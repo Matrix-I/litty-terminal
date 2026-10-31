@@ -4,6 +4,13 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
+INSTALL=true
+case "${1:-}" in
+    --no-install) INSTALL=false ;;
+    "") ;;
+    *) echo "Usage: $0 [--no-install]" >&2; exit 1 ;;
+esac
+
 APP_NAME="Litty.app"
 DIST_DIR="$DIR/dist"
 APP_DIR="$DIST_DIR/$APP_NAME"
@@ -40,7 +47,7 @@ touch "$APP_DIR"
 
 echo "==> $APP_NAME created at $APP_DIR"
 
-if [ -d "$HOME/Applications" ]; then
+if [ "$INSTALL" = true ] && [ -d "$HOME/Applications" ]; then
     echo "==> Installing to $HOME/Applications/$APP_NAME..."
     rm -rf "$HOME/Applications/$APP_NAME" 2>/dev/null || true
     cp -R "$APP_DIR" "$HOME/Applications/" 2>/dev/null || true
@@ -63,7 +70,7 @@ ln -s /Applications "$DMG_STAGING/Applications"
 hdiutil create -volname "Litty" \
     -srcfolder "$DMG_STAGING" \
     -ov -format UDZO \
-    "$DMG_PATH" > /dev/null 2>&1 || true
+    "$DMG_PATH"
 
 rm -rf "$DMG_STAGING"
 

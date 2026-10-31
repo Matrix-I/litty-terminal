@@ -482,12 +482,11 @@ fn fetch_release_from_api(channel: AutoUpdateChannel) -> Result<ReleaseInfo, Str
         "Accept: application/vnd.github+json",
     ]);
     let mut stdin_config: Option<Vec<u8>> = None;
-    if let Ok(token) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN")) {
-        if !token.is_empty() {
+    if let Ok(token) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN"))
+        && !token.is_empty() {
             cmd.arg("-K").arg("-");
             stdin_config = Some(format!("header = \"Authorization: Bearer {token}\"\n").into_bytes());
         }
-    }
     cmd.arg(url);
 
     let body = run_curl_with_stdin(&mut cmd, "GitHub API request", stdin_config.as_deref())?;
@@ -974,20 +973,18 @@ pub(crate) fn download_and_verify_in(
 
     // Reuse a build that an earlier `auto-update = download` run already fetched,
     // but only together with a signature that still verifies.
-    if let Ok(sums) = fs::read_to_string(&sums_path) {
-        if let Ok(asset) = pick_asset(release, &sums, candidates) {
+    if let Ok(sums) = fs::read_to_string(&sums_path)
+        && let Ok(asset) = pick_asset(release, &sums, candidates) {
             let path = release_dir.join(&asset.name);
-            if path.is_file() && verify_checksum(&sums, &asset.name, &path).is_ok() {
-                if let Some(sig_asset) = signature_asset(release) {
+            if path.is_file() && verify_checksum(&sums, &asset.name, &path).is_ok()
+                && let Some(sig_asset) = signature_asset(release) {
                     let sig_path = release_dir.join(&sig_asset.name);
                     if sig_path.is_file() {
                         verify_signature(&sums_path, &sig_path)?;
                         return Ok((path, asset.name.clone()));
                     }
                 }
-            }
         }
-    }
 
     let sums_asset = release
         .assets

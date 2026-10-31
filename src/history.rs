@@ -380,11 +380,10 @@ fn candidate_history_files() -> Vec<PathBuf> {
     let mut files = Vec::new();
 
     // 1. $HISTFILE if set and non-empty
-    if let Ok(histfile) = std::env::var("HISTFILE") {
-        if !histfile.trim().is_empty() {
+    if let Ok(histfile) = std::env::var("HISTFILE")
+        && !histfile.trim().is_empty() {
             files.push(PathBuf::from(histfile));
         }
-    }
 
     let home = std::env::var("HOME").ok().map(PathBuf::from);
     let shell = std::env::var("SHELL").unwrap_or_default();
@@ -452,23 +451,21 @@ fn unmetafy(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut it = bytes.iter();
     while let Some(&b) = it.next() {
-        if b == 0x83 {
-            if let Some(&next) = it.next() {
+        if b == 0x83
+            && let Some(&next) = it.next() {
                 out.push(next ^ 0x20);
                 continue;
             }
-        }
         out.push(b);
     }
     out
 }
 
 fn decode_history_bytes(bytes: &[u8], zsh: bool) -> String {
-    if zsh && bytes.contains(&0x83) {
-        if let Ok(s) = String::from_utf8(unmetafy(bytes)) {
+    if zsh && bytes.contains(&0x83)
+        && let Ok(s) = String::from_utf8(unmetafy(bytes)) {
             return s;
         }
-    }
     String::from_utf8_lossy(bytes).into_owned()
 }
 
@@ -486,13 +483,12 @@ fn split_line_entries(bytes: &[u8], zsh: bool) -> Vec<RawEntry> {
         if !content.is_empty() {
             content.push(b'\n');
         }
-        if let Some(stripped) = line.strip_suffix(b"\\") {
-            if next < bytes.len() {
+        if let Some(stripped) = line.strip_suffix(b"\\")
+            && next < bytes.len() {
                 content.extend_from_slice(stripped);
                 pos = next;
                 continue;
             }
-        }
         content.extend_from_slice(line);
         entries.push(line_entry(start..next, &content, zsh));
         content.clear();
@@ -550,11 +546,10 @@ fn split_history_entries(path: &Path, bytes: &[u8]) -> Vec<RawEntry> {
 }
 
 fn decode_history_cow(bytes: &[u8], zsh: bool) -> std::borrow::Cow<'_, str> {
-    if zsh && bytes.contains(&0x83) {
-        if let Ok(s) = String::from_utf8(unmetafy(bytes)) {
+    if zsh && bytes.contains(&0x83)
+        && let Ok(s) = String::from_utf8(unmetafy(bytes)) {
             return std::borrow::Cow::Owned(s);
         }
-    }
     String::from_utf8_lossy(bytes)
 }
 
@@ -581,15 +576,14 @@ fn parse_history_file_dedup(
     let Ok(bytes) = std::fs::read(path) else { return };
     if is_fish_history(path) {
         for entry in split_fish_entries(&bytes).into_iter().rev() {
-            if let Some(cmd) = entry.command {
-                if !seen.contains(cmd.as_str()) {
+            if let Some(cmd) = entry.command
+                && !seen.contains(cmd.as_str()) {
                     seen.insert(cmd.as_str().into());
                     out.push_back(cmd);
                     if out.len() >= max_items {
                         break;
                     }
                 }
-            }
         }
         return;
     }
@@ -621,13 +615,12 @@ fn parse_history_file_dedup(
         if !content.is_empty() {
             content.push(b'\n');
         }
-        if let Some(stripped) = line.strip_suffix(b"\\") {
-            if next < bytes.len() {
+        if let Some(stripped) = line.strip_suffix(b"\\")
+            && next < bytes.len() {
                 content.extend_from_slice(stripped);
                 pos = next;
                 continue;
             }
-        }
         if content.is_empty() {
             raw_lines.push(LineSlice::Borrowed(line));
         } else {
@@ -639,8 +632,8 @@ fn parse_history_file_dedup(
 
     for raw in raw_lines.into_iter().rev() {
         let decoded = decode_history_cow(raw.as_bytes(), zsh);
-        if let Some(cmd) = extract_line_command(&decoded) {
-            if !seen.contains(cmd) {
+        if let Some(cmd) = extract_line_command(&decoded)
+            && !seen.contains(cmd) {
                 let s = cmd.to_string();
                 seen.insert(s.as_str().into());
                 out.push_back(s);
@@ -648,7 +641,6 @@ fn parse_history_file_dedup(
                     break;
                 }
             }
-        }
     }
 }
 
@@ -770,11 +762,10 @@ fn active_shell_history_files() -> Vec<PathBuf> {
         }
     }
 
-    if files.is_empty() {
-        if let Some(f) = candidate_history_files().into_iter().find(|p| p.exists()) {
+    if files.is_empty()
+        && let Some(f) = candidate_history_files().into_iter().find(|p| p.exists()) {
             files.push(f);
         }
-    }
     files
 }
 
@@ -1040,11 +1031,10 @@ fn match_ascii_terms(terms: &[PreparedTerm], text: &str, recency_rank: usize) ->
                     for (t_idx, &b) in target.iter().enumerate() {
                         if p_idx < p_len && b == p_pat[p_idx] {
                             all_match_indices.push(t_idx);
-                            if let Some(last) = last_match {
-                                if last + 1 == t_idx {
+                            if let Some(last) = last_match
+                                && last + 1 == t_idx {
                                     term_score += 50;
                                 }
-                            }
                             if t_idx == 0 {
                                 term_score += 100;
                             } else {
@@ -1169,11 +1159,10 @@ fn match_unicode_terms(terms: &[PreparedTerm], text: &str, recency_rank: usize) 
                     for (t_idx, &tch) in search_target.iter().enumerate() {
                         if p_idx < p_chars.len() && tch == p_chars[p_idx] {
                             all_match_indices.push(t_idx);
-                            if let Some(last) = last_match {
-                                if last + 1 == t_idx {
+                            if let Some(last) = last_match
+                                && last + 1 == t_idx {
                                     term_score += 50;
                                 }
-                            }
                             if t_idx == 0 {
                                 term_score += 100;
                             } else {

@@ -27,11 +27,10 @@ pub fn invalidate_font_cache() {
 }
 
 fn get_font_files() -> Arc<[PathBuf]> {
-    if let Ok(lock) = FONT_FILES_CACHE.read() {
-        if let Some(files) = lock.as_ref() {
+    if let Ok(lock) = FONT_FILES_CACHE.read()
+        && let Some(files) = lock.as_ref() {
             return Arc::clone(files);
         }
-    }
     let mut files = Vec::new();
     for dir in font_dirs() {
         collect_font_files(&dir, 0, &mut files);
@@ -44,13 +43,11 @@ fn get_font_files() -> Arc<[PathBuf]> {
 }
 
 fn get_cached_faces(path: &Path) -> Arc<[FaceName]> {
-    if let Ok(lock) = FACE_CACHE.read() {
-        if let Some(cache) = lock.as_ref() {
-            if let Some(faces) = cache.get(path) {
+    if let Ok(lock) = FACE_CACHE.read()
+        && let Some(cache) = lock.as_ref()
+            && let Some(faces) = cache.get(path) {
                 return Arc::clone(faces);
             }
-        }
-    }
     let parsed: Arc<[FaceName]> = read_faces(path).unwrap_or_default().into();
     if let Ok(mut lock) = FACE_CACHE.write() {
         let map = lock.get_or_insert_with(HashMap::new);
@@ -72,13 +69,11 @@ pub fn find_family(family: &str) -> Option<FaceRef> {
     if family.contains('/') {
         return Path::new(family).is_file().then(|| FaceRef { path: family.to_string(), index: 0 });
     }
-    if let Ok(lock) = FAMILY_CACHE.read() {
-        if let Some(cache) = lock.as_ref() {
-            if let Some(res) = cache.get(family) {
+    if let Ok(lock) = FAMILY_CACHE.read()
+        && let Some(cache) = lock.as_ref()
+            && let Some(res) = cache.get(family) {
                 return res.clone();
             }
-        }
-    }
     let res = resolve_family(family);
     if let Ok(mut lock) = FAMILY_CACHE.write() {
         let map = lock.get_or_insert_with(HashMap::new);
@@ -101,11 +96,10 @@ fn resolve_family(family: &str) -> Option<FaceRef> {
 
     // 2. If the user asked for "<Name> Nerd Font" / "<Name> NF", strip the suffix and retry
     // (Ghostty style: base font for text + automatic Nerd Font symbol fallback)
-    if let Some(base) = strip_nerd_font_suffix(&want) {
-        if let Some(face) = search_files(&files, base) {
+    if let Some(base) = strip_nerd_font_suffix(&want)
+        && let Some(face) = search_files(&files, base) {
             return Some(face);
         }
-    }
 
     // 3. Known aliases on macOS:
     #[cfg(target_os = "macos")]
@@ -133,11 +127,10 @@ fn strip_nerd_font_suffix(want: &str) -> Option<&str> {
         "nfp",
         "nf",
     ] {
-        if let Some(base) = want.strip_suffix(suffix) {
-            if !base.is_empty() {
+        if let Some(base) = want.strip_suffix(suffix)
+            && !base.is_empty() {
                 return Some(base);
             }
-        }
     }
     None
 }
@@ -241,11 +234,10 @@ fn collect_font_files(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
         let Ok(ft) = entry.file_type() else { continue };
         if ft.is_dir() {
             collect_font_files(&p, depth + 1, out);
-        } else if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-            if matches!(ext.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc") {
+        } else if let Some(ext) = p.extension().and_then(|e| e.to_str())
+            && matches!(ext.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc") {
                 out.push(p);
             }
-        }
     }
 }
 

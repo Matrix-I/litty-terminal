@@ -207,7 +207,11 @@ cat <<EOF > "$REPORT_FILE"
 - **Execution Date**: $(date '+%Y-%m-%d %H:%M:%S %z')
 - **Platform**: $(uname -s) $(uname -m) (Kernel $(uname -r))
 - **Git Commit**: $(git rev-parse --short HEAD 2>/dev/null || echo "N/A")
-- **Status**: $([ $TOTAL_FAILURES -eq 0 ] && echo "✅ **READY FOR RELEASE (ALL PASS)**" || echo "❌ **RELEASE BLOCKED (REGRESSIONS/FAILURES DETECTED)**")
+- **Automated Suite Status**: $([ $TOTAL_FAILURES -eq 0 ] && echo "✅ **ALL EXECUTED CHECKS PASS**" || echo "❌ **REGRESSIONS/FAILURES DETECTED**")
+
+This suite uses the budgets in src/bench.rs. Passing it does not establish
+compliance with AGENTS.md's stricter <50 MB idle RAM requirement, verify idle
+CPU usage, or replace the outstanding Linux manual checks in ROADMAP.md.
 
 ---
 
@@ -215,7 +219,8 @@ cat <<EOF > "$REPORT_FILE"
 - **1 Window, 1 Tab (Idle Baseline)**: Measures cold start footprint at idle state.
 - **1 Window, 3 Tabs**: Measures memory scaling when opening multiple tabs in a single window.
 - **2 Windows, 6 Tabs (3 tabs per window)**: Measures multi-window scalability and multi-GPU swapchains.
-- **Post-cleanup (Tabs closed)**: Ensures no memory leaks occurred (leak delta $\le$ 8 MB).
+- **Post-cleanup (Tabs closed)**: Checks retained footprint growth (delta $\le$ 10 MB).
+- **Suite footprint budgets**: 85 MB (1w/1t), 95 MB (1w/3t), 145 MB (2w/6t).
 - **Status**: **$RAM_PASSED**
 
 ## 2. Interactive Latency & I/O
@@ -225,7 +230,7 @@ cat <<EOF > "$REPORT_FILE"
 - **File Reading Ingestion**:
   - 4 KB Config: $\le$ 1.0 ms
   - 64 KB Source code: $\le$ 15.0 ms
-  - 1 MB Data stream: $\ge$ 50 MB/s
+  - 1 MB Data stream: $\le$ 150 ms
 - **Image & Extras Stream Ingestion**:
   - 256 KB Kitty Graphics APC: $\le$ 30.0 ms
   - 256 KB Sixel Graphics DCS: $\le$ 30.0 ms
@@ -243,8 +248,8 @@ cat <<EOF > "$REPORT_FILE"
 - **Status**: **$PERF_PASSED**
 
 ## 4. Critical Features Regression
-- **FZF Fuzzy History Search**: Query over 10,000 real-world commands ($\le$ 1.5 ms / query, 100% accuracy).
-- **Find in Terminal (Regex Search)**: Regex scan across 5,000 scrollback lines ($\le$ 15 ms).
+- **FZF Fuzzy History Search**: Query over 10,000 commands ($\le$ 2.5 ms / query).
+- **Find in Terminal (Regex Search)**: Regex scan across 5,000 scrollback lines ($\le$ 1 ms).
 - **Split Panes Engine**: 1,000 vertical/horizontal splits, resize, zoom, and close operations without panicking.
 - **Bracketed Paste Security**: Escape injection mitigation (\`\x1b[201~\`) and safe shell quotation.
 - **Status**: **$FEAT_PASSED**
@@ -259,7 +264,7 @@ echo ""
 
 if [[ $TOTAL_FAILURES -eq 0 ]]; then
     echo "${BOLD}${GREEN}==================================================================${RESET}"
-    echo "${BOLD}${GREEN}  ✔ ALL CRITERIA PASSED! BUILD IS READY FOR RELEASE.              ${RESET}"
+    echo "${BOLD}${GREEN}  ✔ AUTOMATED SUITE PASSED. CHECK PROJECT RULES BEFORE RELEASE.  ${RESET}"
     echo "${BOLD}${GREEN}==================================================================${RESET}"
     echo ""
     exit 0

@@ -10,14 +10,12 @@ pub fn lookup(name: &str) -> Option<u32> {
         n += 1;
     }
     let key = std::str::from_utf8(&key[..n]).ok()?;
-    if let Some(level) = key.strip_prefix("gray").or_else(|| key.strip_prefix("grey")) {
-        if let Ok(pct) = level.parse::<u32>() {
-            if pct <= 100 {
+    if let Some(level) = key.strip_prefix("gray").or_else(|| key.strip_prefix("grey"))
+        && let Ok(pct) = level.parse::<u32>()
+            && pct <= 100 {
                 let v = (pct * 255 + 50) / 100;
                 return Some((v << 16) | (v << 8) | v);
             }
-        }
-    }
     let key = key.replace("grey", "gray");
     NAMES.binary_search_by(|(k, _)| k.cmp(&key.as_str())).ok().map(|i| NAMES[i].1)
 }

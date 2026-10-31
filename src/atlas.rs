@@ -1983,11 +1983,10 @@ unsafe fn cached_ct_base_font(is_emoji: bool, size: f64) -> *const std::ffi::c_v
     let size_bits = size.to_bits();
     {
         let cache = BASE_FONT_CACHE.lock();
-        if let Some((cached_bits, ptr_val)) = cache[slot_idx] {
-            if cached_bits == size_bits && ptr_val != 0 {
+        if let Some((cached_bits, ptr_val)) = cache[slot_idx]
+            && cached_bits == size_bits && ptr_val != 0 {
                 return CFRetain(ptr_val as *const c_void);
             }
-        }
     }
 
     let name_str = if is_emoji { "Apple Color Emoji" } else { "Menlo" };
@@ -2003,11 +2002,10 @@ unsafe fn cached_ct_base_font(is_emoji: bool, size: f64) -> *const std::ffi::c_v
     }
 
     let mut cache = BASE_FONT_CACHE.lock();
-    if let Some((_, old_ptr)) = cache[slot_idx].replace((size_bits, font as usize)) {
-        if old_ptr != 0 {
+    if let Some((_, old_ptr)) = cache[slot_idx].replace((size_bits, font as usize))
+        && old_ptr != 0 {
             CFRelease(old_ptr as *const c_void);
         }
-    }
     CFRetain(font)
 }}
 
@@ -2511,11 +2509,10 @@ static FONT_CACHE: Mutex<Option<(Vec<String>, Arc<FontSet>)>> = parking_lot::con
 /// families, `LITTY_FONT=/path/to/font.ttf` or the platform defaults apply.
 pub fn load_font(families: &[String]) -> Arc<FontSet> {
     let mut cache = FONT_CACHE.lock();
-    if let Some((ref cached_families, ref font_set)) = *cache {
-        if cached_families.as_slice() == families {
+    if let Some((ref cached_families, ref font_set)) = *cache
+        && cached_families.as_slice() == families {
             return Arc::clone(font_set);
         }
-    }
 
     let mut configured_faces: Vec<(String, u32)> = Vec::new();
     for fam in families {

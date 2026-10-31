@@ -1297,11 +1297,10 @@ impl Grid {
             let (chars, levels, order) = &mut *scratch.borrow_mut();
             if self.bidi_order(r, chars, levels, order) {
                 let visual = |l: usize| order.iter().position(|&o| o as usize == l);
-                if let Some(prev) = col.checked_sub(1).filter(|&p| levels.get(p) == Some(&0)) {
-                    if let Some(v) = visual(prev).map(|v| v + 1).filter(|&v| v < order.len()) {
+                if let Some(prev) = col.checked_sub(1).filter(|&p| levels.get(p) == Some(&0))
+                    && let Some(v) = visual(prev).map(|v| v + 1).filter(|&v| v < order.len()) {
                         return v;
                     }
-                }
                 visual(col).unwrap_or(col)
             } else {
                 col
@@ -1393,12 +1392,11 @@ impl Grid {
                 let cp = cell.codepoint;
                 if cp & (CLUSTER_FLAG | PH_FLAG) == CLUSTER_FLAG {
                     let id = (cp & CLUSTER_ID) as usize;
-                    if let Some(u) = used.get_mut(id) {
-                        if !*u {
+                    if let Some(u) = used.get_mut(id)
+                        && !*u {
                             *u = true;
                             used_count += 1;
                         }
-                    }
                 }
             }
         };
@@ -1547,11 +1545,10 @@ impl Grid {
             return None;
         }
         let mut codepoint = if c == PLACEHOLDER { PH_FLAG } else { c as u32 };
-        if w == 1 && (0x1F300..=0x1F6FF).contains(&codepoint) && self.cols >= 2 && self.in_line_editor() {
-            if let Some(wide) = self.wide_pictograph(c) {
+        if w == 1 && (0x1F300..=0x1F6FF).contains(&codepoint) && self.cols >= 2 && self.in_line_editor()
+            && let Some(wide) = self.wide_pictograph(c) {
                 (codepoint, w) = (wide, 2);
             }
-        }
         if w == 2 && self.cols < 2 {
             w = 1;
         }
@@ -2029,21 +2026,19 @@ impl Grid {
             let start = physical_row * self.cols;
             let end = start + self.cols;
             for cell in &self.cells[start..end] {
-                if cell.codepoint & PH_FLAG != 0 {
-                    if let Some((id, pid)) = self.placeholder_ids(cell) {
+                if cell.codepoint & PH_FLAG != 0
+                    && let Some((id, pid)) = self.placeholder_ids(cell) {
                         referenced.insert((id, pid));
                     }
-                }
             }
         }
         // Check alt screen if active
         if self.alt_active {
             for cell in &self.alt {
-                if cell.codepoint & PH_FLAG != 0 {
-                    if let Some((id, pid)) = self.placeholder_ids(cell) {
+                if cell.codepoint & PH_FLAG != 0
+                    && let Some((id, pid)) = self.placeholder_ids(cell) {
                         referenced.insert((id, pid));
                     }
-                }
             }
         }
         self.graphics.virtuals.retain(|v| {

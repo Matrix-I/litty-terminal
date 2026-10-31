@@ -402,11 +402,10 @@ impl Perform for Grid {
             b"52" => {
                 // `52;<targets>;<base64>`. Only setting is supported: reading the
                 // clipboard from the terminal would leak it to any program.
-                if let Some(text) = params.get(2).filter(|d| **d != b"?").and_then(|d| decode_base64(d)) {
-                    if let Ok(text) = String::from_utf8(text) {
+                if let Some(text) = params.get(2).filter(|d| **d != b"?").and_then(|d| decode_base64(d))
+                    && let Ok(text) = String::from_utf8(text) {
                         self.clipboard_request = Some(text);
                     }
-                }
             }
             b"8" => {
                 self.osc8(params);

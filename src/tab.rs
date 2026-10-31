@@ -109,8 +109,8 @@ impl Tab {
     }
 
     pub fn compute_pane_rects(&self, total_cols: usize, total_rows: usize) -> Vec<PaneRect> {
-        if let Some(z_id) = self.zoomed_pane_id {
-            if self.panes.iter().any(|p| p.id == z_id) {
+        if let Some(z_id) = self.zoomed_pane_id
+            && self.panes.iter().any(|p| p.id == z_id) {
                 return vec![PaneRect {
                     id: z_id,
                     col: 0,
@@ -121,7 +121,6 @@ impl Tab {
                     has_border_bottom: false,
                 }];
             }
-        }
         let area = Rect {
             col: 0,
             row: 0,

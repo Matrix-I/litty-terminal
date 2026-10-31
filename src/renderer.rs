@@ -835,13 +835,12 @@ impl Renderer {
         let full = self.force_full;
         let (mut lo, mut hi) = (usize::MAX, 0);
 
-        if let Some((titles, active_idx)) = tab_bar {
-            if full {
+        if let Some((titles, active_idx)) = tab_bar
+            && full {
                 self.build_tab_bar_row(cols, titles, active_idx);
                 lo = 0;
                 hi = 0;
             }
-        }
 
         let active_rect = panes.iter().find(|p| p.is_active).map(|p| p.rect);
         self.placed.clear();
@@ -946,8 +945,8 @@ impl Renderer {
         self.force_full = false;
         self.last_cursor = active_cur;
 
-        if let Some((_, link)) = hovered_link {
-            if total_rows > 0 && cols > 0 {
+        if let Some((_, link)) = hovered_link
+            && total_rows > 0 && cols > 0 {
                 let max_chars = cols.saturating_sub(2).min(120);
                 let display_url = if link.url.chars().count() > max_chars {
                     format!("{}...", link.url.chars().take(max_chars.saturating_sub(3)).collect::<String>())
@@ -983,13 +982,12 @@ impl Renderer {
                 lo = lo.min(preview_row);
                 hi = hi.max(preview_row);
             }
-        }
 
         // IME composition (e.g. Telex / Pinyin preedit): underlined text at the cursor,
         // with the cursor moved to the end of the composition.
         let mut cursor = active_cur;
-        if let (false, Some((cx, cy))) = (preedit.is_empty(), active_cur) {
-            if cols > 0 && cy < total_rows && cx < cols {
+        if let (false, Some((cx, cy))) = (preedit.is_empty(), active_cur)
+            && cols > 0 && cy < total_rows && cx < cols {
                 let row_start = cy * cols;
                 let mut col = cx;
                 for ch in preedit.chars() {
@@ -1014,17 +1012,15 @@ impl Renderer {
                 lo = lo.min(cy);
                 hi = hi.max(cy);
             }
-        }
 
         if search.is_open {
             self.build_search_box(cols, top_rows, total_rows, search, &mut lo, &mut hi);
         }
 
-        if let Some(search) = history_search {
-            if search.is_open {
+        if let Some(search) = history_search
+            && search.is_open {
                 self.build_history_popup(cols, total_rows, search, &mut lo, &mut hi);
             }
-        }
 
         if let Some(lines) = inspector {
             self.build_inspector(cols, top_rows, total_rows, lines, &mut lo, &mut hi);
@@ -1971,14 +1967,13 @@ fn make_instance_buf(device: &wgpu::Device, cells: usize) -> wgpu::Buffer {
 /// prompt prefix so narrow tabs show only the path. The window title keeps the
 /// full string.
 fn tab_label(title: &str) -> &str {
-    if let Some((prefix, rest)) = title.split_once(':') {
-        if !prefix.is_empty()
+    if let Some((prefix, rest)) = title.split_once(':')
+        && !prefix.is_empty()
             && !prefix.chars().any(char::is_whitespace)
             && (rest.starts_with('~') || (rest.starts_with('/') && !rest.starts_with("//")))
         {
             return rest;
         }
-    }
     title
 }
 

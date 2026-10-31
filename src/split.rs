@@ -171,18 +171,16 @@ impl SplitNode {
         match self {
             SplitNode::Leaf(id) => *id == target_id,
             SplitNode::Split { first, second, .. } => {
-                if let SplitNode::Leaf(id) = **first {
-                    if id == target_id {
+                if let SplitNode::Leaf(id) = **first
+                    && id == target_id {
                         *self = *second.clone();
                         return true;
                     }
-                }
-                if let SplitNode::Leaf(id) = **second {
-                    if id == target_id {
+                if let SplitNode::Leaf(id) = **second
+                    && id == target_id {
                         *self = *first.clone();
                         return true;
                     }
-                }
                 if first.remove_pane(target_id) {
                     return true;
                 }

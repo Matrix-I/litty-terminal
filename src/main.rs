@@ -850,13 +850,12 @@ impl App {
                     if btn_state == ElementState::Released && s.scrollbar_drag.take().is_some() {
                         return;
                     }
-                    if btn_state == ElementState::Pressed && !s.history_search.is_open {
-                        if let Some(pane_id) = scrollbar_at_mouse(s) {
+                    if btn_state == ElementState::Pressed && !s.history_search.is_open
+                        && let Some(pane_id) = scrollbar_at_mouse(s) {
                             s.scrollbar_drag = Some(pane_id);
                             drag_scrollbar(s, pane_id);
                             return;
                         }
-                    }
                 }
                 if let (Some(b), false) = (reported, s.history_search.is_open || s.selecting) {
                     let action = if btn_state == ElementState::Pressed { mouse::Action::Press } else { mouse::Action::Release };
@@ -872,8 +871,8 @@ impl App {
                     return;
                 }
                 if s.history_search.is_open {
-                    if btn_state == ElementState::Pressed {
-                        if let Some((x0, y0, popup_w, popup_h, visible_rows)) =
+                    if btn_state == ElementState::Pressed
+                        && let Some((x0, y0, popup_w, popup_h, visible_rows)) =
                             s.renderer.history_popup_geometry(&s.history_search)
                         {
                             let show_tabs = s.tabs.len() > 1;
@@ -899,12 +898,11 @@ impl App {
                                             let cmd_opt = s.history_search.selected_command().map(|c| c.to_string());
                                             s.history_search.close();
                                             s.renderer.invalidate();
-                                            if let Some(cmd) = cmd_opt {
-                                                if let Some(pane) = s.tabs[s.active].active_pane() {
+                                            if let Some(cmd) = cmd_opt
+                                                && let Some(pane) = s.tabs[s.active].active_pane() {
                                                     let bracketed = pane.grid.lock().bracketed_paste;
                                                     pane.pty.write(&history_insert_payload(&cmd, true, bracketed));
                                                 }
-                                            }
                                             s.window.request_redraw();
                                             return;
                                         } else {
@@ -923,7 +921,6 @@ impl App {
                                 return;
                             }
                         }
-                    }
                     return;
                 }
                 match btn_state {
@@ -933,8 +930,8 @@ impl App {
                         #[cfg(not(target_os = "macos"))]
                         let cmd_pressed = s.mods.control_key() || s.mods.super_key();
 
-                        if cmd_pressed {
-                            if let Some((pane_id, url, is_path)) = s.hovered_link.as_ref().map(|l| (l.pane_id, l.link.url.clone(), l.link.is_path)) {
+                        if cmd_pressed
+                            && let Some((pane_id, url, is_path)) = s.hovered_link.as_ref().map(|l| (l.pane_id, l.link.url.clone(), l.link.is_path)) {
                                 let cwd = s.tabs.get_mut(s.active)
                                     .and_then(|t| t.pane_mut(pane_id))
                                     .and_then(|p| p.cwd());
@@ -942,7 +939,6 @@ impl App {
                                 open_target(&url, is_path, cwd_path);
                                 return;
                             }
-                        }
 
                         if let Some(action) = s.renderer.hit_test_tab_bar(s.mouse_pos.0, s.mouse_pos.1, &s.tab_titles) {
                             match action {
@@ -1040,19 +1036,17 @@ impl App {
                         if s.selecting {
                             s.selecting = false;
                             if s.drag_moved {
-                                if let Some(pane_id) = s.active_click_pane_id {
-                                    if let Some(pane) = s.tabs.get(s.active).and_then(|t| t.pane(pane_id)) {
+                                if let Some(pane_id) = s.active_click_pane_id
+                                    && let Some(pane) = s.tabs.get(s.active).and_then(|t| t.pane(pane_id)) {
                                         let text = pane.grid.lock().selected_text();
                                         if let Some(t) = text.filter(|_| s.config.copy_on_select) {
                                             copy_to_clipboard(&t);
                                         }
                                     }
-                                }
-                            } else if s.click_count == 1 && !s.history_search.is_open {
-                                if let (Some(pane_id), Some((pane_row, pane_col))) =
+                            } else if s.click_count == 1 && !s.history_search.is_open
+                                && let (Some(pane_id), Some((pane_row, pane_col))) =
                                     (s.active_click_pane_id, s.last_click_cell)
-                                {
-                                    if let Some(pane) = s.tabs.get(s.active).and_then(|t| t.pane(pane_id)) {
+                                    && let Some(pane) = s.tabs.get(s.active).and_then(|t| t.pane(pane_id)) {
                                         let move_bytes = pane
                                             .grid
                                             .lock()
@@ -1062,8 +1056,6 @@ impl App {
                                             s.window.request_redraw();
                                         }
                                     }
-                                }
-                            }
                         }
                     }
                 }
@@ -1159,13 +1151,12 @@ impl App {
 
             // Dropped files paste their shell-quoted paths, separated by spaces.
             WindowEvent::DroppedFile(path) => {
-                if let Some(tab) = s.tabs.get(s.active) {
-                    if let Some(pane) = tab.active_pane() {
+                if let Some(tab) = s.tabs.get(s.active)
+                    && let Some(pane) = tab.active_pane() {
                         let bracketed = pane.grid.lock().bracketed_paste;
                         let text = format!("{} ", shell_quote(&path.to_string_lossy()));
                         pane.pty.write(&paste_payload(&text, bracketed));
                     }
-                }
             }
 
             WindowEvent::ThemeChanged(theme) => {
@@ -1218,13 +1209,11 @@ impl App {
                     tab.bell = false;
                     refresh_tab_titles(s);
                 }
-                if let Some(tab) = s.tabs.get(s.active) {
-                    if let Some(pane) = tab.active_pane() {
-                        if pane.grid.lock().focus_events {
+                if let Some(tab) = s.tabs.get(s.active)
+                    && let Some(pane) = tab.active_pane()
+                        && pane.grid.lock().focus_events {
                             pane.pty.write(if focused { b"\x1b[I" } else { b"\x1b[O" });
                         }
-                    }
-                }
                 if focused {
                     s.cursor_blink_epoch = std::time::Instant::now();
                     let mtime = config::config_mtime();
@@ -1383,11 +1372,10 @@ fn handle_terminal_requests(s: &mut State) {
     if ring {
         macos::beep();
     }
-    if audio {
-        if let Some(path) = &s.config.bell_audio_path {
+    if audio
+        && let Some(path) = &s.config.bell_audio_path {
             play_sound(path, s.config.bell_audio_volume);
         }
-    }
     if border {
         s.renderer.set_bell_border(true);
         s.window.request_redraw();
@@ -1500,11 +1488,10 @@ fn refresh_tab_titles(s: &mut State) {
             let lock = if s.secure_input { "🔒 " } else { "" };
             s.window.set_title(&format!("{lock}{title}"));
             #[cfg(target_os = "macos")]
-            if let Some(tab) = s.tabs.get_mut(s.active) {
-                if let Some(cwd) = tab.active_pane_mut().and_then(|p| p.cwd()) {
+            if let Some(tab) = s.tabs.get_mut(s.active)
+                && let Some(cwd) = tab.active_pane_mut().and_then(|p| p.cwd()) {
                     macos::set_window_represented_filename(&s.window, &cwd);
                 }
-            }
         }
     }
 }
@@ -2581,11 +2568,10 @@ fn handle_key(
         // Keys belong to the search box; shortcuts it does not consume still work,
         // but nothing reaches the shell.
         consume_key(s, ev);
-        if !handle_search_key(s, &ev.logical_key, m) {
-            if let Some(action) = keymap::resolve(keymap::PLATFORM, &ev.logical_key, m, alt_screen) {
+        if !handle_search_key(s, &ev.logical_key, m)
+            && let Some(action) = keymap::resolve(keymap::PLATFORM, &ev.logical_key, m, alt_screen) {
                 run_action(s, action, waker);
             }
-        }
         return;
     }
     // User `keybind` entries come first; the last matching one wins.
@@ -2604,11 +2590,10 @@ fn handle_key(
             return;
         }
         Some(keymap::Binding::Text(bytes)) => {
-            if let Some(tab) = s.tabs.get(s.active) {
-                if let Some(pane) = tab.active_pane() {
+            if let Some(tab) = s.tabs.get(s.active)
+                && let Some(pane) = tab.active_pane() {
                     pane.pty.write(&bytes);
                 }
-            }
             consume_key(s, ev);
             return;
         }
@@ -2619,12 +2604,11 @@ fn handle_key(
         Some(keymap::Binding::Unbind) => None,
         None => keymap::resolve(keymap::PLATFORM, &ev.logical_key, m, alt_screen),
     };
-    if let Some(action) = builtin {
-        if run_action(s, action, waker) {
+    if let Some(action) = builtin
+        && run_action(s, action, waker) {
             consume_key(s, ev);
             return;
         }
-    }
     if s.tabs.is_empty() {
         consume_key(s, ev);
         return;
@@ -2946,11 +2930,10 @@ fn handle_search_key(s: &mut State, key: &Key, m: keymap::Mods) -> bool {
 fn refresh_search(s: &mut State) {
     let Some(tab) = s.tabs.get(s.active) else { return };
     let Some(pane) = tab.active_pane() else { return };
-    if let Some(old) = s.search.pane_id.filter(|&id| id != pane.id) {
-        if let Some(p) = s.tabs.iter().flat_map(|t| &t.panes).find(|p| p.id == old) {
+    if let Some(old) = s.search.pane_id.filter(|&id| id != pane.id)
+        && let Some(p) = s.tabs.iter().flat_map(|t| &t.panes).find(|p| p.id == old) {
             p.grid.lock().clear_search();
         }
-    }
     s.search.pane_id = Some(pane.id);
     // Copy the text under the lock, match outside it.
     let matches = match s.search.compile() {
@@ -2974,20 +2957,18 @@ fn refresh_search(s: &mut State) {
 }
 
 fn search_step(s: &mut State, up: bool) {
-    if let Some(tab) = s.tabs.get(s.active) {
-        if let Some(pane) = tab.active_pane() {
+    if let Some(tab) = s.tabs.get(s.active)
+        && let Some(pane) = tab.active_pane() {
             pane.grid.lock().search_step(up);
             s.window.request_redraw();
         }
-    }
 }
 
 fn close_search(s: &mut State) {
-    if let Some(id) = s.search.pane_id {
-        if let Some(p) = s.tabs.iter().flat_map(|t| &t.panes).find(|p| p.id == id) {
+    if let Some(id) = s.search.pane_id
+        && let Some(p) = s.tabs.iter().flat_map(|t| &t.panes).find(|p| p.id == id) {
             p.grid.lock().clear_search();
         }
-    }
     s.search.close();
     s.renderer.invalidate();
     s.window.request_redraw();
@@ -3109,8 +3090,8 @@ fn run_tab_action(
             }
         }
         A::Paste => {
-            if let Some(text) = paste_from_clipboard().filter(|t| !t.is_empty()) {
-                if let Some(pane) = s.tabs[s.active].active_pane() {
+            if let Some(text) = paste_from_clipboard().filter(|t| !t.is_empty())
+                && let Some(pane) = s.tabs[s.active].active_pane() {
                     let bracketed = {
                         let mut g = pane.grid.lock();
                         g.reset_display();
@@ -3135,7 +3116,6 @@ fn run_tab_action(
                     pane.pty.write(&paste_payload(&text, bracketed));
                     s.window.request_redraw();
                 }
-            }
         }
         // A single in-window tab: move between native macOS tabs, if any.
         A::PrevTab if tabs < 2 => return macos::select_native_tab(&s.window, -1, None),
@@ -3404,17 +3384,15 @@ fn read_clipboard_with(cmds: &'static [(&'static str, &'static [&'static str])])
                         }
                     }
                 }
-                if exited_ok {
-                    if let Some(out) = stdout.take() {
+                if exited_ok
+                    && let Some(out) = stdout.take() {
                         let mut buf = Vec::new();
-                        if out.take(16 << 20).read_to_end(&mut buf).is_ok() {
-                            if let Ok(s) = String::from_utf8(buf) {
+                        if out.take(16 << 20).read_to_end(&mut buf).is_ok()
+                            && let Ok(s) = String::from_utf8(buf) {
                                 let _ = tx.send(Some(s));
                                 return;
                             }
-                        }
                     }
-                }
             }
             let _ = tx.send(None);
         })

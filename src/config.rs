@@ -900,12 +900,11 @@ pub fn parse_color(v: &str) -> Result<u32, String> {
 pub fn open_config_in_editor() {
     let path = config_path();
     if !path.exists() {
-        if let Some(dir) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(dir) {
+        if let Some(dir) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(dir) {
                 eprintln!("litty: cannot create {}: {e}", dir.display());
                 return;
             }
-        }
         let body = TEMPLATE.replace("{path}", &path.display().to_string());
         if let Err(e) = std::fs::write(&path, body) {
             eprintln!("litty: cannot create {}: {e}", path.display());

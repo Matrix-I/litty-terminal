@@ -553,11 +553,10 @@ mod imp {
         if let Some(layer) = send_id(ns_view, c"layer") {
             apply_layer_colorspace(layer, cg_cs);
         }
-        if let Some(content_view) = send_id(ns_window, c"contentView").filter(|&v| v != ns_view) {
-            if let Some(layer) = send_id(content_view, c"layer") {
+        if let Some(content_view) = send_id(ns_window, c"contentView").filter(|&v| v != ns_view)
+            && let Some(layer) = send_id(content_view, c"layer") {
                 apply_layer_colorspace(layer, cg_cs);
             }
-        }
         if let Some(subviews) = send_id(ns_view, c"subviews") {
             for_each_in_array(subviews, |sv| {
                 if let Some(layer) = send_id(sv, c"layer") {
@@ -1008,11 +1007,10 @@ mod imp {
                 .and_then(|bundle| send_id(bundle, c"bundlePath"))
                 .map(|path| msg_send!(path, c"UTF8String"; -> *const std::ffi::c_char))
                 .filter(|p| !p.is_null());
-            if let Some(path) = bundle_path {
-                if CStr::from_ptr(path).to_string_lossy().ends_with(".app") {
+            if let Some(path) = bundle_path
+                && CStr::from_ptr(path).to_string_lossy().ends_with(".app") {
                     return;
                 }
-            }
 
             const ICON_BYTES: &[u8] = include_bytes!("../resources/icon.png");
             let Some(data_cls) = class(c"NSData") else { return };
@@ -1169,8 +1167,8 @@ mod imp {
 
             // App icon on the left
             let app_icon = shared_application().and_then(|app| send_id(app, c"applicationIconImage"));
-            if let Some(iv_cls) = class(c"NSImageView") {
-                if let Some(alloc_iv) = send_id(iv_cls, c"alloc") {
+            if let Some(iv_cls) = class(c"NSImageView")
+                && let Some(alloc_iv) = send_id(iv_cls, c"alloc") {
                     let iv_frame = NSRect { x: 18.0, y: 20.0, w: 48.0, h: 48.0 };
                     let iv = msg_send!(alloc_iv, c"initWithFrame:", iv_frame => NSRect; -> Id);
                     if !iv.is_null() {
@@ -1181,11 +1179,10 @@ mod imp {
                         msg_send!(iv, c"release");
                     }
                 }
-            }
 
             // Title label
-            if let Some(tf_cls) = class(c"NSTextField") {
-                if let Some(alloc_tf) = send_id(tf_cls, c"alloc") {
+            if let Some(tf_cls) = class(c"NSTextField")
+                && let Some(alloc_tf) = send_id(tf_cls, c"alloc") {
                     let tf_frame = NSRect { x: 78.0, y: 55.0, w: 265.0, h: 20.0 };
                     let tf = msg_send!(alloc_tf, c"initWithFrame:", tf_frame => NSRect; -> Id);
                     if !tf.is_null() {
@@ -1206,11 +1203,10 @@ mod imp {
                         msg_send!(tf, c"release");
                     }
                 }
-            }
 
             // Informational text label
-            if let Some(tf_cls) = class(c"NSTextField") {
-                if let Some(alloc_tf) = send_id(tf_cls, c"alloc") {
+            if let Some(tf_cls) = class(c"NSTextField")
+                && let Some(alloc_tf) = send_id(tf_cls, c"alloc") {
                     let tf_frame = NSRect { x: 78.0, y: 35.0, w: 265.0, h: 18.0 };
                     let tf = msg_send!(alloc_tf, c"initWithFrame:", tf_frame => NSRect; -> Id);
                     if !tf.is_null() {
@@ -1231,11 +1227,10 @@ mod imp {
                         msg_send!(tf, c"release");
                     }
                 }
-            }
 
             // Indeterminate progress bar
-            if let Some(ind_cls) = class(c"NSProgressIndicator") {
-                if let Some(alloc_ind) = send_id(ind_cls, c"alloc") {
+            if let Some(ind_cls) = class(c"NSProgressIndicator")
+                && let Some(alloc_ind) = send_id(ind_cls, c"alloc") {
                     let frame = NSRect { x: 78.0, y: 15.0, w: 265.0, h: 14.0 };
                     let ind = msg_send!(alloc_ind, c"initWithFrame:", frame => NSRect; -> Id);
                     if !ind.is_null() {
@@ -1246,7 +1241,6 @@ mod imp {
                         msg_send!(ind, c"release");
                     }
                 }
-            }
 
             msg_send!(win, c"center");
             msg_send!(win, c"makeKeyAndOrderFront:", std::ptr::null_mut() => Id);

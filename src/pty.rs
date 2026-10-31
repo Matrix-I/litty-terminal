@@ -337,11 +337,10 @@ impl Pty {
 
     pub fn cwd(&self) -> Option<String> {
         let pgrp = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
-        if pgrp > 0 && pgrp != self.pid {
-            if let Some(dir) = pid_cwd(pgrp) {
+        if pgrp > 0 && pgrp != self.pid
+            && let Some(dir) = pid_cwd(pgrp) {
                 return Some(dir);
             }
-        }
         pid_cwd(self.pid)
     }
 
@@ -569,11 +568,10 @@ pub(crate) fn pid_cwd(pid: libc::pid_t) -> Option<String> {
         if ret != size {
             return None;
         }
-        if let Some(chunk) = info.pvi_cdir.vip_path.last_mut() {
-            if let Some(last) = chunk.last_mut() {
+        if let Some(chunk) = info.pvi_cdir.vip_path.last_mut()
+            && let Some(last) = chunk.last_mut() {
                 *last = 0;
             }
-        }
         let cstr = std::ffi::CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast::<libc::c_char>());
         let s = cstr.to_str().ok()?.to_string();
         (!s.is_empty()).then_some(s)

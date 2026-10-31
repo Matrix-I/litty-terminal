@@ -702,11 +702,10 @@ impl Store {
         // Abandoned chunked transmission timeout: free buffers if sender stalled > 5s.
         const CHUNKED_TIMEOUT: Duration = Duration::from_secs(5);
         let now = Instant::now();
-        if let Some((_, _, last_active)) = self.pending {
-            if now.duration_since(last_active) > CHUNKED_TIMEOUT {
+        if let Some((_, _, last_active)) = self.pending
+            && now.duration_since(last_active) > CHUNKED_TIMEOUT {
                 self.pending = None;
             }
-        }
 
         // Chunked transmissions: collect until `m=0`; only the first chunk has the keys.
         let (cmd, data) = match self.pending.take() {
