@@ -516,7 +516,7 @@ Comprehensive memory leak, cache accumulation, lifecycle, and zombie process aud
 - [x] Propagate config reload renderer changes to all open windows in multi-window mode (`src/main.rs`)
 - [x] Fix `OSC 104` color aliasing corruption when two overridden palette indices swap colors across sequential in-place `Grid::recolor` passes (`src/grid/perform.rs`, `src/grid/mod.rs`)
 
-## Planned Features (v0.7.0 — Post v0.6.0 Release)
+## Planned Features & Hardening (v0.7.0 — Post v0.6.0 Release)
 
 - [ ] **Built-in LLM Shell Assistant (`yo <query>`, Yosh Parity)** — see [yosh_implementation_plan.md](./yosh_implementation_plan.md)
   - Natural-language `yo <intent>` command across `zsh`, `bash`, `fish`, and `nushell` via `OSC 778` shell integration bridge
@@ -524,3 +524,54 @@ Comprehensive memory leak, cache accumulation, lifecycle, and zombie process aud
   - Multi-step continuation workflows (`pending: true`), per-pane session memory, and automatic 50% context window compaction
   - Multi-provider support (Anthropic Claude, OpenAI, OpenRouter, DeepSeek, Kimi, Qwen, local Ollama) configured via `~/.litty/config` (`ai-*` keys) with `~/.yoconf` compatibility
 
+### Code Health & Hardening — Audit 2026-10-31
+
+Reviewed baseline: `6b5e179f7afc3a29e135df8e969340c7fdc7aac9` (v0.6.0), before concurrent LLM assistant changes. Eight findings were reproduced with isolated tests against a source copy; three were established through source/documentation inspection. Measurements below are host-specific release-build observations, not portable timing thresholds. P1/P2/P3 indicate fix priority, not CVSS scores. All items remain open.
+
+Baseline verification passed: `cargo check`, `cargo check --target x86_64-unknown-linux-gnu`, `cargo clippy --all-targets` (no warnings), and `cargo test -- --test-threads=1` outside the sandbox (248 passed, 1 ignored). Passing existing tests did not cover these defects.
+
+- [ ] **P1 — CWE-190: Reject overflowing Kitty composition rectangles** (`src/graphics.rs`, `Store::kitty_compose`)
+  - Evidence — reproduced through `Grid::feed_byte`: transmit a 1×1 RGBA image with `a=t,i=1,f=32,s=1,v=1;AAAAAA==`, then compose with `a=c,i=1,r=1,c=1,X=4294967295,w=1,h=1`. Unchecked `src_left + w` panics in debug; release wraps the bound and then panics on slice index 4,294,967,292 into a four-byte buffer. Production release uses `panic = "abort"`.
+  - Acceptance: validate all source/destination rectangle arithmetic before indexing; malformed terminal output must return a protocol error without panicking in debug or release. Add regression coverage for maximum coordinates and dimensions.
+
+- [ ] **P1 — Bound cumulative Sixel decode work and release the grid lock during decoding** (`src/graphics.rs`, `src/grid/perform.rs`, `src/pty.rs`)
+  - Evidence — reproduced: a Sixel DCS containing `!8192~$` repeated 8,192 times is only 57,349 bytes including delimiters, but takes about 585 ms through the Grid feed path. It repeatedly paints one six-pixel-high band, so dimension limits do not bound cumulative work. Decoding runs under the PTY reader's grid mutex; the ingestion timeout does not interrupt the decoder.
+  - Acceptance: enforce a decode work budget/cancellation boundary and keep expensive decoding outside the grid lock; reject excessive overpainting while preserving legitimate images. Add an adversarial overpaint regression and a legitimate-image benchmark.
+
+- [ ] **P2 — CWE-770: Bound image count and account for metadata memory** (`src/graphics.rs`, `Store::insert` / `Store::evict`)
+  - Evidence — reproduced: 100,000 transmit-only 1×1 RGBA images charge only 400,000 bytes to the pixel quota, while HashMap entry storage alone requires at least 11,927,552 bytes, excluding Arc/order/allocation overhead. Placement limits do not constrain unplaced images; the 64 MiB pixel quota permits millions of objects.
+  - Acceptance: enforce an independent image-count limit and/or a budget including metadata; test many tiny images with unique IDs, not only oversized pixel buffers. Verify eviction also removes associated placements and frames.
+
+- [ ] **P2 — Drain clipboard helper stdout before waiting for process exit** (`src/main.rs`, `read_clipboard_with`)
+  - Evidence — reproduced using the production helper function with `/bin/cat`: 1 KiB is returned intact, but 1 MiB returns `None` after approximately 97 ms. The helper blocks on a full stdout pipe while the parent waits for exit and eventually kills it. Affects Linux and the macOS subprocess fallback, not the native macOS clipboard API.
+  - Acceptance: drain stdout concurrently with bounded size/time handling; test payloads larger than pipe capacity, helper failure, timeout cleanup, and the output-size limit.
+
+- [ ] **P2 — Preserve PTY input and protocol replies under queue backpressure** (`src/pty.rs`, `Pty::write` / `spawn_reader`)
+  - Evidence — reproduced with the real `Pty::write` method and a deliberately undrained queue: 2,049 writes yield only 2,048 messages; the last payload is silently discarded. Both input and reply paths ignore `try_send` failures, and the reply path has already emptied its buffer with `mem::take`.
+  - Acceptance: provide bounded pending/retry handling or an explicit caller-visible failure without blocking the UI or holding the grid lock during writes. Test a stalled consumer, recovery, byte ordering, and reply delivery. The queue proof is isolated, not an end-to-end shell workload.
+
+- [ ] **P2 — Amortize grapheme collection on scrollback eviction** (`src/grid/mod.rs`, `scroll_up_in` / `gc_clusters`)
+  - Evidence — reproduced with a synthetic populated 80-column grid, default 5,000-line history, and 5,000 distinct CJK-plus-mark clusters: 200 scrolls take about 66.3 ms versus 31.1 µs for the plain-grid control. Once 4,096 clusters exist, each affected eviction allocates a mark vector and scans the full active history, even if all clusters remain referenced.
+  - Acceptance: avoid full-history collection on every evicted row; reuse scratch storage or maintain bounded/amortized reclamation. Benchmark repeated cluster-bearing eviction and verify live clusters survive while dead ones are reclaimed.
+
+- [ ] **P2 — Preserve actual grapheme cell widths in search mappings** (`src/grid/mod.rs`, `Grid::search_text`; `src/search.rs`, `SearchText::cell_at`)
+  - Evidence — reproduced through normal input: after `❤️x`, the grid places `x` at zero-based column 2, but searching for `x` returns column 1. The snapshot stores only the cluster's first scalar, then reconstructs width without its variation selector or stored wide flag.
+  - Acceptance: retain byte-to-cell mappings based on actual grid widths; cover VS16, keycaps, ZWJ sequences, wrapped rows, and text following wide clusters.
+
+- [ ] **P2 — Prevent silent OSC 52 clipboard truncation** (`Cargo.toml`, `src/pty.rs`, `src/grid/perform.rs`)
+  - Evidence — reproduced: OSC 52 containing `YWJj` repeated 1,000 times should decode to 3,000 ASCII bytes, but produces a successful clipboard request of only 765 bytes. VTE 0.13's enabled default `no_std` feature caps the OSC buffer at 1,024 bytes before the project's nominal 1 MiB base64 limit is checked. The proof inspected the request without changing the system clipboard.
+  - Acceptance: use bounded OSC handling that either preserves the complete supported payload or rejects it atomically; never replace the clipboard with a silently truncated prefix. Test payload boundaries and preserve active/focused-pane authorization.
+
+- [ ] **P2 — Use supported Linux `xdg-open` arguments** (`src/main.rs`, `open_target` and release-link handling)
+  - Evidence — source/documentation verified, Linux runtime not exercised: calls pass `xdg-open -- <target>`, but the standard utility does not support a general `--` separator. Its [manual](https://manpages.debian.org/trixie/xdg-utils/xdg-open.1.en.html) prescribes absolute paths, `./` prefixes, or file URLs for hyphen-leading paths.
+  - Acceptance: pass a single validated target using supported syntax, retain executable/script safeguards, and test URL/path/release-link opening on Linux, including spaces and leading hyphens. Do not assume every distribution wrapper has identical behavior.
+
+- [ ] **P2 — Move Kitty file-medium I/O outside the grid mutex** (`src/pty.rs`, `src/grid/mod.rs`, `src/graphics.rs`, `read_file_medium`)
+  - Evidence — source-proven call chain: locked `feed_byte` → `apc_dispatch` → `Store::kitty` → file decoding performs canonicalize/open/metadata/seek/read and optional unlink. `O_NONBLOCK` does not make regular-file reads or path resolution asynchronous; up to 64 MiB can be read while holding the lock. A slow-filesystem stall was not simulated.
+  - Acceptance: perform bounded filesystem work outside the grid lock, then apply results with short lock holds. Preserve path validation, uniform denied errors, temporary-file safeguards, ordering, and pane-lifetime handling; test responsiveness with delayed reads.
+
+- [ ] **P3 — Reuse pane-layout and image-quad buffers during steady rendering** (`src/main.rs`, `src/tab.rs`, `src/image_layer.rs`)
+  - Evidence — source verified: `compute_pane_rects` creates a fresh Vec each render, including a single-pane terminal, and image preparation allocates a fresh quad Vec each image frame. This violates the zero-heap-allocation render-loop invariant; no frame-latency impact was measured. Iterator collection may reuse an allocation and is not counted as an additional allocation here.
+  - Acceptance: retain and clear reusable buffers; instrument steady-state allocations after warmup for one pane, multiple panes, and image frames.
+
+Verification scope: no sustained fuzzing, sanitizer campaign, end-to-end Linux desktop/GPU stress run, or complete dependency-advisory audit was performed. Shared-memory mapping races and history rewrite concurrency remain follow-up investigation areas, not confirmed findings in this backlog. Add durable regression tests for the reproduced cases when implementing fixes; the audit's temporary proof tests asserted buggy behavior and must not be treated as secure-behavior tests.
