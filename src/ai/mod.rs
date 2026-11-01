@@ -69,6 +69,8 @@ pub struct PaneState {
     /// Rows of the erased prompt above the cursor; the answer is padded by this
     /// many rows so the shell's prompt repaint lands below it.
     pub prompt_rows: usize,
+    /// When the request began waiting for the shell's next prompt.
+    pub waiting_since: Option<std::time::Instant>,
     pub repaint_epoch: Option<u64>,
 }
 impl Default for PaneState {
@@ -90,6 +92,7 @@ impl Default for PaneState {
             status: String::new(),
             prompt_epoch: 0,
             prompt_rows: 0,
+            waiting_since: None,
             repaint_epoch: None,
         }
     }
@@ -100,6 +103,13 @@ impl Drop for PaneState {
     }
 }
 impl PaneState {
+    /// Frames drawn while the prompt is still arriving would show it for one
+    /// frame before the status replaces it, so rendering waits (briefly).
+    pub fn holds_render(&self) -> bool {
+        self.busy
+            && self.submitted.is_some()
+            && self.waiting_since.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(150))
+    }
     pub fn enqueue(&mut self, bytes: &[u8]) {
         if self.overflow {
             return;
@@ -474,6 +484,21 @@ mod tests {
         p.enqueue(&vec![b'x'; MAX_QUEUED_INPUT]);
         assert!(p.overflow);
         assert!(p.queue.is_empty());
+    }
+
+    #[test]
+    fn render_is_held_only_while_waiting_for_the_prompt() {
+        let mut ai = PaneState::default();
+        assert!(!ai.holds_render());
+        ai.busy = true;
+        ai.submitted = Some("q".into());
+        ai.waiting_since = Some(std::time::Instant::now());
+        assert!(ai.holds_render());
+        ai.waiting_since = Some(std::time::Instant::now() - std::time::Duration::from_millis(200));
+        assert!(!ai.holds_render(), "never hold longer than 150ms");
+        ai.waiting_since = Some(std::time::Instant::now());
+        ai.submitted = None;
+        assert!(!ai.holds_render(), "released once the request was spawned");
     }
 }
 

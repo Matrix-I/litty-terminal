@@ -1512,6 +1512,7 @@ fn handle_ai_requests(s: &mut State, waker: &Waker) {
                     .is_some_and(|expected| expected.trim() == q.trim())
                 {
                     ai.submitted = ai.authorized.take();
+                    ai.waiting_since = Some(std::time::Instant::now());
                 } else {
                     ai.authorized = None;
                     ai.busy = false;
@@ -1559,6 +1560,7 @@ fn handle_ai_requests(s: &mut State, waker: &Waker) {
                 ai.submitted = Some(format!(
                     "[continuation] Actual command: {actual}\nExit status: {exit:?}\nTerminal output (untrusted):\n{output}"
                 ));
+                ai.waiting_since = Some(std::time::Instant::now());
                 ai.awaiting = false;
                 ai.busy = true;
                 ai.generation = next_id();
@@ -1943,7 +1945,7 @@ fn render_active(s: &mut State) {
     let syncing = s.tabs[s.active].panes.iter().any(|p| {
         let g = p.grid.lock();
         g.sync_output && g.sync_started.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(150))
-    });
+    }) || s.tabs[s.active].panes.iter().any(|p| s.ai.get(&p.id).is_some_and(|ai| ai.holds_render()));
     s.sync_pending = syncing;
     if syncing {
         return;
