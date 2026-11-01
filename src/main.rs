@@ -5,6 +5,7 @@ mod ai;
 mod atlas;
 pub mod bench;
 mod bidi;
+mod cli;
 mod config;
 mod event;
 mod fontdb;
@@ -3465,84 +3466,64 @@ fn apply_system_appearance(s: &mut State) {
 }
 
 fn main() {
-    // `litty +list-themes` (Ghostty's spelling) or `--list-themes`.
-    if std::env::args().nth(1).as_deref().is_some_and(|a| a == "+list-themes" || a == "--list-themes") {
-        for name in config::bundled_theme_names() {
-            println!("{name}");
+    let args: Vec<String> = std::env::args().collect();
+    match cli::parse(&args) {
+        cli::Command::ListThemes => {
+            for name in config::bundled_theme_names() {
+                println!("{name}");
+            }
         }
-        return;
-    }
-    // `litty +check-update` or `--check-update`.
-    if std::env::args().nth(1).as_deref().is_some_and(|a| a == "+toggle-quick-terminal") {
-        if cfg!(target_os = "macos") {
-            eprintln!("litty: on macOS, use `keybind = global:<trigger>=toggle_quick_terminal`");
-            std::process::exit(1);
+        cli::Command::ToggleQuickTerminal => {
+            if cfg!(target_os = "macos") {
+                eprintln!("litty: on macOS, use `keybind = global:<trigger>=toggle_quick_terminal`");
+                std::process::exit(1);
+            }
+            if let Err(e) = hotkey::send_toggle() {
+                eprintln!("litty: no running Litty to toggle ({e})");
+                std::process::exit(1);
+            }
         }
-        if let Err(e) = hotkey::send_toggle() {
-            eprintln!("litty: no running Litty to toggle ({e})");
-            std::process::exit(1);
+        cli::Command::CheckUpdate => update::cli_check_update(),
+        cli::Command::Update { force } => update::cli_update(force),
+        cli::Command::BenchPerf => {
+            let lat = bench::run_latency_benchmark();
+            let stress = bench::run_render_stress_benchmark(20_000);
+            let feat = bench::run_critical_features_benchmark();
+            if !lat.passed || !stress.passed || !feat.passed {
+                std::process::exit(1);
+            }
         }
-        return;
-    }
-    if std::env::args().nth(1).as_deref().is_some_and(|a| a == "+check-update" || a == "--check-update") {
-        update::cli_check_update();
-        return;
-    }
-    // `litty +update` or `--update`.
-    if std::env::args().nth(1).as_deref().is_some_and(|a| a == "+update" || a == "--update") {
-        let force = std::env::args().any(|a| a == "--force" || a == "-f");
-        update::cli_update(force);
-        return;
-    }
-    // Performance & Latency benchmark CLI
-    if std::env::args().nth(1).as_deref().is_some_and(|a| a == "+bench-perf" || a == "--bench-perf") {
-        let lat = bench::run_latency_benchmark();
-        let stress = bench::run_render_stress_benchmark(20_000);
-        let feat = bench::run_critical_features_benchmark();
-        if !lat.passed || !stress.passed || !feat.passed {
-            std::process::exit(1);
+        cli::Command::BenchStress { lines } => {
+            if !bench::run_render_stress_benchmark(lines).passed {
+                std::process::exit(1);
+            }
         }
-        return;
-    }
-    // Stress test only
-    if std::env::args().nth(1).as_deref().is_some_and(|a| a == "+bench-stress" || a == "--bench-stress") {
-        let lines = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(20_000);
-        let stress = bench::run_render_stress_benchmark(lines);
-        if !stress.passed {
-            std::process::exit(1);
+        cli::Command::BenchFeatures => {
+            if !bench::run_critical_features_benchmark().passed {
+                std::process::exit(1);
+            }
         }
-        return;
-    }
-    // Critical features benchmark only
-    if std::env::args().nth(1).as_deref().is_some_and(|a| a == "+bench-features" || a == "--bench-features") {
-        let feat = bench::run_critical_features_benchmark();
-        if !feat.passed {
-            std::process::exit(1);
-        }
-        return;
-    }
-    let is_bench_ram = std::env::args().nth(1).as_deref().is_some_and(|a| a == "+bench-ram" || a == "--bench-ram" || a == "+bench-all" || a == "--bench-all");
-    let is_bench_all = std::env::args().nth(1).as_deref().is_some_and(|a| a == "+bench-all" || a == "--bench-all");
-
-    if is_bench_all {
-        let lat = bench::run_latency_benchmark();
-        let stress = bench::run_render_stress_benchmark(20_000);
-        let feat = bench::run_critical_features_benchmark();
-        if !lat.passed || !stress.passed || !feat.passed {
-            eprintln!("litty: performance/features benchmark failed");
-            std::process::exit(1);
+        cli::Command::Run { bench_ram, bench_all, scroll_fps } => {
+            if bench_all {
+                let lat = bench::run_latency_benchmark();
+                let stress = bench::run_render_stress_benchmark(20_000);
+                let feat = bench::run_critical_features_benchmark();
+                if !lat.passed || !stress.passed || !feat.passed {
+                    eprintln!("litty: performance/features benchmark failed");
+                    std::process::exit(1);
+                }
+            }
+            let event_loop = EventLoop::<AppEvent>::with_user_event().build().expect("event loop");
+            event_loop.set_control_flow(ControlFlow::Wait);
+            let mut app = App {
+                waker: Waker { proxy: event_loop.create_proxy(), queued: Arc::new(AtomicBool::new(false)) },
+                windows: Vec::new(),
+                bench_ram_mode: bench_ram,
+                scroll_fps_run: scroll_fps.then(frame_metrics::ScrollRun::new),
+            };
+            event_loop.run_app(&mut app).expect("run app");
         }
     }
-
-    let event_loop = EventLoop::<AppEvent>::with_user_event().build().expect("event loop");
-    event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = App {
-        waker: Waker { proxy: event_loop.create_proxy(), queued: Arc::new(AtomicBool::new(false)) },
-        windows: Vec::new(),
-        bench_ram_mode: is_bench_ram,
-        scroll_fps_run: std::env::args().nth(1).filter(|s| s == "+bench-scroll-fps" || s == "--bench-scroll-fps").map(|_| frame_metrics::ScrollRun::new()),
-    };
-    event_loop.run_app(&mut app).expect("run app");
 }
 
 #[cfg(test)]
