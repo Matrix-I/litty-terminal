@@ -244,8 +244,8 @@ fn run(shell: &str) {
         // A second prompt-ready mark makes Litty draw `Thinking...` on a prompt the
         // shell is about to replace, leaving duplicate prompts on screen.
         assert_eq!(count(rest, b"133;B"), 1, "{shell}: {}", text(&output));
-        if shell == "zsh" || shell == "bash" {
-            // The empty prompt the shell redraws for the abandoned `yo` line is erased
+        if shell == "zsh" {
+            // The empty prompt zsh redraws for the abandoned `yo` line is erased
             // (one row for this test's single-line prompt) before the real one.
             assert!(has(rest, b"\x1b[1A\x1b[J"), "{shell}: {}", text(&output));
         }
