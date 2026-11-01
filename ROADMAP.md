@@ -208,6 +208,8 @@ Each item lists what to run inside a Litty window and the expected result.
 - [ ] **LLM assistant release validation on additional environments**
   - Implementation is complete (see [implementation record](./docs/yosh_implementation_plan.md#implementation-record-2026-11-01)); mock provider/tool/continuation/cancellation/compaction tests and isolated zsh/Bash 3.2 smoke tests pass.
   - fish PTY interception/repaint/editable-prefill checks passed in the Linux container. Still requires Nushell runtime checks, a live-provider smoke test with configured credentials, and hardware GPU-window visual/idle-memory profiling. These are release validation, not unimplemented assistant features.
+  - Anthropic live-provider smoke test **passed** (2026-11-01, `LITTY_AI_LIVE_MODEL=claude-haiku-5-5`, `bash scripts/test-ai-live.sh`, 1 passed in 9.57s): docs + scrollback tool round trips + chat; pending suggestion + edited execution + continuation; context compaction + post-compaction request; transport cancellation in 221 ms. See [scope](./docs/ai-live-validation.md). Other providers (OpenAI, OpenRouter, etc.) were not live-tested.
+  - Still open: Nushell runtime checks, hardware GPU-window visual/idle-memory profiling, real-app keyboard checks (Ctrl+C, queued Enter, prompt repaint, editable prefill). fish on real Linux is skipped for now (no Linux machine).
 
 ## Tech debt (v0.4.1)
 

@@ -213,3 +213,20 @@ To satisfy both **Litty's Ghostty-style config** (`~/.litty/config`) and **Yosh'
 - Validation: `cargo check`; `cargo check --target x86_64-unknown-linux-gnu`; `cargo test` outside sandbox (**271 passed, 1 existing ignored**); `cargo clippy --all-targets -- -D warnings`; `git diff --check`; isolated zsh and macOS Bash 3.2 PTY smoke tests.
 - AI tests use local mock HTTP responses, not production credentials. Covered tool-result round trips, scrollback/docs tools, compaction, in-flight curl cancellation, queued input/overflow, stale results, pane disposal, OSC authorization, full edited command capture, and macOS/Linux Ctrl+C versus Copy parity.
 - Remaining release validation: direct runtime checks on fish and Nushell (not installed on this machine), live-provider smoke tests with configured credentials, and GPU-window visual/idle-memory profiling. These are not claimed by the automated checks above. Package version remains 0.6.0.
+
+### Live-provider validation
+
+The Anthropic runner is `bash scripts/test-ai-live.sh`; see
+[live validation instructions](./ai-live-validation.md) for the credential prompt,
+synthetic fixtures, test scope and limitations.
+
+**Result (2026-11-01, model `claude-haiku-5-5`): PASS.** Docs + scrollback tool round
+trips and chat; pending suggestion, edited execution and continuation; context
+compaction and post-compaction request; transport cancellation in 221 ms. No
+persistent config changed and no model-generated command was executed. Only
+Anthropic was exercised live; OpenAI Responses, Chat Completions and other
+providers remain covered by mock tests only.
+
+Remaining release validation: Nushell runtime checks, fish on real Linux,
+real-app GPU-window checks (Ctrl+C, queued Enter, repaint, editable prefill) and
+idle-memory profiling.

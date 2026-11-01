@@ -5,6 +5,8 @@ pub(crate) mod json;
 pub mod markdown;
 pub mod prompt;
 mod provider;
+#[cfg(test)]
+mod live_tests;
 
 use crate::event::AppEvent;
 use crate::grid::Grid;
