@@ -5,6 +5,7 @@
 use super::{Instance, Renderer};
 use crate::atlas::Atlas;
 
+pub(super) mod search_box;
 pub(super) mod tab_bar;
 
 /// The window's cell instances and the glyph atlas they index.
