@@ -7,7 +7,7 @@ base=${1:-HEAD~1}; head=${2:-HEAD}
 norm() {
     git diff -U0 --no-color "$base" "$head" -- src |
         grep -E '^[-+]' | grep -vE '^(\+\+\+|---)' |
-        sed -E 's/^([-+])[[:space:]]+/\1/; s/\b(pub\((crate|super|in [a-z_:]+)\)|pub) //g' |
+        sed -E 's/^([-+])[[:space:]]+/\1/; s/^([-+])(pub\((crate|super|in [a-z_:]+)\)|pub) /\1/' |
         grep -vE '^[-+](use |mod |//)' | grep -vE '^[-+]\}?$'
 }
 { norm | grep '^-' | sed 's/^-//' | sort | sed 's/^/R /'
