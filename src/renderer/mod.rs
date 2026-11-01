@@ -10,6 +10,7 @@ use winit::window::Window;
 
 mod gpu;
 mod pane_row;
+use pane_row::{build_pane_row, PaneRowCtx, RowScratch};
 mod ui;
 use gpu::{make_bind_group, make_instance_buf, make_viewport_buffer};
 pub use ui::scrollbar::{scrollbar_thumb, SCROLLBAR_WIDTH};
@@ -159,12 +160,8 @@ pub struct Renderer {
     last_progress: Option<(u8, u8)>,
     /// A bell rang (`bell-features = border`) and has not been seen yet.
     bell_border: bool,
-    /// Shaped slot keys of the row being built (reused buffer).
-    shaped: Vec<u32>,
-    /// Bidi scratch of the row being built: its characters, levels and visual order.
-    bidi_chars: Vec<char>,
-    bidi_levels: Vec<u8>,
-    bidi_order: Vec<u16>,
+    /// Per-row scratch buffers reused across rows and frames.
+    row_scratch: RowScratch,
     /// Inline images and this frame's placements (reused buffers).
     images: crate::image_layer::ImageLayer,
     image_draws: Vec<crate::graphics::ImageDraw>,
@@ -301,10 +298,7 @@ impl Renderer {
             last_active_pane: 0,
             last_progress: None,
             bell_border: false,
-            shaped: Vec::new(),
-            bidi_chars: Vec::new(),
-            bidi_levels: Vec::new(),
-            bidi_order: Vec::new(),
+            row_scratch: RowScratch::default(),
             images,
             image_draws: Vec::new(),
             placed: Vec::new(),
@@ -813,12 +807,19 @@ impl Renderer {
                 self.placed.push(crate::image_layer::Placed { draw, rect, clip });
             }
 
+            let row_ctx = PaneRowCtx {
+                rect: &pane.rect,
+                is_active: pane.is_active,
+                active_rect: active_rect.as_ref(),
+                hovered_link: pane_link,
+                pane_defaults,
+                p_cols,
+                selection_colors: self.selection_colors,
+            };
+            let (mut cells, scratch) = self.row_target(cols);
+
             if g.scroll_fraction > 0.0 && (pane_full || g.dirty.iter().any(|&d| d)) {
-                self.build_pane_row(
-                    &g, p_rows, Some(extra_start), top_rows + pane.rect.row + p_rows,
-                    pane.rect.col, p_cols, cols, &pane.rect, pane.is_active,
-                    active_rect.as_ref(), pane_link, pane_defaults,
-                );
+                build_pane_row(&mut cells, scratch, &g, &row_ctx, p_rows, Some(extra_start), top_rows + pane.rect.row + p_rows);
             }
             extra_start += pane.rect.cols;
             g.viewport_dirty = false;
@@ -830,20 +831,7 @@ impl Renderer {
                 if pane_full || g.dirty[r] {
                     let dst_row = top_rows + pane.rect.row + r;
                     if dst_row < total_rows {
-                        self.build_pane_row(
-                            &g,
-                            r,
-                            None,
-                            dst_row,
-                            pane.rect.col,
-                            p_cols,
-                            cols,
-                            &pane.rect,
-                            pane.is_active,
-                            active_rect.as_ref(),
-                            pane_link,
-                            pane_defaults,
-                        );
+                        build_pane_row(&mut cells, scratch, &g, &row_ctx, r, None, dst_row);
                         dirty.mark(dst_row, dst_row);
                     }
                 }
@@ -867,30 +855,23 @@ impl Renderer {
                     let p_cols = pane.rect.cols.min(g.cols);
                     let p_rows = pane.rect.rows.min(g.rows);
                     let extra = self.viewports[pane_index].extra_start as usize;
+                    let row_ctx = PaneRowCtx {
+                        rect: &pane.rect,
+                        is_active: pane.is_active,
+                        active_rect: active_rect.as_ref(),
+                        hovered_link: pane_link,
+                        pane_defaults,
+                        p_cols,
+                        selection_colors: self.selection_colors,
+                    };
+                    let (mut cells, scratch) = self.row_target(cols);
                     if g.scroll_fraction > 0.0 {
-                        self.build_pane_row(
-                            &g, p_rows, Some(extra), top_rows + pane.rect.row + p_rows,
-                            pane.rect.col, p_cols, cols, &pane.rect, pane.is_active,
-                            active_rect.as_ref(), pane_link, pane_defaults,
-                        );
+                        build_pane_row(&mut cells, scratch, &g, &row_ctx, p_rows, Some(extra), top_rows + pane.rect.row + p_rows);
                     }
                     for r in 0..p_rows {
                         let dst_row = top_rows + pane.rect.row + r;
                         if dst_row < total_rows {
-                            self.build_pane_row(
-                                &g,
-                                r,
-                                None,
-                                dst_row,
-                                pane.rect.col,
-                                p_cols,
-                                cols,
-                                &pane.rect,
-                                pane.is_active,
-                                active_rect.as_ref(),
-                                pane_link,
-                                pane_defaults,
-                            );
+                            build_pane_row(&mut cells, scratch, &g, &row_ctx, r, None, dst_row);
                         }
                     }
                 }
