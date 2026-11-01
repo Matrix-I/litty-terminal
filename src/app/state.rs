@@ -92,10 +92,15 @@ pub(super) struct State {
     pub(super) quit_requested: bool,
     /// Config reload requested; `App` propagates it to all windows.
     pub(super) reload_config_requested: bool,
+    pub(super) inspector: InspectorState,
+}
+
+/// Terminal inspector overlay.
+pub(super) struct InspectorState {
     /// Terminal inspector overlay is shown.
-    pub(super) inspector: bool,
+    pub(super) shown: bool,
     /// Last key sent to the terminal and its bytes, for the inspector.
-    pub(super) inspector_key: String,
+    pub(super) last_key: String,
 }
 
 impl State {

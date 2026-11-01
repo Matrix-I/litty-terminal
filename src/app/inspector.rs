@@ -49,6 +49,6 @@ pub(super) fn inspector_lines(s: &mut State) -> Vec<String> {
         format!("Process   {}  cwd {cwd}", if running { "running" } else { "shell at prompt" }),
         format!("Title     {:?}", g.title),
         format!("Cell      {cell}"),
-        format!("Last key  {}", s.inspector_key),
+        format!("Last key  {}", s.inspector.last_key),
     ]
 }

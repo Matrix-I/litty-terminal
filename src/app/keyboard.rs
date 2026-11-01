@@ -252,8 +252,8 @@ pub(super) fn handle_key(
     if let Some(bytes) = &bytes {
         write_pty(pane, bytes);
     }
-    if s.inspector {
-        s.inspector_key = describe_key(&ev.logical_key, m, bytes.as_deref());
+    if s.inspector.shown {
+        s.inspector.last_key = describe_key(&ev.logical_key, m, bytes.as_deref());
         s.window.request_redraw();
     }
 }

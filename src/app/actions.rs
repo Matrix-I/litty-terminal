@@ -108,7 +108,7 @@ pub(super) fn run_tab_action(
             s.window.request_redraw();
         }
         A::ToggleInspector => {
-            s.inspector = !s.inspector;
+            s.inspector.shown = !s.inspector.shown;
             s.renderer.invalidate();
             s.window.request_redraw();
         }

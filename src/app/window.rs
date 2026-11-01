@@ -2,7 +2,7 @@
 
 use super::inspector::inspector_lines;
 use super::search_ui::refresh_search;
-use super::state::State;
+use super::state::{InspectorState, State};
 use super::terminal_io::write_pty;
 
 use std::sync::Arc;
@@ -192,8 +192,7 @@ pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Op
         quick_terminal_requested: false,
         quit_requested: false,
         reload_config_requested: false,
-        inspector: false,
-        inspector_key: String::new(),
+        inspector: InspectorState { shown: false, last_key: String::new() },
     })
 }
 
@@ -434,7 +433,7 @@ pub(super) fn render_active(s: &mut State) {
     if titles_changed || s.titles_refreshed_at.elapsed() >= std::time::Duration::from_secs(1) {
         refresh_tab_titles(s);
     }
-    let inspector = s.inspector.then(|| inspector_lines(s));
+    let inspector = s.inspector.shown.then(|| inspector_lines(s));
     let tab_bar = (s.tabs.len() > 1).then_some((s.tab_titles.as_slice(), s.active));
     let blink_on = cursor_is_visible_now(s);
 

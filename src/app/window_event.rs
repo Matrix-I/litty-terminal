@@ -139,7 +139,7 @@ impl App {
             s.window.set_cursor_visible(true);
             s.mouse_hidden = false;
         }
-        if s.inspector {
+        if s.inspector.shown {
             s.window.request_redraw();
         }
         s.renderer.set_mouse(position.x, position.y);
@@ -439,7 +439,7 @@ impl App {
                 (p.y * multiplier, s.renderer.cell_size().1.max(1) as f64, true)
             }
         };
-        if precise && !s.history_search.is_open && !s.search.is_open && !s.inspector
+        if precise && !s.history_search.is_open && !s.search.is_open && !s.inspector.shown
             && let Some(pane) = s.tabs[s.active].pane(target_id) {
                 let mut g = pane.grid.lock();
                 let local = g.mouse_tracking == grid::MouseTracking::Off || s.mods.shift_key() || s.mods.super_key();
