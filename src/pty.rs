@@ -196,7 +196,6 @@ impl Pty {
         }
         if let Some((_, feats)) = integration {
             env.push(cstr("LITTY_SHELL_INTEGRATION=1"));
-            env.push(cstr("LAPLACE_SHELL_INTEGRATION=1"));
             let mut list = Vec::new();
             if feats.cursor { list.push("cursor"); }
             if feats.sudo { list.push("sudo"); }
@@ -204,7 +203,6 @@ impl Pty {
             if !list.is_empty() {
                 let joined = list.join(",");
                 env.push(cstr(format!("LITTY_SHELL_INTEGRATION_FEATURES={joined}")));
-                env.push(cstr(format!("LAPLACE_SHELL_INTEGRATION_FEATURES={joined}")));
             }
         }
         env.push(cstr(format!("PWD={target_dir}")));

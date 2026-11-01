@@ -35,7 +35,6 @@ mkdir -p "$MACOS" "$RESOURCES"
 # Copy binary
 cp "target/release/litty" "$MACOS/litty"
 chmod +x "$MACOS/litty"
-ln -sf "litty" "$MACOS/laplace"
 
 # Copy Info.plist and Icon
 cp "resources/Info.plist" "$CONTENTS/Info.plist"

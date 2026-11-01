@@ -3,9 +3,6 @@
 if [[ -n "${LITTY_ZDOTDIR+x}" ]]; then
   ZDOTDIR=$LITTY_ZDOTDIR
   unset LITTY_ZDOTDIR
-elif [[ -n "${LAPLACE_ZDOTDIR+x}" ]]; then
-  ZDOTDIR=$LAPLACE_ZDOTDIR
-  unset LAPLACE_ZDOTDIR
 else
   unset ZDOTDIR
 fi
@@ -14,12 +11,10 @@ fi
   typeset _litty_file=${ZDOTDIR-$HOME}/.zshenv
   [[ ! -r $_litty_file ]] || builtin source -- $_litty_file
 } always {
-  typeset _litty_dir=${LITTY_SHELL_INTEGRATION_DIR-$LAPLACE_SHELL_INTEGRATION_DIR}
+  typeset _litty_dir=${LITTY_SHELL_INTEGRATION_DIR-}
   if [[ -o interactive && -n $_litty_dir ]]; then
     if [[ -r "$_litty_dir/zsh/litty-integration.zsh" ]]; then
       builtin source -- "$_litty_dir/zsh/litty-integration.zsh"
-    elif [[ -r "$_litty_dir/zsh/laplace-integration.zsh" ]]; then
-      builtin source -- "$_litty_dir/zsh/laplace-integration.zsh"
     fi
   fi
   builtin unset _litty_file _litty_dir

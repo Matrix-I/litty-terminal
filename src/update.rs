@@ -895,20 +895,10 @@ pub fn apply_update(downloaded_file: &Path, asset_name: &str) -> Result<(), Stri
         }
 
         let staged_app = staging_dir.join("Litty.app");
-        let staged_app = if staged_app.exists() {
-            staged_app
-        } else {
-            staging_dir.join("Laplace.app")
-        };
         if !staged_app.exists() {
             return Err("extracted archive did not contain Litty.app".to_string());
         }
         let bin_path = staged_app.join("Contents").join("MacOS").join("litty");
-        let bin_path = if bin_path.exists() {
-            bin_path
-        } else {
-            staged_app.join("Contents").join("MacOS").join("laplace")
-        };
         check_binary_arch(&bin_path)?;
 
         // Sync updated contents to app_path

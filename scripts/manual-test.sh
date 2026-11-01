@@ -9,7 +9,7 @@
 # scripts/manual-test-results.md.
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-LOG=${LITTY_TEST_LOG:-${LAPLACE_TEST_LOG:-$REPO/scripts/manual-test-results.md}}
+LOG=${LITTY_TEST_LOG:-$REPO/scripts/manual-test-results.md}
 BIN=$REPO/target/release/litty
 export LC_ALL=en_US.UTF-8
 OS=$(uname -s)
@@ -203,7 +203,7 @@ g5() { GROUP="Config: padding, theme, keybind, colors, title, copy-on-select"
 }
 
 g6() { GROUP="Shell integration, prompt jump, output selection"
-    auto "LITTY_SHELL_INTEGRATION_DIR set" "${LITTY_SHELL_INTEGRATION_DIR:-${LAPLACE_SHELL_INTEGRATION_DIR:-<empty>}}" '*/litty/shell-integration/*'
+    auto "LITTY_SHELL_INTEGRATION_DIR set" "${LITTY_SHELL_INTEGRATION_DIR:-<empty>}" '*/litty/shell-integration/*'
     say "Quit this script (Ctrl+C) or do these in another tab:"
     printf '%s\n' 'seq 50; ls; seq 30' '# Cmd+Shift+↑ repeatedly, Cmd+Shift+↓ back to live' 'ls -la' '# Cmd+Shift+O → only the ls output is selected and copied' 'cd /tmp' '# Cmd+T → new tab in /tmp' | paste_box; pause
     verdict "prompt jump"; verdict "Cmd+Shift+O selects ls output"; verdict "Cmd+T inherits cwd"

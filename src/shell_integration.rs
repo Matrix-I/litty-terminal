@@ -59,16 +59,12 @@ pub fn prepare(shell_name: &str, configured: ShellIntegration, get_env: impl Fn(
 
 fn injection(kind: ShellIntegration, dir: &Path, get_env: impl Fn(&str) -> Option<String>) -> Injection {
     let dir_str = dir.to_string_lossy().into_owned();
-    let mut env = vec![
-        ("LITTY_SHELL_INTEGRATION_DIR".to_string(), dir_str.clone()),
-        ("LAPLACE_SHELL_INTEGRATION_DIR".to_string(), dir_str.clone()),
-    ];
+    let mut env = vec![("LITTY_SHELL_INTEGRATION_DIR".to_string(), dir_str.clone())];
     let mut argv = None;
     match kind {
         ShellIntegration::Zsh => {
             if let Some(user) = get_env("ZDOTDIR") {
-                env.push(("LITTY_ZDOTDIR".into(), user.clone()));
-                env.push(("LAPLACE_ZDOTDIR".into(), user));
+                env.push(("LITTY_ZDOTDIR".into(), user));
             }
             env.push(("ZDOTDIR".into(), format!("{dir_str}/zsh")));
         }
@@ -76,14 +72,12 @@ fn injection(kind: ShellIntegration, dir: &Path, get_env: impl Fn(&str) -> Optio
             let script = format!("{dir_str}/bash/litty.bash");
             argv = Some(vec!["bash".to_string(), "--rcfile".to_string(), script]);
             env.push(("LITTY_BASH_INJECT".into(), "1".into()));
-            env.push(("LAPLACE_BASH_INJECT".into(), "1".into()));
         }
         ShellIntegration::Fish | ShellIntegration::Nushell | ShellIntegration::Elvish => {
             let data = format!("{dir_str}/data");
             let rest = get_env("XDG_DATA_DIRS").filter(|v| !v.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".into());
             env.push(("XDG_DATA_DIRS".into(), format!("{data}:{rest}")));
-            env.push(("LITTY_SHELL_INTEGRATION_XDG_DIR".into(), data.clone()));
-            env.push(("LAPLACE_SHELL_INTEGRATION_XDG_DIR".into(), data));
+            env.push(("LITTY_SHELL_INTEGRATION_XDG_DIR".into(), data));
         }
         ShellIntegration::Detect | ShellIntegration::None => {}
     }
@@ -119,12 +113,6 @@ fn write_scripts(dir: &Path) -> std::io::Result<()> {
         ("data/fish/vendor_conf.d/litty-integration.fish", FISH),
         ("data/nushell/vendor/autoload/litty.nu", NU),
         ("data/elvish/lib/litty.elv", ELVISH),
-        // Fallback backward-compatible filenames
-        ("zsh/laplace-integration.zsh", ZSH),
-        ("bash/laplace.bash", BASH),
-        ("data/fish/vendor_conf.d/laplace-integration.fish", FISH),
-        ("data/nushell/vendor/autoload/laplace.nu", NU),
-        ("data/elvish/lib/laplace.elv", ELVISH),
     ];
     for (rel, content) in files {
         let path = dir.join(rel);
@@ -168,19 +156,16 @@ mod tests {
         let zsh = injection(ShellIntegration::Zsh, dir, |k| (k == "ZDOTDIR").then(|| "/home/u/.config/zsh".into()));
         assert_eq!(env_of(&zsh, "ZDOTDIR").as_deref(), Some("/c/litty/zsh"));
         assert_eq!(env_of(&zsh, "LITTY_ZDOTDIR").as_deref(), Some("/home/u/.config/zsh"));
-        assert_eq!(env_of(&zsh, "LAPLACE_ZDOTDIR").as_deref(), Some("/home/u/.config/zsh"));
         assert_eq!(zsh.argv, None);
 
         let bash = injection(ShellIntegration::Bash, dir, |_| None);
         let argv = vec!["bash".to_string(), "--rcfile".to_string(), "/c/litty/bash/litty.bash".to_string()];
         assert_eq!(bash.argv, Some(argv));
         assert_eq!(env_of(&bash, "LITTY_BASH_INJECT").as_deref(), Some("1"));
-        assert_eq!(env_of(&bash, "LAPLACE_BASH_INJECT").as_deref(), Some("1"));
 
         let fish = injection(ShellIntegration::Fish, dir, |_| None);
         assert_eq!(env_of(&fish, "XDG_DATA_DIRS").as_deref(), Some("/c/litty/data:/usr/local/share:/usr/share"));
         assert_eq!(env_of(&fish, "LITTY_SHELL_INTEGRATION_XDG_DIR").as_deref(), Some("/c/litty/data"));
-        assert_eq!(env_of(&fish, "LAPLACE_SHELL_INTEGRATION_XDG_DIR").as_deref(), Some("/c/litty/data"));
 
         let nu = injection(ShellIntegration::Nushell, dir, |k| (k == "XDG_DATA_DIRS").then(|| "/opt/share".into()));
         assert_eq!(env_of(&nu, "XDG_DATA_DIRS").as_deref(), Some("/c/litty/data:/opt/share"));
@@ -194,11 +179,8 @@ mod tests {
         write_scripts(&dir).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("zsh/.zshenv")).unwrap(), ZSHENV);
         assert!(dir.join("data/fish/vendor_conf.d/litty-integration.fish").exists());
-        assert!(dir.join("data/fish/vendor_conf.d/laplace-integration.fish").exists());
         assert!(dir.join("data/nushell/vendor/autoload/litty.nu").exists());
-        assert!(dir.join("data/nushell/vendor/autoload/laplace.nu").exists());
         assert!(dir.join("data/elvish/lib/litty.elv").exists());
-        assert!(dir.join("data/elvish/lib/laplace.elv").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

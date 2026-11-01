@@ -1,8 +1,8 @@
 # Litty shell integration for bash. Litty starts `bash --rcfile <this file>`
 # (works on every bash, including macOS's 3.2), so load the login startup files
 # as the login shell Litty would otherwise start, then install the hooks.
-if [ -n "$LITTY_BASH_INJECT" ] || [ -n "$LAPLACE_BASH_INJECT" ]; then
-  builtin unset LITTY_BASH_INJECT LAPLACE_BASH_INJECT
+if [ -n "$LITTY_BASH_INJECT" ]; then
+  builtin unset LITTY_BASH_INJECT
   if [ -r /etc/profile ]; then builtin source /etc/profile; fi
   for _litty_f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
     if [ -r "$_litty_f" ]; then
@@ -19,7 +19,7 @@ fi
 [[ -n $_litty_loaded ]] && return 0
 _litty_loaded=1
 
-_litty_feats="${LITTY_SHELL_INTEGRATION_FEATURES-$LAPLACE_SHELL_INTEGRATION_FEATURES}"
+_litty_feats="${LITTY_SHELL_INTEGRATION_FEATURES-}"
 _litty_has() { [[ ",${_litty_feats}," == *",$1,"* ]]; }
 
 _litty_prompt_command() {

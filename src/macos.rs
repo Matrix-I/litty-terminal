@@ -1000,7 +1000,7 @@ mod imp {
         unsafe {
             let Some(app) = shared_application() else { return };
 
-            // Inside a .app bundle the Dock already reads Litty.icns (or Laplace.icns) from the bundle;
+            // Inside a .app bundle the Dock already reads Litty.icns from the bundle;
             // skipping setApplicationIconImage saves ~8 MB of resident bitmap memory.
             let bundle_path = class(c"NSBundle")
                 .and_then(|cls| send_id(cls, c"mainBundle"))

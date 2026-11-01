@@ -11,16 +11,10 @@ if set -q LITTY_SHELL_INTEGRATION_XDG_DIR
     and set -e XDG_DATA_DIRS[$idx]
     test (count $XDG_DATA_DIRS) -eq 0; and set -e XDG_DATA_DIRS
     set -e LITTY_SHELL_INTEGRATION_XDG_DIR
-else if set -q LAPLACE_SHELL_INTEGRATION_XDG_DIR
-    set -l idx (contains -i -- $LAPLACE_SHELL_INTEGRATION_XDG_DIR $XDG_DATA_DIRS)
-    and set -e XDG_DATA_DIRS[$idx]
-    test (count $XDG_DATA_DIRS) -eq 0; and set -e XDG_DATA_DIRS
-    set -e LAPLACE_SHELL_INTEGRATION_XDG_DIR
 end
 
 function __litty_has
     set -l feats "$LITTY_SHELL_INTEGRATION_FEATURES"
-    test -z "$feats"; and set feats "$LAPLACE_SHELL_INTEGRATION_FEATURES"
     contains -- $argv[1] (string split , -- "$feats")
 end
 

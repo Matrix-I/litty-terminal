@@ -6,7 +6,7 @@
 typeset -g _litty_loaded=1
 typeset -g _litty_running=0
 
-_litty_feats="${LITTY_SHELL_INTEGRATION_FEATURES-$LAPLACE_SHELL_INTEGRATION_FEATURES}"
+_litty_feats="${LITTY_SHELL_INTEGRATION_FEATURES-}"
 _litty_has() { [[ ",${_litty_feats}," == *",$1,"* ]] }
 
 _litty_precmd() {

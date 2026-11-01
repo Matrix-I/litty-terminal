@@ -12,9 +12,6 @@ var xdg_inject = ''
 if (has-env LITTY_SHELL_INTEGRATION_XDG_DIR) {
   set xdg_inject = $E:LITTY_SHELL_INTEGRATION_XDG_DIR
   unset-env LITTY_SHELL_INTEGRATION_XDG_DIR
-} elif (has-env LAPLACE_SHELL_INTEGRATION_XDG_DIR) {
-  set xdg_inject = $E:LAPLACE_SHELL_INTEGRATION_XDG_DIR
-  unset-env LAPLACE_SHELL_INTEGRATION_XDG_DIR
 }
 if (!=s $xdg_inject '') {
   var rest = [(str:split : (or (get-env XDG_DATA_DIRS) '') | each {|d| if (and (!=s $d $xdg_inject) (!=s $d '')) { put $d } })]
@@ -24,8 +21,6 @@ if (!=s $xdg_inject '') {
 var features = []
 if (has-env LITTY_SHELL_INTEGRATION_FEATURES) {
   set features = [(str:split , $E:LITTY_SHELL_INTEGRATION_FEATURES)]
-} elif (has-env LAPLACE_SHELL_INTEGRATION_FEATURES) {
-  set features = [(str:split , $E:LAPLACE_SHELL_INTEGRATION_FEATURES)]
 }
 var running = $false
 

@@ -89,7 +89,7 @@ fn poc_cwe494_download_url_restricted_to_github() {
 #[test]
 fn poc_cwe321_no_runtime_pubkey_override_or_placeholder() {
     let src = include_str!("update.rs");
-    for needle in [concat!("var(\"LITTY_", "PUBKEY"), concat!("var(\"LAPLACE_", "PUBKEY"), concat!("RWTPtQ8tZ89sE7J9", "HqZqKj3j")] {
+    for needle in [concat!("var(\"LITTY_", "PUBKEY"), concat!("RWTPtQ8tZ89sE7J9", "HqZqKj3j")] {
         assert!(!src.contains(needle), "update.rs still contains `{needle}`");
     }
 }

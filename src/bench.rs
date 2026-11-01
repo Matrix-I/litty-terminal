@@ -630,7 +630,7 @@ pub fn run_critical_features_benchmark() -> FeatureMetrics {
             4 => format!("nvim src/renderer.rs +{}", i),
             5 => format!("ssh user@server-{}.internal.corp -p 2222", i),
             6 => format!("tail -f /var/log/system_{}.log | grep -E 'ERROR|WARN'", i),
-            _ => format!("cd ~/Desktop/personal/laplace-terminal/src_{}", i),
+            _ => format!("cd ~/Desktop/personal/litty-terminal/src_{}", i),
         })
         .collect();
 

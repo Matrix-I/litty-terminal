@@ -186,7 +186,6 @@ pub const DEFAULT_FONT_PT: f32 = 14.0;
 impl Default for Config {
     fn default() -> Self {
         let font_size = std::env::var("LITTY_FONT_SIZE")
-            .or_else(|_| std::env::var("LAPLACE_FONT_SIZE"))
             .ok()
             .and_then(|s| s.parse::<f32>().ok())
             .unwrap_or(DEFAULT_FONT_PT)
@@ -816,7 +815,6 @@ fn theme_file_text(name: &str) -> Option<String> {
     let home = std::env::var_os("HOME").filter(|v| !v.is_empty()).unwrap_or_else(|| "/".into());
     let candidates = [
         PathBuf::from(&home).join(".litty").join("themes").join(name),
-        PathBuf::from(&home).join(".laplace").join("themes").join(name),
         PathBuf::from(&home).join(".config").join("ghostty").join("themes").join(name),
         PathBuf::from(&home).join("Applications/Ghostty.app/Contents/Resources/ghostty/themes").join(name),
         PathBuf::from("/Applications/Ghostty.app/Contents/Resources/ghostty/themes").join(name),

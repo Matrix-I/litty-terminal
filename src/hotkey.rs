@@ -50,32 +50,9 @@ pub fn socket_path() -> PathBuf {
     }
 }
 
-/// Fallback socket path for backward compatibility.
-pub fn legacy_socket_path() -> PathBuf {
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
-        return PathBuf::from(dir).join("laplace.sock");
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::env::temp_dir().join("laplace.sock")
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
-            let dir = PathBuf::from(home).join(".cache").join("laplace");
-            dir.join("laplace.sock")
-        } else {
-            std::env::temp_dir().join(format!("laplace-{}.sock", unsafe { libc::getuid() }))
-        }
-    }
-}
-
 /// `litty +toggle-quick-terminal`: ask the running instance to toggle.
 pub fn send_toggle() -> std::io::Result<()> {
-    if let Ok(mut stream) = UnixStream::connect(socket_path()) {
-        return stream.write_all(TOGGLE);
-    }
-    UnixStream::connect(legacy_socket_path())?.write_all(TOGGLE)
+    UnixStream::connect(socket_path())?.write_all(TOGGLE)
 }
 
 /// Remember the event proxy for hotkey presses and serve the control socket
@@ -99,11 +76,6 @@ pub fn listen(proxy: EventLoopProxy<AppEvent>) {
     let bound = UnixListener::bind(&path);
     unsafe { libc::umask(old_umask) };
     let Ok(listener) = bound else { return };
-    // Also try to symlink legacy socket path for backward compatibility
-    let legacy = legacy_socket_path();
-    let _ = std::fs::remove_file(&legacy);
-    let _ = std::os::unix::fs::symlink(&path, &legacy);
-
     let spawned = std::thread::Builder::new().name("litty-control".into()).spawn(move || {
         for stream in listener.incoming().flatten() {
             let mut buf = [0u8; 64];
@@ -117,7 +89,6 @@ pub fn listen(proxy: EventLoopProxy<AppEvent>) {
     });
     if spawned.is_err() {
         let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&legacy);
     }
 }
 

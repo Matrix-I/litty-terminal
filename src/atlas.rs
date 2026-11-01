@@ -2525,7 +2525,7 @@ pub fn load_font(families: &[String]) -> Arc<FontSet> {
     }
 
     let mut primary_candidates: Vec<String> = Vec::new();
-    if let Ok(p) = std::env::var("LITTY_FONT").or_else(|_| std::env::var("LAPLACE_FONT")) {
+    if let Ok(p) = std::env::var("LITTY_FONT") {
         primary_candidates.push(p);
     }
 
@@ -2778,7 +2778,7 @@ mod tests {
     /// `LITTY_LIGATURE_FONT=JetBrainsMono-Regular.ttf cargo test ligatures`.
     #[test]
     fn ligatures_shape_into_glyph_pieces() {
-        let Ok(path) = std::env::var("LITTY_LIGATURE_FONT").or_else(|_| std::env::var("LAPLACE_LIGATURE_FONT")) else { return };
+        let Ok(path) = std::env::var("LITTY_LIGATURE_FONT") else { return };
         let (shaper_mmap, shaper_index) = shaper_mmap_for(&path, 0)
             .map(|(m, idx)| (Some(m), idx))
             .unwrap_or((None, 0));
