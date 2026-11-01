@@ -22,17 +22,34 @@ _litty_loaded=1
 _litty_feats="${LITTY_SHELL_INTEGRATION_FEATURES-}"
 _litty_has() { [[ ",${_litty_feats}," == *",$1,"* ]]; }
 
+# Prompt marks live in variables so `yo` can mute them for the prompt Readline
+# redraws while the line is replaced (see _litty_yo_accept).
+_litty_pa=$'\e]133;A\a'
+_litty_pb=$'\e]133;B\a'
+_litty_yo_redraw=
+
 _litty_prompt_command() {
   local ret=$?
   _litty_armed=
+  if [[ -n $_litty_yo_redraw ]]; then
+    # Erase the empty prompt Readline redrew for the abandoned `yo` line.
+    _litty_yo_redraw=
+    _litty_pa=$'\e]133;A\a'
+    _litty_pb=$'\e]133;B\a'
+    printf '\e[1A\e[J'
+  fi
   printf '\e]133;D;%s\a' "$ret"
   local _litty_pwd="${PWD//[[:cntrl:]]/}"
   printf '\e]7;file://%s%s\a' "${HOSTNAME//[[:cntrl:]]/}" "${_litty_pwd// /%20}"
   _litty_has title && printf '\e]2;%s\a' "${_litty_pwd/#$HOME/\~}"
   _litty_has cursor && printf '\e[5 q'
   # Prompt start / end marks, re-added whenever something rebuilds PS1.
-  [[ $PS1 == *'133;A'* ]] || PS1='\[\e]133;A\a\]'"$PS1"
-  [[ $PS1 == *'133;B'* ]] || PS1="$PS1"'\[\e]133;B\a\]'
+  if [[ $PS1 != *'133;A'* && $PS1 != *'${_litty_pa}'* ]]; then
+    if shopt -q promptvars; then PS1='\[${_litty_pa}\]'"$PS1"; else PS1='\[\e]133;A\a\]'"$PS1"; fi
+  fi
+  if [[ $PS1 != *'133;B'* && $PS1 != *'${_litty_pb}'* ]]; then
+    if shopt -q promptvars; then PS1="$PS1"'\[${_litty_pb}\]'; else PS1="$PS1"'\[\e]133;B\a\]'; fi
+  fi
   return $ret
 }
 
@@ -80,6 +97,11 @@ _litty_yo_accept() {
       builtin printf '\r\n%s\r\n' "$original"
       READLINE_LINE=''
       READLINE_POINT=0
+      # Readline redraws the prompt before the bound \C-j accepts the empty
+      # line; mute its marks so Litty sees a single prompt-ready mark.
+      _litty_yo_redraw=1
+      _litty_pa=
+      _litty_pb=
       _litty_yo_emit "$query"
       ;;
   esac
