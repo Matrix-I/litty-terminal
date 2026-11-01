@@ -3,7 +3,7 @@
 Cross-platform, zero-latency GPU terminal emulator (macOS Metal / Linux Vulkan, Wayland, X11).
 
 ## Core Invariants & Safety
-- **Performance**: < 50MB idle RAM, 0% idle CPU (`ControlFlow::Wait`), zero heap allocation on hot paths (PTY parsing, scrolling, render loop).
+- **Performance**: < 50MB idle RAM (macOS `footprint`, app idle with all windows closed; open windows add GPU swapchain surfaces and are budgeted by `+bench-ram`), 0% idle CPU (`ControlFlow::Wait`), zero heap allocation on hot paths (PTY parsing, scrolling, render loop).
 - **Grid Cell**: `Cell` struct must stay exactly 12 bytes (`static_assert`). Pack new state into existing bits.
 - **Concurrency & Locking**: Minimize grid `Mutex` hold time. Never perform blocking I/O (PTY writes, subprocesses, file ops) while holding it.
 - **Process & Security**:

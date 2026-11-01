@@ -224,7 +224,8 @@ Noted 2026-11-01 so these do not get lost; details live in "Verification debt" a
   - Owner: user, by hand. Agreed ("ok"); no automation possible.
 - [x] **Decision: what the <50 MB idle invariant measures**
   - Decided: the budget applies when the app is idle with **all windows closed** (running in the Dock/background), so the 45 MB window swapchain (IOSurface) is not counted against it.
-  - Follow-up: measure `footprint` with zero windows open and update the `CLAUDE.md` invariant wording to say so; the current 84 MB figure (1 window/1 tab) is not comparable.
+  - Measured (2026-11-01, macOS arm64 release build at `8369405`, last window closed via shell exit so the app hides to the Dock): `footprint` **41 MB** (Malloc Small 12 MB, CG Image 8 MB, IOAccelerator 7 MB, no IOSurface), stable over 3 samples; CPU time flat at 0.70 s over 20 s. Meets the <50 MB invariant. With the window open the same build showed 71 MB (30 MB IOSurface), so the 84 MB 1w/1t figure above is not comparable.
+  - `CLAUDE.md` invariant wording updated to say "all windows closed". Not measured on Linux (the process exits when the last window closes there, so the invariant is macOS-only in practice).
 
 ## Tech debt (v0.4.1)
 
