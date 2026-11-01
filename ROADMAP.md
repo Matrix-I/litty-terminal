@@ -214,6 +214,19 @@ Each item lists what to run inside a Litty window and the expected result.
   - Idle profile, macOS arm64 release build, 1 window/1 tab, no `yo` used (2026-11-01): CPU **0.0%** (CPU time flat at 0.49 s over 60 s, matches `ControlFlow::Wait`); RSS ~113 MB; `footprint` **84 MB**, of which 45 MB is IOSurface (window swapchain), ~11 MB Malloc Small, ~7 MB IOAccelerator. Meets the 85 MB `+bench-ram` budget but **not** the <50 MB invariant in `CLAUDE.md` if GPU surfaces are counted; heap alone is ~12 MB. The invariant needs a decision on what it measures. Per-session memory after `yo` is not measured.
   - Still open: real-app keyboard checks (Ctrl+C, queued Enter, prompt repaint, editable prefill), which need someone driving the GPU window. fish on real Linux is skipped for now (no Linux machine).
 
+## Open for release
+
+Noted 2026-11-01 so these do not get lost; details live in "Verification debt" above.
+
+- [ ] **Run `linux_xdg_open_dispatch_smoke` in the Podman container**
+  - Blocker: the image build needs network access to `static.rust-lang.org` (clippy component download).
+  - Plan: the local machine has a CA at `~/warp-ca.crt` (TLS proxy). Bake it into the image via `LITTY_TEST_CA_BUNDLE` (see `scripts/linux/README.md`) so the build and the test pass.
+- [ ] **Manual keyboard checks in a real GPU window** (Ctrl+C, queued Enter, prompt repaint, editable prefill)
+  - Owner: user, by hand. Agreed ("ok"); no automation possible.
+- [x] **Decision: what the <50 MB idle invariant measures**
+  - Decided: the budget applies when the app is idle with **all windows closed** (running in the Dock/background), so the 45 MB window swapchain (IOSurface) is not counted against it.
+  - Follow-up: measure `footprint` with zero windows open and update the `CLAUDE.md` invariant wording to say so; the current 84 MB figure (1 window/1 tab) is not comparable.
+
 ## Tech debt (v0.4.1)
 
 Found while benchmarking v0.4.0 against v0.3.0 (`perf_bench` parser harness on a
