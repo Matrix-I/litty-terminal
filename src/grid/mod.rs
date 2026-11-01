@@ -513,6 +513,15 @@ impl Grid {
         self.prompt_input_mark.is_some() && !self.alt_active
     }
 
+    /// Rows between the start of the current prompt (`133;A`) and the cursor, so a
+    /// multi-line prompt can be erased as a whole. Zero without a current prompt.
+    pub fn prompt_rows_above_cursor(&self) -> usize {
+        self.prompts
+            .last()
+            .filter(|p| p.output.is_none())
+            .map_or(0, |p| self.cursor_line().saturating_sub(p.prompt))
+    }
+
     /// Whole editable input, including text after the cursor and soft-wrapped rows.
     pub fn full_prompt_input(&self) -> String {
         let Some((start, col)) = self.prompt_input_mark else {
@@ -4493,6 +4502,22 @@ mod tests {
         assert!(g.jump_to_prompt(1));
         assert!(g.jump_to_prompt(1), "past the last prompt goes live");
         assert_eq!(g.display_offset, 0);
+    }
+
+    #[test]
+    fn prompt_rows_above_cursor_counts_the_current_multiline_prompt() {
+        let mut g = Grid::new(30, 6);
+        feed(&mut g, "\x1b]133;A\x07~\r\n$ \x1b]133;B\x07");
+        assert_eq!(g.prompt_rows_above_cursor(), 1);
+
+        let mut single = Grid::new(30, 6);
+        feed(&mut single, "\x1b]133;A\x07$ \x1b]133;B\x07");
+        assert_eq!(single.prompt_rows_above_cursor(), 0);
+
+        // A prompt that already produced output is not the current one.
+        let mut done = Grid::new(30, 6);
+        feed(&mut done, "\x1b]133;A\x07~\r\n$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07out\r\n");
+        assert_eq!(done.prompt_rows_above_cursor(), 0);
     }
 
     #[test]

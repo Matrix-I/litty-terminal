@@ -66,6 +66,9 @@ pub struct PaneState {
     pub result: Option<Outcome>,
     pub status: String,
     pub prompt_epoch: u64,
+    /// Rows of the erased prompt above the cursor; the answer is padded by this
+    /// many rows so the shell's prompt repaint lands below it.
+    pub prompt_rows: usize,
     pub repaint_epoch: Option<u64>,
 }
 impl Default for PaneState {
@@ -86,6 +89,7 @@ impl Default for PaneState {
             result: None,
             status: String::new(),
             prompt_epoch: 0,
+            prompt_rows: 0,
             repaint_epoch: None,
         }
     }

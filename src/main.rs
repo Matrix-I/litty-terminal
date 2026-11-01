@@ -1586,10 +1586,18 @@ fn handle_ai_requests(s: &mut State, waker: &Waker) {
                     proxy: waker.proxy.clone(),
                 });
                 if let Some(query) = ai.display_query.take() {
+                    ai.prompt_rows = 0;
                     ai_display(
                         &pane.grid,
                         &format!("\r\x1b[2K{}\r\n", ai::markdown::clean(&query)),
                     );
+                } else {
+                    // The typed line is already above this prompt: drop the whole
+                    // (possibly multi-line) prompt so the status takes its place.
+                    let rows = pane.grid.lock().prompt_rows_above_cursor().min(8);
+                    ai.prompt_rows = rows;
+                    let up = if rows > 0 { format!("\x1b[{rows}A") } else { String::new() };
+                    ai_display(&pane.grid, &format!("{up}\r\x1b[J"));
                 }
                 ai.status = "Thinking...".into();
             }
@@ -1614,6 +1622,7 @@ fn handle_ai_requests(s: &mut State, waker: &Waker) {
                     if ai.overflow {
                         text.push_str("Queued input exceeded 64 KiB and was discarded.\r\n");
                     }
+                    text.push_str(&"\r\n".repeat(ai.prompt_rows));
                     ai_display(&pane.grid, &text);
                     ai.repaint_epoch = Some(epoch);
                     write_pty(pane, b"\x1b[24;8~");
