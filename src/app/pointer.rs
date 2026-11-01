@@ -1,14 +1,13 @@
 //! Mouse pointer: scrollbar drag, application mouse reporting, link hover.
 
+use super::state::State;
 use super::terminal_io::write_pty;
 use super::window::refresh_tab_titles;
-use super::state::State;
 
 use crate::{grid, mouse, renderer};
 use crate::HoveredPaneLink;
 
 use winit::window::CursorIcon;
-
 
 /// Pane under the mouse pointer and the pane-relative `(row, col)` cell.
 /// Pane whose visible scrollbar (shown while scrolled back) is under the mouse.

@@ -1,11 +1,11 @@
 //! Tab and split-pane lifecycle and navigation for one window.
 
-use super::window::tab_title;
-use super::window::sync_size;
-use super::window::spawn_pane;
-use super::window::refresh_tab_titles;
-use super::close_search;
+use super::search_ui::close_search;
 use super::state::State;
+use super::window::refresh_tab_titles;
+use super::window::spawn_pane;
+use super::window::sync_size;
+use super::window::tab_title;
 
 #[cfg(target_os = "macos")]
 use crate::macos;

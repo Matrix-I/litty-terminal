@@ -1,12 +1,10 @@
 //! Input-method composition (preedit, commit, candidate window placement).
 
-use super::terminal_io::write_pane_input;
-use super::refresh_search;
+use super::search_ui::refresh_search;
 use super::state::State;
-
+use super::terminal_io::write_pane_input;
 
 use winit::event::Ime;
-
 
 pub(super) fn handle_ime(s: &mut State, ime: Ime) {
     match ime {

@@ -1,7 +1,8 @@
 //! Bridges grid AI requests to the async `ai` module and back.
 
-use super::terminal_io::write_pty;
 use super::state::State;
+use super::terminal_io::write_pty;
+
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 

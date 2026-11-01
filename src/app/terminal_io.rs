@@ -1,7 +1,7 @@
 //! PTY writes and draining terminal-originated requests (title, cwd, bell, OSC 52, notifications).
 
-use super::window::refresh_tab_titles;
 use super::state::State;
+use super::window::refresh_tab_titles;
 
 use crate::{ai, macos};
 use crate::Pane;

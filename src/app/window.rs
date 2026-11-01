@@ -1,9 +1,10 @@
 //! Window creation, sizing, config reload and per-frame rendering.
 
-use super::terminal_io::write_pty;
-use super::refresh_search;
-use super::inspector_lines;
+use super::inspector::inspector_lines;
+use super::search_ui::refresh_search;
 use super::state::State;
+use super::terminal_io::write_pty;
+
 use std::sync::Arc;
 
 use crate::{atlas, config, grid, hotkey, macos, scroll};
