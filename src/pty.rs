@@ -125,7 +125,7 @@ fn feed_output(
             drop(g);
         } else {
             reply.append(&mut g.response);
-            return g.sync_output;
+            return g.modes.sync_output;
         }
     }
 }

@@ -94,7 +94,7 @@ impl App {
             WindowEvent::DroppedFile(path) => {
                 if let Some(tab) = s.tabs.get(s.active)
                     && let Some(pane) = tab.active_pane() {
-                        let bracketed = pane.grid.lock().bracketed_paste;
+                        let bracketed = pane.grid.lock().modes.bracketed_paste;
                         let text = format!("{} ", shell_quote(&path.to_string_lossy()));
                         write_pane_input(pane,&mut s.ai,&paste_payload(&text, bracketed));
                     }
@@ -255,7 +255,7 @@ impl App {
                                     s.renderer.invalidate();
                                     if let Some(cmd) = cmd_opt
                                         && let Some(pane) = s.tabs[s.active].active_pane() {
-                                            let bracketed = pane.grid.lock().bracketed_paste;
+                                            let bracketed = pane.grid.lock().modes.bracketed_paste;
                                             write_pane_input(pane,&mut s.ai,&history_insert_payload(&cmd, true, bracketed));
                                         }
                                     s.window.request_redraw();
@@ -442,7 +442,7 @@ impl App {
         if precise && !s.history_search.is_open && !s.search.is_open && !s.inspector.shown
             && let Some(pane) = s.tabs[s.active].pane(target_id) {
                 let mut g = pane.grid.lock();
-                let local = g.mouse_tracking == grid::MouseTracking::Off || s.mods.shift_key() || s.mods.super_key();
+                let local = g.modes.mouse_tracking == grid::MouseTracking::Off || s.mods.shift_key() || s.mods.super_key();
                 if local && !g.alt_active {
                     let changed = g.scroll_pixels(amount, unit);
                     drop(g);
@@ -522,7 +522,7 @@ impl App {
         }
         if let Some(tab) = s.tabs.get(s.active)
             && let Some(pane) = tab.active_pane() {
-            let report_focus = pane.grid.lock().focus_events;
+            let report_focus = pane.grid.lock().modes.focus_events;
             if report_focus {
                 write_pty(pane, if focused { b"\x1b[I" } else { b"\x1b[O" });
             }

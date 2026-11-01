@@ -128,7 +128,7 @@ pub(super) fn handle_key(
         } else {
             let (app_cursor, kitty_flags, modify_other_keys) = {
                 let g = pane.grid.lock();
-                (g.app_cursor, g.kitty_keyboard_flags(), g.modify_other_keys)
+                (g.modes.app_cursor, g.kitty_keyboard_flags(), g.modes.modify_other_keys)
             };
             if let Some(bytes) =
                 encode_terminal_key(ev, m, s.locks, app_cursor, kitty_flags, modify_other_keys)
@@ -203,9 +203,9 @@ pub(super) fn handle_key(
 
     let (app_cursor, kitty_flags, modify_other_keys, ctrl_u_bytes) = {
         let mut g = pane.grid.lock();
-        let app_cursor = g.app_cursor;
+        let app_cursor = g.modes.app_cursor;
         let kitty_flags = g.kitty_keyboard_flags();
-        let modify_other_keys = g.modify_other_keys;
+        let modify_other_keys = g.modes.modify_other_keys;
 
         // A lone modifier (Cmd before C, Shift before a click) keeps the selection
         // and the scrollback position; only real keys snap back to the prompt.
@@ -361,7 +361,7 @@ pub(super) fn handle_key_release(s: &mut State, ev: &KeyEvent, m: keymap::Mods) 
     let Some(pane) = s.tabs[s.active].active_pane() else { return; };
     let (app_cursor, kitty_flags) = {
         let g = pane.grid.lock();
-        (g.app_cursor, g.kitty_keyboard_flags())
+        (g.modes.app_cursor, g.kitty_keyboard_flags())
     };
     if kitty_flags & keymap::KITTY_REPORT_EVENTS == 0 {
         return;

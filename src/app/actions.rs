@@ -145,7 +145,7 @@ pub(super) fn run_tab_action(
                     let bracketed = {
                         let mut g = pane.grid.lock();
                         g.reset_display();
-                        g.bracketed_paste
+                        g.modes.bracketed_paste
                     };
                     let has_newlines = text.contains('\n') || text.contains('\r');
                     if !bracketed && has_newlines {

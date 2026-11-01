@@ -266,8 +266,8 @@ impl Grid {
             return None;
         }
 
-        let seq_left = if self.app_cursor { b"\x1bOD" } else { b"\x1b[D" };
-        let seq_right = if self.app_cursor { b"\x1bOC" } else { b"\x1b[C" };
+        let seq_left = if self.modes.app_cursor { b"\x1bOD" } else { b"\x1b[D" };
+        let seq_right = if self.modes.app_cursor { b"\x1bOC" } else { b"\x1b[C" };
 
         if target_col < cur_col {
             let mut count = 0;

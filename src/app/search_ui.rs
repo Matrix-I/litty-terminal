@@ -22,7 +22,7 @@ pub(super) fn handle_history_search_key(s: &mut State, key: &Key, m: keymap::Mod
             if let (Some(cmd), Some(tab)) = (cmd, s.tabs.get(s.active)) {
                 // Enter runs it, Tab leaves it for editing.
                 if let Some(pane) = tab.active_pane() {
-                    let bracketed = pane.grid.lock().bracketed_paste;
+                    let bracketed = pane.grid.lock().modes.bracketed_paste;
                     write_pane_input(pane,&mut s.ai,&history_insert_payload(&cmd, *k == NamedKey::Enter, bracketed));
                 }
             }

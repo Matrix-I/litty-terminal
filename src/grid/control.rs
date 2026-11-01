@@ -36,7 +36,7 @@ impl Grid {
         let body = match request {
             b"m" => Some(format!("{}m", self.sgr_report())),
             b"r" => Some(format!("{};{}r", self.scroll_top + 1, self.scroll_bot + 1)),
-            b" q" => Some(format!("{} q", self.cursor_shape.max(1))),
+            b" q" => Some(format!("{} q", self.modes.cursor_shape.max(1))),
             b"\"q" => Some("0\"q".to_string()),
             _ => None,
         };
