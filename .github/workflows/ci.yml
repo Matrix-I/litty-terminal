@@ -37,7 +37,7 @@ jobs:
   test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 3
+    timeout-minutes: 8
     strategy:
       fail-fast: false
       matrix:
@@ -52,5 +52,27 @@ jobs:
         run: cargo check --all-targets
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
+      - name: build tests
+        run: cargo test --no-run
+      # TEMPORARY: macOS tests hang in Pty::spawn_in users. If the run is still
+      # going 70s after the tests start, dump the process table and stacks.
       - name: cargo test
-        run: cargo test
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            (
+              sleep 70
+              echo "::group::watchdog: process table"
+              ps -axo pid,ppid,pgid,stat,etime,command | tail -80
+              echo "::endgroup::"
+              for pid in $(pgrep -f 'target/debug/deps/litty-' || true); do
+                echo "::group::watchdog: sample $pid"
+                sample "$pid" 3 2>&1 | head -150
+                echo "::endgroup::"
+              done
+            ) &
+            watchdog=$!
+          fi
+          rc=0
+          cargo test || rc=$?
+          if [ -n "${watchdog:-}" ]; then kill "$watchdog" 2>/dev/null || true; fi
+          exit $rc
