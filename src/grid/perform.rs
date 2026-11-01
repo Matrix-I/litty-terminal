@@ -5,6 +5,7 @@ use std::io::Write;
 use vte::{Params, Perform};
 
 use super::*;
+use super::control::{decode_base64, lossy_join, parse_osc7_path};
 
 impl Perform for Grid {
     fn print(&mut self, c: char) {
