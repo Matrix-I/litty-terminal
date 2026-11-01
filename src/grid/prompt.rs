@@ -6,6 +6,19 @@ use super::*;
 /// Prompts remembered for jump-to-prompt and output selection.
 pub const MAX_PROMPTS: usize = 1000;
 
+/// Shell-integration state for the AI bridge (OSC 778 `init` / `yo`, OSC 133 `C`).
+/// The grid only records it; `crate::ai` and the app decide what it means.
+#[derive(Default)]
+pub struct AiTrack {
+    /// AI bridge is armed only by a user submission at a known shell prompt.
+    pub available: bool,
+    pub direct: bool,
+    pub armed: bool,
+    pub track: bool,
+    pub command: Option<String>,
+    pub request: Option<String>,
+}
+
 /// One shell prompt from OSC 133 marks, as absolute lines.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct PromptMark {
