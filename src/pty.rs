@@ -38,6 +38,32 @@ impl WritePayload {
     }
 }
 
+/// Atomic nonblocking enqueue: the caller can report/retry the entire rejected
+/// payload rather than silently losing a key or a tail of pasted input.
+fn try_write(tx: &mpsc::SyncSender<WritePayload>, data: &[u8]) -> io::Result<()> {
+    tx.try_send(WritePayload::from_slice(data)).map_err(|e| match e {
+        mpsc::TrySendError::Full(_) => io::Error::new(io::ErrorKind::WouldBlock, "PTY input queue is full; input was not sent"),
+        mpsc::TrySendError::Disconnected(_) => io::Error::new(io::ErrorKind::BrokenPipe, "PTY writer has stopped"),
+    })
+}
+
+/// Reader-only backpressure. Keep the reply owned until it can enter the same
+/// FIFO as input, polling the shutdown pipe so closing a stalled pane exits.
+/// This never runs on the UI thread or while holding a grid guard.
+fn queue_reply(tx: &mpsc::SyncSender<WritePayload>, mut data: WritePayload, shutdown: RawFd) -> io::Result<()> {
+    loop {
+        match tx.try_send(data) {
+            Ok(()) => return Ok(()),
+            Err(mpsc::TrySendError::Disconnected(_)) => return Err(io::Error::new(io::ErrorKind::BrokenPipe, "PTY writer has stopped")),
+            Err(mpsc::TrySendError::Full(pending)) => data = pending,
+        }
+        let mut fd = libc::pollfd { fd: shutdown, events: libc::POLLIN, revents: 0 };
+        let ready = unsafe { libc::poll(&mut fd, 1, 2) };
+        if ready > 0 { return Err(io::Error::new(io::ErrorKind::BrokenPipe, "PTY closed during reply backpressure")); }
+        if ready < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted { return Err(io::Error::last_os_error()); }
+    }
+}
+
 /// Dropping a `Pty` closes the master side and wakes both I/O threads through the
 /// shutdown pipe; once their duplicated descriptors are closed the kernel hangs up
 /// the terminal (SIGHUP to the shell and its foreground job) and the reader thread
@@ -384,8 +410,8 @@ impl Pty {
     }
 
     /// Queue bytes for the shell. Uses WritePayload to avoid heap allocation on keystrokes.
-    pub fn write(&self, data: &[u8]) {
-        let _ = self.tx.try_send(WritePayload::from_slice(data));
+    pub fn write(&self, data: &[u8]) -> io::Result<()> {
+        try_write(&self.tx, data)
     }
 
     /// Spawn Thread 1: reads into a fixed 64 KB stack buffer, parsed by `vte`
@@ -424,7 +450,7 @@ impl Pty {
                 let mut buf = [0u8; 65536];
                 let mut parser = vte::Parser::new();
                 let mut reply: Vec<u8> = Vec::with_capacity(256);
-                loop {
+                'read: loop {
                     if !wait_ready(raw, libc::POLLIN, shutdown.as_raw_fd()) {
                         break; // Pty dropped
                     }
@@ -451,7 +477,11 @@ impl Pty {
                         }
                         if !reply.is_empty() {
                             // Same queue as keyboard input, so replies never interleave with a paste.
-                            let _ = tx.try_send(WritePayload::Heap(std::mem::take(&mut reply)));
+                            notify();
+                            if let Err(e) = queue_reply(&tx, WritePayload::Heap(std::mem::take(&mut reply)), shutdown.as_raw_fd()) {
+                                eprintln!("litty: terminal reply failed: {e}");
+                                break 'read;
+                            }
                         }
 
                         // Never hold output back waiting for the next prompt: prompt themes take
@@ -619,6 +649,54 @@ pub(crate) fn pid_cwd(pid: libc::pid_t) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn shutdown_pipe() -> (OwnedFd, OwnedFd) {
+        let mut fds = [-1; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+    }
+
+    #[test]
+    fn input_backpressure_is_visible_atomic_and_recovers_in_order() {
+        let (tx, rx) = mpsc::sync_channel(2);
+        try_write(&tx, b"first").unwrap();
+        try_write(&tx, b"second").unwrap();
+        let rejected = b"a paste longer than inline storage";
+        assert_eq!(try_write(&tx, rejected).unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(rx.recv().unwrap().as_slice(), b"first");
+        try_write(&tx, rejected).unwrap();
+        assert_eq!(rx.recv().unwrap().as_slice(), b"second");
+        assert_eq!(rx.recv().unwrap().as_slice(), rejected);
+        drop(rx);
+        assert_eq!(try_write(&tx, b"closed").unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn protocol_reply_retries_stalled_queue_and_shutdown_cancels_wait() {
+        let (shutdown, close) = shutdown_pipe();
+        let (tx, rx) = mpsc::sync_channel(2);
+        try_write(&tx, b"input1").unwrap();
+        try_write(&tx, b"input2").unwrap();
+        let (done_tx, done) = mpsc::channel();
+        let producer = tx.clone();
+        let worker = std::thread::spawn(move || {
+            let result = queue_reply(&producer, WritePayload::from_slice(b"\x1b[1;1R"), shutdown.as_raw_fd());
+            done_tx.send(result).unwrap();
+        });
+        assert!(done.recv_timeout(std::time::Duration::from_millis(20)).is_err());
+        assert_eq!(rx.recv().unwrap().as_slice(), b"input1");
+        assert_eq!(rx.recv().unwrap().as_slice(), b"input2");
+        done.recv_timeout(std::time::Duration::from_secs(1)).unwrap().unwrap();
+        assert_eq!(rx.recv().unwrap().as_slice(), b"\x1b[1;1R");
+        worker.join().unwrap();
+        drop(close);
+        let (shutdown, close) = shutdown_pipe();
+        let (tx, _rx) = mpsc::sync_channel(1);
+        try_write(&tx, b"stalled").unwrap();
+        let worker = std::thread::spawn(move || queue_reply(&tx, WritePayload::from_slice(b"reply"), shutdown.as_raw_fd()));
+        drop(close);
+        assert_eq!(worker.join().unwrap().unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+    }
+
     #[test]
     fn image_jobs_release_grid_lock_and_preserve_stream_order() {
         let grid = Arc::new(Mutex::new(Grid::new(80, 24)));
@@ -721,7 +799,7 @@ mod tests {
         // Far more than the kernel PTY buffer: must be queued, not block the caller.
         let payload = vec![b'x'; 4 << 20];
         let start = std::time::Instant::now();
-        pty.write(&payload);
+        pty.write(&payload).unwrap();
         assert!(start.elapsed() < std::time::Duration::from_millis(200));
 
         drop(pty);
@@ -741,7 +819,7 @@ mod tests {
             let _ = tx.send(());
         })
         .expect("spawn reader");
-        pty.write(b"exit\r");
+        pty.write(b"exit\r").unwrap();
         rx.recv_timeout(std::time::Duration::from_secs(10)).expect("on_exit fires");
         let r = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
         assert_eq!(r, -1);
@@ -769,7 +847,7 @@ mod tests {
         // Like zsh after Enter: bracketed paste goes off, a newline is echoed, and the
         // prompt follows once its precmd finishes (10ms here; agnoster's git status
         // takes 40-200ms). `%s%s` keeps the markers out of the echoed command line.
-        pty.write(b"printf '\\033[?2004h'; sleep 0.3; printf '\\033[?2004l\\r\\n%s%s' AF TER; sleep 0.01; printf '%s%s' PRO MPT\r");
+        pty.write(b"printf '\\033[?2004h'; sleep 0.3; printf '\\033[?2004l\\r\\n%s%s' AF TER; sleep 0.01; printf '%s%s' PRO MPT\r").unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut frames = Vec::new();
         while let Ok(text) = rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
@@ -806,7 +884,7 @@ mod tests {
             libc::close(pipe_fds[0]);
             assert_eq!(n, 0, "child process must have closed inherited write pipe end");
         }
-        pty.write(b"exit\r");
+        pty.write(b"exit\r").unwrap();
     }
 
     #[test]

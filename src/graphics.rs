@@ -11,6 +11,9 @@ use std::time::{Duration, Instant};
 
 /// Decoded images kept per terminal, in bytes of RGBA; the oldest go first.
 pub(crate) const STORE_LIMIT: usize = 64 << 20;
+/// Independent object cap: tiny transmit-only images still allocate map entries,
+/// Arc headers, insertion-order slots, and animation metadata.
+const MAX_IMAGES: usize = 1024;
 /// Largest image accepted, per side.
 const MAX_SIDE: u32 = 8192;
 /// Largest decoded image, in pixels: its RGBA must fit in the store.
@@ -261,10 +264,10 @@ impl Store {
         id
     }
 
-    /// Over the limit: evict the oldest images (and their placements). The
-    /// newest image goes too when it alone exceeds the limit.
+    /// Enforce both pixel bytes and object count, including transmit-only
+    /// images. Removing an image also releases its frames and placements.
     fn evict(&mut self) {
-        while self.bytes > STORE_LIMIT && !self.order.is_empty() {
+        while (self.bytes > STORE_LIMIT || self.images.len() > MAX_IMAGES) && !self.order.is_empty() {
             let oldest = self.order[0];
             self.remove_image(oldest, true);
         }
@@ -349,15 +352,28 @@ impl Store {
         let (iw, ih) = (img.width, img.height);
         let w = if cmd.src_w == 0 { iw } else { cmd.src_w };
         let h = if cmd.src_h == 0 { ih } else { cmd.src_h };
-        if cmd.src_left + w > iw || cmd.src_top + h > ih || cmd.x + w > iw || cmd.y + h > ih {
+        if [(cmd.src_left, w, iw), (cmd.src_top, h, ih), (cmd.x, w, iw), (cmd.y, h, ih)]
+            .into_iter().any(|(start, size, bound)| start.checked_add(size).is_none_or(|end| end > bound)) {
             return Err("EINVAL:rectangle out of bounds".into());
         }
         let source = img.frame(src - 1).1.clone();
+        let destination = img.frame(dst - 1).1;
+        let image_bytes = (iw as usize).checked_mul(ih as usize).and_then(|n| n.checked_mul(4));
+        if image_bytes != Some(source.len()) || image_bytes != Some(destination.len()) {
+            return Err("EINVAL:invalid frame dimensions".into());
+        }
         let mut canvas = img.frame(dst - 1).1.to_vec();
+        // The rectangle endpoints and full frame byte lengths were validated
+        // above. Use usize for offsets so intermediate u32 products cannot wrap.
+        let stride = iw as usize * 4;
         for y in 0..h {
+            let src_row = (cmd.src_top + y) as usize * stride;
+            let dst_row = (cmd.y + y) as usize * stride;
             for x in 0..w {
-                let s = &source[(((cmd.src_top + y) * iw + cmd.src_left + x) * 4) as usize..][..4];
-                let d = &mut canvas[(((cmd.y + y) * iw + cmd.x + x) * 4) as usize..][..4];
+                let src_offset = src_row + (cmd.src_left + x) as usize * 4;
+                let dst_offset = dst_row + (cmd.x + x) as usize * 4;
+                let s = &source[src_offset..src_offset + 4];
+                let d = &mut canvas[dst_offset..dst_offset + 4];
                 compose_pixel(d, s, cmd.overwrite);
             }
         }
@@ -1417,6 +1433,80 @@ mod tests {
         assert_eq!(run(&mut store, "Ga=c,i=6,r=2,c=1,X=1,w=1,h=1,C=1").as_deref(), Some("i=6;OK"));
         assert_eq!(&store.image(6).unwrap().rgba[..], [255, 0, 0, 255, 0, 0, 0, 0]);
         assert_eq!(run(&mut store, "Ga=c,i=6,r=2,c=1,X=1,w=2,h=1").as_deref(), Some("i=6;EINVAL:rectangle out of bounds"));
+    }
+
+    #[test]
+    fn kitty_compose_rejects_overflow_and_preserves_frames() {
+        let mut store = Store::default();
+        store.insert(1, 2, 2, vec![23; 16]);
+        let original = Arc::clone(&store.image(1).unwrap().rgba);
+        let key = store.image(1).unwrap().key;
+        for field in ["X", "Y", "x", "y", "w", "h"] {
+            for value in [u32::MAX, u32::MAX - 1, 3] {
+                let body = format!("Ga=c,i=1,r=1,c=1,w=1,h=1,{field}={value}");
+                let (cmd, payload) = parse_kitty(body.as_bytes()).unwrap();
+                assert_eq!(store.kitty(cmd, payload).1.as_deref(), Some("i=1;EINVAL:rectangle out of bounds"), "{body}");
+                let image = store.image(1).unwrap();
+                assert_eq!(image.key, key, "failure must not mutate the frame");
+                assert!(Arc::ptr_eq(&image.rgba, &original));
+            }
+        }
+        // Coordinates exactly at the last pixel are valid; default dimensions
+        // cover the full image. Overlapping copies read the original frame.
+        assert_eq!(run(&mut store, "Ga=c,i=1,r=1,c=1,X=1,Y=1,x=1,y=1,w=1,h=1").as_deref(), Some("i=1;OK"));
+        assert_eq!(run(&mut store, "Ga=c,i=1,r=1,c=1").as_deref(), Some("i=1;OK"));
+    }
+
+    #[test]
+    fn kitty_compose_checks_frame_byte_lengths_before_indexing() {
+        let mut store = Store::default();
+        // Internal dimension/data inconsistency must not turn into unchecked
+        // pixel indexing, even though normal decoding validates these lengths.
+        store.insert(1, u32::MAX, u32::MAX, vec![0; 4]);
+        assert_eq!(run(&mut store, "Ga=c,i=1,r=1,c=1,w=1,h=1").as_deref(), Some("i=1;EINVAL:invalid frame dimensions"));
+    }
+
+    #[test]
+    fn tiny_transmit_only_images_have_an_independent_count_limit() {
+        let mut store = Store::default();
+        for id in 1..=100_000 {
+            let cmd = KittyCommand { action: b't', format: 32, medium: b'd', width: 1, height: 1, id, quiet: 2, ..Default::default() };
+            let (outcome, reply) = store.kitty(cmd, b"AAAAAA==");
+            assert!(matches!(outcome, KittyOutcome::None));
+            assert!(reply.is_none());
+            assert!(store.images.len() <= MAX_IMAGES);
+            assert_eq!(store.order.len(), store.images.len());
+        }
+        assert_eq!(store.images.len(), MAX_IMAGES);
+        assert_eq!(store.bytes, MAX_IMAGES * 4);
+        assert!(store.placements.is_empty());
+        assert!(store.image(1).is_none());
+        assert!(store.image(100_000).is_some());
+        // Replacing an existing ID must not evict an unrelated image.
+        store.insert(100_000, 1, 1, vec![1; 4]);
+        assert_eq!(store.images.len(), MAX_IMAGES);
+        assert!(store.image(100_000 - MAX_IMAGES as u32 + 1).is_some());
+    }
+
+    #[test]
+    fn image_count_eviction_releases_placements_and_animation_frames() {
+        let mut store = Store::default();
+        store.insert(1, 1, 1, vec![0; 4]);
+        assert_eq!(run(&mut store, "Ga=f,f=32,i=1;AAAAAA==").as_deref(), Some("i=1;OK"));
+        store.place(Placement { image_id: 1, placement_id: 1, line: 0, col: 0, cols: 1, rows: 1, src: [0, 0, 1, 1], z: 0, alt: false, fit: false });
+        store.place_virtual(VirtualPlacement { image_id: 1, placement_id: 2, cols: 1, rows: 1, z: 0, alt: false });
+        let root = Arc::downgrade(&store.image(1).unwrap().rgba);
+        let frame = Arc::downgrade(&store.image(1).unwrap().frames[0].rgba);
+        for id in 2..=MAX_IMAGES as u32 { store.insert(id, 1, 1, vec![0; 4]); }
+        assert!(store.image(1).is_some(), "at the limit, no eviction");
+        store.insert(MAX_IMAGES as u32 + 1, 1, 1, vec![0; 4]);
+        assert_eq!(store.images.len(), MAX_IMAGES);
+        assert!(store.image(1).is_none());
+        assert!(store.placements.is_empty());
+        assert!(store.virtuals.is_empty());
+        assert!(root.upgrade().is_none());
+        assert!(frame.upgrade().is_none());
+        assert_eq!(store.bytes, MAX_IMAGES * 4, "eviction includes animation bytes");
     }
 
     #[test]

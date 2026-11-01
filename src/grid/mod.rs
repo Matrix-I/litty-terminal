@@ -151,7 +151,13 @@ impl ImageJob {
     }
 }
 
+// Includes OSC 52 command/target fields in addition to its 1 MiB base64 payload.
+const MAX_OSC_BYTES: usize = (1 << 20) + 64;
+
 pub struct Grid {
+    osc_len: Option<usize>,
+    osc_discard: bool,
+    osc_start: Option<std::time::Instant>,
     pub(crate) defer_images: bool,
     pub(crate) image_job: Option<ImageJob>,
     pub(crate) image_epoch: u64,
@@ -359,6 +365,9 @@ impl Grid {
             mouse_sgr_pixels: false,
             color_scheme_reports: false,
             cell_px: (0, 0),
+            osc_len: None,
+            osc_discard: false,
+            osc_start: None,
             defer_images: false,
             image_job: None,
             image_epoch: 0,
@@ -1272,25 +1281,28 @@ impl Grid {
         let last = self.lines_pushed + self.rows;
         let mut text = String::new();
         let mut rows = Vec::with_capacity(last - first);
+        let mut columns = Vec::new();
         for l in first..last {
             let Some(cells) = self.line_cells(l) else { continue };
             let row_start = text.len();
             rows.push((row_start, l));
             let mut skip_next = false;
-            for cell in cells {
-                if std::mem::take(&mut skip_next) {
-                    continue;
-                }
-                // One char per cell (a cluster's first) keeps offsets mapped to columns.
+            for (col, cell) in cells.iter().enumerate() {
+                if std::mem::take(&mut skip_next) { continue; }
                 skip_next = is_wide_cp(cell.codepoint);
-                text.push(self.cell_char(cell));
+                let width = if skip_next { 2 } else { 1 };
+                columns.push((text.len(), col, width));
+                self.push_cell_text(cell, &mut text);
             }
             if !self.line_wrapped(l) {
                 text.truncate(text.trim_end_matches(' ').len().max(row_start));
+                while columns.last().is_some_and(|&(offset, _, _)| offset >= text.len()) { columns.pop(); }
+                let col = columns.last().filter(|&&(offset, _, _)| offset >= row_start).map_or(0, |&(_, col, width)| col + width);
+                columns.push((text.len(), col, 1));
                 text.push('\n');
             }
         }
-        SearchText { text, rows }
+        SearchText { text, rows, columns }
     }
 
     /// Replace the search matches and focus the one closest to the bottom of the
@@ -1999,6 +2011,45 @@ impl Grid {
     /// are handled here, because vte drops them; everything else goes to `parser`.
     #[inline]
     pub fn feed_byte(&mut self, parser: &mut vte::Parser, b: u8) {
+        if let Some(len) = self.osc_len {
+            match b {
+                0x07 | 0x18 | 0x1a => {
+                    self.osc_len = None;
+                    self.osc_start = None;
+                    if !self.osc_discard {
+                        // VTE invokes OscEnd even for CAN/SUB. Suppress that
+                        // callback so cancellation cannot commit a prefix.
+                        self.osc_discard = b != 0x07;
+                        parser.advance(self, b);
+                    }
+                    self.osc_discard = false;
+                    return;
+                }
+                0x1b => {
+                    // Existing ESC handling forwards ESC + the next byte to
+                    // VTE, preserving ST and transitions to another sequence.
+                    self.osc_len = None;
+                    self.osc_start = None;
+                    self.osc_discard = false;
+                }
+                _ => {
+                    if !self.osc_discard {
+                        let timed_out = len & 0x03ff == 0 && self.osc_start.is_some_and(|t| t.elapsed() > std::time::Duration::from_secs(5));
+                        if len >= MAX_OSC_BYTES || timed_out {
+                            // Cancel before dispatch, then consume the rest of
+                            // the string. A partial OSC 52 must never succeed.
+                            self.osc_discard = true;
+                            parser.advance(self, 0x18);
+                        } else {
+                            self.osc_len = Some(len + 1);
+                            parser.advance(self, b);
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+
         if self.apc_state >= 2
             && (self.apc_buf.len() & 0x03ff == 0)
             && self.apc_start.is_some_and(|t| t.elapsed() > std::time::Duration::from_secs(5))
@@ -2012,6 +2063,15 @@ impl Grid {
         match (self.apc_state, b) {
             (0, 0x1b) => self.apc_state = 1,
             (0, _) => parser.advance(self, b),
+            (1, b']') => {
+                self.apc_state = 0;
+                self.apc_start = None;
+                parser.advance(self, 0x1b);
+                parser.advance(self, b']');
+                self.osc_len = Some(0);
+                self.osc_discard = false;
+                self.osc_start = Some(std::time::Instant::now());
+            }
             (1, b'_') => {
                 self.apc_state = 2;
                 self.apc_buf.clear();
@@ -3628,6 +3688,64 @@ mod tests {
         for b in s.bytes() {
             g.feed_byte(&mut p, b);
         }
+    }
+
+    #[test]
+    fn osc52_preserves_supported_payload_and_rejects_oversize_atomically() {
+        let mut g = Grid::new(80, 24);
+        for (repeats, terminator) in [(1000, "\x07"), ((1 << 20) / 4, "\x1b\\")] {
+            let payload = "YWJj".repeat(repeats);
+            feed(&mut g, &format!("\x1b]52;c;{payload}{terminator}"));
+            assert_eq!(g.clipboard_request.take().unwrap(), "abc".repeat(repeats));
+        }
+        for length in [(1 << 20) + 4, MAX_OSC_BYTES + 128] {
+            g.clipboard_request = Some("keep".into());
+            feed(&mut g, &format!("\x1b]52;c;{}\x07", "A".repeat(length)));
+            assert_eq!(g.clipboard_request.as_deref(), Some("keep"));
+        }
+        g.clipboard_request = None;
+        feed(&mut g, "\x1b]52;c;YWJj;ignored\x07");
+        assert!(g.clipboard_request.is_none(), "extra fields cannot cause partial success");
+        for cancel in ['\x18', '\x1a'] {
+            feed(&mut g, &format!("\x1b]52;c;YWJj{cancel}"));
+            assert!(g.clipboard_request.is_none(), "CAN/SUB must not dispatch a valid-looking prefix");
+        }
+        feed(&mut g, "\x1b]52;c;eHl6\x07");
+        assert_eq!(g.clipboard_request.as_deref(), Some("xyz"), "parser recovers after cancellation");
+    }
+
+    #[test]
+    fn osc_timeout_cancels_clipboard_without_dispatching_a_prefix() {
+        let mut g = Grid::new(80, 24);
+        let mut parser = vte::Parser::new();
+        for &byte in b"\x1b]52;c;" { g.feed_byte(&mut parser, byte); }
+        g.osc_start = Some(std::time::Instant::now() - std::time::Duration::from_secs(6));
+        for byte in "YWJj".repeat(1024).bytes().chain(b"\x1b\\".iter().copied()) { g.feed_byte(&mut parser, byte); }
+        assert!(g.clipboard_request.is_none());
+        for &byte in b"\x1b]52;c;YWJj\x07" { g.feed_byte(&mut parser, byte); }
+        assert_eq!(g.clipboard_request.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn kitty_composition_overflow_returns_protocol_error_through_grid() {
+        let mut g = Grid::new(80, 24);
+        feed(&mut g, "\x1b_Ga=t,i=1,f=32,s=1,v=1;AAAAAA==\x1b\\");
+        let key = g.graphics.image(1).unwrap().key;
+        for rectangle in [
+            "X=4294967295,w=1,h=1", "Y=4294967295,w=1,h=1",
+            "x=4294967295,w=1,h=1", "y=4294967295,w=1,h=1",
+            "X=1,w=4294967295,h=1", "Y=1,w=1,h=4294967295",
+            "x=1,w=4294967295,h=1", "y=1,w=1,h=4294967295",
+            "X=4294967295,Y=4294967295,w=4294967295,h=4294967295",
+        ] {
+            g.response.clear();
+            feed(&mut g, &format!("\x1b_Ga=c,i=1,r=1,c=1,{rectangle}\x1b\\"));
+            assert_eq!(g.response, b"\x1b_Gi=1;EINVAL:rectangle out of bounds\x1b\\", "{rectangle}");
+            assert_eq!(g.graphics.image(1).unwrap().key, key);
+            assert_eq!(&*g.graphics.image(1).unwrap().rgba, &[0; 4]);
+        }
+        feed(&mut g, "still responsive");
+        assert_eq!(g.display_row(0)[0].codepoint, 's' as u32);
     }
 
     fn line(g: &Grid, r: usize) -> String {

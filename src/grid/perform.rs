@@ -332,6 +332,7 @@ impl Perform for Grid {
     }
 
     fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+        if self.osc_discard { return; }
         let st = if bell_terminated { "\x07" } else { "\x1b\\" };
         match params.first().copied().unwrap_or_default() {
             // OSC 104 [; index ...]: reset palette entries (all without indices).
@@ -402,7 +403,8 @@ impl Perform for Grid {
             b"52" => {
                 // `52;<targets>;<base64>`. Only setting is supported: reading the
                 // clipboard from the terminal would leak it to any program.
-                if let Some(text) = params.get(2).filter(|d| **d != b"?").and_then(|d| decode_base64(d))
+                if params.len() == 3
+                    && let Some(text) = params.get(2).filter(|d| **d != b"?").and_then(|d| decode_base64(d))
                     && let Ok(text) = String::from_utf8(text) {
                         self.clipboard_request = Some(text);
                     }

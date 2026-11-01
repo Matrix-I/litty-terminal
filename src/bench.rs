@@ -392,7 +392,9 @@ pub fn run_latency_benchmark() -> LatencyMetrics {
         let t_sp = Instant::now();
         if let Ok(pty) = crate::pty::Pty::spawn_in(80, 24, 8, 16, None, None) {
             spawn_times.push(t_sp.elapsed().as_secs_f64() * 1000.0);
-            pty.write(b"exit\r");
+            if let Err(error) = pty.write(b"exit\r") {
+                eprintln!("litty: benchmark PTY input failed: {error}");
+            }
         }
     }
     let pty_spawn_avg_ms = if !spawn_times.is_empty() {

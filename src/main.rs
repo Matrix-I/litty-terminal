@@ -679,7 +679,7 @@ impl ApplicationHandler<AppEvent> for App {
                                     #[cfg(target_os = "macos")]
                                     let _ = spawn_detached(std::process::Command::new("/usr/bin/open").arg("--").arg(&release.html_url));
                                     #[cfg(not(target_os = "macos"))]
-                                    let _ = spawn_detached(std::process::Command::new(if std::path::Path::new("/usr/bin/xdg-open").exists() { "/usr/bin/xdg-open" } else { "xdg-open" }).arg("--").arg(&release.html_url));
+                                    let _ = spawn_detached(&mut linux_open_command(&release.html_url));
                                 }
                                 _ => {}
                             }
@@ -1243,10 +1243,12 @@ impl App {
                     refresh_tab_titles(s);
                 }
                 if let Some(tab) = s.tabs.get(s.active)
-                    && let Some(pane) = tab.active_pane()
-                        && pane.grid.lock().focus_events {
-                            pane.pty.write(if focused { b"\x1b[I" } else { b"\x1b[O" });
-                        }
+                    && let Some(pane) = tab.active_pane() {
+                    let report_focus = pane.grid.lock().focus_events;
+                    if report_focus {
+                        write_pty(pane, if focused { b"\x1b[I" } else { b"\x1b[O" });
+                    }
+                }
                 if focused {
                     s.cursor_blink_epoch = std::time::Instant::now();
                     let mtime = config::config_mtime();
@@ -1447,7 +1449,7 @@ fn handle_ai_requests(s: &mut State, waker: &Waker) {
                         ai.status.clear();
                         // Only OSC 133 C confirms execution, including a queued Enter.
                         if !bytes.is_empty() {
-                            pane.pty.write(&bytes);
+                            write_pty(pane, &bytes);
                         }
                     }
                 }
@@ -1516,7 +1518,7 @@ fn handle_ai_requests(s: &mut State, waker: &Waker) {
                     }
                     ai_display(&pane.grid, &text);
                     ai.repaint_epoch = Some(epoch);
-                    pane.pty.write(b"\x1b[24;8~");
+                    write_pty(pane, b"\x1b[24;8~");
                 } else if !ai.status.is_empty() {
                     ai_display(
                         &pane.grid,
@@ -1525,6 +1527,17 @@ fn handle_ai_requests(s: &mut State, waker: &Waker) {
                 }
             }
         }
+    }
+}
+
+/// Surface rejected input instead of silently dropping it. Enqueues are
+/// atomic, so a failed paste is reported as a whole rather than truncated.
+fn write_pty(pane: &Pane, bytes: &[u8]) {
+    if let Err(error) = pane.pty.write(bytes) {
+        eprintln!("litty: {error}");
+        let mut g = pane.grid.lock();
+        g.notification = Some(("Litty input".into(), error.to_string()));
+        g.bell = true;
     }
 }
 
@@ -1537,7 +1550,7 @@ fn write_pane_input(
     if let Some(ai) = states.get_mut(&pane.id).filter(|a| a.busy) {
         ai.enqueue(bytes);
     } else {
-        pane.pty.write(bytes);
+        write_pty(pane, bytes);
     }
 }
 
@@ -1939,6 +1952,21 @@ fn safe_path_for_linux_open(path: &std::path::Path) -> &std::path::Path {
     }
 }
 
+/// xdg-open accepts one target and no general `--` separator. Prefix relative
+/// hyphen-leading paths so the target cannot be parsed as an option.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn linux_open_command(target: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    use std::os::unix::ffi::OsStrExt;
+    let target = target.as_ref();
+    let mut cmd = std::process::Command::new(system_bin("xdg-open"));
+    if target.as_bytes().first() == Some(&b'-') {
+        cmd.arg(std::path::Path::new(".").join(target));
+    } else {
+        cmd.arg(target);
+    }
+    cmd
+}
+
 fn open_target(target: &str, is_path: bool, cwd: Option<&std::path::Path>) {
     if is_path {
         let path = if let Some(rest) = target.strip_prefix("~/") {
@@ -1984,7 +2012,7 @@ fn open_target(target: &str, is_path: bool, cwd: Option<&std::path::Path>) {
         #[cfg(target_os = "linux")]
         let res = {
             let open_path = safe_path_for_linux_open(&path);
-            spawn_detached(std::process::Command::new(system_bin("xdg-open")).arg("--").arg(open_path))
+            spawn_detached(&mut linux_open_command(open_path))
         };
 
         if let Err(e) = res {
@@ -1994,7 +2022,7 @@ fn open_target(target: &str, is_path: bool, cwd: Option<&std::path::Path>) {
         #[cfg(target_os = "macos")]
         let res = spawn_detached(std::process::Command::new(system_bin("open")).arg("-u").arg(target));
         #[cfg(target_os = "linux")]
-        let res = spawn_detached(std::process::Command::new(system_bin("xdg-open")).arg("--").arg(target));
+        let res = spawn_detached(&mut linux_open_command(target));
 
         if let Err(e) = res {
             eprintln!("litty: failed to open URL {target}: {e}");
@@ -2095,7 +2123,7 @@ fn report_mouse(s: &mut State, button: mouse::Button, action: mouse::Action) -> 
     if wanted {
         let mods = mouse::Mods { shift: false, alt: s.mods.alt_key(), ctrl: s.mods.control_key() };
         if let Some((bytes, len)) = mouse::encode(button, action, mods, row, col, sgr || pixels) {
-            pane.pty.write(&bytes[..len]);
+            write_pty(pane, &bytes[..len]);
         }
         s.last_mouse_report = Some((pane_id, row, col));
     }
@@ -2127,7 +2155,7 @@ fn alt_screen_scroll(s: &mut State, lines: isize) -> bool {
         (false, false) => b"\x1b[B",
     };
     let count = lines.unsigned_abs().min(20);
-    pane.pty.write(&key.repeat(count));
+    write_pty(pane, &key.repeat(count));
     true
 }
 
@@ -2897,7 +2925,7 @@ fn handle_key(
                 }
                 ai.display_query = Some(input.clone());
                 s.history_search.add_session_command(&input);
-                pane.pty.write(b"\x05\x15\r");
+                write_pty(pane, b"\x05\x15\r");
                 consume_key(s, ev);
                 return;
             }
@@ -2965,14 +2993,14 @@ fn handle_key(
     }
 
     if let Some(bytes) = ctrl_u_bytes {
-        pane.pty.write(&bytes);
+        write_pty(pane, &bytes);
         s.window.request_redraw();
         return;
     }
 
     let bytes=encode_terminal_key(ev,m,s.locks,app_cursor,kitty_flags,modify_other_keys);
     if let Some(bytes) = &bytes {
-        pane.pty.write(bytes);
+        write_pty(pane, bytes);
     }
     if s.inspector {
         s.inspector_key = describe_key(&ev.logical_key, m, bytes.as_deref());
@@ -3141,7 +3169,7 @@ fn handle_key_release(s: &mut State, ev: &KeyEvent, m: keymap::Mods) {
     let unshifted = ev.key_without_modifiers();
     let key = kitty_key(ev, &unshifted, keymap::KeyKind::Release, s.locks);
     if let Some(bytes) = keymap::encode_kitty(keymap::PLATFORM, &key, m, kitty_flags, app_cursor) {
-        pane.pty.write(&bytes);
+        write_pty(pane, &bytes);
     }
 }
 
@@ -3503,8 +3531,9 @@ fn apply_system_appearance(s: &mut State) {
         s.reload_config_requested = true;
     }
     for pane in s.tabs.iter().flat_map(|t| &t.panes) {
-        if pane.grid.lock().color_scheme_reports {
-            pane.pty.write(grid::color_scheme_report());
+        let report_scheme = pane.grid.lock().color_scheme_reports;
+        if report_scheme {
+            write_pty(pane, grid::color_scheme_report());
         }
     }
 }
@@ -3665,6 +3694,59 @@ fn paste_from_clipboard() -> Option<String> {
     read_clipboard_with(cmds)
 }
 
+const MAX_CLIPBOARD_BYTES: usize = 16 << 20;
+
+/// Drain a nonblocking pipe while checking the child and deadline. Waiting for
+/// exit before reading deadlocks when the helper fills its stdout pipe.
+fn read_clipboard_child(command: &mut std::process::Command, deadline: std::time::Instant, limit: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).process_group(0).spawn().ok()?;
+    let output = (|| {
+        let mut stdout = child.stdout.take()?;
+        let fd = stdout.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 { return None; }
+        let mut output = Vec::new();
+        let mut buf = [0; 16 * 1024];
+        let mut eof = false;
+        let mut status = None;
+        loop {
+            if std::time::Instant::now() >= deadline { return None; }
+            if !eof {
+                match stdout.read(&mut buf) {
+                    Ok(0) => eof = true,
+                    Ok(n) => {
+                        if n > limit.saturating_sub(output.len()) { return None; }
+                        output.extend_from_slice(&buf[..n]);
+                        continue;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {},
+                    Err(_) => return None,
+                }
+            }
+            if status.is_none() { status = child.try_wait().ok()?; }
+            if status.is_some_and(|s| !s.success()) { return None; }
+            if eof && status.is_some() { return Some(output); }
+            // EOF can precede process exit; avoid polling a permanently hung-up fd.
+            let mut pfd = libc::pollfd { fd: if eof { -1 } else { fd }, events: libc::POLLIN, revents: 0 };
+            let wait = deadline.saturating_duration_since(std::time::Instant::now()).as_millis().min(5) as i32;
+            unsafe { libc::poll(&mut pfd, 1, wait); }
+        }
+    })();
+    if output.is_none() {
+        // Also close descendants which inherited stdout. No detached reader
+        // thread can remain blocked on a pipe after the deadline.
+        unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL); }
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    output
+}
+
 /// Run the clipboard helpers in order on a worker thread and return the first
 /// successful output, waiting at most 100ms and killing any hung child process.
 fn read_clipboard_with(cmds: &'static [(&'static str, &'static [&'static str])]) -> Option<String> {
@@ -3684,55 +3766,13 @@ fn read_clipboard_with(cmds: &'static [(&'static str, &'static [&'static str])])
                 }
             }
             let _guard = Guard;
-            use std::io::Read;
-            use std::process::Stdio;
-            use std::time::{Duration, Instant};
-
-            let deadline = Instant::now() + Duration::from_millis(95);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(95);
             for (bin, args) in cmds {
-                if Instant::now() >= deadline {
-                    break;
-                }
-                let Ok(mut child) = clipboard_command(bin)
-                    .args(*args)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null())
-                    .spawn()
-                else {
-                    continue;
-                };
-                let mut stdout = child.stdout.take();
-                let mut exited_ok = false;
-                loop {
-                    match child.try_wait() {
-                        Ok(Some(status)) => {
-                            exited_ok = status.success();
-                            break;
-                        }
-                        Ok(None) => {
-                            if Instant::now() >= deadline {
-                                let _ = child.kill();
-                                let _ = child.wait();
-                                break;
-                            }
-                            std::thread::sleep(Duration::from_millis(5));
-                        }
-                        Err(_) => {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            break;
-                        }
-                    }
-                }
-                if exited_ok
-                    && let Some(out) = stdout.take() {
-                        let mut buf = Vec::new();
-                        if out.take(16 << 20).read_to_end(&mut buf).is_ok()
-                            && let Ok(s) = String::from_utf8(buf) {
-                                let _ = tx.send(Some(s));
-                                return;
-                            }
+                if std::time::Instant::now() >= deadline { break; }
+                if let Some(bytes) = read_clipboard_child(clipboard_command(bin).args(*args), deadline, MAX_CLIPBOARD_BYTES)
+                    && let Ok(text) = String::from_utf8(bytes) {
+                        let _ = tx.send(Some(text));
+                        return;
                     }
             }
             let _ = tx.send(None);
@@ -3829,6 +3869,42 @@ fn main() {
 #[cfg(test)]
 mod paste_tests {
     use super::{paste_payload, shell_quote};
+
+    #[test]
+    fn clipboard_helpers_drain_large_output_and_reject_over_limit_atomically() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!("litty-clipboard-pipe-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let data = "Việt Nam 🦀\n".repeat(100_000);
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
+        file.write_all(data.as_bytes()).unwrap();
+        drop(file);
+        let read = |limit| super::read_clipboard_child(std::process::Command::new("/bin/cat").arg(&path), std::time::Instant::now() + std::time::Duration::from_secs(3), limit);
+        assert_eq!(read(data.len()).unwrap(), data.as_bytes(), "payload exceeds pipe capacity");
+        let argument: &'static str = Box::leak(path.to_str().unwrap().to_owned().into_boxed_str());
+        let args: &'static [&'static str] = Box::leak(vec![argument].into_boxed_slice());
+        let helpers: &'static [(&'static str, &'static [&'static str])] = Box::leak(vec![("/bin/cat", args)].into_boxed_slice());
+        assert_eq!(super::read_clipboard_with(helpers).unwrap(), data, "production worker drains large pipes too");
+        assert!(read(data.len() - 1).is_none(), "never return a truncated success");
+        std::fs::remove_file(&path).unwrap();
+        assert!(super::read_clipboard_child(std::process::Command::new("/bin/sh").args(["-c", "printf partial; exit 1"]), std::time::Instant::now() + std::time::Duration::from_secs(1), 1024).is_none());
+        assert!(super::read_clipboard_child(std::process::Command::new("/bin/sh").args(["-c", "printf partial; exec sleep 5"]), std::time::Instant::now() + std::time::Duration::from_millis(25), 1024).is_none());
+        let start = std::time::Instant::now();
+        assert!(super::read_clipboard_child(std::process::Command::new("/bin/sh").args(["-c", "sleep 5 & exit 0"]), start + std::time::Duration::from_millis(25), 1024).is_none());
+        assert!(start.elapsed() < std::time::Duration::from_secs(1), "inherited stdout must not strand a worker");
+    }
+
+    #[test]
+    fn linux_open_has_one_supported_target_argument() {
+        for (target, expected) in [
+            ("https://example.org/releases/v0.7.0", "https://example.org/releases/v0.7.0"),
+            ("/tmp/a b.txt", "/tmp/a b.txt"), ("-a b.txt", "./-a b.txt"),
+            ("./-file.txt", "./-file.txt"), ("relative/file.txt", "relative/file.txt"),
+        ] {
+            let command = super::linux_open_command(target);
+            let args: Vec<_> = command.get_args().collect();
+            assert_eq!(args, [std::ffi::OsStr::new(expected)]);
+        }
+    }
 
     #[test]
     fn dropped_paths_are_shell_quoted() {

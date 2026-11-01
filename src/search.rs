@@ -8,7 +8,7 @@
 
 use regex::{Regex, RegexBuilder};
 
-use crate::grid::{char_width, Selection};
+use crate::grid::Selection;
 
 /// Upper bound on highlighted matches (keeps memory bounded for `.` and friends).
 pub const MAX_MATCHES: usize = 10_000;
@@ -85,49 +85,43 @@ impl SearchBar {
     }
 }
 
-/// Text of a range of terminal lines: one char per cell (wide glyphs once, their
-/// placeholder cell skipped), soft-wrapped lines joined, hard lines separated by `\n`.
+/// Full grapheme text with byte-to-cell mappings from the actual grid.
+/// Wide placeholders are skipped; soft wraps join and hard lines use `\n`.
 pub struct SearchText {
     pub text: String,
     /// `(byte offset, absolute line)` where each physical line starts in `text`.
     pub rows: Vec<(usize, usize)>,
+    /// `(byte offset, column, stored cell width)` for each grapheme/newline.
+    pub columns: Vec<(usize, usize, usize)>,
 }
 
 impl SearchText {
     /// All non-empty matches of `re`, as inclusive `(line, col)` ranges in
     /// top-to-bottom order.
     pub fn find(&self, re: &Regex) -> Vec<Selection> {
-        if self.rows.is_empty() || self.text.is_empty() {
+        if self.rows.is_empty() || self.columns.is_empty() || self.text.is_empty() {
             return Vec::new();
         }
         re.find_iter(&self.text)
             .filter(|m| !m.is_empty())
             .take(MAX_MATCHES)
             .map(|m| {
-                let start = self.cell_at(m.start());
-                let last = self.text[..m.end()].char_indices().next_back().map_or(m.start(), |(i, _)| i);
-                let (line, col) = self.cell_at(last);
-                let width = self.text[last..].chars().next().map_or(1, char_width).max(1);
+                let (line, col, _) = self.cell_at(m.start());
+                let start = (line, col);
+                let (line, col, width) = self.cell_at(m.end() - 1);
                 Selection { start, end: (line, col + width - 1) }
             })
             .collect()
     }
 
     /// Cell `(line, col)` of the char starting at byte `offset`.
-    fn cell_at(&self, offset: usize) -> (usize, usize) {
-        if self.rows.is_empty() {
-            return (0, 0);
-        }
-        let i = self.rows.partition_point(|&(start, _)| start <= offset).saturating_sub(1);
-        let (start, line) = self.rows[i];
-        let offset = offset.min(self.text.len());
-        let col = if start <= offset {
-            self.text[start..offset].chars().map(char_width).sum()
-        } else {
-            0
-        };
-        (line, col)
+    fn cell_at(&self, offset: usize) -> (usize, usize, usize) {
+        let row = self.rows.partition_point(|&(start, _)| start <= offset).saturating_sub(1);
+        let cell = self.columns.partition_point(|&(start, _, _)| start <= offset).saturating_sub(1);
+        let (_, col, width) = self.columns[cell];
+        (self.rows[row].1, col, width)
     }
+
 }
 
 #[cfg(test)]
@@ -147,6 +141,24 @@ mod tests {
         bar.regex = regex;
         bar.query = query.to_string();
         bar.compile().map(|re| g.search_text().find(&re)).unwrap_or_default()
+    }
+
+    #[test]
+    fn grapheme_search_uses_stored_widths_and_full_cluster_text() {
+        for cluster in ["❤️", "#️⃣", "👨‍👩‍👧", "🇻🇳", "👍🏽"] {
+            let mut g = Grid::new(40, 2);
+            feed(&mut g, &format!("{cluster}x"));
+            let after = search(&g, "x", false);
+            assert_eq!((after[0].start, after[0].end), ((0, 2), (0, 2)), "after {cluster}");
+            let whole = search(&g, cluster, false);
+            assert_eq!((whole[0].start, whole[0].end), ((0, 0), (0, 1)), "whole {cluster}");
+        }
+        let mut g = Grid::new(4, 3);
+        feed(&mut g, "❤️xyzz");
+        let across = search(&g, "yzz", false);
+        assert_eq!((across[0].start, across[0].end), ((0, 3), (1, 1)));
+        let variation = search(&g, "\u{fe0f}", false);
+        assert_eq!((variation[0].start, variation[0].end), ((0, 0), (0, 1)), "partial cluster still highlights its cell pair");
     }
 
     #[test]
@@ -204,6 +216,7 @@ mod tests {
         let empty_search_text = SearchText {
             text: String::new(),
             rows: Vec::new(),
+            columns: Vec::new(),
         };
         let re = Regex::new("foo").unwrap();
         let matches = empty_search_text.find(&re);
