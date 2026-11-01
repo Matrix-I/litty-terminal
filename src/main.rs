@@ -4009,6 +4009,57 @@ mod paste_tests {
         }
     }
 
+    /// Drives the production `open_target` through the real `xdg-open`; a stub
+    /// `$BROWSER` records what the utility dispatches. Run by `scripts/linux/run.sh`.
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore = "needs xdg-utils; run via scripts/linux/run.sh"]
+    fn linux_xdg_open_dispatch_smoke() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("litty-xdg-open-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("dispatched.log");
+        let stub = dir.join("stub-handler.sh");
+        std::fs::write(&stub, format!("#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\n", log.display())).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let spaced = dir.join("a b.txt");
+        let script = dir.join("run me.sh");
+        std::fs::write(&spaced, "x").unwrap();
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(dir.join("-dash.txt"), "x").unwrap();
+        // SAFETY: ignored test, run alone, before any other thread reads the environment.
+        unsafe {
+            std::env::set_var("BROWSER", &stub);
+            std::env::remove_var("DISPLAY");
+            std::env::remove_var("WAYLAND_DISPLAY");
+        }
+        std::env::set_current_dir(&dir).unwrap();
+        let url = "https://example.org/releases/v0.7.0";
+        super::open_target(spaced.to_str().unwrap(), true, None);
+        super::open_target(script.to_str().unwrap(), true, None);
+        super::open_target("-dash.txt", true, None);
+        super::open_target(url, false, None);
+        let wanted = [
+            spaced.to_str().unwrap().to_owned(),
+            dir.to_str().unwrap().to_owned(),
+            "./-dash.txt".to_owned(),
+            url.to_owned(),
+        ];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut seen = Vec::new();
+        while std::time::Instant::now() < deadline {
+            seen = std::fs::read_to_string(&log).unwrap_or_default().lines().map(str::to_owned).collect();
+            if seen.len() >= wanted.len() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        seen.sort();
+        let mut wanted = wanted.to_vec();
+        wanted.sort();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(seen, wanted, "executable/script paths must open their containing directory");
+    }
+
     #[test]
     fn dropped_paths_are_shell_quoted() {
         assert_eq!(shell_quote("/Users/me/notes.txt"), "/Users/me/notes.txt");

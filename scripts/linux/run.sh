@@ -15,6 +15,7 @@ cargo clippy --locked --all-targets -- -D warnings
 xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- \
     cargo test --locked -- --test-threads=1
 python3 scripts/test-yo-shells.py
+cargo test --locked linux_xdg_open_dispatch_smoke -- --ignored --nocapture
 cargo build --locked
 xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- \
     python3 scripts/linux/x11_smoke.py target/debug/litty
