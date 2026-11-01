@@ -9,14 +9,14 @@ use winit::event::Ime;
 pub(super) fn handle_ime(s: &mut State, ime: Ime) {
     match ime {
         Ime::Preedit(text, _) => {
-            if s.ime_preedit != text {
-                s.ime_preedit = text;
+            if s.ime.preedit != text {
+                s.ime.preedit = text;
                 s.cursor_blink_epoch = std::time::Instant::now();
                 s.window.request_redraw();
             }
         }
         Ime::Commit(text) => {
-            s.ime_preedit.clear();
+            s.ime.preedit.clear();
             if s.tabs.is_empty() || text.is_empty() {
                 return;
             }
@@ -37,8 +37,8 @@ pub(super) fn handle_ime(s: &mut State, ime: Ime) {
         }
         Ime::Enabled => {}
         Ime::Disabled => {
-            if !s.ime_preedit.is_empty() {
-                s.ime_preedit.clear();
+            if !s.ime.preedit.is_empty() {
+                s.ime.preedit.clear();
                 s.window.request_redraw();
             }
         }

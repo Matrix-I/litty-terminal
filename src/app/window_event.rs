@@ -83,7 +83,7 @@ impl App {
                 if event.state == ElementState::Pressed && s.renderer.set_bell_border(false) {
                     s.window.request_redraw();
                 }
-                if s.ime_preedit.is_empty() {
+                if s.ime.preedit.is_empty() {
                     handle_key(s, &event, &waker);
                 }
             }

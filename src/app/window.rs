@@ -2,7 +2,7 @@
 
 use super::inspector::inspector_lines;
 use super::search_ui::refresh_search;
-use super::state::{InspectorState, State};
+use super::state::{ImeState, InspectorState, State};
 use super::terminal_io::write_pty;
 
 use std::sync::Arc;
@@ -178,8 +178,7 @@ pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Op
         history_search: HistorySearch::new(),
         search: SearchBar::new(),
         first_frame: true,
-        ime_preedit: String::new(),
-        ime_cursor_cell: None,
+        ime: ImeState { preedit: String::new(), cursor_cell: None },
         mouse_button_down: None,
         last_mouse_report: None,
         sync_pending: false,
@@ -453,7 +452,7 @@ pub(super) fn render_active(s: &mut State) {
         blink_on,
         Some(&s.history_search),
         &s.search,
-        &s.ime_preedit,
+        &s.ime.preedit,
         inspector.as_deref(),
     );
 
@@ -462,8 +461,8 @@ pub(super) fn render_active(s: &mut State) {
         let (cx, cy) = p.grid.lock().cursor_pos()?;
         Some((p.rect.row + cy, p.rect.col + cx))
     });
-    if cursor_cell.is_some() && cursor_cell != s.ime_cursor_cell {
-        s.ime_cursor_cell = cursor_cell;
+    if cursor_cell.is_some() && cursor_cell != s.ime.cursor_cell {
+        s.ime.cursor_cell = cursor_cell;
         if let Some((row, col)) = cursor_cell {
             let (x, y) = s.renderer.cell_origin_px(row, col, show_tabs);
             let (cw, ch) = s.renderer.cell_size();

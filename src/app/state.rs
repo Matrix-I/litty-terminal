@@ -64,10 +64,7 @@ pub(super) struct State {
     /// Find-in-terminal box (`Cmd+F` / `Ctrl+Shift+F`).
     pub(super) search: SearchBar,
     pub(super) first_frame: bool,
-    /// IME composition in progress (Telex, Pinyin, ...); keys belong to the IME while non-empty.
-    pub(super) ime_preedit: String,
-    /// Last cursor cell reported to the IME for candidate window placement.
-    pub(super) ime_cursor_cell: Option<(usize, usize)>,
+    pub(super) ime: ImeState,
     /// Mouse button held while the application tracks the mouse (for drag reports).
     pub(super) mouse_button_down: Option<mouse::Button>,
     /// Last `(pane, row, col)` reported to a mouse-tracking application.
@@ -132,4 +129,12 @@ impl Drop for State {
             macos::set_secure_input(false);
         }
     }
+}
+
+/// Input-method composition.
+pub(super) struct ImeState {
+    /// IME composition in progress (Telex, Pinyin, ...); keys belong to the IME while non-empty.
+    pub(super) preedit: String,
+    /// Last cursor cell reported to the IME for candidate window placement.
+    pub(super) cursor_cell: Option<(usize, usize)>,
 }
