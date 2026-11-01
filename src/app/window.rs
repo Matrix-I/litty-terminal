@@ -1,6 +1,6 @@
 //! Window creation, sizing, config reload and per-frame rendering.
 
-use super::write_pty;
+use super::terminal_io::write_pty;
 use super::refresh_search;
 use super::inspector_lines;
 use super::state::State;
