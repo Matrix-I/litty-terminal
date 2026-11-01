@@ -202,8 +202,8 @@ impl Grid {
                     if !self.graphics.virtuals.is_empty() && self.cells[start..end].iter().any(|c| c.codepoint & PH_FLAG != 0) {
                         evicted_had_ph = true;
                     }
-                    if self.clusters.len() >= 4096 && self.cells[start..end].iter().any(|c| c.codepoint & (CLUSTER_FLAG | PH_FLAG) == CLUSTER_FLAG) {
-                        self.cluster_evictions = self.cluster_evictions.saturating_add(1);
+                    if self.clusters.texts.len() >= 4096 && self.cells[start..end].iter().any(|c| c.codepoint & (CLUSTER_FLAG | PH_FLAG) == CLUSTER_FLAG) {
+                        self.clusters.evictions = self.clusters.evictions.saturating_add(1);
                     }
                     if self.cells[start..end].iter().any(|c| ((c.fg & FG_EXTRA) | (c.bg & BG_EXTRA)) != 0) {
                         self.extras_dirty = true;
@@ -229,7 +229,7 @@ impl Grid {
             // Amortize a history scan across a history-sized batch, even when
             // every interned cluster is still live. MAX_CLUSTERS also triggers
             // demand collection so dead IDs never permanently exhaust the pool.
-            if self.cluster_evictions >= self.history.max(self.rows).max(256) {
+            if self.clusters.evictions >= self.history.max(self.rows).max(256) {
                 self.gc_clusters();
             }
             self.all_dirty = true;

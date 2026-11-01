@@ -1271,19 +1271,19 @@ fn delete_before_and_after_cursor() {
 fn clear_screen_and_history_clears_clusters() {
     let mut g = Grid::new(20, 5);
     feed(&mut g, "❤️\r\n👨‍👩‍👧‍👦\r\n");
-    assert!(!g.clusters.is_empty(), "clusters recorded");
-    assert!(!g.cluster_ids.is_empty());
+    assert!(!g.clusters.texts.is_empty(), "clusters recorded");
+    assert!(!g.clusters.ids.is_empty());
 
     g.clear_screen_and_history();
-    assert!(g.clusters.is_empty(), "clusters cleared on clear_screen_and_history");
-    assert!(g.cluster_ids.is_empty());
+    assert!(g.clusters.texts.is_empty(), "clusters cleared on clear_screen_and_history");
+    assert!(g.clusters.ids.is_empty());
 
     feed(&mut g, "🏳️‍🌈\r\n");
-    assert!(!g.clusters.is_empty());
+    assert!(!g.clusters.texts.is_empty());
 
     g.full_reset();
-    assert!(g.clusters.is_empty(), "clusters cleared on full_reset");
-    assert!(g.cluster_ids.is_empty());
+    assert!(g.clusters.texts.is_empty(), "clusters cleared on full_reset");
+    assert!(g.clusters.ids.is_empty());
 }
 
 #[test]
@@ -1686,35 +1686,35 @@ fn populated_cluster_history() -> Grid {
     }
     assert_eq!(g.history, 5000);
     g.gc_clusters();
-    assert!(g.clusters.len() >= 4096);
+    assert!(g.clusters.texts.len() >= 4096);
     g
 }
 
 #[test]
 fn cluster_eviction_gc_is_amortized_and_preserves_live_text() {
     let mut g = populated_cluster_history();
-    let start_count = g.clusters.len();
-    let start_evictions = g.cluster_evictions;
+    let start_count = g.clusters.texts.len();
+    let start_evictions = g.clusters.evictions;
     let allocations = crate::test_alloc::allocations(|| {
         for _ in 0..200 { g.scroll_up_in(0, g.rows - 1, 1, true); }
     });
     assert_eq!(allocations, 0, "scrolling must not allocate a mark vector per row");
-    assert_eq!(g.clusters.len(), start_count, "no collection during a small eviction batch");
-    assert_eq!(g.cluster_evictions, start_evictions + 200);
+    assert_eq!(g.clusters.texts.len(), start_count, "no collection during a small eviction batch");
+    assert_eq!(g.clusters.evictions, start_evictions + 200);
     // Finish a full eviction interval. GC must reclaim dead clusters and
     // remap the surviving cells, even after wrapping the ring.
     for _ in 0..4800 { g.scroll_up_in(0, g.rows - 1, 1, true); }
-    assert!(g.clusters.len() < start_count);
-    assert_eq!(g.cluster_evictions, 0);
+    assert!(g.clusters.texts.len() < start_count);
+    assert_eq!(g.clusters.evictions, 0);
     for i in 0..50 {
         let row = (g.top + g.cap - g.history + i) % g.cap;
         let cp = g.cells[row * g.cols].codepoint;
         let base = char::from_u32((0x4e00 + (5151 + i) % 5000) as u32).unwrap();
         if i < 49 { assert_eq!(g.cluster(cp), Some(format!("{base}\u{301}").as_str())); }
     }
-    let marks = g.cluster_marks.as_ptr();
+    let marks = g.clusters.marks.as_ptr();
     g.gc_clusters();
-    assert_eq!(g.cluster_marks.as_ptr(), marks, "mark storage is reused");
+    assert_eq!(g.clusters.marks.as_ptr(), marks, "mark storage is reused");
 }
 
 #[test]
@@ -1742,7 +1742,7 @@ fn test_grapheme_cluster_gc_on_clear_history_and_eviction() {
         let mark2 = char::from_u32(0x0310 + (i % 16)).unwrap();
         feed(&mut g, &format!("a{mark1}{mark2}_{i}\r\n"));
     }
-    assert!(g.clusters.len() >= 10, "clusters should be populated (got {})", g.clusters.len());
+    assert!(g.clusters.texts.len() >= 10, "clusters should be populated (got {})", g.clusters.texts.len());
 
     // Write a distinct active cluster on the current screen row
     feed(&mut g, "z\u{0308}\u{0304}");
@@ -1754,9 +1754,9 @@ fn test_grapheme_cluster_gc_on_clear_history_and_eviction() {
     // Clear history -> triggers gc_clusters()
     g.clear_history();
     assert!(
-        g.clusters.len() <= 4,
+        g.clusters.texts.len() <= 4,
         "unreferenced history clusters must be garbage-collected (remaining: {})",
-        g.clusters.len()
+        g.clusters.texts.len()
     );
     let cp_after = g.display_row(active_row)[0].codepoint;
     assert_ne!(cp_after & CLUSTER_FLAG, 0);

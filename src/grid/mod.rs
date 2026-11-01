@@ -35,6 +35,7 @@ pub use width::{char_width, is_wide_cp};
 use width::is_pictographic;
 pub use modes::{TerminalModes, set_grapheme_default};
 use modes::GRAPHEME_DEFAULT;
+use clusters::ClusterTable;
 pub use storage::set_scrollback_limit;
 use storage::scrollback_lines;
 
@@ -165,15 +166,8 @@ pub struct Grid {
     extras: Vec<Option<CellExtra>>,
     extras_dirty: bool,
     extras_full: bool,
-    /// Multi-codepoint graphemes cells refer to (see `CLUSTER_FLAG`), interned.
-    clusters: Vec<Box<str>>,
-    cluster_ids: std::collections::HashMap<Box<str>, u32>,
-    /// Reused buffer for building a cluster.
-    cluster_buf: String,
-    /// Collect at most once per history-sized batch of cluster-bearing evictions.
-    cluster_evictions: usize,
-    cluster_marks: Vec<bool>,
-    cluster_remap: Vec<u32>,
+    /// Grapheme cluster table (see `ClusterTable`).
+    clusters: ClusterTable,
     /// The last character joined a ZWJ to a cluster: a pictograph after it joins too.
     joiner: bool,
 }
@@ -264,12 +258,7 @@ impl Grid {
             extras: vec![None],
             extras_dirty: true,
             extras_full: false,
-            clusters: Vec::new(),
-            cluster_ids: std::collections::HashMap::new(),
-            cluster_buf: String::new(),
-            cluster_evictions: 0,
-            cluster_marks: Vec::new(),
-            cluster_remap: Vec::new(),
+            clusters: ClusterTable::default(),
             joiner: false,
             palette_override: Vec::new(),
             color_override: [0; 3],
@@ -307,21 +296,21 @@ impl Grid {
     /// when the cell after it is where the cursor is. False if it could not.
     fn append_to_cell(&mut self, row: usize, col: usize, c: char, widen: bool) -> bool {
         let cp = self.row_mut(row)[col].codepoint;
-        let mut text = std::mem::take(&mut self.cluster_buf);
+        let mut text = std::mem::take(&mut self.clusters.buf);
         text.clear();
         match self.cluster(cp) {
             Some(s) => text.push_str(s),
             None => match char::from_u32(cp).filter(|&b| b != '\0') {
                 Some(base) => text.push(base),
                 None => {
-                    self.cluster_buf = text;
+                    self.clusters.buf = text;
                     return false;
                 }
             },
         }
         text.push(c);
         let id = self.intern_cluster(text.as_str());
-        self.cluster_buf = text;
+        self.clusters.buf = text;
         let Some(id) = id else { return false };
         let was_wide = is_wide_cp(cp);
         let widen = widen && !was_wide && !self.wrap_pending && self.cur.col == col + 1 && col + 1 < self.cols;
@@ -786,8 +775,8 @@ impl Grid {
         self.color_override = [0; 3];
         self.tab_stops = default_tab_stops(self.cols);
         self.selection = None;
-        self.clusters.clear();
-        self.cluster_ids.clear();
+        self.clusters.texts.clear();
+        self.clusters.ids.clear();
         self.clear_rows(0, self.rows);
         self.trim_extras();
         self.apc_state = 0;

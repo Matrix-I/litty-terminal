@@ -68,7 +68,7 @@ impl Grid {
         self.selection = None;
         self.clear_search();
         self.trim_extras();
-        if !self.clusters.is_empty() {
+        if !self.clusters.texts.is_empty() {
             self.gc_clusters();
         }
         if !self.graphics.virtuals.is_empty() {
@@ -89,8 +89,8 @@ impl Grid {
         self.cur.row = 0;
         self.cur.col = 0;
         self.wrap_pending = false;
-        self.clusters.clear();
-        self.cluster_ids.clear();
+        self.clusters.texts.clear();
+        self.clusters.ids.clear();
         self.trim_extras();
         self.apc_state = 0;
         self.apc_buf.clear();
