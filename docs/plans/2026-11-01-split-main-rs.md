@@ -116,6 +116,142 @@ Expected: both succeed. If the baseline is not clean, stop and fix that in a sep
 
 ---
 
+### Task 0.5: Build the safety net and record baseline evidence
+
+**Why:** `cargo test` alone cannot prove Tasks 5–12 preserve behavior. Of the 13 tests in `src/main.rs`, about 10 cover leaf helpers (clipboard, paste, `xdg-open`, `spawn_detached`); nothing exercises `State`, `handle_window_event`, `user_event`, `about_to_wait`, or keyboard / pointer / IME / tab / search dispatch (about 3,900 lines). Compile success proves types, not behavior. This task assembles four independent kinds of evidence from what the repo already has plus two small scripts, and records their baseline on `main` before any code moves.
+
+**What the existing tooling covers (read before relying on it):**
+
+| Tool | Exercises | Does not cover |
+|---|---|---|
+| `cargo test` (309 tests, 5 ignored) + `tests/yo_shells.rs` | Pure modules (`grid`, `keymap`, `history`, `config`, `split`, `search`), leaf helpers, `yo` interception in 4 real shells | `State` and the event loop |
+| `litty +bench-ram` | The real `State` through `user_event`: `OpenWindow`, `OpenTabInLastWindow`, `CloseLastWindow`, `CloseExtraTabs`; RAM budget | Input handling. Budgets are absolute (85 / 95 / 145 MB, leak <= 10 MB), not before/after, and the leak check is known flaky (`ROADMAP.md`, 2026-11-01) |
+| `litty +bench-perf` | PTY round trip, file ingest, Kitty / Sixel ingest, 20k-line render stress, frame stalls | Input handling |
+| `litty +bench-features` | fzf search, regex find, split engine, paste security — all on pure modules | `State` wiring of those features |
+| `scripts/manual-test.sh` (30 groups) | Real-app behavior; some items auto-checked via terminal replies and key presses | **IME and Cmd+F search have no group** (Step 4 adds them) |
+| `src/test_alloc.rs` | Per-thread allocation counter for tests | Not used on `State` paths |
+
+**Files:**
+- Create: `scripts/refactor-census.sh`, `scripts/refactor-moved.sh` (both removed in Task 13)
+
+- [ ] **Step 1: Create the token census script**
+
+`scripts/refactor-census.sh` counts tokens that a pure move must leave unchanged: lock acquisitions, `unsafe`, `#[cfg]`, thread spawns, blocking I/O, allocation sites, `#[test]`, and every `WindowEvent::` / `AppEvent::` / `BenchCommand::` / `Action::` / `NamedKey::` path (so a dropped `match` arm shows up by name).
+
+```bash
+#!/usr/bin/env bash
+# Token census of src/**/*.rs. A pure move keeps every count identical.
+# Usage: scripts/refactor-census.sh > census.txt
+set -eo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+files=$(find src -name '*.rs' | sort)
+count() { # label, ERE
+    printf '%-18s %s\n' "$1" "$(cat $files | grep -oE "$2" | wc -l | tr -d ' ')"
+}
+count lock '\.lock\(\)'
+count unsafe '\bunsafe\b'
+count cfg '#\[cfg(_attr)?\('
+count thread_spawn 'thread::(spawn|Builder)|\.spawn\('
+count blocking_io 'std::fs::|File::(open|create)|\.write_all\(|\.read_to_|Command::new|\.output\(\)|\.wait\(\)'
+count alloc 'Vec::new|vec!\[|Vec::with_capacity|Box::new|String::new|String::from|format!\(|\.to_string\(\)|\.to_owned\(\)|\.to_vec\(\)|\.clone\(\)|\.collect\(\)'
+count test_attr '#\[test\]'
+cat $files | grep -oE '\b(WindowEvent|AppEvent|BenchCommand|ElementState|MouseButton|MouseScrollDelta|Ime|NamedKey|Action)::[A-Za-z0-9_]+' | sort | uniq -c | awk '{printf "arm %-40s %s\n", $2, $1}'
+```
+
+Make it executable: `chmod +x scripts/refactor-census.sh`.
+
+- [ ] **Step 2: Create the move-residual script**
+
+`scripts/refactor-moved.sh` diffs a commit and cancels out removed and added lines after trimming indentation and visibility keywords (`pub`, `pub(crate)`, `pub(super)`), ignoring `use` / `mod` / comment lines. A pure move prints nothing; anything printed is a real change that must be explained in the commit body.
+
+```bash
+#!/usr/bin/env bash
+# Residual of a refactor commit: lines removed and added that do NOT cancel out
+# after trimming indentation and visibility keywords. A pure move prints nothing.
+# Usage: scripts/refactor-moved.sh [<base>] [<head>]   (default: HEAD~1 HEAD)
+set -eo pipefail
+base=${1:-HEAD~1}; head=${2:-HEAD}
+norm() {
+    git diff -U0 --no-color "$base" "$head" -- src |
+        grep -E '^[-+]' | grep -vE '^(\+\+\+|---)' |
+        sed -E 's/^([-+])[[:space:]]+/\1/; s/\b(pub\((crate|super|in [a-z_:]+)\)|pub) //g' |
+        grep -vE '^[-+](use |mod |//)' | grep -vE '^[-+]\}?$'
+}
+{ norm | grep '^-' | sed 's/^-//' | sort | sed 's/^/R /'
+  norm | grep '^+' | sed 's/^+//' | sort | sed 's/^/A /'; } |
+    awk '{k=substr($0,3); if ($1=="R") r[k]++; else a[k]++}
+         END {for (k in r) if (r[k]>a[k]) printf "only-removed x%d: %s\n", r[k]-a[k], k
+              for (k in a) if (a[k]>r[k]) printf "only-added   x%d: %s\n", a[k]-r[k], k}' | sort
+```
+
+Make it executable: `chmod +x scripts/refactor-moved.sh`. Sanity check that it detects real changes: `scripts/refactor-moved.sh 865f4a0~1 865f4a0` must list the added `ai.busy` / `ai.submitted` lines of that fix.
+
+- [ ] **Step 3: Record the automated baseline on `main`**
+
+Run on a quiet machine (no build or test running) with a GUI session, because `+bench-ram` opens real windows. `scripts/release-test-report.md` is git-ignored; `scripts/manual-test-results.md` is tracked, so the manual runs below redirect their log with `LITTY_TEST_LOG`.
+
+```bash
+mkdir -p "$TMPDIR/baseline"
+scripts/refactor-census.sh > "$TMPDIR/baseline/census.txt"
+wc -l src/main.rs | tee "$TMPDIR/baseline/main-lines.txt"
+cargo build --release
+for i in 1 2 3; do
+  scripts/pre-release-check.sh 2>&1 | tee "$TMPDIR/baseline/pre-release-$i.txt"
+  cp /tmp/litty_ram_bench.json "$TMPDIR/baseline/ram-$i.json"
+done
+```
+
+Expected: `cargo test` inside the script passes every run. The RAM leak check is known flaky, so keep all three runs and treat the **median** footprint per phase (1w/1t, 1w/3t, 2w/6t, after cleanup) as the baseline; a single failing leak check at baseline is recorded, not fixed here. If any other check fails at baseline, stop: the net has no stable reference.
+
+- [ ] **Step 4: Record the manual baseline on `main`**
+
+Run these groups inside a Litty window built from `main`, logging outside the repo:
+
+```bash
+export LITTY_TEST_LOG="$TMPDIR/baseline/manual.md"
+bash scripts/manual-test.sh 2 3 4 6 7 8 11 12 15 16 17 18 19 29 30
+```
+
+Coverage map (which Task each group guards):
+
+| Group | Guards |
+|---|---|
+| 2, 16, 27 (Linux only), 29 | `app::keyboard` (Task 10): modifyOtherKeys, Caps Lock, Kitty keys in the real app |
+| 4, 7, 11, 30 | `app::pointer` (Task 8): pixel mouse, drag and drop, scrollbar drag, OSC 8 hover |
+| 3, 6, 12 | `app::terminal_io` (Task 7): notifications, progress, bell, shell integration |
+| 8, 18 | `app::window`, `app::tabs` (Tasks 6, 9): multiple windows, native tabs |
+| 15, 17 | `app::actions`, `app::inspector` (Task 10): menu bar, terminal inspector |
+| 19 (macOS) / 28 (Linux) | Quick Terminal toggle (`app::window`) |
+
+Then add the items no group covers, as a short checklist saved to `$TMPDIR/baseline/manual-extra.md` with a pass / fail per line:
+1. Cmd+F opens search, typing highlights matches, Enter / Shift+Enter move between them, Esc closes it (`app::search_ui`).
+2. Vietnamese Telex typing (`vieejt` → `việt`) shows preedit text and commits correctly (`app::ime`). Repeat with a second IME if available.
+3. Ctrl+R opens fuzzy history and the vim redo in alt screen still works (`app::keyboard`).
+4. Cmd+C, Cmd+V (Ctrl+Shift+C / V on Linux); paste of text containing `\x1b[201~` is stripped.
+5. Cmd+T, Cmd+W, Cmd+1..9, Cmd+D / Cmd+Shift+D splits, pane focus and zoom.
+6. `yo hello` renders the AI status line and the prompt returns (`app::ai_bridge`; `bash scripts/test-ai-live.sh` only if the user has a key configured).
+7. Config reload applies a changed `theme`.
+8. Idle check: all windows closed, `footprint` < 50 MB; one window idle, `top` shows 0.0% CPU.
+
+- [ ] **Step 5: Commit the two scripts**
+
+```bash
+git add scripts/refactor-census.sh scripts/refactor-moved.sh
+git commit -m "chore(refactor): add token census and move-residual scripts"
+```
+
+- [ ] **Step 6: Define the checkpoints (used by later tasks)**
+
+| Checkpoint | After | Required evidence |
+|---|---|---|
+| **A** | Task 4 | Full verification suite; test count == baseline + new `cli` tests; `scripts/refactor-moved.sh` per commit shows only explained lines; re-record `census.txt` as `census-A.txt` (Task 4 adds new code, so later comparisons use this one) |
+| **B** | Task 10 | Everything in A, plus: `scripts/refactor-census.sh` diff against `census-A.txt` is **empty**; for every Task 5–10 commit `scripts/refactor-moved.sh` is **empty** (or each residual line is justified in the commit body); `pre-release-check.sh` 3 runs, median footprints within 5% of baseline and no new failing check; Step 4 manual groups and extra checklist identical to baseline |
+| **C** | Task 12 | Same as B, with the census diff again empty or explained line by line |
+
+**Gate:** Tasks 11 and 12 are the only tasks that are not pure moves, and no automated test reaches the code they change. Do not start Task 11 until Checkpoint B passes. If any residual cannot be explained, stop and fix or revert the offending commit; do not carry on. If the user prefers lower risk, Tasks 11 and 12 can be dropped from this plan after Checkpoint B and done later as a separate plan with their own characterization tests.
+
+---
+
 ### Task 1: Extract `platform::process`
 
 **Files:**
@@ -959,7 +1095,7 @@ Expected: all green; no file in `src/app/` above ~700 lines; total test count ==
 
 - [ ] **Step 4: Release-mode smoke test**
 
-Repeat Task 11 Step 5 plus: Cmd+C / Cmd+V (and Ctrl+Shift+C / V on Linux), bracketed paste of text containing `\x1b[201~`, Cmd+T / Cmd+W, Cmd+D splits and navigation, Cmd+F search, Ctrl+R history, Telex IME typing, config reload, Quick Terminal toggle. Check idle RAM (< 50 MB) and idle CPU (0%) in Activity Monitor / `top`.
+Re-run the Task 0.5 Checkpoint C evidence (census diff, `pre-release-check.sh` x3, manual groups and extra checklist) against the Task 0.5 baseline, then remove the helpers in their own commit: `git rm scripts/refactor-census.sh scripts/refactor-moved.sh && git commit -m "chore(refactor): remove refactor helper scripts"`. Repeat Task 11 Step 5 plus: Cmd+C / Cmd+V (and Ctrl+Shift+C / V on Linux), bracketed paste of text containing `\x1b[201~`, Cmd+T / Cmd+W, Cmd+D splits and navigation, Cmd+F search, Ctrl+R history, Telex IME typing, config reload, Quick Terminal toggle. Check idle RAM (< 50 MB) and idle CPU (0%) in Activity Monitor / `top`.
 
 - [ ] **Step 5: Commit**
 
