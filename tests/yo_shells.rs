@@ -1,4 +1,4 @@
-//! Isolated PTY smoke tests for `yo` interception on zsh, Bash, and fish.
+//! Isolated PTY smoke tests for `yo` interception on zsh, Bash, fish, and nushell.
 //!
 //! Each test drives a real interactive shell with the Litty integration script
 //! loaded. Run outside a PTY-restricted sandbox; no API keys or network
@@ -18,6 +18,11 @@ use std::{
 };
 
 const READ_WINDOW: Duration = Duration::from_millis(400);
+/// Nushell writes a default config on first start, so its first read waits longer.
+const NU_STARTUP_WINDOW: Duration = Duration::from_secs(4);
+/// Reply to a cursor-position query (`ESC [ 6 n`) as a real terminal would.
+const CURSOR_QUERY: &[u8] = b"\x1b[6n";
+const CURSOR_REPLY: &[u8] = b"\x1b[1;1R";
 
 /// An interactive shell attached to a fresh PTY, killed and cleaned up on drop.
 struct Session {
@@ -27,7 +32,7 @@ struct Session {
 }
 
 impl Session {
-    fn spawn(program: &Path, args: &[String], home: &Path) -> Self {
+    fn spawn(program: &Path, args: &[String], home: &Path, extra_env: &[(&str, &Path)]) -> Self {
         let (mut master, mut slave) = (-1, -1);
         let mut size = libc::winsize { ws_row: 24, ws_col: 120, ws_xpixel: 0, ws_ypixel: 0 };
         // SAFETY: both out-pointers are valid; termios is optional (null).
@@ -49,6 +54,7 @@ impl Session {
             .env("TERM", "xterm-256color")
             .env("PS1", "test> ")
             .env("HISTFILE", "/dev/null")
+            .envs(extra_env.iter().copied())
             .stdin(Stdio::from(slave.try_clone().expect("dup slave")))
             .stdout(Stdio::from(slave.try_clone().expect("dup slave")))
             .stderr(Stdio::from(slave));
@@ -71,9 +77,14 @@ impl Session {
         self.master.write_all(data).expect("write to pty");
     }
 
-    /// Collects output until the window elapses, mirroring a timed `select` loop.
     fn read(&mut self) -> Vec<u8> {
-        let end = Instant::now() + READ_WINDOW;
+        self.read_for(READ_WINDOW)
+    }
+
+    /// Collects output until the window elapses, mirroring a timed `select` loop.
+    /// Cursor-position queries are answered so line editors that wait on them proceed.
+    fn read_for(&mut self, window: Duration) -> Vec<u8> {
+        let end = Instant::now() + window;
         let mut data = Vec::new();
         let mut buf = [0u8; 65536];
         loop {
@@ -93,7 +104,12 @@ impl Session {
             }
             match self.master.read(&mut buf) {
                 Ok(0) | Err(_) => break,
-                Ok(n) => data.extend_from_slice(&buf[..n]),
+                Ok(n) => {
+                    data.extend_from_slice(&buf[..n]);
+                    for _ in buf[..n].windows(CURSOR_QUERY.len()).filter(|w| *w == CURSOR_QUERY) {
+                        self.write(CURSOR_REPLY);
+                    }
+                }
             }
         }
         data
@@ -161,6 +177,9 @@ fn run(shell: &str) {
     let _ = fs::remove_dir_all(&home);
     fs::create_dir_all(&home).expect("create home");
 
+    let data_dirs = home.join("data");
+    let config_home = home.join(".config");
+    let mut extra_env: Vec<(&str, &Path)> = Vec::new();
     let args: Vec<String> = match shell {
         "zsh" => {
             let script = shell_quote(&root.join("src/shell/litty-integration.zsh"));
@@ -174,6 +193,15 @@ fn run(shell: &str) {
             fs::write(&config, format!("source {script}\n")).expect("write config.fish");
             vec!["--interactive".into()]
         }
+        "nu" => {
+            // Mirror Litty's injection: the script is autoloaded from XDG_DATA_DIRS.
+            let autoload = data_dirs.join("nushell/vendor/autoload");
+            fs::create_dir_all(&autoload).expect("create nushell autoload dir");
+            fs::copy(root.join("src/shell/litty.nu"), autoload.join("litty.nu")).expect("copy litty.nu");
+            extra_env.push(("XDG_DATA_DIRS", &data_dirs));
+            extra_env.push(("XDG_CONFIG_HOME", &config_home));
+            Vec::new()
+        }
         _ => vec![
             "--noprofile".into(),
             "--rcfile".into(),
@@ -182,8 +210,8 @@ fn run(shell: &str) {
         ],
     };
 
-    let mut session = Session::spawn(&binary, &args, &home);
-    let initial = session.read();
+    let mut session = Session::spawn(&binary, &args, &home, &extra_env);
+    let initial = session.read_for(if shell == "nu" { NU_STARTUP_WINDOW } else { READ_WINDOW });
     assert!(has(&initial, b"778;init"), "{shell}: {}", text(&initial));
 
     let query = "find files > 100MB; echo SHOULD_NOT_EXECUTE";
@@ -246,4 +274,9 @@ fn yo_bash() {
 #[test]
 fn yo_fish() {
     run("fish");
+}
+
+#[test]
+fn yo_nu() {
+    run("nu");
 }
