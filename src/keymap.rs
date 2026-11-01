@@ -32,6 +32,11 @@ impl Mods {
     }
 }
 
+/// Ctrl+C cancels a thinking AI request on both platforms. Copy shortcuts remain free.
+pub fn ai_cancel(key: &Key, mods: Mods) -> bool {
+    mods.only(true,false,false,false) && matches!(key,Key::Character(ch) if ch.eq_ignore_ascii_case("c"))
+}
+
 /// An application shortcut. Some actions only apply in a given state (e.g. more
 /// than one tab); the caller reports whether it handled the action, and unhandled
 /// keys fall through to the shell.
@@ -1069,6 +1074,19 @@ mod tests {
 
     fn linux(key: &Key, m: Mods) -> Option<Action> {
         resolve(Platform::Linux, key, m, false)
+    }
+
+    #[test]
+    fn ai_cancel_preserves_platform_copy_shortcuts() {
+        let key=Key::Character("c".into());
+        for platform in [Platform::MacOs,Platform::Linux] {
+            let ctrl=Mods {ctrl:true,..Mods::default()};
+            assert!(ai_cancel(&key,ctrl));
+            assert_eq!(encode(platform,&key,Some("c"),ctrl,false),Some(vec![3]));
+            let copy=if platform==Platform::MacOs {Mods{sup:true,..Mods::default()}}else{Mods{ctrl:true,shift:true,..Mods::default()}};
+            assert!(!ai_cancel(&key,copy));
+            assert_eq!(resolve(platform,&key,copy,false),Some(Action::Copy));
+        }
     }
 
     #[test]

@@ -26,3 +26,19 @@ if "cursor" in $litty_features {
     $env.config.cursor_shape.vi_insert = "line"
 }
 
+
+# Litty intercepts unquoted yo input before Nushell parses punctuation.
+# This function also supports a normally parsed, explicitly quoted invocation.
+def --env --wrapped yo [...rest: string] {
+    let payload = ($rest | str join ' ' | encode base64)
+    print -n $"(char escape)]778;yo;($payload)(char bel)"
+}
+$env.config.keybindings = ($env.config.keybindings | append {
+    name: litty_ai_repaint
+    modifier: control_alt_shift
+    keycode: f12
+    mode: [emacs vi_insert vi_normal]
+    event: {send: repaint}
+})
+
+print -n $"(char escape)]778;init;direct(char bel)"

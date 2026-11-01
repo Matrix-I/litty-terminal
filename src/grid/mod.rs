@@ -128,6 +128,15 @@ pub fn set_grapheme_default(on: bool) {
 
 
 pub struct Grid {
+    /// AI bridge is armed only by a user submission at a known shell prompt.
+    pub ai_available: bool,
+    pub ai_direct: bool,
+    pub ai_armed: bool,
+    pub ai_track: bool,
+    pub ai_command: Option<String>,
+    pub ai_request: Option<String>,
+    pub prompt_epoch: u64,
+    pub last_exit: Option<i32>,
     pub cols: usize,
     pub rows: usize,
     /// Scrollback lines kept above the screen (`scrollback-limit`).
@@ -277,6 +286,14 @@ impl Grid {
         // The ring buffer doubles dynamically on demand up to max_cap when lines scroll off screen.
         let cap = (rows * 2).max(64).min(max_cap);
         Grid {
+            ai_available: false,
+            ai_direct: false,
+            ai_armed: false,
+            ai_track: false,
+            ai_command: None,
+            ai_request: None,
+            prompt_epoch: 0,
+            last_exit: None,
             cols,
             rows,
             scrollback,
@@ -439,6 +456,84 @@ impl Grid {
         let off = if self.alt_active { 0 } else { self.display_offset };
         let r = self.cur.row + off;
         (r < self.rows).then(|| (self.cur.col.min(self.cols - 1), r))
+    }
+
+    pub fn prompt_ready(&self) -> bool {
+        self.prompt_input_mark.is_some() && !self.alt_active
+    }
+
+    /// Whole editable input, including text after the cursor and soft-wrapped rows.
+    pub fn full_prompt_input(&self) -> String {
+        let Some((start, col)) = self.prompt_input_mark else {
+            return String::new();
+        };
+        let mut text = String::new();
+        let mut line = start;
+        let cursor = self.lines_pushed + self.cur.row;
+        while let Some(cells) = self.line_cells(line) {
+            let first = if line == start { col } else { 0 };
+            for cell in cells.iter().skip(first).filter(|c| c.codepoint != 0) {
+                self.push_cell_text(cell, &mut text);
+            }
+            let wrapped = self.line_wrapped(line);
+            if !wrapped {
+                if line >= cursor {
+                    break;
+                }
+                let trimmed = text.trim_end_matches(' ').len();
+                text.truncate(trimmed);
+                text.push('\n');
+            }
+            line += 1;
+            if line >= self.lines_pushed + self.rows || text.len() > 65536 {
+                break;
+            }
+        }
+        text.trim_end().to_owned()
+    }
+
+    /// A bounded copy of recent logical lines, excluding the current prompt.
+    pub fn extract_scrollback_lines(&self, max_lines: usize) -> String {
+        if self.alt_active || max_lines == 0 {
+            return String::new();
+        }
+        let end = self
+            .prompts
+            .last()
+            .map(|p| p.prompt)
+            .unwrap_or(self.lines_pushed + self.cur.row);
+        let end = end.min(self.lines_pushed + self.rows);
+        let mut start = end;
+        let mut count = 0;
+        let limit = max_lines.min(1000);
+        while start > self.first_line() && count < limit {
+            start -= 1;
+            if start == self.first_line() || !self.line_wrapped(start - 1) {
+                count += 1;
+            }
+            // Bound even a pathological single wrapped logical line.
+            if end - start >= 4000 {
+                break;
+            }
+        }
+        let mut out = String::new();
+        for line in start..end {
+            if let Some(cells) = self.line_cells(line) {
+                let before = out.len();
+                for cell in cells.iter().filter(|c| c.codepoint != 0) {
+                    self.push_cell_text(cell, &mut out);
+                }
+                if !self.line_wrapped(line) {
+                    let trimmed = out[before..].trim_end_matches(' ').len();
+                    out.truncate(before + trimmed);
+                    out.push('\n');
+                }
+            }
+            if out.len() > 256 * 1024 {
+                break;
+            }
+        }
+        crate::ai::markdown::clean(&out)
     }
 
     /// Extract text typed by user on the active prompt line (before the cursor).
@@ -3469,6 +3564,35 @@ mod tests {
             .collect::<String>()
             .trim_end()
             .to_string()
+    }
+
+    #[test]
+    fn ai_bridge_requires_user_arming_and_bounds_payloads() {
+        let mut g=Grid::new(20,6);
+        feed(&mut g,"\x1b]778;yo;aGVsbG8=\x07");assert!(g.ai_request.is_none());
+        g.ai_armed=true;feed(&mut g,"\x1b]778;yo;aGVsbG8=\x07");assert_eq!(g.ai_request.take().as_deref(),Some("hello"));assert!(!g.ai_armed);
+        g.ai_armed=true;feed(&mut g,"\x1b]778;yo;%%%\x07");assert!(g.ai_request.is_none());
+        g.ai_armed=true;feed(&mut g,"\x1b[?1049h\x1b]778;yo;aGVsbG8=\x07");assert!(g.ai_request.is_none());
+    }
+
+    #[test]
+    fn ai_scrollback_joins_wraps_and_excludes_prompt() {
+        let mut g=Grid::new(10,6);
+        feed(&mut g,"abcdefghijk\r\nsecond\r\n\x1b]133;A\x07$ \x1b]133;B\x07yo help");
+        assert_eq!(g.extract_scrollback_lines(1),"second\n");
+        assert_eq!(g.extract_scrollback_lines(2),"abcdefghijk\nsecond\n");
+        assert_eq!(g.extract_scrollback_lines(0),"");
+        feed(&mut g,"\x1b[?1049h");assert!(g.extract_scrollback_lines(200).is_empty());
+    }
+
+    #[test]
+    fn ai_execution_reads_full_edited_wrapped_input_and_exit() {
+        let mut g=Grid::new(10,8);
+        feed(&mut g,"\x1b]133;A\x07$ \x1b]133;B\x07printf hello_world");
+        feed(&mut g,"\x1b[D\x1b[D");
+        assert_eq!(g.full_prompt_input(),"printf hello_world");
+        g.ai_track=true;feed(&mut g,"\r\n\x1b]133;C\x07output\r\n\x1b]133;D;7\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+        assert_eq!(g.ai_command.as_deref(),Some("printf hello_world"));assert_eq!(g.last_exit,Some(7));assert_eq!(g.prompt_epoch,2);
     }
 
     #[test]

@@ -410,13 +410,32 @@ impl Perform for Grid {
             b"8" => {
                 self.osc8(params);
             }
+            b"778" if params[1] == b"init" => {self.ai_available=true;self.ai_direct=params.get(2)==Some(&b"direct".as_slice());}
+            b"778" if params[1] == b"yo" => {
+                if self.ai_armed && !self.alt_active {
+                    self.ai_armed = false;
+                    if let Some(payload)=params.get(2).filter(|p|p.len()<=65536)
+                        && let Some(bytes)=decode_base64(payload)
+                        && let Ok(query)=String::from_utf8(bytes) {
+                            self.ai_request=Some(query);
+                        }
+                }
+            }
             b"133" => {
+                if params[1] == b"C" && self.ai_track && !self.alt_active {
+                    self.ai_track=false;
+                    self.ai_command=Some(self.full_prompt_input());
+                }
                 match params[1].first() {
                     Some(b'B') => {
+                        self.prompt_epoch=self.prompt_epoch.wrapping_add(1);
                         self.prompt_input_mark = Some((self.abs_line(self.cur.row), self.cur.col));
                     }
                     Some(b'A' | b'C' | b'D') => self.prompt_input_mark = None,
                     _ => {}
+                }
+                if params[1] == b"D" {
+                    self.last_exit=params.get(2).and_then(|s|std::str::from_utf8(s).ok()?.parse().ok());
                 }
                 if !self.alt_active {
                     self.record_prompt_mark(params[1].first().copied());

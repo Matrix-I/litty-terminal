@@ -91,6 +91,7 @@ pub const DEFAULT_PALETTE: [u32; 16] = [
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
+    pub ai: crate::ai::config::Settings,
     /// Default background color, packed `0xRRGGBB00`.
     pub background: u32,
     /// Default foreground color, packed `0xRRGGBB00`.
@@ -191,6 +192,7 @@ impl Default for Config {
             .unwrap_or(DEFAULT_FONT_PT)
             .clamp(6.0, 72.0);
         Config {
+            ai: crate::ai::config::Settings::default(),
             background: 0x0000_0000,
             foreground: 0xE6E6_E600,
             theme: None,
@@ -292,7 +294,10 @@ impl Config {
         for (i, raw) in text.lines().enumerate() {
             match parse_line(raw) {
                 Some(Ok(entry)) => entries.push((i + 1, entry)),
-                Some(Err(line)) => errors.push(format!("line {}: expected `key = value`, got `{line}`", i + 1)),
+                Some(Err(line)) => {
+                    let line=if line.starts_with("ai-api-key") {"ai-api-key <redacted>"}else{line};
+                    errors.push(format!("line {}: expected `key = value`, got `{line}`", i + 1));
+                }
                 None => {}
             }
         }
@@ -321,6 +326,7 @@ impl Config {
         let d = Config::default();
         let empty = value.is_empty();
         match key {
+            key if key.starts_with("ai-") => return self.ai.set(&key[3..], value),
             "background" => self.background = if empty { d.background } else { parse_color(value)? },
             "foreground" => self.foreground = if empty { d.foreground } else { parse_color(value)? },
             "font-family" => {
@@ -1027,6 +1033,14 @@ const TEMPLATE: &str = r#"# This is the configuration file for Litty.
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ai_settings_validate_and_redact_credentials() {
+        let (cfg,errors)=Config::parse("ai-provider = ollama\nai-model = test\nai-context-window = 8192\nai-api-key = secret");
+        assert!(errors.is_empty());assert!(!format!("{cfg:?}").contains("secret"));
+        let (_,errors)=Config::parse("ai-api-key secret");assert!(!errors.join(" ").contains("secret"));
+        let (_,errors)=Config::parse("ai-provider = unknown\nai-thinking = extreme\nai-web-search = maybe");assert_eq!(errors.len(),3);
+    }
 
     #[test]
     fn color_title_and_copy_options() {

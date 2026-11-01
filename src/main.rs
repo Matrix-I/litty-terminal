@@ -1,6 +1,7 @@
 //! Entry point: `winit` event loop in `ControlFlow::Wait` mode (0% idle CPU),
 //! coalesced PTY redraw wakeups, and keyboard-to-ANSI translation.
 
+mod ai;
 mod atlas;
 pub mod bench;
 mod bidi;
@@ -54,6 +55,7 @@ use crate::search::SearchBar;
 use crate::split::{Direction, PaneRect, SplitDirection};
 
 struct State {
+    ai: std::collections::BTreeMap<u64, ai::PaneState>,
     window: Arc<Window>,
     renderer: Renderer,
     tabs: Vec<Tab>,
@@ -133,6 +135,7 @@ struct State {
 
 impl State {
     fn invalidate_pane_state(&mut self, pane_id: u64) {
+        self.ai.remove(&pane_id);
         if self.search.pane_id == Some(pane_id) {
             self.search.close();
         }
@@ -400,6 +403,7 @@ fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Option<&str>)
 
     let config_mtime = config::config_mtime();
     Ok(State {
+        ai: std::collections::BTreeMap::new(),
         window,
         renderer,
         tabs: vec![tab],
@@ -490,10 +494,31 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
+            AppEvent::AiStatus {pane_id,generation,text} => {
+                for s in &mut self.windows {
+                    if let Some(ai)=s.ai.get_mut(&pane_id).filter(|a|a.generation==generation && a.busy) {
+                        ai.status=text;
+                        handle_ai_requests(s,&self.waker);
+                        s.window.request_redraw();
+                        break;
+                    }
+                }
+            }
+            AppEvent::AiResult {pane_id,generation,outcome} => {
+                for s in &mut self.windows {
+                    if let Some(ai)=s.ai.get_mut(&pane_id).filter(|a|a.generation==generation && a.busy) {
+                        ai.accept_result(generation,*outcome);
+                        handle_ai_requests(s,&self.waker);
+                        s.window.request_redraw();
+                        break;
+                    }
+                }
+            }
             AppEvent::WakeUp => {
                 self.waker.rearm();
                 for s in &mut self.windows {
                     handle_terminal_requests(s);
+                    handle_ai_requests(s, &self.waker);
                     if !s.tabs.is_empty() {
                         render_active(s);
                     }
@@ -771,6 +796,7 @@ impl App {
         match event {
             WindowEvent::CloseRequested => {
                 if confirm_close(&s.config, s.tabs.iter().flat_map(|t| &t.panes), "this window") {
+                    s.ai.clear();
                     s.tabs.clear();
                     close_last_window(s);
                 }
@@ -901,7 +927,7 @@ impl App {
                                             if let Some(cmd) = cmd_opt
                                                 && let Some(pane) = s.tabs[s.active].active_pane() {
                                                     let bracketed = pane.grid.lock().bracketed_paste;
-                                                    pane.pty.write(&history_insert_payload(&cmd, true, bracketed));
+                                                    write_pane_input(pane,&mut s.ai,&history_insert_payload(&cmd, true, bracketed));
                                                 }
                                             s.window.request_redraw();
                                             return;
@@ -1052,7 +1078,7 @@ impl App {
                                             .lock()
                                             .calculate_cursor_movement_to(pane_row, pane_col);
                                         if let Some(bytes) = move_bytes {
-                                            pane.pty.write(&bytes);
+                                            write_pane_input(pane,&mut s.ai,&bytes);
                                             s.window.request_redraw();
                                         }
                                     }
@@ -1155,7 +1181,7 @@ impl App {
                     && let Some(pane) = tab.active_pane() {
                         let bracketed = pane.grid.lock().bracketed_paste;
                         let text = format!("{} ", shell_quote(&path.to_string_lossy()));
-                        pane.pty.write(&paste_payload(&text, bracketed));
+                        write_pane_input(pane,&mut s.ai,&paste_payload(&text, bracketed));
                     }
             }
 
@@ -1325,8 +1351,191 @@ fn tab_title(tab: &mut Tab) -> String {
     format!("{bell}{prefix}{title}")
 }
 
-/// Act on what applications asked for since the last wake-up: desktop
-/// notifications (OSC 9 / 777), the bell, and the mouse pointer shape (OSC 22).
+/// Feed trusted, locally generated UI bytes without ever writing to the PTY under lock.
+fn ai_display(grid: &Arc<Mutex<Grid>>, bytes: &str) {
+    let mut parser = vte::Parser::new();
+    let mut g = grid.lock();
+    for b in bytes.bytes() {
+        g.feed_byte(&mut parser, b);
+    }
+}
+
+fn handle_ai_requests(s: &mut State, waker: &Waker) {
+    // Iteration does not allocate on ordinary PTY wakeups or idle frames.
+    for tab in &mut s.tabs {
+        for pane in &mut tab.panes {
+            let Some(ai) = s.ai.get_mut(&pane.id) else {
+                continue;
+            };
+            let (request, actual, ready, epoch, exit, alt) = {
+                let mut g = pane.grid.lock();
+                (
+                    g.ai_request.take(),
+                    g.ai_command.take(),
+                    g.prompt_ready(),
+                    g.prompt_epoch,
+                    g.last_exit,
+                    g.alt_active,
+                )
+            };
+            if alt && ai.busy {
+                ai.cancel_request();
+                ai.busy = false;
+                ai.authorized = None;
+                ai.submitted = None;
+                ai.result = None;
+                ai.repaint_epoch = None;
+                let mut g = pane.grid.lock();
+                g.ai_armed = false;
+                g.ai_track = false;
+                continue;
+            }
+            if let Some(actual) = actual {
+                ai.executed = Some(actual.clone());
+                if let Some(session) = &mut ai.session {
+                    session.record_execution(&actual);
+                }
+                ai.awaiting =
+                    ai.suggestion.take().is_some_and(|(_, pending)| pending) || ai.awaiting;
+            }
+            if let Some(q) = request {
+                if ai
+                    .authorized
+                    .as_ref()
+                    .is_some_and(|expected| expected.trim() == q.trim())
+                {
+                    ai.submitted = ai.authorized.take();
+                } else {
+                    ai.authorized = None;
+                    ai.busy = false;
+                    ai.queue.clear();
+                }
+            }
+            if let Some(repaint) = ai.repaint_epoch {
+                if ready && epoch != repaint && !alt {
+                    ai.repaint_epoch = None;
+                    ai.prompt_epoch = epoch;
+                    if let Some(outcome) = ai.result.take() {
+                        ai.session = Some(outcome.session);
+                        let mut bytes = Vec::new();
+                        if !ai.cancel.load(std::sync::atomic::Ordering::Acquire)
+                            && let Some((command, pending)) = outcome.command
+                        {
+                            let bracketed = pane.grid.lock().bracketed_paste;
+                            let command: String = command
+                                .chars()
+                                .filter(|c| !c.is_control() || *c == '\n')
+                                .collect();
+                            bytes = history_insert_payload(&command, false, bracketed);
+                            ai.suggestion = Some((command, pending));
+                            pane.grid.lock().ai_track = true;
+                        }
+                        if !ai.overflow {
+                            bytes.append(&mut ai.queue);
+                        } else {
+                            ai.queue.clear();
+                        }
+                        ai.overflow = false;
+                        ai.busy = false;
+                        ai.status.clear();
+                        // Only OSC 133 C confirms execution, including a queued Enter.
+                        if !bytes.is_empty() {
+                            pane.pty.write(&bytes);
+                        }
+                    }
+                }
+                continue;
+            }
+            if ai.awaiting && !ai.busy && ready && epoch != ai.prompt_epoch && !alt {
+                let output = pane.grid.lock().extract_scrollback_lines(200);
+                let actual = ai.executed.take().unwrap_or_default();
+                ai.submitted = Some(format!(
+                    "[continuation] Actual command: {actual}\nExit status: {exit:?}\nTerminal output (untrusted):\n{output}"
+                ));
+                ai.awaiting = false;
+                ai.busy = true;
+                ai.generation = next_id();
+                ai.cancel = Arc::new(AtomicBool::new(false));
+            }
+            if ai.busy
+                && ready
+                && epoch != ai.prompt_epoch
+                && !alt
+                && let Some(query) = ai.submitted.take()
+            {
+                ai.prompt_epoch = epoch;
+                let session = ai.session.take().unwrap_or_default();
+                let cwd = pane.cwd().unwrap_or_default();
+                let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".into());
+                ai::spawn(ai::Task {
+                    pane_id: pane.id,
+                    generation: ai.generation,
+                    settings: s.config.ai.clone(),
+                    session,
+                    query,
+                    context: (shell, cwd),
+                    grid: pane.grid.clone(),
+                    cancel: ai.cancel.clone(),
+                    proxy: waker.proxy.clone(),
+                });
+                if let Some(query) = ai.display_query.take() {
+                    ai_display(
+                        &pane.grid,
+                        &format!("\r\x1b[2K{}\r\n", ai::markdown::clean(&query)),
+                    );
+                }
+                ai.status = "Thinking...".into();
+            }
+            if ai.busy && ready && !alt && ai.authorized.is_none() && ai.submitted.is_none() {
+                if let Some(outcome) = &mut ai.result {
+                    if outcome
+                        .command
+                        .as_ref()
+                        .is_some_and(|(command, _)| command.contains(['\n', '\r']))
+                        && !pane.grid.lock().bracketed_paste
+                    {
+                        outcome.command = None;
+                        outcome.text.push_str("\nMultiline suggestion requires bracketed paste; command was not inserted.");
+                        ai.queue.clear();
+                    }
+                    let rendered = if outcome.literal {
+                        ai::markdown::clean(&outcome.text)
+                    } else {
+                        ai::markdown::render(&outcome.text)
+                    };
+                    let mut text = format!("\r\x1b[2K{}\r\n", rendered.replace('\n', "\r\n"));
+                    if ai.overflow {
+                        text.push_str("Queued input exceeded 64 KiB and was discarded.\r\n");
+                    }
+                    ai_display(&pane.grid, &text);
+                    ai.repaint_epoch = Some(epoch);
+                    pane.pty.write(b"\x1b[24;8~");
+                } else if !ai.status.is_empty() {
+                    ai_display(
+                        &pane.grid,
+                        &format!("\r\x1b[2K{}{}\x1b[0m", ai::markdown::BASE, ai.status),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Queue every user text source while thinking; terminal protocol replies bypass this.
+fn write_pane_input(
+    pane: &Pane,
+    states: &mut std::collections::BTreeMap<u64, ai::PaneState>,
+    bytes: &[u8],
+) {
+    if let Some(ai) = states.get_mut(&pane.id).filter(|a| a.busy) {
+        ai.enqueue(bytes);
+    } else {
+        pane.pty.write(bytes);
+    }
+}
+
+/// Service requests raised by the PTY parser outside the grid lock: clipboard,
+/// notifications, the bell, and mouse pointer shape.
 fn handle_terminal_requests(s: &mut State) {
     let mut titles_dirty = false;
     let mut attention = false;
@@ -1949,7 +2158,7 @@ fn handle_ime(s: &mut State, ime: Ime) {
                 refresh_search(s);
             } else if let Some(pane) = s.tabs[s.active].active_pane() {
                 pane.grid.lock().reset_display();
-                pane.pty.write(text.as_bytes());
+                write_pane_input(pane,&mut s.ai,text.as_bytes());
             }
             s.cursor_blink_epoch = std::time::Instant::now();
             s.window.request_redraw();
@@ -2592,7 +2801,7 @@ fn handle_key(
         Some(keymap::Binding::Text(bytes)) => {
             if let Some(tab) = s.tabs.get(s.active)
                 && let Some(pane) = tab.active_pane() {
-                    pane.pty.write(&bytes);
+                    write_pane_input(pane,&mut s.ai,&bytes);
                 }
             consume_key(s, ev);
             return;
@@ -2618,6 +2827,105 @@ fn handle_key(
         consume_key(s, ev);
         return;
     };
+    let pane_id = pane.id;
+    if s.ai.get(&pane_id).is_some_and(|a| a.busy) {
+        let cancel = keymap::ai_cancel(&ev.logical_key, m);
+        if cancel {
+            let ai = s.ai.get_mut(&pane_id).unwrap();
+            ai.cancel_request();
+            if ai.authorized.take().is_some() {
+                // A canceled bridge must not leave input waiting for a worker
+                // that was never started (including a malformed OSC payload).
+                {
+                    let mut g = pane.grid.lock();
+                    g.ai_armed = false;
+                    g.ai_request = None;
+                }
+                ai.submitted = None;
+                ai.result = Some(ai::Outcome {
+                    session: ai.session.take().unwrap_or_default(),
+                    command: None,
+                    text: "Cancelled".into(),
+                    error: true,
+                    literal: false,
+                });
+            }
+        } else {
+            let (app_cursor, kitty_flags, modify_other_keys) = {
+                let g = pane.grid.lock();
+                (g.app_cursor, g.kitty_keyboard_flags(), g.modify_other_keys)
+            };
+            if let Some(bytes) =
+                encode_terminal_key(ev, m, s.locks, app_cursor, kitty_flags, modify_other_keys)
+            {
+                s.ai.get_mut(&pane_id).unwrap().enqueue(&bytes);
+            }
+        }
+        consume_key(s, ev);
+        if cancel {
+            handle_ai_requests(s, waker);
+            s.window.request_redraw();
+        }
+        return;
+    }
+    let is_enter =
+        ev.logical_key == Key::Named(NamedKey::Enter) && !m.alt && !m.ctrl && !m.shift && !m.sup;
+    if is_enter {
+        let (input, ready, epoch) = {
+            let g = pane.grid.lock();
+            (g.full_prompt_input(), g.prompt_ready(), g.prompt_epoch)
+        };
+        if ready
+            && pane.grid.lock().ai_available
+            && let Some(query) = ai::query(&input)
+        {
+            let ai = s.ai.entry(pane_id).or_default();
+            ai.submitted(&input);
+            ai.awaiting = false;
+            ai.authorized = Some(query.into());
+            ai.generation = next_id();
+            ai.cancel = Arc::new(AtomicBool::new(false));
+            ai.busy = true;
+            ai.prompt_epoch = epoch;
+            let direct = pane.grid.lock().ai_direct
+                || input.starts_with(char::is_whitespace)
+                || query.len() > 4096;
+            if direct {
+                // Clear Readline/Reedline's buffer and submit an empty line. The
+                // natural language is never parsed or executed by the shell.
+                {
+                    let mut g = pane.grid.lock();
+                    g.ai_track = false;
+                    g.ai_request = Some(query.into());
+                }
+                ai.display_query = Some(input.clone());
+                s.history_search.add_session_command(&input);
+                pane.pty.write(b"\x05\x15\r");
+                consume_key(s, ev);
+                return;
+            }
+            {
+                let mut g = pane.grid.lock();
+                g.ai_track = false;
+                g.ai_armed = true;
+            }
+        } else if let Some(ai) = s.ai.get_mut(&pane_id) {
+            if input.trim().is_empty() {
+                ai.submitted("");
+                pane.grid.lock().ai_track = false;
+            }
+            ai.prompt_epoch = epoch;
+        }
+    } else if m.ctrl
+        && matches!(&ev.logical_key,Key::Character(ch) if ch.eq_ignore_ascii_case("c"))
+        && let Some(ai) = s.ai.get_mut(&pane_id)
+    {
+        ai.suggestion = None;
+        ai.awaiting = false;
+        ai.executed = None;
+        pane.grid.lock().ai_track = false;
+    }
+
     let (app_cursor, kitty_flags, modify_other_keys, ctrl_u_bytes) = {
         let mut g = pane.grid.lock();
         let app_cursor = g.app_cursor;
@@ -2665,22 +2973,57 @@ fn handle_key(
         return;
     }
 
-    let bytes = if kitty_flags != 0 {
-        let kind = if ev.repeat { keymap::KeyKind::Repeat } else { keymap::KeyKind::Press };
-        let unshifted = ev.key_without_modifiers();
-        keymap::encode_kitty(keymap::PLATFORM, &kitty_key(ev, &unshifted, kind, s.locks), m, kitty_flags, app_cursor)
-    } else if modify_other_keys != 0 {
-        let text = ev.text.as_deref();
-        keymap::encode_modify_other_keys(keymap::PLATFORM, &ev.logical_key, text, m, modify_other_keys, app_cursor)
-    } else {
-        keymap::encode(keymap::PLATFORM, &ev.logical_key, ev.text.as_deref(), m, app_cursor)
-    };
+    let bytes=encode_terminal_key(ev,m,s.locks,app_cursor,kitty_flags,modify_other_keys);
     if let Some(bytes) = &bytes {
         pane.pty.write(bytes);
     }
     if s.inspector {
         s.inspector_key = describe_key(&ev.logical_key, m, bytes.as_deref());
         s.window.request_redraw();
+    }
+}
+
+/// Encode queued input with the same protocol and modifiers as immediate input.
+fn encode_terminal_key(
+    ev: &KeyEvent,
+    m: keymap::Mods,
+    locks: u8,
+    app_cursor: bool,
+    kitty_flags: u8,
+    modify_other_keys: u8,
+) -> Option<Vec<u8>> {
+    if kitty_flags != 0 {
+        let kind = if ev.repeat {
+            keymap::KeyKind::Repeat
+        } else {
+            keymap::KeyKind::Press
+        };
+        let unshifted = ev.key_without_modifiers();
+        keymap::encode_kitty(
+            keymap::PLATFORM,
+            &kitty_key(ev, &unshifted, kind, locks),
+            m,
+            kitty_flags,
+            app_cursor,
+        )
+    } else if modify_other_keys != 0 {
+        let text = ev.text.as_deref();
+        keymap::encode_modify_other_keys(
+            keymap::PLATFORM,
+            &ev.logical_key,
+            text,
+            m,
+            modify_other_keys,
+            app_cursor,
+        )
+    } else {
+        keymap::encode(
+            keymap::PLATFORM,
+            &ev.logical_key,
+            ev.text.as_deref(),
+            m,
+            app_cursor,
+        )
     }
 }
 
@@ -2786,6 +3129,7 @@ fn handle_key_release(s: &mut State, ev: &KeyEvent, m: keymap::Mods) {
         s.consumed_keys.swap_remove(i);
         return;
     }
+    if s.tabs.get(s.active).and_then(|t|t.active_pane()).is_some_and(|p|s.ai.get(&p.id).is_some_and(|a|a.busy)) {return;}
     if s.tabs.is_empty() || s.search.is_open || s.history_search.is_open {
         return;
     }
@@ -2839,7 +3183,7 @@ fn handle_history_search_key(s: &mut State, key: &Key, m: keymap::Mods) -> bool 
                 // Enter runs it, Tab leaves it for editing.
                 if let Some(pane) = tab.active_pane() {
                     let bracketed = pane.grid.lock().bracketed_paste;
-                    pane.pty.write(&history_insert_payload(&cmd, *k == NamedKey::Enter, bracketed));
+                    write_pane_input(pane,&mut s.ai,&history_insert_payload(&cmd, *k == NamedKey::Enter, bracketed));
                 }
             }
         }
@@ -3016,7 +3360,7 @@ fn run_tab_action(
         A::ClearScreen => {
             if let Some(pane) = s.tabs[s.active].active_pane() {
                 pane.grid.lock().clear_screen_and_history();
-                pane.pty.write(b"\x0c");
+                write_pane_input(pane,&mut s.ai,b"\x0c");
                 s.window.request_redraw();
             }
         }
@@ -3113,7 +3457,7 @@ fn run_tab_action(
                             return true;
                         }
                     }
-                    pane.pty.write(&paste_payload(&text, bracketed));
+                    write_pane_input(pane,&mut s.ai,&paste_payload(&text, bracketed));
                     s.window.request_redraw();
                 }
         }

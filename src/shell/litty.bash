@@ -65,3 +65,35 @@ elif [[ -z "$(trap -p DEBUG)" ]]; then
 else
   PROMPT_COMMAND="_litty_prompt_command${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
 fi
+
+_litty_yo_emit() {
+  local payload
+  payload=$(builtin printf '%s' "$1" | command base64 | command tr -d '\r\n')
+  builtin printf '\e]778;yo;%s\a' "$payload"
+}
+yo() { _litty_yo_emit "$*"; }
+_litty_yo_accept() {
+  case $READLINE_LINE in
+    yo|yo[[:space:]]*)
+      local original="$READLINE_LINE" query="${READLINE_LINE#yo}"
+      history -s -- "$original"
+      builtin printf '\r\n%s\r\n' "$original"
+      READLINE_LINE=''
+      READLINE_POINT=0
+      _litty_yo_emit "$query"
+      ;;
+  esac
+}
+# READLINE_LINE exists only in Bash 4+. Older Bash delegates interception to
+# Litty before Enter reaches Readline, keeping punctuation out of shell syntax.
+if (( BASH_VERSINFO[0] >= 4 )); then
+  bind -x '"\C-x\C-y":_litty_yo_accept'
+  bind '"\C-m":"\C-x\C-y\C-j"'
+fi
+_litty_ai_repaint() { :; }
+bind -x '"\e[24;8~":_litty_ai_repaint'
+if (( BASH_VERSINFO[0] >= 4 )); then
+  builtin printf '\e]778;init\a'
+else
+  builtin printf '\e]778;init;direct\a'
+fi

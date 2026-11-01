@@ -51,3 +51,25 @@ if functions -q fish_prompt; and not functions -q __litty_original_fish_prompt
     end
 end
 
+
+function __litty_yo_emit
+    set -l payload (printf '%s' "$argv[1]" | command base64 | string join '')
+    printf '\e]778;yo;%s\a' "$payload"
+end
+function yo
+    __litty_yo_emit (string join ' ' -- $argv)
+end
+function __litty_yo_accept
+    set -l line (commandline --current-buffer | string collect)
+    if string match -rq '^yo(\s|$)' -- "$line"
+        printf '\r\n%s\r\n' "$line"
+        commandline --replace ''
+        __litty_yo_emit (string replace -r '^yo\s*' '' -- "$line")
+    end
+    commandline -f execute
+end
+bind \r __litty_yo_accept
+bind \n __litty_yo_accept
+bind \e\[24\;8~ repaint
+
+printf '\e]778;init\a'

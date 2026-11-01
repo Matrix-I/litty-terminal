@@ -10,6 +10,8 @@ use crate::update;
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     WakeUp,
+    AiStatus { pane_id: u64, generation: u64, text: String },
+    AiResult { pane_id: u64, generation: u64, outcome: Box<crate::ai::Outcome> },
     ChildExit(u64),
     Reopen,
     /// A menu bar item (macOS) was chosen.

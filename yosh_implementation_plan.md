@@ -2,6 +2,25 @@
 
 > **Target Release:** v0.7.0 (scheduled after v0.6.0 release)
 
+## Approved Interaction Decisions (2026-10-31)
+
+The following decisions override any conflicting behavior elsewhere in this document:
+
+1. **Input while thinking**: `Ctrl+C` cancels the active request immediately, including curl and retry backoff. Ordinary typing and `Enter` do **not** cancel thinking and must not reach the shell while the request is active. Queue input per pane in order and replay it only after the final response has been displayed and any suggested command has been prefilled into a ready shell prompt. An explicitly queued `Enter` may execute the suggestion after thinking finishes. Cancellation clears queued input so it cannot execute later. Bound the queue and visibly report overflow rather than silently executing a truncated command. Clipboard paste, IME commits, and dropped-file insertion follow the same queue rule.
+2. **Edited pending commands**: If the user edits a suggestion with `pending: true` and executes it, continue the workflow using the **actual command executed**, its output, and exit status. Exact equality with the original suggestion is not required. Empty `Enter`, `Ctrl+C`, or a new `yo` query cancels the previous continuation chain. Each newly suggested step still requires user `Enter`, including an Enter explicitly queued while thinking.
+
+### Implementation Clarifications
+
+- **Shell ownership and stale results**: Track request generations and prompt-ready transitions per pane. Apply results only to the originating live pane and current request. Never inject suggestions into a running process or alternate screen. A pane close cancels its worker.
+- **OSC trust**: An OSC 778 sequence alone must not start an AI request. Require a corresponding user-submitted `yo` command from a tracked shell prompt; bound payload size and reject malformed or unsolicited requests.
+- **Command insertion**: Strip terminal control characters. Use bracketed paste for multiline suggestions; if unavailable, refuse unsafe multiline insertion instead of allowing automatic execution. Never append Enter except when replaying an explicit user Enter.
+- **Configuration**: Explicit Litty settings override Yosh fallback settings. Credentials, models, and endpoints from a different Yosh provider must not leak into a Litty provider override. Resolve configuration lazily on `yo`; redact credentials in diagnostics. `ai-base-url` accepts an API root (e.g. `https://host/v1`) or a full endpoint. OpenAI defaults to Responses; a full `/chat/completions` endpoint selects that API style. Add `ai-context-window` for custom models. Thinking defaults off and web search defaults false.
+- **Memory and locking**: Follow the repository's **<50 MB idle RAM** requirement. Allocate AI sessions lazily in application state, avoiding new AI state fields in every Pane. Scrollback extraction necessarily copies text; bound it and keep grid locks short. No HTTP, subprocess, filesystem I/O, or PTY writes under the grid mutex.
+- **Older Bash / Nushell acceptance**: macOS Bash 3.2 lacks `READLINE_LINE`. For that shell and Nushell, the integration advertises direct terminal interception: capture `yo` before forwarding Enter, clear the shell buffer, and request an empty prompt. This keeps natural-language punctuation out of the shell parser. The original query remains in Litty session history. Modern Bash, zsh, and fish use their line-editor widgets.
+- **Compatibility**: Reuse the existing injected shell integrations without modifying user dotfiles. Preserve shell editing and platform shortcuts. Keep the package version at 0.6.0 until a separately requested release.
+
+---
+
 ## 1. Analysis of `yoshell.ai` (Yosh)
 
 **Yosh** ([pizlonator/yosh](https://github.com/pizlonator/yosh)) is an LLM-enabled fork of GNU Bash 5.3 + GNU Readline 8.3 compiled with Fil-C. Its core philosophy is **safety-first, zero-friction natural language to shell**:
@@ -34,9 +53,9 @@
 Yosh has to fork Bash/Readline and inject a **transparent PTY proxy + 1MB `mmap` ring buffer** just so Readline can read terminal output—and it only works in custom-compiled Bash on Linux.
 
 **Litty Terminal is the terminal emulator itself**, which gives us massive architectural advantages:
-- **Zero-copy Scrollback Awareness**: `Grid` (`src/grid/mod.rs`) already holds the entire scrollback ring buffer and tracks semantic prompt/output boundaries via **OSC 133 (`A`, `B`, `C`, `D`)** in `PromptMark` (`src/grid/prompt.rs`). No PTY proxy or duplicate memory buffer is needed!
+- **Direct Scrollback Awareness**: `Grid` (`src/grid/mod.rs`) already holds the entire scrollback ring buffer and tracks semantic prompt/output boundaries via **OSC 133 (`A`, `B`, `C`, `D`)** in `PromptMark` (`src/grid/prompt.rs`). No PTY proxy or duplicate memory buffer is needed!
 - **Works Across Every Shell (zsh, bash, fish, nushell)**: Litty already injects zero-dotfile shell integration scripts via `src/shell_integration.rs`.
-- **Zero External Crate Bloat**: Litty already has a battle-tested `curl` wrapper and zero-dependency JSON parser in `src/update.rs`, preserving the `< 15 MB RAM` and `0% idle CPU` invariants in `CLAUDE.md`.
+- **Zero External Crate Bloat**: Litty already has a battle-tested `curl` wrapper and zero-dependency JSON parser in `src/update.rs`, preserving the `< 50 MB idle RAM` and `0% idle CPU` invariants in `CLAUDE.md`.
 
 ---
 
@@ -87,8 +106,8 @@ To make `yo <query>` feel 100% native like Readline—where `yo ...` does not po
 
 3. **Execution Tracking & Multi-Step Continuation (`pending: true`)**:
    - When Litty pre-fills a command, it marks `pane_ai.prefilled_command = Some((cmd, is_pending))`.
-   - When the user presses `Enter` in `handle_key` (`src/main.rs`), Litty compares `g.current_prompt_input()` with `prefilled_command`:
-     - Records `executed = true` in the session exchange history.
+   - When the user presses `Enter` in `handle_key` (`src/main.rs`), Litty captures the full actual shell input, including edits to `prefilled_command`:
+     - Records `executed = true` and the actual command in the session exchange history, even when the user edited the suggestion.
      - If `is_pending == true`, sets `awaiting_continuation = true`.
    - When the command finishes and the shell emits `OSC 133;D;<exit_code>` followed by `OSC 133;B` (next prompt ready) in `src/grid/perform.rs`:
      - If `awaiting_continuation` is set, Litty automatically grabs the last 200 lines of scrollback (including the command output between `OSC 133;C` and `D`) and dispatches a `[continuation]` LLM turn!
@@ -122,7 +141,8 @@ To satisfy both **Litty's Ghostty-style config** (`~/.litty/config`) and **Yosh'
    - `ai-api-key = <key>` (or env var `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, etc.)
    - `ai-base-url = <url>`
    - `ai-thinking = off | minimal | low | medium | high | max`
-   - `ai-web-search = true | false`
+   - `ai-web-search = true | false` (default false)
+   - `ai-context-window = <tokens>` (optional override for custom models)
 2. **Yosh `~/.yoconf` & Key Files Fallback**:
    - Automatically reads `~/.yoconf` and `~/.anthropickey`, `~/.openaikey`, `~/.openrouterkey`, `~/.deepseekkey`, `~/.kimikey`, `~/.qwenkey`, `~/.zaikey` so existing Yosh setups work out of the box.
 
@@ -154,8 +174,8 @@ To satisfy both **Litty's Ghostty-style config** (`~/.litty/config`) and **Yosh'
   - `src/event.rs`:
     - Add `AppEvent::AiStatus { pane_id: u64, text: String }` and `AppEvent::AiResult { pane_id: u64, outcome: AiOutcome }`.
   - `src/tab.rs` & `src/main.rs`:
-    - Attach `AiPaneState` to `Pane` (allocated lazily on first `yo` command so idle panes use 0 extra bytes).
-    - Handle `Ctrl+C` during active `AiPaneState::Thinking` to set the cancel flag and print `Cancelled`.
+    - Store per-pane `AiPaneState` lazily in application state keyed by pane ID; idle panes have no AI session allocation.
+    - Handle `Ctrl+C` during active `AiPaneState::Thinking` to set the cancel flag, clear queued input, and print `Cancelled`. Queue ordinary typing, Enter, paste, IME commits, and dropped-file input until thinking finishes; replay after safe prompt prefill.
     - Handle `AiResult`: render Markdown chat/explanation into the pane's `Grid` (or before prompt) and write pre-filled command bytes to `pane.pty`.
 
 ### Phase 4: Shell Integration (`yo <query>` in zsh, bash, fish, nushell) & Multi-Step Continuation
@@ -172,8 +192,24 @@ To satisfy both **Litty's Ghostty-style config** (`~/.litty/config`) and **Yosh'
   - Anthropic, OpenAI Responses, and Chat Completions JSON request building & tool-call parsing.
   - Markdown-to-ANSI rendering (`**bold**`, `` `code` ``, `*italic*`).
   - `Grid::extract_scrollback_lines` and `OSC 778` dispatch in `src/grid/mod.rs`.
+- Integration and lifecycle tests for:
+  - Typing and Enter queue during thinking; Ctrl+C cancels curl/backoff and clears the queue.
+  - Queue overflow, pane closure, stale results, prompt readiness, and alternate-screen protection.
+  - Edited pending commands continue with actual executed input and exit status; empty Enter/new yo/Ctrl+C cancel chains.
+  - Multiline/control-character suggestions cannot execute without explicit user Enter.
+  - Unsolicited OSC 778 cannot trigger requests; bounded scrollback excludes the current prompt and joins soft wraps.
 - Cross-platform compile & lint checks:
   - `cargo check` (macOS)
   - `cargo check --target x86_64-unknown-linux-gnu` (Linux parity)
   - `cargo test`
   - `cargo clippy --all-targets`
+
+
+## Implementation Record (2026-11-01)
+
+- Implemented Phases 1–4: lazy per-pane sessions, shared bounded JSON parser (also reused by the updater), cancellable curl transport/retries, provider wire formats and tool loop, prompt/Markdown rendering, bounded scrollback, guarded OSC bridge, shell integration, edited-command continuation, compaction, and local commands.
+- Implemented the two approved interaction decisions, including queues for keyboard, paste, IME, and dropped files; cancellation discards pending input and late suggestions. Queued keys preserve the shell's active keyboard protocol.
+- Added configuration and usage documentation to README and a reproducible `python3 scripts/test-yo-shells.py` smoke test.
+- Validation: `cargo check`; `cargo check --target x86_64-unknown-linux-gnu`; `cargo test` outside sandbox (**271 passed, 1 existing ignored**); `cargo clippy --all-targets -- -D warnings`; `git diff --check`; isolated zsh and macOS Bash 3.2 PTY smoke tests.
+- AI tests use local mock HTTP responses, not production credentials. Covered tool-result round trips, scrollback/docs tools, compaction, in-flight curl cancellation, queued input/overflow, stale results, pane disposal, OSC authorization, full edited command capture, and macOS/Linux Ctrl+C versus Copy parity.
+- Remaining release validation: direct runtime checks on fish and Nushell (not installed on this machine), live-provider smoke tests with configured credentials, and GPU-window visual/idle-memory profiling. These are not claimed by the automated checks above. Package version remains 0.6.0.

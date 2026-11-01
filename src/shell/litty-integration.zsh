@@ -42,3 +42,29 @@ _litty_preexec() {
 autoload -Uz add-zsh-hook
 add-zsh-hook precmd _litty_precmd
 add-zsh-hook preexec _litty_preexec
+
+# `yo` stays in ZLE so natural-language punctuation never becomes shell syntax.
+_litty_yo_emit() {
+  local payload
+  payload=$(builtin printf '%s' "$1" | command base64 | command tr -d '\r\n')
+  builtin printf '\e]778;yo;%s\a' "$payload"
+}
+yo() { _litty_yo_emit "$*"; }
+_litty_accept_line() {
+  if [[ $BUFFER == yo || $BUFFER == yo[[:space:]]* ]]; then
+    local query=${BUFFER#yo}
+    query=${query##[[:space:]]#}
+    builtin print -s -- "$BUFFER"
+    zle -I
+    builtin print -r -- "$BUFFER"
+    BUFFER=''
+    _litty_yo_emit "$query"
+  fi
+  zle .accept-line
+}
+zle -N accept-line _litty_accept_line
+_litty_ai_repaint() { zle reset-prompt; }
+zle -N _litty_ai_repaint
+bindkey '\e[24;8~' _litty_ai_repaint
+
+builtin printf '\e]778;init\a'
