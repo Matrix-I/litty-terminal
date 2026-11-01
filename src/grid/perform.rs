@@ -130,6 +130,7 @@ impl Perform for Grid {
                     3 => {
                         self.history = 0;
                         self.display_offset = 0;
+                        self.scroll_fraction = 0.0;
                         self.graphics.prune(self.lines_pushed);
                         self.all_dirty = true;
                     }

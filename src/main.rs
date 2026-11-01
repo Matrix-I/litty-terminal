@@ -8,6 +8,7 @@ mod bidi;
 mod config;
 mod event;
 mod fontdb;
+mod frame_metrics;
 mod graphics;
 mod grid;
 mod history;
@@ -20,6 +21,7 @@ mod postfx;
 mod pty;
 mod renderer;
 mod search;
+mod scroll;
 #[cfg(test)]
 mod security_poc;
 mod shell_integration;
@@ -44,7 +46,7 @@ mod test_alloc;
 use parking_lot::Mutex;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
-use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, StartCause, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
@@ -82,6 +84,7 @@ struct State {
     extend_drag: bool,
     /// Pane whose scrollbar thumb is being dragged.
     scrollbar_drag: Option<u64>,
+    wheel_scroll: scroll::Accumulator,
     /// Mouse pointer outside links: the active pane's OSC 22 shape.
     pointer_icon: CursorIcon,
     /// Last desktop notification shown, to rate-limit OSC 9 / 777 floods.
@@ -178,6 +181,7 @@ struct App {
     /// after the last one closes, so a Dock click can reopen it.
     windows: Vec<State>,
     bench_ram_mode: bool,
+    scroll_fps_run: Option<frame_metrics::ScrollRun>,
 }
 
 impl App {
@@ -435,6 +439,7 @@ fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Option<&str>,
         click_on_selected_block: false,
         extend_drag: false,
         scrollbar_drag: None,
+        wheel_scroll: scroll::Accumulator::default(),
         pointer_icon: CursorIcon::Default,
         last_notification: None,
         secure_input: false,
@@ -484,6 +489,31 @@ impl ApplicationHandler<AppEvent> for App {
         }
         let state = create_window(event_loop, &self.waker, None, false).expect("spawn initial PTY");
         self.windows.push(state);
+
+        if self.scroll_fps_run.is_some() {
+            let s = &mut self.windows[0];
+            s.window.set_title("Litty — scroll FPS benchmark");
+            s.window.focus_window();
+            #[cfg(target_os = "macos")]
+            macos::activate_app();
+            let pane = s.tabs[s.active].active_pane().unwrap();
+            let mut g = pane.grid.lock();
+            let mut parser = vte::Parser::new();
+            for line in 0..5000 {
+                let text = format!("{line:05}  Scroll rendering benchmark: alpha beta gamma 0123456789\r\n");
+                for b in text.bytes() { g.feed_byte(&mut parser, b); }
+            }
+            g.scroll_display(2000);
+            drop(g);
+            let size = s.window.inner_size();
+            let refresh = s.window.current_monitor().and_then(|m| m.refresh_rate_millihertz());
+            println!("{{\"benchmark\":\"scroll_swapchain\",\"width_px\":{},\"height_px\":{},\"scale_factor\":{},\"monitor_millihz\":{},\"custom_shaders\":{},\"warmup_ms\":1000,\"scenario_ms\":5000}}",
+                size.width, size.height, s.window.scale_factor(), refresh.unwrap_or(0), s.config.custom_shaders.len());
+            s.renderer.start_frame_capture(s.occluded);
+            self.scroll_fps_run = Some(frame_metrics::ScrollRun::new());
+            s.window.request_redraw();
+            return;
+        }
 
         #[cfg(target_os = "macos")]
         {
@@ -766,6 +796,33 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(run) = &mut self.scroll_fps_run {
+            let now = std::time::Instant::now();
+            let Some(s) = self.windows.first_mut() else { event_loop.exit(); return };
+            if now.duration_since(run.start) >= std::time::Duration::from_secs(5) {
+                let (label, hz, _) = frame_metrics::ScrollRun::SCENARIOS[run.scenario];
+                s.renderer.finish_frame_capture(label, hz);
+                run.scenario += 1;
+                if run.scenario == frame_metrics::ScrollRun::SCENARIOS.len() {
+                    event_loop.exit();
+                    return;
+                }
+                run.start = now;
+                run.next = now;
+                run.ticks = 0;
+                s.renderer.start_frame_capture(s.occluded);
+            }
+            if run.due(now) {
+                let (_, _, pixels) = frame_metrics::ScrollRun::SCENARIOS[run.scenario];
+                if let Some(pane) = s.tabs[s.active].active_pane() {
+                    let direction = if run.ticks % 240 < 120 { 1.0 } else { -1.0 };
+                    pane.grid.lock().scroll_pixels(direction * pixels, s.renderer.cell_size().1 as f64);
+                }
+                s.window.request_redraw();
+            }
+            event_loop.set_control_flow(ControlFlow::WaitUntil(run.next));
+            return;
+        }
         if self.waker.is_queued() {
             event_loop.set_control_flow(ControlFlow::Poll);
             return;
@@ -863,9 +920,13 @@ impl App {
                             let tab = &s.tabs[s.active];
                             let rects = tab.compute_pane_rects(cols, rows);
                             if let Some(target) = rects.iter().find(|r| r.id == pane_id) {
-                                let pane_row = cell_row.saturating_sub(target.row).min(target.rows.saturating_sub(1));
                                 let pane_col = cell_col.saturating_sub(target.col).min(target.cols.saturating_sub(1));
-                                let pane_col = tab.pane(pane_id).map_or(pane_col, |p| p.grid.lock().logical_col(pane_row, pane_col));
+                                let top = s.renderer.cell_origin_px(target.row, target.col, show_tabs).1;
+                                let (pane_row, pane_col) = tab.pane(pane_id).map_or((cell_row.saturating_sub(target.row), pane_col), |p| {
+                                    let g = p.grid.lock();
+                                    let row = g.viewport_row(position.y - top, s.renderer.cell_size().1 as f64);
+                                    (row, g.logical_col(row, pane_col))
+                                });
                                 let end = (pane_row, pane_col);
                                 if s.extend_drag {
                                     if let Some(pane) = tab.pane(pane_id) {
@@ -1131,18 +1192,41 @@ impl App {
                 s.window.request_redraw();
             }
 
-            WindowEvent::MouseWheel { delta, .. } => {
+            WindowEvent::MouseWheel { delta, phase, .. } => {
                 if s.tabs.is_empty() {
                     return;
                 }
-                if s.history_search.is_open {
-                    let lines = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => y.round() as isize,
-                        MouseScrollDelta::PixelDelta(p) => {
-                            let cell_h = s.renderer.cell_size().1 as f64;
-                            (p.y / cell_h.max(1.0)).round() as isize
+                if matches!(phase, TouchPhase::Started | TouchPhase::Cancelled) {
+                    s.wheel_scroll.reset();
+                }
+                if phase == TouchPhase::Cancelled {
+                    return;
+                }
+                let target_id = pane_cell_at_mouse(s).map_or(s.tabs[s.active].active_pane_id, |(id, _, _)| id);
+                let target = if s.history_search.is_open { scroll::Target::History } else { scroll::Target::Pane(target_id) };
+                let (amount, unit, precise) = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => {
+                        let multiplier = if s.history_search.is_open { 1.0 } else { s.config.mouse_scroll_discrete };
+                        (y as f64 * multiplier, 1.0, false)
+                    }
+                    MouseScrollDelta::PixelDelta(p) => {
+                        let multiplier = if s.history_search.is_open { 1.0 } else { s.config.mouse_scroll_precision };
+                        (p.y * multiplier, s.renderer.cell_size().1.max(1) as f64, true)
+                    }
+                };
+                if precise && !s.history_search.is_open && !s.search.is_open && !s.inspector
+                    && let Some(pane) = s.tabs[s.active].pane(target_id) {
+                        let mut g = pane.grid.lock();
+                        let local = g.mouse_tracking == grid::MouseTracking::Off || s.mods.shift_key() || s.mods.super_key();
+                        if local && !g.alt_active {
+                            let changed = g.scroll_pixels(amount, unit);
+                            drop(g);
+                            if changed { s.window.request_redraw(); }
+                            return;
                         }
-                    };
+                    }
+                let lines = s.wheel_scroll.push(amount, unit, target, precise);
+                if s.history_search.is_open {
                     let visible_rows = s.renderer.history_popup_geometry(&s.history_search).map_or(10, |g| g.4);
                     if lines > 0 {
                         for _ in 0..lines.abs() {
@@ -1159,16 +1243,6 @@ impl App {
                     }
                     return;
                 }
-                let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => {
-                        (y as f64 * s.config.mouse_scroll_discrete).round() as isize
-                    }
-                    MouseScrollDelta::PixelDelta(p) => {
-                        let cell_h = s.renderer.cell_size().1 as f64;
-                        let px_lines = p.y / cell_h.max(1.0);
-                        (px_lines * s.config.mouse_scroll_precision).round() as isize
-                    }
-                };
                 if lines != 0 {
                     let count = lines.unsigned_abs().min(20);
                     let wheel = if lines > 0 { mouse::Button::WheelUp } else { mouse::Button::WheelDown };
@@ -1181,7 +1255,6 @@ impl App {
                     if alt_screen_scroll(s, lines) {
                         return;
                     }
-                    let target_id = pane_cell_at_mouse(s).map_or(s.tabs[s.active].active_pane_id, |(id, _, _)| id);
                     if let Some(pane) = s.tabs[s.active].pane(target_id) {
                         pane.grid.lock().scroll_display(lines);
                         s.window.request_redraw();
@@ -1219,6 +1292,7 @@ impl App {
             }
 
             WindowEvent::Occluded(occluded) => {
+                s.renderer.capture_occlusion(occluded);
                 s.occluded = occluded;
                 if occluded {
                     s.renderer.shrink_drawables();
@@ -1235,6 +1309,9 @@ impl App {
             }
 
             WindowEvent::Focused(focused) => {
+                if !focused {
+                    s.wheel_scroll.reset();
+                }
                 let was_focused = std::mem::replace(&mut s.focused, focused);
                 if focused && s.occluded {
                     s.occluded = false;
@@ -2054,15 +2131,13 @@ fn open_target(target: &str, is_path: bool, cwd: Option<&std::path::Path>) {
 /// Pane under the mouse pointer and the pane-relative `(row, col)` cell.
 /// Pane whose visible scrollbar (shown while scrolled back) is under the mouse.
 fn scrollbar_at_mouse(s: &State) -> Option<u64> {
-    const GRAB_PX: f64 = 12.0;
     let show_tabs = s.tabs.len() > 1;
     let (cols, rows) = s.renderer.grid_size_for_tabs(show_tabs);
     let tab = s.tabs.get(s.active)?;
     let (mx, my) = s.mouse_pos;
     tab.compute_pane_rects(cols, rows).into_iter().find_map(|r| {
-        let (_, top) = s.renderer.cell_origin_px(r.row, r.col, show_tabs);
-        let (right, bottom) = s.renderer.cell_origin_px(r.row + r.rows, r.col + r.cols, show_tabs);
-        let over = mx <= right && mx >= right - GRAB_PX && my >= top && my < bottom;
+        let (right, top, bottom) = s.renderer.scrollbar_track(&r, show_tabs);
+        let over = mx <= right && mx >= right - renderer::SCROLLBAR_WIDTH && my >= top && my < bottom;
         let scrolled = tab.pane(r.id).is_some_and(|p| p.grid.lock().scroll_position().1 > 0);
         (over && scrolled).then_some(r.id)
     })
@@ -2075,14 +2150,14 @@ fn drag_scrollbar(s: &mut State, pane_id: u64) {
     let Some(tab) = s.tabs.get(s.active) else { return };
     let Some(rect) = tab.compute_pane_rects(cols, rows).into_iter().find(|r| r.id == pane_id) else { return };
     let Some(pane) = tab.pane(pane_id) else { return };
-    let (_, top) = s.renderer.cell_origin_px(rect.row, rect.col, show_tabs);
-    let (_, bottom) = s.renderer.cell_origin_px(rect.row + rect.rows, rect.col, show_tabs);
-    let frac = ((s.mouse_pos.1 - top) / (bottom - top).max(1.0)).clamp(0.0, 1.0);
+    let (_, top, bottom) = s.renderer.scrollbar_track(&rect, show_tabs);
     let mut g = pane.grid.lock();
     let (history, offset) = g.scroll_position();
-    let total = (history + g.rows) as f64;
-    let top_line = (frac * total - g.rows as f64 / 2.0).round().clamp(0.0, history as f64) as usize;
-    g.scroll_display((history - top_line) as isize - offset as isize);
+    let track_height = (bottom - top).max(0.0);
+    let (_, height) = renderer::scrollbar_thumb(track_height, g.rows, history, offset);
+    let frac = ((s.mouse_pos.1 - top - height / 2.0) / (track_height - height).max(1.0)).clamp(0.0, 1.0);
+    let new_offset = ((1.0 - frac) * history as f64).round() as usize;
+    g.scroll_display(new_offset as isize - offset as isize);
     drop(g);
     s.window.request_redraw();
 }
@@ -2097,8 +2172,13 @@ fn pane_cell_at_mouse(s: &State) -> Option<(u64, usize, usize)> {
         .find(|r| col >= r.col && col < r.col + r.cols && row >= r.row && row < r.row + r.rows)
         .map(|r| {
             // Right-to-left rows are drawn reordered: hit-test the logical cell.
-            let (row, col) = (row - r.row, col - r.col);
-            let col = tab.pane(r.id).map_or(col, |p| p.grid.lock().logical_col(row, col));
+            let top = s.renderer.cell_origin_px(r.row, r.col, show_tabs).1;
+            let col = col - r.col;
+            let (row, col) = tab.pane(r.id).map_or((row - r.row, col), |p| {
+                let g = p.grid.lock();
+                let row = g.viewport_row(s.mouse_pos.1 - top, s.renderer.cell_size().1 as f64);
+                (row, g.logical_col(row, col))
+            });
             (r.id, row, col)
         })
 }
@@ -2280,11 +2360,12 @@ fn update_hovered_link(s: &mut State) {
                     && cell_row < r.row + r.rows
             }) {
                 if let Some(pane) = s.tabs[s.active].pane_mut(target.id) {
-                    let pane_row = cell_row - target.row;
-                    let (pane_col, candidate) = {
+                    let top = s.renderer.cell_origin_px(target.row, target.col, show_tabs).1;
+                    let (pane_row, pane_col, candidate) = {
                         let g = pane.grid.lock();
+                        let pane_row = g.viewport_row(s.mouse_pos.1 - top, s.renderer.cell_size().1 as f64);
                         let lcol = g.logical_col(pane_row, cell_col - target.col);
-                        (lcol, g.find_hyperlink_candidate_at(pane_row, lcol))
+                        (pane_row, lcol, g.find_hyperlink_candidate_at(pane_row, lcol))
                     };
                     match candidate {
                         Some(cand) => {
@@ -3883,6 +3964,7 @@ fn main() {
         waker: Waker { proxy: event_loop.create_proxy(), queued: Arc::new(AtomicBool::new(false)) },
         windows: Vec::new(),
         bench_ram_mode: is_bench_ram,
+        scroll_fps_run: std::env::args().nth(1).filter(|s| s == "+bench-scroll-fps" || s == "--bench-scroll-fps").map(|_| frame_metrics::ScrollRun::new()),
     };
     event_loop.run_app(&mut app).expect("run app");
 }

@@ -25,8 +25,19 @@ pub struct RenderPane {
     pub is_active: bool,
 }
 
-/// Instance `bg` bit: draw the scrollbar thumb at the right edge of this cell.
-const SCROLLBAR_THUMB: u32 = 0x20;
+/// Dedicated scrollbar instance (preview + thumb bits); upper bits store height.
+const SCROLLBAR_OVERLAY: u32 = 0x30;
+pub const SCROLLBAR_WIDTH: f64 = 10.0;
+
+/// Thumb position within the track and height, shared by drawing and dragging.
+pub fn scrollbar_thumb(track_height: f64, rows: usize, history: usize, offset: usize) -> (f64, f64) {
+    let track_height = track_height.max(0.0);
+    let total = (history + rows).max(1) as f64;
+    let height = (track_height * rows as f64 / total).max(SCROLLBAR_WIDTH).min(track_height).round().min(track_height);
+    let travel = (track_height - height).max(0.0);
+    let y = travel * history.saturating_sub(offset) as f64 / history.max(1) as f64;
+    (y, height)
+}
 /// Instance `bg` bit: the cell belongs to an unfocused split.
 const UNFOCUSED: u32 = 0x40;
 /// Instance `fg` bit: the slot is a color glyph (emoji) in the color atlas.
@@ -36,8 +47,9 @@ const COLOR_GLYPH: u32 = 0x04;
 ///
 /// `glyph`: bits 0..16 atlas slot, 16..19 pane divider flags, 19..31 underline
 /// color as 4-bit RGB, bit 31 set when that color is used. `bg` low byte: bits 0..3
-/// underline style, bit 3 strikethrough, bit 4 preview row, bit 5 scrollbar thumb,
-/// bit 7 explicit color.
+/// underline style, bit 3 strikethrough, bit 4 preview row, bit 7 explicit color.
+/// Extra scrollbar instances use low byte 0x30 and pack pixel height above it;
+/// their `glyph` and `fg` fields hold the x/y position as f32 bits.
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
 struct Instance {
@@ -85,13 +97,40 @@ struct Uniforms {
     flip_y: u32,
     /// 0 = draw everything, 1 = backgrounds only, 2 = text only (images under the text).
     layer: u32,
-    _pad: u32,
+    pane_count: u32,
 }
 
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 128);
 const _: () = assert!(std::mem::size_of::<Instance>() == 12);
 
+
+/// One descriptor per pane, shared by its cells and its additional bottom row.
+#[repr(C)]
+#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct Viewport {
+    col: u32,
+    row: u32,
+    cols: u32,
+    rows: u32,
+    extra_start: u32,
+    shift: f32,
+    top: f32,
+    bottom: f32,
+    divider: u32,
+    _pad: u32,
+}
+
+fn make_viewport_buffer(device: &wgpu::Device, panes: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("pane viewports"),
+        size: (panes.max(1) * std::mem::size_of::<Viewport>()) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
 pub struct Renderer {
+    frame_capture: Option<crate::frame_metrics::Capture>,
     surface: wgpu::Surface<'static>,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
@@ -107,6 +146,8 @@ pub struct Renderer {
     sampler: wgpu::Sampler,
     instance_buf: wgpu::Buffer,
     instances: Vec<Instance>,
+    viewport_buf: wgpu::Buffer,
+    viewports: Vec<Viewport>,
     atlas: Atlas,
     /// Window padding in physical pixels `(x, y)`, from `window-padding-x/y` points.
     pad: (u32, u32),
@@ -220,6 +261,16 @@ fn create_cells_pipeline(
                 count: None,
             },
             wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
                 binding: 3,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
@@ -272,6 +323,22 @@ fn create_cells_pipeline(
 }
 
 impl Renderer {
+    pub fn start_frame_capture(&mut self, occluded: bool) {
+        let mut capture = crate::frame_metrics::Capture::new();
+        capture.occluded(occluded);
+        self.frame_capture = Some(capture);
+    }
+
+    pub fn capture_occlusion(&mut self, occluded: bool) {
+        if let Some(capture) = &mut self.frame_capture { capture.occluded(occluded); }
+    }
+
+    pub fn finish_frame_capture(&mut self, label: &str, input_hz: u32) {
+        if let Some(capture) = self.frame_capture.take() {
+            println!("{}", capture.report(label, input_hz));
+        }
+    }
+
     pub fn new(
         window: Arc<Window>,
         font: Arc<FontSet>,
@@ -372,20 +439,22 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-        let bind_group = make_bind_group(&device, &bgl, &uniform_buf, &atlas, &sampler);
+        let viewport_buf = make_viewport_buffer(&device, 1);
+        let bind_group = make_bind_group(&device, &bgl, &uniform_buf, &atlas, &sampler, &viewport_buf);
         let text_uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("text uniforms"),
             size: std::mem::size_of::<Uniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let text_bind_group = make_bind_group(&device, &bgl, &text_uniform_buf, &atlas, &sampler);
+        let text_bind_group = make_bind_group(&device, &bgl, &text_uniform_buf, &atlas, &sampler, &viewport_buf);
         let instance_buf = make_instance_buf(&device, 1);
         let scale_factor = window.scale_factor();
         let pad_px = (scale_factor * 4.0).round() as u32;
 
         let images = crate::image_layer::ImageLayer::new(&device, format);
         Renderer {
+            frame_capture: None,
             surface,
             device,
             queue,
@@ -400,6 +469,8 @@ impl Renderer {
             sampler,
             instance_buf,
             instances: Vec::new(),
+            viewport_buf,
+            viewports: Vec::new(),
             atlas,
             pad: (pad_px, pad_px),
             pad_pt: (4.0, 4.0),
@@ -632,9 +703,9 @@ impl Renderer {
     }
 
     fn rebind_atlas(&mut self) {
-        self.bind_group = make_bind_group(&self.device, &self.bgl, &self.uniform_buf, &self.atlas, &self.sampler);
+        self.bind_group = make_bind_group(&self.device, &self.bgl, &self.uniform_buf, &self.atlas, &self.sampler, &self.viewport_buf);
         self.text_bind_group =
-            make_bind_group(&self.device, &self.bgl, &self.text_uniform_buf, &self.atlas, &self.sampler);
+            make_bind_group(&self.device, &self.bgl, &self.text_uniform_buf, &self.atlas, &self.sampler, &self.viewport_buf);
     }
 
     pub fn set_fonts(&mut self, fonts: Arc<FontSet>, px: f32) {
@@ -693,6 +764,16 @@ impl Renderer {
         (x, y)
     }
 
+    /// Outer panes extend through window padding; inner panes end at their divider.
+    pub fn scrollbar_track(&self, rect: &PaneRect, show_tabs: bool) -> (f64, f64, f64) {
+        let (cols, rows) = self.grid_size_for_tabs(show_tabs);
+        let (_, top) = self.cell_origin_px(rect.row, rect.col, show_tabs);
+        let (right, bottom) = self.cell_origin_px(rect.row + rect.rows, rect.col + rect.cols, show_tabs);
+        let right = if rect.col + rect.cols >= cols { self.config.width as f64 } else { right };
+        let bottom = if rect.row + rect.rows >= rows { self.config.height as f64 } else { bottom };
+        (right, top, bottom)
+    }
+
     /// Map a physical window cursor position `(x_px, y_px)` to a terminal grid
     /// cell `(row, col)`. Returns `None` if the cursor is inside the tab bar.
     pub fn pixel_to_cell(
@@ -733,6 +814,7 @@ impl Renderer {
         preedit: &str,
         inspector: Option<&[String]>,
     ) {
+        let capture_start = self.frame_capture.as_ref().map(|_| std::time::Instant::now());
         if panes.is_empty() {
             return;
         }
@@ -752,9 +834,19 @@ impl Renderer {
 
         // Overlays are redrawn every frame on top of the cells.
         let is_search_open = history_search.is_some_and(|h| h.is_open) || search.is_open;
+        // Cell-based overlays stay fixed while open; snap once when opening them.
+        if is_search_open || inspector.is_some() {
+            for pane in panes {
+                let mut g = pane.grid.lock();
+                if g.scroll_fraction > 0.0 { g.scroll_display(0); }
+            }
+        }
         let (cols, term_rows) = self.grid_size_for_tabs(tab_bar.is_some());
         let total_rows = term_rows + top_rows;
         let n = cols * total_rows;
+        let extra_cells: usize = panes.iter().map(|p| p.rect.cols).sum();
+        let scrollbar_start = n + extra_cells;
+        let instance_count = scrollbar_start + panes.len();
 
         let active_pane = panes.iter().find(|p| p.is_active).unwrap_or(&panes[0]);
         let (active_cur, active_dirty, defaults, cursor_color, progress, active_cursor_style) = {
@@ -762,7 +854,7 @@ impl Renderer {
             let cur = g
                 .cursor_pos()
                 .map(|(cx, cy)| (active_pane.rect.col + g.cursor_visual_col(cy, cx), active_pane.rect.row + cy + top_rows));
-            let dirty = g.all_dirty || g.dirty.iter().any(|&d| d);
+            let dirty = g.all_dirty || g.viewport_dirty || g.dirty.iter().any(|&d| d);
             let cursor_color = g.cursor_color().map_or(self.config_cursor_color, |c| c | 1);
             let cursor_style = match g.cursor_shape {
                 1 | 2 => 0, // Block
@@ -792,10 +884,10 @@ impl Renderer {
         if !self.force_full && !is_search_open && !self.animate {
             let any_dirty = active_dirty || panes.iter().filter(|p| p.id != active_pane.id).any(|p| {
                 let g = p.grid.lock();
-                g.all_dirty || g.dirty.iter().any(|&d| d)
+                g.all_dirty || g.viewport_dirty || g.dirty.iter().any(|&d| d)
             });
             if !any_dirty
-                && self.instances.len() == n
+                && self.instances.len() == instance_count
                 && active_cur == self.last_cursor
                 && effective_visible == self.last_cursor_visible
             {
@@ -803,6 +895,7 @@ impl Renderer {
             }
         }
 
+        let acquire_start = capture_start.map(|_| std::time::Instant::now());
         let frame = match self.surface.get_current_texture() {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
@@ -816,21 +909,29 @@ impl Renderer {
             }
         };
 
-        if self.instances.len() != n {
+        let acquire_ms = acquire_start.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
+
+        if self.instances.len() != instance_count {
             self.instances.clear();
-            self.instances.resize(n, Instance::default());
-            if self.instances.capacity() > n.saturating_mul(2) && self.instances.capacity() > 4096 {
+            self.instances.resize(instance_count, Instance::default());
+            if self.instances.capacity() > instance_count.saturating_mul(2) && self.instances.capacity() > 4096 {
                 self.instances.shrink_to_fit();
             }
-            let needed_bytes = (n * std::mem::size_of::<Instance>()) as u64;
+            let needed_bytes = (instance_count * std::mem::size_of::<Instance>()) as u64;
             if self.instance_buf.size() < needed_bytes
                 || (self.instance_buf.size() > needed_bytes.saturating_mul(2) && self.instance_buf.size() > 65536)
             {
-                self.instance_buf = make_instance_buf(&self.device, n);
+                self.instance_buf = make_instance_buf(&self.device, instance_count);
             }
             self.force_full = true;
         }
 
+        if self.viewport_buf.size() < (panes.len() * std::mem::size_of::<Viewport>()) as u64 {
+            self.viewport_buf = make_viewport_buffer(&self.device, panes.len());
+            self.rebind_atlas();
+        }
+        self.viewports.clear();
+        let mut extra_start = n;
         self.atlas.begin_frame();
         let full = self.force_full;
         let (mut lo, mut hi) = (usize::MAX, 0);
@@ -846,13 +947,37 @@ impl Renderer {
         self.placed.clear();
         let (cw, ch) = (self.atlas.cell_w, self.atlas.cell_h);
 
-        for pane in panes {
+        for (pane_index, pane) in panes.iter().enumerate() {
             let pane_link = hovered_link.filter(|(id, _)| *id == pane.id).map(|(_, l)| l);
             let mut g = pane.grid.lock();
             let pane_full = full || g.all_dirty;
             let pane_defaults = Some((g.fg_color(), g.bg_color())).filter(|&d| d != defaults);
             let p_cols = pane.rect.cols.min(g.cols);
             let p_rows = pane.rect.rows.min(g.rows);
+            let (right, top, bottom) = self.scrollbar_track(&pane.rect, tab_bar.is_some());
+            let (history, offset) = g.scroll_position();
+            let track_height = (bottom - top).max(0.0);
+            let (thumb_y, height) = scrollbar_thumb(track_height, g.rows, history, offset);
+            let y = top + thumb_y + (track_height - height).max(0.0) * g.scroll_fraction / history.max(1) as f64;
+            self.viewports.push(Viewport {
+                col: pane.rect.col as u32,
+                row: (pane.rect.row + top_rows) as u32,
+                cols: pane.rect.cols as u32,
+                rows: pane.rect.rows as u32,
+                extra_start: extra_start as u32,
+                shift: -(g.scroll_fraction as f32) * ch as f32,
+                top: self.cell_origin_px(pane.rect.row, pane.rect.col, tab_bar.is_some()).1 as f32,
+                bottom: self.cell_origin_px(pane.rect.row + pane.rect.rows, pane.rect.col, tab_bar.is_some()).1 as f32,
+                divider: u32::from(pane.rect.has_border_bottom) | (u32::from(pane.is_active || active_rect.is_some_and(|ar| {
+                    ar.row == pane.rect.row + pane.rect.rows && ar.col < pane.rect.col + pane.rect.cols && ar.col + ar.cols > pane.rect.col
+                })) << 1),
+                _pad: 0,
+            });
+            self.instances[scrollbar_start + pane_index] = Instance {
+                glyph: ((right - SCROLLBAR_WIDTH) as f32).to_bits(),
+                fg: (y as f32).to_bits(),
+                bg: SCROLLBAR_OVERLAY | (if offset > 0 { (height as u32).min(0xFF_FFFF) } else { 0 } << 8),
+            };
 
             // Collect visible images while g is locked to eliminate redundant grid locking in subsequent passes.
             g.visible_images(&mut self.image_draws);
@@ -860,7 +985,7 @@ impl Renderer {
             let clip = [px0 as u32, py0 as u32, pane.rect.cols as u32 * cw, pane.rect.rows as u32 * ch];
             for draw in self.image_draws.drain(..) {
                 let x = px0 as f32 + (draw.col as u32 * cw) as f32;
-                let y = py0 as f32 + draw.row as f32 * ch as f32;
+                let y = py0 as f32 + (draw.row as f32 - g.scroll_fraction as f32) * ch as f32;
                 let rect = match draw.px {
                     Some([dx, dy, w, h]) => [x + dx, y + dy, w, h],
                     None if draw.fit => [x, y, (draw.cols as u32 * cw) as f32, (draw.rows as u32 * ch) as f32],
@@ -869,6 +994,15 @@ impl Renderer {
                 self.placed.push(crate::image_layer::Placed { draw, rect, clip });
             }
 
+            if g.scroll_fraction > 0.0 && (pane_full || g.dirty.iter().any(|&d| d)) {
+                self.build_pane_row(
+                    &g, p_rows, Some(extra_start), top_rows + pane.rect.row + p_rows,
+                    pane.rect.col, p_cols, cols, &pane.rect, pane.is_active,
+                    active_rect.as_ref(), pane_link, pane_defaults,
+                );
+            }
+            extra_start += pane.rect.cols;
+            g.viewport_dirty = false;
             if !pane_full && !g.dirty.iter().any(|&d| d) {
                 continue;
             }
@@ -880,6 +1014,7 @@ impl Renderer {
                         self.build_pane_row(
                             &g,
                             r,
+                            None,
                             dst_row,
                             pane.rect.col,
                             p_cols,
@@ -907,18 +1042,27 @@ impl Renderer {
                 if let Some((titles, active_idx)) = tab_bar {
                     self.build_tab_bar_row(cols, titles, active_idx);
                 }
-                for pane in panes {
+                for (pane_index, pane) in panes.iter().enumerate() {
                     let pane_link = hovered_link.filter(|(id, _)| *id == pane.id).map(|(_, l)| l);
                     let g = pane.grid.lock();
                     let pane_defaults = Some((g.fg_color(), g.bg_color())).filter(|&d| d != defaults);
                     let p_cols = pane.rect.cols.min(g.cols);
                     let p_rows = pane.rect.rows.min(g.rows);
+                    let extra = self.viewports[pane_index].extra_start as usize;
+                    if g.scroll_fraction > 0.0 {
+                        self.build_pane_row(
+                            &g, p_rows, Some(extra), top_rows + pane.rect.row + p_rows,
+                            pane.rect.col, p_cols, cols, &pane.rect, pane.is_active,
+                            active_rect.as_ref(), pane_link, pane_defaults,
+                        );
+                    }
                     for r in 0..p_rows {
                         let dst_row = top_rows + pane.rect.row + r;
                         if dst_row < total_rows {
                             self.build_pane_row(
                                 &g,
                                 r,
+                                None,
                                 dst_row,
                                 pane.rect.col,
                                 p_cols,
@@ -1037,6 +1181,11 @@ impl Renderer {
                 );
             }
         }
+        self.queue.write_buffer(
+            &self.instance_buf,
+            (n * std::mem::size_of::<Instance>()) as u64,
+            bytemuck::cast_slice(&self.instances[n..]),
+        );
         let (cx, cy) = cursor.unwrap_or((0, 0));
         let tab_info = match tab_bar {
             Some((titles, active_idx)) => ((active_idx as u32) << 16) | (titles.len() as u32 & 0xFFFF),
@@ -1080,8 +1229,10 @@ impl Renderer {
             bell_border: self.bell_border as u32,
             flip_y: self.postfx.is_some() as u32,
             layer: 0,
-            _pad: 0,
+            pane_count: panes.len() as u32,
         };
+
+        self.queue.write_buffer(&self.viewport_buf, 0, bytemuck::cast_slice(&self.viewports));
 
         // Lower z first; equal z keeps the placement order.
         self.placed.sort_by_key(|p| p.draw.z);
@@ -1123,7 +1274,7 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            let instances = 0..(cols * total_rows) as u32;
+            let instances = 0..instance_count as u32;
             if layered {
                 // Kitty z order: below cell backgrounds, below the text, above it.
                 use crate::graphics::Z_BELOW_BG;
@@ -1151,6 +1302,10 @@ impl Renderer {
         }
         self.queue.submit(Some(encoder.finish()));
         frame.present();
+        if let (Some(capture), Some(start)) = (&mut self.frame_capture, capture_start) {
+            let now = std::time::Instant::now();
+            capture.record(now, now.duration_since(start).as_secs_f64() * 1000.0, acquire_ms);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1158,6 +1313,7 @@ impl Renderer {
         &mut self,
         g: &Grid,
         src_row: usize,
+        instance_start: Option<usize>,
         dst_row: usize,
         dst_col: usize,
         p_cols: usize,
@@ -1175,16 +1331,8 @@ impl Renderer {
         const CURRENT_FG: u32 = 0x1E1E_2E80;
         let row = g.display_row(src_row);
         let hits = g.search_hits(src_row);
-        let start = dst_row * window_cols + dst_col;
+        let start = instance_start.unwrap_or(dst_row * window_cols + dst_col);
         let is_link_row = hovered_link.is_some_and(|l| l.row == src_row);
-        // Overlay scrollbar thumb in the last column while scrolled back.
-        let (history, offset) = g.scroll_position();
-        let on_thumb = offset > 0 && {
-            let total = history + g.rows;
-            let len = (g.rows * g.rows / total).max(1);
-            let start = (history - offset) * g.rows / total;
-            src_row >= start && src_row < start + len
-        };
         let is_last_row = src_row + 1 == rect.rows;
 
         let is_border_right_active = is_active
@@ -1275,7 +1423,7 @@ impl Renderer {
                     div_flags |= 4;
                 }
             }
-            if rect.has_border_bottom && is_last_row {
+            if rect.has_border_bottom && is_last_row && g.scroll_fraction == 0.0 {
                 div_flags |= 2;
                 if is_border_bottom_active {
                     div_flags |= 4;
@@ -1309,9 +1457,6 @@ impl Renderer {
             }
             if self.atlas.is_color(slot) {
                 dst.fg |= COLOR_GLYPH;
-            }
-            if on_thumb && v + 1 == p_cols {
-                dst.bg |= SCROLLBAR_THUMB;
             }
             if !is_active {
                 dst.bg |= UNFOCUSED;
@@ -1408,7 +1553,7 @@ impl Renderer {
     /// Inspector panel in the bottom-right corner: a frame around `lines`,
     /// the first of which is the title.
     fn build_inspector(&mut self, cols: usize, top_rows: usize, total_rows: usize, lines: &[String], lo: &mut usize, hi: &mut usize) {
-        const BOX_BG: u32 = 0x1819_2480;
+        const BOX_BG: u32 = 0x1819_2490;
         const BORDER_FG: u32 = 0x585B_7080;
         const TITLE_FG: u32 = 0x89DC_EB80;
         const LABEL_FG: u32 = 0xA6AD_C880;
@@ -1486,7 +1631,7 @@ impl Renderer {
         let Some((x0, y0, w)) = Self::search_box_geometry(cols, top_rows, total_rows) else {
             return;
         };
-        const BOX_BG: u32 = 0x1819_2480;
+        const BOX_BG: u32 = 0x1819_2490;
         const BORDER_FG: u32 = 0x585B_7080;
         const TITLE_FG: u32 = 0x89DC_EB80;
         const PROMPT_FG: u32 = 0xA6E3_A180;
@@ -1631,7 +1776,7 @@ impl Renderer {
             return;
         };
 
-        const POPUP_BG: u32 = 0x1819_2480;       // Catppuccin deep slate (#181924) with bit 7 set
+        const POPUP_BG: u32 = 0x1819_2490;       // Catppuccin deep slate (#181924) with bit 7 set
         const BORDER_FG: u32 = 0x585B_7080;      // Slate gray border
         const TITLE_FG: u32 = 0x89DC_EB80;       // Cyan title
         const BADGE_FG: u32 = 0xA6AD_C880;       // Lavender counter
@@ -1640,7 +1785,7 @@ impl Renderer {
         const QUERY_FG: u32 = 0xF2F2_F780;       // Crisp white query text
         const DIM_FG: u32 = 0x6C70_8680;         // Dim placeholder
         const CURSOR_FG: u32 = 0xCBA6_F780;      // Lavender block cursor
-        const SEL_BG: u32 = 0x3134_4C80;         // Selection highlight background with bit 7 set
+        const SEL_BG: u32 = 0x3134_4C90;         // Selection highlight background with bit 7 set
         const SEL_ARROW_FG: u32 = 0x00BF_E380;   // Cyan selection arrow ➜
         const SEL_TEXT_FG: u32 = 0xFFFF_FF80;     // Bright white text for selected item
         const TEXT_FG: u32 = 0xBAC2_DE80;        // Soft text for unselected item
@@ -1941,12 +2086,14 @@ fn make_bind_group(
     uniform_buf: &wgpu::Buffer,
     atlas: &Atlas,
     sampler: &wgpu::Sampler,
+    viewport_buf: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("bind group"),
         layout: bgl,
         entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: uniform_buf.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 4, resource: viewport_buf.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&atlas.view) },
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&atlas.color_view) },
@@ -1980,6 +2127,114 @@ fn tab_label(title: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::tab_label;
+
+    #[test]
+    #[ignore = "requires a Metal/Vulkan adapter; run explicitly for GPU pixel verification"]
+    fn precise_scroll_gpu_pixels() {
+        use super::*;
+        use wgpu::util::DeviceExt;
+        let gpu = wgpu::Instance::default();
+        let adapter = pollster::block_on(gpu.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("GPU adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None)).unwrap();
+        for flip_y in [0, 1] {
+            let format = wgpu::TextureFormat::Rgba8Unorm;
+            let (layout, pipeline) = create_cells_pipeline(&device, format);
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("scroll test"), size: wgpu::Extent3d { width: 64, height: 48, depth_or_array_layers: 1 },
+                mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let dummy = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("blank atlas"), size: wgpu::Extent3d { width: 16, height: 16, depth_or_array_layers: 1 },
+                mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+            });
+            let dummy_view = dummy.create_view(&Default::default());
+            let sampler = device.create_sampler(&Default::default());
+            let uniforms = Uniforms { screen: [64.0, 48.0], cell: [16.0, 16.0], atlas_size: [16.0, 16.0],
+                offset: [0.0, 8.0], cols: 4, slots_per_row: 1, bg_opacity: 1.0, pane_count: 2, flip_y, ..Default::default() };
+            let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None, contents: bytemuck::bytes_of(&uniforms), usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let viewports = [
+                Viewport { cols: 3, rows: 2, extra_start: 8, shift: -12.0, top: 8.0, bottom: 40.0, divider: 1, ..Default::default() },
+                Viewport { col: 3, cols: 1, rows: 2, extra_start: 11, top: 8.0, bottom: 40.0, ..Default::default() },
+            ];
+            let viewport_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None, contents: bytemuck::cast_slice(&viewports), usage: wgpu::BufferUsages::STORAGE,
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &layout, entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: uniform_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dummy_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&dummy_view) },
+                wgpu::BindGroupEntry { binding: 4, resource: viewport_buf.as_entire_binding() },
+            ] });
+            let mut cells = Vec::new();
+            for bg in [0xFF00_0080, 0x00FF_0080, 0x0000_FF80] {
+                cells.extend([Instance { bg, ..Default::default() }; 4]);
+            }
+            cells.push(Instance { glyph: 54.0f32.to_bits(), fg: 12.0f32.to_bits(), bg: SCROLLBAR_OVERLAY | (24 << 8) });
+            let instances = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None, contents: bytemuck::cast_slice(&cells), usage: wgpu::BufferUsages::VERTEX,
+            });
+            let readback = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 256 * 48,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let view = texture.create_view(&Default::default());
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
+                    ..Default::default()
+                });
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.set_vertex_buffer(0, instances.slice(..));
+                pass.draw(0..4, 0..cells.len() as u32);
+            }
+            encoder.copy_texture_to_buffer(texture.as_image_copy(), wgpu::TexelCopyBufferInfo { buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256), rows_per_image: None } },
+                wgpu::Extent3d { width: 64, height: 48, depth_or_array_layers: 1 });
+            queue.submit(Some(encoder.finish()));
+            let (tx, rx) = std::sync::mpsc::channel();
+            readback.slice(..).map_async(wgpu::MapMode::Read, move |result| { tx.send(result).unwrap(); });
+            let _ = device.poll(wgpu::Maintain::Wait);
+            rx.recv().unwrap().unwrap();
+            let pixels = readback.slice(..).get_mapped_range();
+            let rgb = |x: usize, y: usize| {
+                let y = if flip_y == 0 { y } else { 47 - y };
+                pixels[y * 256 + x * 4..y * 256 + x * 4 + 3].to_vec()
+            };
+            assert_eq!(rgb(32, 7), [0, 0, 0]); // top clipping
+            assert_eq!(rgb(32, 10), [255, 0, 0]);
+            assert_eq!(rgb(32, 20), [0, 255, 0]);
+            assert_eq!(rgb(32, 35), [0, 0, 255]); // additional bottom row
+            assert_eq!(rgb(32, 39), [53, 54, 64]); // split divider stays fixed
+            assert_eq!(rgb(32, 40), [0, 0, 0]); // bottom clipping
+            assert_eq!(rgb(53, 20), [255, 0, 0]); // adjacent pane is stationary; exactly 10px width
+            assert_ne!(rgb(63, 24), [0, 255, 0]); // flush against right edge
+            assert_eq!(rgb(54, 12), [255, 0, 0]); // rounded top-left corner
+            if flip_y == 0 && let Some(path) = std::env::var_os("LITTY_SCROLL_TEST_IMAGE") {
+                let mut png = png::Encoder::new(std::fs::File::create(path).unwrap(), 64, 48);
+                png.set_color(png::ColorType::Rgba);
+                png.set_depth(png::BitDepth::Eight);
+                png.write_header().unwrap().write_image_data(&pixels).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn scrollbar_thumb_reaches_track_ends_and_keeps_caps_visible() {
+        use super::scrollbar_thumb;
+        assert_eq!(scrollbar_thumb(400.0, 40, 360, 360), (0.0, 40.0));
+        assert_eq!(scrollbar_thumb(400.0, 40, 360, 0), (360.0, 40.0));
+        assert_eq!(scrollbar_thumb(400.0, 40, 360, 180), (180.0, 40.0));
+        assert_eq!(scrollbar_thumb(400.0, 40, 100_000, 100_000), (0.0, 10.0));
+        assert_eq!(scrollbar_thumb(6.0, 40, 100_000, 1), (0.0, 6.0));
+        assert_eq!(scrollbar_thumb(0.0, 0, 0, 0), (0.0, 0.0));
+    }
 
     #[test]
     fn test_tab_label_strips_user_host_prefix() {

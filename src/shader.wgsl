@@ -29,13 +29,27 @@ struct Uniforms {
     bell_border: u32,       // 1 = outline the window (bell-features = border)
     flip_y: u32,            // 1 = draw upside down (into a custom-shader texture)
     layer: u32,             // 0 = everything, 1 = backgrounds only, 2 = text only (images under the text)
-    pad2: u32,
+    pane_count: u32,
+};
+
+struct Viewport {
+    col: u32,
+    row: u32,
+    cols: u32,
+    rows: u32,
+    extra_start: u32,
+    shift: f32,
+    top: f32,
+    bottom: f32,
+    divider: u32,
+    pad: u32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
 @group(0) @binding(3) var color_atlas: texture_2d<f32>;  // premultiplied RGBA emoji, same slots
+@group(0) @binding(4) var<storage, read> viewports: array<Viewport>;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -44,8 +58,8 @@ struct VsOut {
     @location(2) @interpolate(flat) fg: vec3<f32>,
     @location(3) @interpolate(flat) bg: vec3<f32>,
     // bits 0..3 = underline style, bit 3 = strikethrough, bits 4..7 = dividers, bit 7 = tab_bar_row,
-    // bits 8..11 = cursor style, bit 11 = scrollbar thumb, bit 12 = unfocused split,
-    // bit 13 = color glyph, bits 16..31 = sxy.y
+    // bits 8..10 = cursor style, bit 11 = fixed bottom divider, bit 12 = unfocused split,
+    // bit 13 = color glyph, bit 14 = scrollbar overlay, bits 16..31 = sxy.y
     @location(4) @interpolate(flat) flags: u32,
     @location(5) @interpolate(flat) col: u32,
     @location(6) @interpolate(flat) ul: vec3<f32>,
@@ -54,6 +68,7 @@ struct VsOut {
     // edge quads may be stretched over the padding (bell border).
     @location(8) @interpolate(flat) origin: vec2<f32>,
     @location(9) @interpolate(flat) uv0: vec2<f32>,
+    @location(10) @interpolate(flat) clip_y: vec2<f32>,
 };
 
 fn unpack(c: u32) -> vec3<f32> {
@@ -157,12 +172,51 @@ fn vs_main(
     @location(2) bg: u32,
 ) -> VsOut {
     let corner = vec2<f32>(f32(vi & 1u), f32(vi >> 1u));
+    // Extra instances follow the terminal cells and draw a capsule in pixel space.
+    if ((bg & 255u) == 48u) {
+        let origin = vec2<f32>(bitcast<f32>(glyph), bitcast<f32>(fg));
+        let size = vec2<f32>(10.0, f32(bg >> 8u));
+        let px = origin + corner * size;
+        var bar: VsOut;
+        bar.pos = vec4<f32>(px.x / u.screen.x * 2.0 - 1.0, 1.0 - px.y / u.screen.y * 2.0, 0.0, 1.0);
+        if (u.flip_y != 0u) { bar.pos.y = -bar.pos.y; }
+        bar.flags = 16384u;
+        bar.origin = origin;
+        bar.uv0 = size;
+        return bar;
+    }
     let cols = max(u.cols, 1u);
-    let col = ii % cols;
-    let row = ii / cols;
+    var col = ii % cols;
+    var row = ii / cols;
+    var shift = 0.0;
+    var clip_y = vec2<f32>(0.0, u.screen.y);
+    var divider = 0u;
+    let is_preview = (bg & 16u) != 0u;
+    if (!is_preview) {
+        for (var i = 0u; i < u.pane_count; i++) {
+            let pane = viewports[i];
+            let extra = ii >= pane.extra_start && ii < pane.extra_start + pane.cols;
+            if (extra) {
+                if (pane.shift == 0.0) {
+                    var hidden: VsOut;
+                    hidden.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+                    return hidden;
+                }
+                col = pane.col + ii - pane.extra_start;
+                row = pane.row + pane.rows;
+            }
+            if (extra || (col >= pane.col && col < pane.col + pane.cols && row >= pane.row && row < pane.row + pane.rows)) {
+                shift = pane.shift;
+                clip_y = vec2<f32>(pane.top, pane.bottom);
+                if (shift != 0.0 && (pane.divider & 1u) != 0u) {
+                    divider = 2048u | select(0u, 64u, (pane.divider & 2u) != 0u);
+                }
+                break;
+            }
+        }
+    }
     let tab_count = u.tab_info & 0xFFFFu;
     let is_tab_row = tab_count > 0u && row == 0u;
-    let is_preview = (bg & 16u) != 0u;
 
     var px: vec2<f32>;
     if (is_tab_row) {
@@ -183,6 +237,7 @@ fn vs_main(
     } else {
         px = (vec2<f32>(f32(col), f32(row)) + corner) * u.cell + u.offset;
     }
+    px.y += shift;
     let origin = px - corner * u.cell;
     // Bell border: stretch the outermost cells over the padding so it can be drawn there.
     if (u.bell_border != 0u && !is_tab_row && !is_preview) {
@@ -209,6 +264,7 @@ fn vs_main(
     out.local = corner;
     out.origin = origin;
     out.uv0 = sxy * u.cell / u.atlas_size;
+    out.clip_y = clip_y;
 
     // fg low byte: bit 7 = explicit color, bits 0-1 = bold / italic (atlas variants),
     // bit 2 = color glyph.
@@ -229,7 +285,7 @@ fn vs_main(
     out.ul = select(f, vec3<f32>(f32(ul >> 8u), f32((ul >> 4u) & 15u), f32(ul & 15u)) / 15.0, (glyph >> 31u) != 0u);
     let cursor_flag = select(0u, (u.cursor_style + 1u) << 8u, is_cursor);
     let divider_flags = (glyph >> 16u) & 7u;
-    out.flags = (bg & 15u) | (select(0u, 2048u, (bg & 32u) != 0u)) | (select(0u, 4096u, (bg & 64u) != 0u)) | (select(0u, 8192u, (fg & 4u) != 0u)) | (select(0u, 128u, is_tab_row)) | (divider_flags << 4u) | cursor_flag | ((slot / u.slots_per_row) << 16u);
+    out.flags = (bg & 15u) | (select(0u, 4096u, (bg & 64u) != 0u)) | (select(0u, 8192u, (fg & 4u) != 0u)) | (select(0u, 128u, is_tab_row)) | (divider_flags << 4u) | cursor_flag | divider | ((slot / u.slots_per_row) << 16u);
     out.col = col;
     out.row = row;
     return out;
@@ -239,6 +295,15 @@ fn vs_main(
 fn fs_main(v: VsOut) -> @location(0) vec4<f32> {
     // Pixel position in screen space, top-left origin, even when drawing flipped.
     let fp = vec2<f32>(v.pos.x, select(v.pos.y, u.screen.y - v.pos.y, u.flip_y != 0u));
+    if ((v.flags & 16384u) != 0u) {
+        if (u.layer == 1u) { discard; }
+        let half_size = v.uv0 * 0.5;
+        let radius = min(half_size.x, half_size.y);
+        let q = abs(fp - v.origin - half_size) - (half_size - vec2<f32>(radius));
+        let distance = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
+        return vec4<f32>(0.62, 0.64, 0.70, 0.75 * clamp(0.5 - distance, 0.0, 1.0));
+    }
+    if (fp.y < v.clip_y.x || fp.y >= v.clip_y.y) { discard; }
     // Unseen bell: an amber outline around the window.
     if (u.bell_border != 0u) {
         let w = max(2.0, floor(u.cell.y / 8.0));
@@ -437,8 +502,9 @@ fn fs_main(v: VsOut) -> @location(0) vec4<f32> {
     var on_divider = false;
     let is_div_r = (v.flags & 16u) != 0u;
     let is_div_b = (v.flags & 32u) != 0u;
+    let fixed_bottom = (v.flags & 2048u) != 0u;
     let is_div_act = (v.flags & 64u) != 0u;
-    if (is_div_r || is_div_b) {
+    if (is_div_r || is_div_b || fixed_bottom) {
         let div_color = select(
             vec3<f32>(0.208, 0.212, 0.251), // #353640 subtle inactive divider
             vec3<f32>(0.420, 0.451, 0.549), // #6b738c active pane divider
@@ -450,18 +516,9 @@ fn fs_main(v: VsOut) -> @location(0) vec4<f32> {
             cell_color = div_color;
             on_divider = true;
         }
-        if (is_div_b && ry >= u.cell.y - 1.0) {
+        if ((fixed_bottom && fp.y >= v.clip_y.y - 1.0) || (is_div_b && ry >= u.cell.y - 1.0)) {
             cell_color = div_color;
             on_divider = true;
-        }
-    }
-
-    // Overlay scrollbar thumb: a 3px bar inset from the right edge.
-    if ((v.flags & 2048u) != 0u) {
-        let rx = local.x * u.cell.x;
-        if (rx >= u.cell.x - 5.0 && rx < u.cell.x - 2.0) {
-            cell_color = mix(cell_color, vec3<f32>(0.62, 0.64, 0.70), 0.75);
-            solid = true;
         }
     }
 

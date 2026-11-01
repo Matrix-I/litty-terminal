@@ -184,6 +184,9 @@ pub struct Grid {
     history: usize,
     /// How many lines the user has scrolled back into history (0 = live).
     pub display_offset: usize,
+    /// Fraction of a row clipped above the viewport during precise scrolling.
+    pub scroll_fraction: f64,
+    pub viewport_dirty: bool,
 
     /// Alternate screen (vim, less, htop...), no scrollback.
     alt: Vec<Cell>,
@@ -339,6 +342,8 @@ impl Grid {
             top: 0,
             history: 0,
             display_offset: 0,
+            scroll_fraction: 0.0,
+            viewport_dirty: false,
             alt: Vec::new(),
             alt_active: false,
             cur: Cursor::default(),
@@ -817,16 +822,46 @@ impl Grid {
         if self.alt_active {
             return;
         }
+        let was_fractional = self.scroll_fraction != 0.0;
+        self.scroll_fraction = 0.0;
         let new = (self.display_offset as isize + delta).clamp(0, self.history as isize) as usize;
-        if new != self.display_offset {
+        if new != self.display_offset || was_fractional {
             self.display_offset = new;
             self.all_dirty = true;
         }
     }
 
+    /// Precise scrolling changes the viewport on every pixel, not only at row boundaries.
+    pub fn scroll_pixels(&mut self, pixels: f64, cell_height: f64) -> bool {
+        if self.alt_active || !pixels.is_finite() || !cell_height.is_finite() || cell_height <= 0.0 {
+            return false;
+        }
+        let current = self.display_offset as f64 - self.scroll_fraction;
+        let next = (current + pixels / cell_height).clamp(0.0, self.history as f64);
+        let nearest = next.round();
+        let next = if (next - nearest).abs() < 1e-10 { nearest } else { next };
+        let offset = next.ceil() as usize;
+        let fraction = offset as f64 - next;
+        if offset == self.display_offset && (fraction - self.scroll_fraction).abs() < 1e-10 {
+            return false;
+        }
+        self.all_dirty |= offset != self.display_offset;
+        self.display_offset = offset;
+        self.scroll_fraction = fraction;
+        self.viewport_dirty = true;
+        true
+    }
+
+    /// Hit-test a row after applying the same pixel shift as the renderer.
+    pub fn viewport_row(&self, y: f64, cell_height: f64) -> usize {
+        ((y / cell_height.max(1.0) + self.scroll_fraction).max(0.0).floor() as usize)
+            .min(self.rows.saturating_sub(usize::from(self.scroll_fraction == 0.0)))
+    }
+
     pub fn reset_display(&mut self) {
         if self.display_offset != 0 {
             self.display_offset = 0;
+            self.scroll_fraction = 0.0;
             self.all_dirty = true;
         }
         if self.selection.is_some() {
@@ -841,6 +876,7 @@ impl Grid {
         self.graphics.prune(self.lines_pushed);
         self.history = 0;
         self.display_offset = 0;
+        self.scroll_fraction = 0.0;
         self.selection = None;
         self.clear_search();
         self.trim_extras();
@@ -960,7 +996,7 @@ impl Grid {
         row: usize,
         col: usize,
     ) -> Option<HyperlinkCandidate> {
-        if row >= self.rows || self.cols == 0 || col >= self.cols {
+        if row >= self.rows + usize::from(self.scroll_fraction > 0.0) || self.cols == 0 || col >= self.cols {
             return None;
         }
         let r = self.display_row(row);
@@ -1087,7 +1123,7 @@ impl Grid {
     ///   selects the full command line excluding the leading `$ ` prompt (`cd ...`).
     /// - On any other line, selects the trimmed line content.
     pub fn select_smart_line(&mut self, row: usize, col: usize) -> String {
-        if row >= self.rows || self.cols == 0 {
+        if row >= self.rows + usize::from(self.scroll_fraction > 0.0) || self.cols == 0 {
             return String::new();
         }
         let r = self.display_row(row);
@@ -1165,7 +1201,7 @@ impl Grid {
     /// Columns of the run of non-blank cells around `(row, col)`; the placeholder
     /// cell of a wide glyph belongs to the glyph.
     fn block_range(&self, row: usize, col: usize) -> Option<(usize, usize)> {
-        if row >= self.rows || col >= self.cols {
+        if row >= self.rows + usize::from(self.scroll_fraction > 0.0) || col >= self.cols {
             return None;
         }
         let r = self.display_row(row);
@@ -1209,7 +1245,7 @@ impl Grid {
     /// Select the entire visible line `row` (up to the last non-blank character)
     /// and return its text.
     pub fn select_line(&mut self, row: usize) -> String {
-        if row >= self.rows {
+        if row >= self.rows + usize::from(self.scroll_fraction > 0.0) {
             return String::new();
         }
         let r = self.display_row(row);
@@ -1351,8 +1387,9 @@ impl Grid {
         let top = self.lines_pushed - self.display_offset;
         if line < top || line >= top + self.rows {
             let offset = (self.lines_pushed + self.rows / 2).saturating_sub(line).min(self.history);
-            if offset != self.display_offset {
+            if offset != self.display_offset || self.scroll_fraction != 0.0 {
                 self.display_offset = offset;
+                self.scroll_fraction = 0.0;
                 self.all_dirty = true;
             }
         }
@@ -1416,7 +1453,7 @@ impl Grid {
 
     /// The logical column drawn at visual column `col` of display row `r`.
     pub fn logical_col(&self, r: usize, col: usize) -> usize {
-        if r >= self.rows {
+        if r >= self.rows + usize::from(self.scroll_fraction > 0.0) {
             return col;
         }
         BIDI_SCRATCH.with(|scratch| {
@@ -1435,7 +1472,7 @@ impl Grid {
     /// (drawn at the run's right end): typing `echo '` before a right-to-left
     /// autosuggestion keeps the cursor next to the quote.
     pub fn cursor_visual_col(&self, r: usize, col: usize) -> usize {
-        if r >= self.rows {
+        if r >= self.rows + usize::from(self.scroll_fraction > 0.0) {
             return col;
         }
         BIDI_SCRATCH.with(|scratch| {
@@ -2284,10 +2321,10 @@ impl Grid {
     pub fn visible_images(&self, out: &mut Vec<crate::graphics::ImageDraw>) {
         if !self.graphics.placements.is_empty() {
             let top = if self.alt_active { self.lines_pushed } else { self.lines_pushed - self.display_offset };
-            self.graphics.visible(top, self.rows, self.alt_active, std::time::Instant::now(), out);
+            self.graphics.visible(top, self.rows + usize::from(self.scroll_fraction > 0.0), self.alt_active, std::time::Instant::now(), out);
         }
         if !self.graphics.virtuals.is_empty() {
-            for r in 0..self.rows {
+            for r in 0..self.rows + usize::from(self.scroll_fraction > 0.0) {
                 self.placeholder_images(r, out);
             }
         }
@@ -2482,6 +2519,7 @@ impl Grid {
             self.cur.col = 0;
             self.alt = bytemuck::zeroed_vec(self.cols * self.rows);
             self.display_offset = 0;
+            self.scroll_fraction = 0.0;
         } else {
             self.alt_active = false;
             if self.alt.iter().any(|cell| ((cell.fg & FG_EXTRA) | (cell.bg & BG_EXTRA)) != 0) {
@@ -2716,6 +2754,7 @@ impl Grid {
         self.history = new_hist;
         self.lines_pushed = new_lines_pushed;
         self.display_offset = 0;
+        self.scroll_fraction = 0.0;
         let main_row = new_cursor.0 - screen_start;
         if self.alt_active {
             self.saved_main.row = main_row;
@@ -3090,8 +3129,9 @@ impl Grid {
     /// Scroll so absolute line `line` is at the top of the viewport (clamped).
     fn scroll_to_line(&mut self, line: usize) {
         let offset = self.lines_pushed.saturating_sub(line).min(self.history);
-        if self.display_offset != offset {
+        if self.display_offset != offset || self.scroll_fraction != 0.0 {
             self.display_offset = offset;
+            self.scroll_fraction = 0.0;
             self.all_dirty = true;
         }
     }
@@ -3764,6 +3804,60 @@ mod tests {
         g.ai_armed=true;feed(&mut g,"\x1b]778;yo;aGVsbG8=\x07");assert_eq!(g.ai_request.take().as_deref(),Some("hello"));assert!(!g.ai_armed);
         g.ai_armed=true;feed(&mut g,"\x1b]778;yo;%%%\x07");assert!(g.ai_request.is_none());
         g.ai_armed=true;feed(&mut g,"\x1b[?1049h\x1b]778;yo;aGVsbG8=\x07");assert!(g.ai_request.is_none());
+    }
+
+    #[test]
+    fn precise_scroll_moves_each_pixel_and_only_rebuilds_at_row_boundaries() {
+        let mut g = Grid::new(8, 3);
+        feed(&mut g, "a\r\nb\r\nc\r\nd\r\ne\r\nf");
+        assert!(g.history >= 3);
+        for step in 1..=24 {
+            g.all_dirty = false;
+            assert!(g.scroll_pixels(1.0, 24.0));
+            assert!((g.display_offset as f64 - g.scroll_fraction - step as f64 / 24.0).abs() < 1e-9);
+            assert_eq!(g.all_dirty, step == 1);
+            assert!(g.viewport_dirty);
+            // The extra row is backed by real newer content, never an empty strip.
+            if g.scroll_fraction > 0.0 { assert_eq!(g.display_row(g.rows)[0].codepoint, b'f' as u32); }
+        }
+        assert_eq!(g.scroll_fraction, 0.0);
+        assert!(g.scroll_pixels(-24.0, 24.0));
+        assert_eq!((g.display_offset, g.scroll_fraction), (0, 0.0));
+    }
+
+    #[test]
+    fn precise_scroll_clamps_reverses_and_hit_tests_partial_rows() {
+        let mut g = Grid::new(8, 3);
+        feed(&mut g, "a\r\nb\r\nc\r\nd\r\ne\r\nf");
+        assert!(!g.scroll_pixels(-4.0, 24.0));
+        g.scroll_pixels(2.0, 24.0);
+        assert_eq!(g.viewport_row(0.0, 24.0), 0);
+        assert_eq!(g.viewport_row(3.0, 24.0), 1);
+        assert_eq!(g.viewport_row(71.0, 24.0), 3);
+        g.scroll_pixels(100_000.0, 24.0);
+        assert_eq!((g.display_offset, g.scroll_fraction), (g.history, 0.0));
+        assert!(!g.scroll_pixels(2.0, 24.0));
+        g.scroll_pixels(-2.0, 24.0);
+        assert!(g.scroll_fraction > 0.0);
+        g.scroll_display(0);
+        assert_eq!(g.scroll_fraction, 0.0);
+        g.scroll_pixels(-2.0, 24.0);
+        g.reset_display();
+        assert_eq!((g.display_offset, g.scroll_fraction), (0, 0.0));
+        feed(&mut g, "\x1b[?1049h");
+        assert!(!g.scroll_pixels(2.0, 24.0));
+        assert!(!g.scroll_pixels(f64::NAN, 24.0));
+    }
+
+    #[test]
+    fn precise_scroll_allocates_nothing_and_preserves_cell_layout() {
+        let mut g = Grid::new(8, 3);
+        feed(&mut g, "a\r\nb\r\nc\r\nd\r\ne\r\nf");
+        assert_eq!(std::mem::size_of::<Cell>(), 12);
+        let count = crate::test_alloc::allocations(|| {
+            for _ in 0..10_000 { g.scroll_pixels(2.0, 24.0); g.scroll_pixels(-2.0, 24.0); }
+        });
+        assert_eq!(count, 0);
     }
 
     #[test]
