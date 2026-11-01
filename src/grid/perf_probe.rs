@@ -25,7 +25,8 @@ fn best_ns_per_byte(data: &[u8]) -> f64 {
             grid.feed_byte(&mut parser, b);
         }
         let ns = start.elapsed().as_nanos() as f64 / data.len() as f64;
-        std::hint::black_box(grid.scroll_position());
+        // Keep every cell write observable so the optimizer cannot drop the work.
+        std::hint::black_box(&grid);
         best = best.min(ns);
     }
     best
