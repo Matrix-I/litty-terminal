@@ -1,3 +1,4 @@
+use super::sprites::draw_builtin_sprite;
 use super::*;
 
 #[test]
