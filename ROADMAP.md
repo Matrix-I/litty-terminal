@@ -637,7 +637,7 @@ Remaining-backlog verification (2026-11-01): `cargo check`,
 `cargo clippy --all-targets -- -D warnings` passed. The complete test suite
 outside the sandbox passed 289 tests (3 ignored); the optimized OSC regression
 run passed all 10 tests (`cargo test --profile fast-release osc -- --test-threads=1`).
-`python3 scripts/test-yo-shells.py` passed isolated zsh and macOS Bash 3.2
+`cargo test --test yo_shells` passed isolated zsh and macOS Bash 3.2
 bridge/repaint/editable-prefill checks without provider credentials. Remaining
 checkboxes are environment-dependent release/runtime verification, listed above.
 

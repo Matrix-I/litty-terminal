@@ -209,7 +209,7 @@ To satisfy both **Litty's Ghostty-style config** (`~/.litty/config`) and **Yosh'
 
 - Implemented Phases 1–4: lazy per-pane sessions, shared bounded JSON parser (also reused by the updater), cancellable curl transport/retries, provider wire formats and tool loop, prompt/Markdown rendering, bounded scrollback, guarded OSC bridge, shell integration, edited-command continuation, compaction, and local commands.
 - Implemented the two approved interaction decisions, including queues for keyboard, paste, IME, and dropped files; cancellation discards pending input and late suggestions. Queued keys preserve the shell's active keyboard protocol.
-- Added configuration and usage documentation to README and a reproducible `python3 scripts/test-yo-shells.py` smoke test.
+- Added configuration and usage documentation to README and a reproducible `cargo test --test yo_shells` smoke test.
 - Validation: `cargo check`; `cargo check --target x86_64-unknown-linux-gnu`; `cargo test` outside sandbox (**271 passed, 1 existing ignored**); `cargo clippy --all-targets -- -D warnings`; `git diff --check`; isolated zsh and macOS Bash 3.2 PTY smoke tests.
 - AI tests use local mock HTTP responses, not production credentials. Covered tool-result round trips, scrollback/docs tools, compaction, in-flight curl cancellation, queued input/overflow, stale results, pane disposal, OSC authorization, full edited command capture, and macOS/Linux Ctrl+C versus Copy parity.
 - Remaining release validation: direct runtime checks on fish and Nushell (not installed on this machine), live-provider smoke tests with configured credentials, and GPU-window visual/idle-memory profiling. These are not claimed by the automated checks above. Package version remains 0.6.0.
