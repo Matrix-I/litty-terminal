@@ -543,7 +543,7 @@ Comprehensive memory leak, cache accumulation, lifecycle, and zombie process aud
 - [x] Propagate config reload renderer changes to all open windows in multi-window mode (`src/main.rs`)
 - [x] Fix `OSC 104` color aliasing corruption when two overridden palette indices swap colors across sequential in-place `Grid::recolor` passes (`src/grid/perform.rs`, `src/grid/mod.rs`)
 
-## Planned Features & Hardening (v0.7.0 — Post v0.6.0 Release)
+## Features & Hardening (v0.7.0)
 
 - [x] **Built-in LLM Shell Assistant (`yo <query>`, Yosh Parity)** — implementation and remaining release validation: [yosh_implementation_plan.md](./docs/yosh_implementation_plan.md)
   - Natural-language `yo <intent>` command across `zsh`, `bash`, `fish`, and `nushell` via `OSC 778` shell integration bridge
@@ -642,3 +642,22 @@ bridge/repaint/editable-prefill checks without provider credentials. Remaining
 checkboxes are environment-dependent release/runtime verification, listed above.
 
 Native Linux container validation (2026-11-01): see [run report](./docs/linux-container-test-2026-11-01.md) and [reproducible runner](./scripts/linux/README.md). X11/XTEST checks supplement the manual verification debt; they do not claim physical keyboard, Wayland, real browser/file-manager or hardware GPU validation.
+
+## Planned (v0.8.0)
+
+Carried over from v0.7.0 release validation; none of these block v0.7.0 and each is listed under **Known limitations** in its release notes.
+
+- [ ] Manual keyboard checks in a real GPU window (Ctrl+C, queued Enter, prompt repaint, editable prefill)
+- [ ] Linux desktop checks: Kitty lock modifiers, Quick Terminal (X11 and Wayland), real `xdg-open` dispatch, fish on real Linux
+- [ ] Live-provider smoke tests for OpenAI, OpenRouter and other non-Anthropic providers; Nushell older than 0.116.1
+- [ ] Measure per-session memory after `yo` usage
+
+### Structural refactor (4 phases, zero behavior change)
+
+Plans are written and committed; execution is deferred. Run in order, each phase after the previous one lands.
+
+- [ ] **Phase 1 — Split `src/main.rs` into `src/app/*`, `src/platform/*`, `src/cli.rs`, `src/paste.rs`** — [plan](./docs/plans/2026-11-01-split-main-rs.md)
+- [ ] **Phase 2 — Split `src/grid/mod.rs` into submodules and group fields into `AiTrack`, `TerminalModes`, `ClusterTable`, `Ring`** — [plan](./docs/plans/2026-11-01-split-grid.md)
+- [ ] **Phase 3 — Split `src/renderer.rs` and `src/atlas.rs` into module directories** — [plan](./docs/plans/2026-11-01-split-renderer-atlas.md)
+- [ ] **Phase 4 — Layered layout `src/terminal/`, `src/render/`, `src/platform/{macos,linux}/` with an enforced dependency-rule test** — [plan](./docs/plans/2026-11-01-layered-layout.md)
+  - Before executing, re-check line numbers against current `main` and gate each phase on the release-mode throughput baseline (`lto = "fat"`).

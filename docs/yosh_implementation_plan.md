@@ -1,6 +1,6 @@
 # Yosh (`yoshell.ai`) Analysis & Litty Integration Plan (v0.7.0)
 
-> **Target Release:** v0.7.0 (scheduled after v0.6.0 release)
+> **Target Release:** v0.7.0 (prepared; see ROADMAP.md)
 
 ## Approved Interaction Decisions (2026-10-31)
 
@@ -17,7 +17,7 @@ The following decisions override any conflicting behavior elsewhere in this docu
 - **Configuration**: Explicit Litty settings override Yosh fallback settings. Credentials, models, and endpoints from a different Yosh provider must not leak into a Litty provider override. Resolve configuration lazily on `yo`; redact credentials in diagnostics. `ai-base-url` accepts an API root (e.g. `https://host/v1`) or a full endpoint. OpenAI defaults to Responses; a full `/chat/completions` endpoint selects that API style. Add `ai-context-window` for custom models. Thinking defaults off and web search defaults false.
 - **Memory and locking**: Follow the repository's **<50 MB idle RAM** requirement. Allocate AI sessions lazily in application state, avoiding new AI state fields in every Pane. Scrollback extraction necessarily copies text; bound it and keep grid locks short. No HTTP, subprocess, filesystem I/O, or PTY writes under the grid mutex.
 - **Older Bash / Nushell acceptance**: macOS Bash 3.2 lacks `READLINE_LINE`. For that shell and Nushell, the integration advertises direct terminal interception: capture `yo` before forwarding Enter, clear the shell buffer, and request an empty prompt. This keeps natural-language punctuation out of the shell parser. The original query remains in Litty session history. Modern Bash, zsh, and fish use their line-editor widgets.
-- **Compatibility**: Reuse the existing injected shell integrations without modifying user dotfiles. Preserve shell editing and platform shortcuts. Keep the package version at 0.6.0 until a separately requested release.
+- **Compatibility**: Reuse the existing injected shell integrations without modifying user dotfiles. Preserve shell editing and platform shortcuts. Package version is 0.7.0.
 
 ---
 
@@ -212,7 +212,7 @@ To satisfy both **Litty's Ghostty-style config** (`~/.litty/config`) and **Yosh'
 - Added configuration and usage documentation to README and a reproducible `cargo test --test yo_shells` smoke test.
 - Validation: `cargo check`; `cargo check --target x86_64-unknown-linux-gnu`; `cargo test` outside sandbox (**271 passed, 1 existing ignored**); `cargo clippy --all-targets -- -D warnings`; `git diff --check`; isolated zsh and macOS Bash 3.2 PTY smoke tests.
 - AI tests use local mock HTTP responses, not production credentials. Covered tool-result round trips, scrollback/docs tools, compaction, in-flight curl cancellation, queued input/overflow, stale results, pane disposal, OSC authorization, full edited command capture, and macOS/Linux Ctrl+C versus Copy parity.
-- Remaining release validation: direct runtime checks on fish and Nushell (not installed on this machine), live-provider smoke tests with configured credentials, and GPU-window visual/idle-memory profiling. These are not claimed by the automated checks above. Package version remains 0.6.0.
+- Remaining release validation: direct runtime checks on fish and Nushell (not installed on this machine), live-provider smoke tests with configured credentials, and GPU-window visual/idle-memory profiling. These are not claimed by the automated checks above..
 
 ### Live-provider validation
 
