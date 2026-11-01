@@ -6,7 +6,7 @@
 
 **Architecture:** Phase 1 of a 4-phase structural refactor (phases 2–4 are outlined at the end and get their own plans). We first extract the leaf code with no `State` dependency (`platform/`, pure `paste` and `cli` modules), then move the whole app core into `src/app/mod.rs` in one step, then peel cohesive groups out of it one commit at a time, then split the giant event handlers into per-event methods, and finally group `State` fields into sub-structs. Every commit compiles and passes the full test suite on both targets.
 
-**Tech Stack:** Rust 2021, winit, wgpu, parking_lot; cargo targets `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`.
+**Tech Stack:** Rust (edition 2024), winit, wgpu, parking_lot; cargo targets `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`.
 
 ## Global Constraints
 
@@ -970,7 +970,9 @@ git commit -m "docs(app): describe app and platform module layout"
 
 ---
 
-## Phases 2–4 (outline; each gets its own detailed plan before starting)
+## Phases 2–4 (outline)
+
+Detailed plans, which supersede this outline where they differ: `2026-11-01-split-grid.md` (phase 2), `2026-11-01-split-renderer-atlas.md` (phase 3), `2026-11-01-layered-layout.md` (phase 4).
 
 ### Phase 2 — `src/grid/mod.rs` (5499 lines, `Grid` with 88 fields)
 
