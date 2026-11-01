@@ -1,3 +1,4 @@
+use super::gpu::create_cells_pipeline;
 use super::tab_label;
 
 #[test]
