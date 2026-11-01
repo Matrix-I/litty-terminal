@@ -3,6 +3,7 @@
 
 use super::*;
 use super::colors::{default_bg, default_fg, palette, parse_x11_color, palette_with};
+use super::links::osc8_target;
 
 fn feed(g: &mut Grid, s: &str) {
     let mut p = vte::Parser::new();
