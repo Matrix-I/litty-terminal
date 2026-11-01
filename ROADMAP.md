@@ -651,6 +651,11 @@ Carried over from v0.7.0 release validation; none of these block v0.7.0 and each
 - [ ] Linux desktop checks: Kitty lock modifiers, Quick Terminal (X11 and Wayland), real `xdg-open` dispatch, fish on real Linux
 - [ ] Live-provider smoke tests for OpenAI, OpenRouter and other non-Anthropic providers; Nushell older than 0.116.1
 - [ ] Measure per-session memory after `yo` usage
+- [ ] **Investigate flaky `Memory Leak <= 10 MB` check in `scripts/pre-release-check.sh`** (seen once, 2026-11-01)
+  - Evidence of the failure: macOS arm64, code at `865f4a0` with the v0.7.0 version bump uncommitted (`5f24865` carries only version/docs changes). Step 4/4 "After Closed & Freed" reported RSS 120.69 MB, footprint **100 MB**, leak delta **+20 MB** (limit 10 MB). Same run: 1w/1t 80 MB, 1w/3t 80 MB, 2w/6t 88 MB, all within budget. The run immediately followed `cargo check`, Linux check, `clippy` and `cargo test` in the same shell command, so the machine may still have been under load or have had a warm memory state; this is a hypothesis, not established.
+  - Evidence it is not deterministic: one run before it passed at `865f4a0`, and three consecutive reruns afterwards all passed with 1w/1t 79 MB and footprint after cleanup **66 MB** (delta -13 MB, reported as 0.00 MB leak). Overall 1 failure in 5 runs. The pass/fail exit code of the failing run was not captured.
+  - If it reappears: record the commit, whether the run followed a build or test, and the full "Memory Profile" step lines (RSS and footprint for all four steps) before rerunning. A repeat at +20 MB with a quiet machine would point to a real retained allocation after closing windows (compare against the 41 MB footprint measured with all windows closed on 2026-11-01); a footprint that varies between 66 MB and 100 MB for the same workload suggests allocator or IOSurface release timing and may warrant sampling the footprint several times after cleanup instead of once.
+  - Mentioned under "Validation" in the published v0.7.0 release notes as an unexplained single outlier.
 
 ### Structural refactor (4 phases, zero behavior change)
 
