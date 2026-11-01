@@ -1,5 +1,6 @@
 /target
 /dist
+.idea/
 .DS_Store
 
 # Release test reports (auto-generated)
