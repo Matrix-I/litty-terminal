@@ -32,7 +32,7 @@ Cross-platform, zero-latency GPU terminal emulator (macOS Metal / Linux Vulkan, 
 - `src/platform/`: clipboard and detached processes (`open` / `xdg-open`, notifications, sounds). `src/paste.rs`: pure paste / shell-quote payloads.
 - `src/keymap.rs`: Pure key-to-byte / shortcut resolution for `Platform::MacOs` & `Platform::Linux` + Kitty protocol.
 - `src/pty.rs`: `openpty` + `fork`/`execve`, reader thread pushing bytes to grid.
-- `src/grid.rs`: 12-byte `Cell`, ring buffer, `vte::Perform`. Responses (DSR, DA) go to `Grid::response`.
+- `src/grid/`: `Grid` terminal state. `mod.rs` holds the struct and the print / parse hot path (`feed_byte`, `put_char`); `cell.rs` the 12-byte `Cell`; `storage.rs` the scrollback ring (row addressing, scrolling); `perform.rs` the `vte::Perform` impl; `modes.rs`, `colors.rs`, `control.rs`, `images.rs`, `clusters.rs`, `links.rs`, `prompt.rs`, `selection.rs`, `viewport.rs`, `resize.rs`, `visual.rs`, `width.rs` one concern each; unit tests in `tests.rs`. Responses (DSR, DA) go to `Grid::response`.
 - `src/renderer.rs` & `src/atlas.rs`: wgpu pipelines, single instanced draw call (`shader.wgsl`), glyph cache, font fallback.
 - `src/split.rs`: Pane tree layout management.
 
@@ -40,7 +40,7 @@ Cross-platform, zero-latency GPU terminal emulator (macOS Metal / Linux Vulkan, 
 ### Implement
 - **Scope**: Change only what the task needs. Note unrelated bugs or refactors as follow-ups (or in `ROADMAP.md`) instead of fixing them in passing.
 - **Branching**: Non-trivial work (new feature, multi-file refactor, anything touching invariants above) goes on a branch `feat/<topic>`, `fix/<topic>`, `refactor/<topic>`. Small docs/typo fixes may go straight to `main`.
-- **Tests**: Bug fixes start with a failing regression test that reproduces the bug. New logic in pure modules (`keymap`, `grid`, `split`, `search`, `history`, `config`) gets unit tests in the same file.
+- **Tests**: Bug fixes start with a failing regression test that reproduces the bug. New logic in pure modules (`keymap`, `grid`, `split`, `search`, `history`, `config`) gets unit tests in the same file (`grid` keeps its tests in `src/grid/tests.rs`).
 - **Platform code**: Gate with `#[cfg(target_os = ...)]`; every platform-specific path needs a counterpart (or an explicit no-op) on the other platform so both targets compile.
 - **Docs**: Update `ROADMAP.md` when a roadmap item is completed or descoped; update `README.md` when user-visible behavior, config keys, or keybindings change.
 - **Done means verified**: Never report a task done without running the verification steps below and stating the result. If a step could not run (sandbox, missing toolchain), say so explicitly.
