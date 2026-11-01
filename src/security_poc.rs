@@ -246,7 +246,7 @@ fn poc_cwe400_hung_paste_helpers_are_killed_and_bounded() {
     let cmds: &'static [(&'static str, &'static [&'static str])] = Box::leak(vec![(bin, &[][..])].into_boxed_slice());
 
     for _ in 0..8 {
-        assert!(crate::read_clipboard_with(cmds).is_none());
+        assert!(crate::platform::clipboard::read_clipboard_with(cmds).is_none());
     }
     std::thread::sleep(std::time::Duration::from_millis(250));
 
