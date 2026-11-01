@@ -33,7 +33,8 @@ Cross-platform, zero-latency GPU terminal emulator (macOS Metal / Linux Vulkan, 
 - `src/keymap.rs`: Pure key-to-byte / shortcut resolution for `Platform::MacOs` & `Platform::Linux` + Kitty protocol.
 - `src/pty.rs`: `openpty` + `fork`/`execve`, reader thread pushing bytes to grid.
 - `src/grid/`: `Grid` terminal state. `mod.rs` holds the struct and the print / parse hot path (`feed_byte`, `put_char`); `cell.rs` the 12-byte `Cell`; `storage.rs` the scrollback ring (row addressing, scrolling); `perform.rs` the `vte::Perform` impl; `modes.rs`, `colors.rs`, `control.rs`, `images.rs`, `clusters.rs`, `links.rs`, `prompt.rs`, `selection.rs`, `viewport.rs`, `resize.rs`, `visual.rs`, `width.rs` one concern each; unit tests in `tests.rs`. Responses (DSR, DA) go to `Grid::response`.
-- `src/renderer.rs` & `src/atlas.rs`: wgpu pipelines, single instanced draw call (`shader.wgsl`), glyph cache, font fallback.
+- `src/renderer/`: `Renderer` API (`mod.rs`), wgpu setup (`gpu.rs`), per-frame phases (`frame.rs`), pane rows (`pane_row.rs`), overlay widgets over a borrowed `Cells` context (`ui/`); one instanced cell draw per layer (`shader.wgsl`).
+- `src/atlas/`: glyph cache and slot LRU (`mod.rs`), rasterization (`raster.rs`), procedural sprites, ligature shaper, font discovery, CoreText (`coretext.rs`) / non-macOS (`linux.rs`) system rasterizers.
 - `src/split.rs`: Pane tree layout management.
 
 ## Workflow & PR Checklist
