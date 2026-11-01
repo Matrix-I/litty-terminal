@@ -418,7 +418,7 @@ fn benchmark_before_vs_after() {
             Some(c) => {
                 if let Some(existing) = cached_hover
                     .as_ref()
-                    .filter(|h| super::matches_cached_hover_candidate(h, 0, lcol, &c))
+                    .filter(|h| super::pointer::matches_cached_hover_candidate(h, 0, lcol, &c))
                 {
                     Some(existing.clone())
                 } else {
@@ -462,37 +462,6 @@ fn benchmark_before_vs_after() {
     println!("    - Sau   (Grid::gc_clusters):       {} active entry retained (65,536 dead reclaimed + new interned in {:>8.2?})", after_gc_clusters, gc_dur);
 
     println!("==================================================================\n");
-}
-
-#[test]
-fn test_cached_hover_candidate_invalidated_when_row_overwritten() {
-    let mut g = crate::grid::Grid::new(80, 24);
-    let mut p = vte::Parser::new();
-    for &b in b"Open ./Cargo.toml now" {
-        g.feed_byte(&mut p, b);
-    }
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let cand1 = g.find_hyperlink_candidate_at(0, 6).expect("initial candidate");
-    let resolved1 = cand1.clone().resolve(Some(manifest_dir)).expect("resolved ./Cargo.toml");
-    assert!(super::matches_cached_hover_candidate(&resolved1, 0, 10, &cand1));
-
-    // Overwrite row 0 in place with a different path of the same length
-    for &b in b"\rOpen ./src/tab.rs now" {
-        g.feed_byte(&mut p, b);
-    }
-    let cand2 = g.find_hyperlink_candidate_at(0, 10).expect("new candidate after overwrite");
-    assert!(
-        !super::matches_cached_hover_candidate(&resolved1, 0, 10, &cand2),
-        "cached link must not match after underlying terminal row text changes"
-    );
-    let resolved2 = cand2.resolve(Some(manifest_dir)).expect("resolved ./src/tab.rs");
-    assert_eq!(resolved2.url, "./src/tab.rs");
-
-    // Overwrite row 0 with plain non-link text
-    for &b in b"\rPlain text only here " {
-        g.feed_byte(&mut p, b);
-    }
-    assert!(g.find_hyperlink_candidate_at(0, 10).is_none());
 }
 
 #[test]

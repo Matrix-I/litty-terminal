@@ -2,10 +2,19 @@
 //! mouse / keyboard / IME input.
 
 mod ai_bridge;
+mod ime;
+mod pointer;
 mod state;
 mod terminal_io;
 mod window;
 
+use pointer::update_hovered_link;
+use pointer::scrollbar_at_mouse;
+use pointer::report_mouse;
+use pointer::pane_cell_at_mouse;
+use ime::handle_ime;
+use pointer::drag_scrollbar;
+use pointer::alt_screen_scroll;
 use terminal_io::write_pty;
 use terminal_io::write_pane_input;
 use terminal_io::handle_terminal_requests;
@@ -24,20 +33,20 @@ use window::apply_system_appearance;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use crate::{ai, bench, config, frame_metrics, grid, keymap, macos, mouse, renderer, scroll, split, update};
+use crate::{ai, bench, config, frame_metrics, grid, keymap, macos, mouse, scroll, split, update};
 #[cfg(target_os = "linux")]
 use crate::hotkey;
-use crate::{next_id, AppEvent, HoveredPaneLink, Pane, Tab, Waker};
+use crate::{next_id, AppEvent, Pane, Tab, Waker};
 
 use state::State;
 
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, StartCause, TouchPhase, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, StartCause, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey, PhysicalKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
-use winit::window::{CursorIcon, WindowId};
+use winit::window::WindowId;
 
 use crate::grid::Selection;
 use crate::paste::{history_insert_payload, paste_payload, shell_quote};
@@ -1068,288 +1077,6 @@ impl App {
 
             _ => {}
         }
-    }
-}
-
-/// Pane under the mouse pointer and the pane-relative `(row, col)` cell.
-/// Pane whose visible scrollbar (shown while scrolled back) is under the mouse.
-fn scrollbar_at_mouse(s: &State) -> Option<u64> {
-    let show_tabs = s.tabs.len() > 1;
-    let (cols, rows) = s.renderer.grid_size_for_tabs(show_tabs);
-    let tab = s.tabs.get(s.active)?;
-    let (mx, my) = s.mouse_pos;
-    tab.compute_pane_rects(cols, rows).into_iter().find_map(|r| {
-        let (right, top, bottom) = s.renderer.scrollbar_track(&r, show_tabs);
-        let over = mx <= right && mx >= right - renderer::SCROLLBAR_WIDTH && my >= top && my < bottom;
-        let scrolled = tab.pane(r.id).is_some_and(|p| p.grid.lock().scroll_position().1 > 0);
-        (over && scrolled).then_some(r.id)
-    })
-}
-
-/// Scroll the dragged pane so the thumb is centered on the mouse.
-fn drag_scrollbar(s: &mut State, pane_id: u64) {
-    let show_tabs = s.tabs.len() > 1;
-    let (cols, rows) = s.renderer.grid_size_for_tabs(show_tabs);
-    let Some(tab) = s.tabs.get(s.active) else { return };
-    let Some(rect) = tab.compute_pane_rects(cols, rows).into_iter().find(|r| r.id == pane_id) else { return };
-    let Some(pane) = tab.pane(pane_id) else { return };
-    let (_, top, bottom) = s.renderer.scrollbar_track(&rect, show_tabs);
-    let mut g = pane.grid.lock();
-    let (history, offset) = g.scroll_position();
-    let track_height = (bottom - top).max(0.0);
-    let (_, height) = renderer::scrollbar_thumb(track_height, g.rows, history, offset);
-    let frac = ((s.mouse_pos.1 - top - height / 2.0) / (track_height - height).max(1.0)).clamp(0.0, 1.0);
-    let new_offset = ((1.0 - frac) * history as f64).round() as usize;
-    g.scroll_display(new_offset as isize - offset as isize);
-    drop(g);
-    s.window.request_redraw();
-}
-
-fn pane_cell_at_mouse(s: &State) -> Option<(u64, usize, usize)> {
-    let show_tabs = s.tabs.len() > 1;
-    let (cols, rows) = s.renderer.grid_size_for_tabs(show_tabs);
-    let (row, col) = s.renderer.pixel_to_cell(s.mouse_pos.0, s.mouse_pos.1, show_tabs, cols, rows)?;
-    let tab = s.tabs.get(s.active)?;
-    tab.compute_pane_rects(cols, rows)
-        .into_iter()
-        .find(|r| col >= r.col && col < r.col + r.cols && row >= r.row && row < r.row + r.rows)
-        .map(|r| {
-            // Right-to-left rows are drawn reordered: hit-test the logical cell.
-            let top = s.renderer.cell_origin_px(r.row, r.col, show_tabs).1;
-            let col = col - r.col;
-            let (row, col) = tab.pane(r.id).map_or((row - r.row, col), |p| {
-                let g = p.grid.lock();
-                let row = g.viewport_row(s.mouse_pos.1 - top, s.renderer.cell_size().1 as f64);
-                (row, g.logical_col(row, col))
-            });
-            (r.id, row, col)
-        })
-}
-
-/// Forward a mouse event to the application in the pane under the pointer if it
-/// tracks the mouse (DECSET 1000/1002/1003). Returns `true` when the application
-/// owns the mouse, so the event must not drive selection or scrollback. Holding
-/// Shift bypasses reporting, as in other terminals; Cmd/Super stays free for links.
-fn report_mouse(s: &mut State, button: mouse::Button, action: mouse::Action) -> bool {
-    use crate::grid::MouseTracking;
-    if s.mods.shift_key() || s.mods.super_key() {
-        return false;
-    }
-    let Some((pane_id, row, col)) = pane_cell_at_mouse(s) else { return false };
-    let tab = &mut s.tabs[s.active];
-    let Some(pane) = tab.pane(pane_id) else { return false };
-    let (tracking, sgr, pixels) = {
-        let g = pane.grid.lock();
-        (g.mouse_tracking, g.mouse_sgr, g.mouse_sgr_pixels)
-    };
-    if tracking == MouseTracking::Off {
-        return false;
-    }
-    // SGR-Pixels (DECSET 1016): the same report with pane-relative pixel coordinates.
-    let (row, col) = if pixels {
-        let (cw, ch) = s.renderer.cell_size();
-        let (dx, dy) = s.renderer.offset_in_cell(s.mouse_pos.0, s.mouse_pos.1, s.tabs.len() > 1);
-        (row * ch as usize + dy, col * cw as usize + dx)
-    } else {
-        (row, col)
-    };
-    let tab = &mut s.tabs[s.active];
-    let Some(pane) = tab.pane(pane_id) else { return false };
-    let wanted = match action {
-        mouse::Action::Press | mouse::Action::Release => true,
-        mouse::Action::Motion => {
-            let moved = s.last_mouse_report != Some((pane_id, row, col));
-            moved
-                && (tracking == MouseTracking::Motion
-                    || (tracking == MouseTracking::Drag && button != mouse::Button::None))
-        }
-    };
-    if wanted {
-        let mods = mouse::Mods { shift: false, alt: s.mods.alt_key(), ctrl: s.mods.control_key() };
-        if let Some((bytes, len)) = mouse::encode(button, action, mods, row, col, sgr || pixels) {
-            write_pty(pane, &bytes[..len]);
-        }
-        s.last_mouse_report = Some((pane_id, row, col));
-    }
-    if action == mouse::Action::Press && tab.active_pane_id != pane_id {
-        tab.active_pane_id = pane_id;
-        refresh_tab_titles(s);
-        s.renderer.invalidate();
-        s.window.request_redraw();
-    }
-    true
-}
-
-/// Alternate scroll (DECSET 1007): on the alternate screen without mouse tracking,
-/// the wheel sends arrow keys so `less`, `man` and editors scroll naturally.
-fn alt_screen_scroll(s: &mut State, lines: isize) -> bool {
-    let Some(tab) = s.tabs.get(s.active) else { return false };
-    let Some(pane) = tab.active_pane() else { return false };
-    let (alt, enabled, app_cursor) = {
-        let g = pane.grid.lock();
-        (g.alt_active, g.alt_scroll, g.app_cursor)
-    };
-    if !alt || !enabled {
-        return false;
-    }
-    let key: &[u8] = match (lines > 0, app_cursor) {
-        (true, true) => b"\x1bOA",
-        (true, false) => b"\x1b[A",
-        (false, true) => b"\x1bOB",
-        (false, false) => b"\x1b[B",
-    };
-    let count = lines.unsigned_abs().min(20);
-    write_pty(pane, &key.repeat(count));
-    true
-}
-
-fn handle_ime(s: &mut State, ime: Ime) {
-    match ime {
-        Ime::Preedit(text, _) => {
-            if s.ime_preedit != text {
-                s.ime_preedit = text;
-                s.cursor_blink_epoch = std::time::Instant::now();
-                s.window.request_redraw();
-            }
-        }
-        Ime::Commit(text) => {
-            s.ime_preedit.clear();
-            if s.tabs.is_empty() || text.is_empty() {
-                return;
-            }
-            if s.history_search.is_open {
-                for c in text.chars() {
-                    s.history_search.append_char(c);
-                }
-                s.renderer.invalidate();
-            } else if s.search.is_open {
-                text.chars().for_each(|c| s.search.append_char(c));
-                refresh_search(s);
-            } else if let Some(pane) = s.tabs[s.active].active_pane() {
-                pane.grid.lock().reset_display();
-                write_pane_input(pane,&mut s.ai,text.as_bytes());
-            }
-            s.cursor_blink_epoch = std::time::Instant::now();
-            s.window.request_redraw();
-        }
-        Ime::Enabled => {}
-        Ime::Disabled => {
-            if !s.ime_preedit.is_empty() {
-                s.ime_preedit.clear();
-                s.window.request_redraw();
-            }
-        }
-    }
-}
-
-fn matches_cached_hover_candidate(
-    cached: &grid::Hyperlink,
-    row: usize,
-    col: usize,
-    cand: &grid::HyperlinkCandidate,
-) -> bool {
-    cached.row == row
-        && col >= cached.start_col
-        && col <= cached.end_col
-        && match cand {
-            grid::HyperlinkCandidate::Resolved(l) => {
-                l.start_col == cached.start_col
-                    && l.end_col == cached.end_col
-                    && l.url == cached.url
-                    && l.is_path == cached.is_path
-            }
-            grid::HyperlinkCandidate::ImplicitPath {
-                start_col,
-                end_col,
-                token,
-                ..
-            } => {
-                *start_col == cached.start_col
-                    && *end_col == cached.end_col
-                    && *token == cached.url
-                    && cached.is_path
-            }
-        }
-}
-
-fn update_hovered_link(s: &mut State) {
-    #[cfg(target_os = "macos")]
-    let cmd_pressed = s.mods.super_key();
-    #[cfg(not(target_os = "macos"))]
-    let cmd_pressed = s.mods.control_key() || s.mods.super_key();
-
-    if !cmd_pressed && s.hovered_link.is_none() {
-        return;
-    }
-
-    if s.tabs.is_empty() {
-        if s.hovered_link.is_some() {
-            s.hovered_link = None;
-            s.window.set_cursor(CursorIcon::Default);
-        }
-        return;
-    }
-
-    let show_tabs = s.tabs.len() > 1;
-    let (cols, rows) = s.renderer.grid_size_for_tabs(show_tabs);
-
-    let new_link = if cmd_pressed && !s.selecting {
-        if let Some((cell_row, cell_col)) = s.renderer.pixel_to_cell(s.mouse_pos.0, s.mouse_pos.1, show_tabs, cols, rows) {
-            let rects = s.tabs[s.active].compute_pane_rects(cols, rows);
-            if let Some(target) = rects.iter().find(|r| {
-                cell_col >= r.col
-                    && cell_col < r.col + r.cols
-                    && cell_row >= r.row
-                    && cell_row < r.row + r.rows
-            }) {
-                if let Some(pane) = s.tabs[s.active].pane_mut(target.id) {
-                    let top = s.renderer.cell_origin_px(target.row, target.col, show_tabs).1;
-                    let (pane_row, pane_col, candidate) = {
-                        let g = pane.grid.lock();
-                        let pane_row = g.viewport_row(s.mouse_pos.1 - top, s.renderer.cell_size().1 as f64);
-                        let lcol = g.logical_col(pane_row, cell_col - target.col);
-                        (pane_row, lcol, g.find_hyperlink_candidate_at(pane_row, lcol))
-                    };
-                    match candidate {
-                        Some(cand) => {
-                            if let Some(existing) = s.hovered_link.as_ref().filter(|h| {
-                                h.pane_id == target.id
-                                    && matches_cached_hover_candidate(&h.link, pane_row, pane_col, &cand)
-                            }) {
-                                Some(existing.clone())
-                            } else {
-                                let cwd = pane.cwd();
-                                let cwd_path = cwd.as_deref().map(std::path::Path::new);
-                                cand.resolve(cwd_path).map(|link| HoveredPaneLink {
-                                    pane_id: target.id,
-                                    link,
-                                })
-                            }
-                        }
-                        None => None,
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    if s.hovered_link != new_link {
-        s.hovered_link = new_link;
-        if s.hovered_link.is_some() {
-            s.window.set_cursor(CursorIcon::Pointer);
-        } else {
-            s.window.set_cursor(s.pointer_icon);
-        }
-        s.renderer.invalidate();
-        s.window.request_redraw();
     }
 }
 
