@@ -204,7 +204,7 @@ Each item lists what to run inside a Litty window and the expected result.
 
 - [ ] **Needs a Linux desktop: xdg-open smoke test**
   - Open terminal URL/path links and a release link, including spaces and hyphen-leading filenames; verify executable/script paths still open their containing directory. Command arguments and Linux compilation are covered automatically; actual desktop dispatch is not exercised here.
-  - Added `linux_xdg_open_dispatch_smoke` (ignored; invoked from `scripts/linux/run.sh`): drives production `open_target` through the real `xdg-open` with a stub `$BROWSER` and asserts spaces, a hyphen-leading name (`./-dash.txt`), an executable script (opens its containing directory) and a release URL. It compiles for macOS and x86_64 Linux but **has not been run**: the Podman image build failed twice on a connection error to `static.rust-lang.org` (clippy component download; likely a TLS proxy, see `scripts/linux/README.md` for `LITTY_TEST_CA_BUNDLE`). The handler is stubbed, so a real browser/file-manager check stays manual.
+  - Added `linux_xdg_open_dispatch_smoke` (ignored; invoked from `scripts/linux/run.sh`): drives production `open_target` through the real `xdg-open` with a stub `$BROWSER` and asserts spaces, a hyphen-leading name (`./-dash.txt`), an executable script (opens its containing directory) and a release URL. It compiles for macOS and x86_64 Linux and **passed in the Podman container** (2026-11-01, aarch64 Debian 13, `LITTY_TEST_CA_BUNDLE=~/warp-ca.crt` fixed the earlier `static.rust-lang.org` connection error; run directly with `cargo test --locked linux_xdg_open_dispatch_smoke -- --ignored`, 1 passed). The full `scripts/linux/test.sh` still stops at Clippy: `tests/yo_shells.rs:40` triggers `clippy::unnecessary_mut_passed` on Linux (`&mut size` passed to `libc::openpty`), so the rest of `run.sh` was not reached. The handler is stubbed, so a real browser/file-manager check stays manual.
 
 - [ ] **LLM assistant release validation on additional environments**
   - Implementation is complete (see [implementation record](./docs/yosh_implementation_plan.md#implementation-record-2026-11-01)); mock provider/tool/continuation/cancellation/compaction tests and isolated zsh/Bash 3.2 smoke tests pass.
@@ -218,9 +218,8 @@ Each item lists what to run inside a Litty window and the expected result.
 
 Noted 2026-11-01 so these do not get lost; details live in "Verification debt" above.
 
-- [ ] **Run `linux_xdg_open_dispatch_smoke` in the Podman container**
-  - Blocker: the image build needs network access to `static.rust-lang.org` (clippy component download).
-  - Plan: the local machine has a CA at `~/warp-ca.crt` (TLS proxy). Bake it into the image via `LITTY_TEST_CA_BUNDLE` (see `scripts/linux/README.md`) so the build and the test pass.
+- [x] **Run `linux_xdg_open_dispatch_smoke` in the Podman container** (passed 2026-11-01 with `LITTY_TEST_CA_BUNDLE=~/warp-ca.crt`)
+  - Fixed the Linux-only Clippy error in `tests/yo_shells.rs:40`; full `scripts/linux/test.sh` now passes end to end (291 passed, 6 ignored, `yo_shells` 4 passed, xdg-open smoke, both X11 probes). The image has no nushell, so `yo_nu` is skipped there.
 - [ ] **Manual keyboard checks in a real GPU window** (Ctrl+C, queued Enter, prompt repaint, editable prefill)
   - Owner: user, by hand. Agreed ("ok"); no automation possible.
 - [x] **Decision: what the <50 MB idle invariant measures**
