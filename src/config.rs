@@ -917,9 +917,9 @@ pub fn open_config_in_editor() {
     }
 
     #[cfg(target_os = "macos")]
-    let res = crate::spawn_detached(std::process::Command::new("/usr/bin/open").arg("-t").arg(&path));
+    let res = crate::platform::process::spawn_detached(std::process::Command::new("/usr/bin/open").arg("-t").arg(&path));
     #[cfg(not(target_os = "macos"))]
-    let res = crate::spawn_detached(std::process::Command::new(if std::path::Path::new("/usr/bin/xdg-open").exists() { "/usr/bin/xdg-open" } else { "xdg-open" }).arg(&path));
+    let res = crate::platform::process::spawn_detached(std::process::Command::new(if std::path::Path::new("/usr/bin/xdg-open").exists() { "/usr/bin/xdg-open" } else { "xdg-open" }).arg(&path));
     if let Err(e) = res {
         eprintln!("litty: failed to open {}: {e}", path.display());
     }

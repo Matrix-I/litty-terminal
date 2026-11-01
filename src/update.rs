@@ -1037,13 +1037,13 @@ pub fn check_on_startup(mode: AutoUpdateMode, channel: AutoUpdateChannel) {
 
         match mode {
             AutoUpdateMode::Check => {
-                crate::show_notification(
+                crate::platform::process::show_notification(
                     "Litty Update Available",
                     &format!("v{} is available. {}", release.version, install_hint()),
                 );
             }
             AutoUpdateMode::Download => match prefetch_release(&release) {
-                Ok(()) => crate::show_notification(
+                Ok(()) => crate::platform::process::show_notification(
                     "Litty Update Ready",
                     &format!("v{} has been downloaded and verified. {}", release.version, install_hint()),
                 ),
