@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+use super::coretext::{rasterize_color, rasterize_text_cluster};
 use super::fonts::{parse_font, shaper_mmap_for};
 use super::shaper::{GlyphPiece, Shaper};
 use super::sprites::draw_builtin_sprite;

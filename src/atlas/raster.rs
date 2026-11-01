@@ -4,9 +4,10 @@
 
 use std::sync::atomic::Ordering;
 
+use super::system::{macos_coretext_rasterize, rasterize_color, rasterize_text_cluster};
 use super::sprites::{draw_builtin_sprite, draw_nerd_icon_fallback};
 use super::{
-    is_emoji, is_emoji_text, macos_coretext_rasterize, rasterize_color, rasterize_text_cluster, Atlas, GlyphStyle,
+    is_emoji, is_emoji_text, Atlas, GlyphStyle,
     CLUSTER_KEY, CODEPOINT_MASK, GLYPH_PIECE, SHAPED_BLANK, STYLE_BOLD, STYLE_ITALIC, THICKEN, WIDE_LEFT, WIDE_RIGHT,
 };
 
