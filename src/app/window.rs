@@ -320,7 +320,7 @@ pub(super) fn cursor_blinks(s: &State) -> bool {
                 if let Some(pane) = tab.active_pane() {
                     let g = pane.grid.lock();
                     // DECSCUSR odd values (and 0 = default) are the blinking styles.
-                    matches!(g.cursor_shape, 0 | 1 | 3 | 5)
+                    matches!(g.modes.cursor_shape, 0 | 1 | 3 | 5)
                 } else {
                     true
                 }
@@ -422,7 +422,7 @@ pub(super) fn render_active(s: &mut State) {
     // frame, but never longer than 150ms.
     let syncing = s.tabs[s.active].panes.iter().any(|p| {
         let g = p.grid.lock();
-        g.sync_output && g.sync_started.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(150))
+        g.modes.sync_output && g.modes.sync_started.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(150))
     }) || s.tabs[s.active].panes.iter().any(|p| s.ai.get(&p.id).is_some_and(|ai| ai.holds_render()));
     s.sync_pending = syncing;
     if syncing {
@@ -530,7 +530,7 @@ pub(super) fn apply_system_appearance(s: &mut State) {
         s.requests.reload_config = true;
     }
     for pane in s.tabs.iter().flat_map(|t| &t.panes) {
-        let report_scheme = pane.grid.lock().color_scheme_reports;
+        let report_scheme = pane.grid.lock().modes.color_scheme_reports;
         if report_scheme {
             write_pty(pane, grid::color_scheme_report());
         }

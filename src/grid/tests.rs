@@ -463,7 +463,7 @@ fn cluster_line(g: &Grid, r: usize) -> String {
 #[test]
 fn grapheme_clusters_in_mode_2027() {
     let mut g = Grid::new(20, 3);
-    g.grapheme_mode = true;
+    g.modes.grapheme_mode = true;
     // ZWJ family, flags (two indicators each), skin tone: two cells apiece.
     feed(&mut g, "👨\u{200D}👩\u{200D}👧|🇻🇳🇺🇸|👍🏽|");
     assert_eq!(cluster_line(&g, 0), "👨\u{200D}👩\u{200D}👧|🇻🇳🇺🇸|👍🏽|");
@@ -516,7 +516,7 @@ fn rtl_rows_map_between_visual_and_logical_columns() {
 #[test]
 fn marks_without_a_precomposed_form_become_clusters() {
     let mut g = Grid::new(10, 1);
-    g.grapheme_mode = false;
+    g.modes.grapheme_mode = false;
     feed(&mut g, "q\u{0303}e\u{0301}z");
     let row = g.display_row(0);
     assert_eq!(g.cluster(row[0].codepoint), Some("q\u{0303}"));
@@ -529,7 +529,7 @@ fn marks_without_a_precomposed_form_become_clusters() {
 fn command_line_input_keeps_per_codepoint_widths() {
     // At the prompt (OSC 133 B..C) zsh counts 👍🏽 as 4 columns and ❤️ as 1.
     let mut g = Grid::new(20, 2);
-    g.grapheme_mode = true;
+    g.modes.grapheme_mode = true;
     feed(&mut g, "\x1b]133;A\x07$ \x1b]133;B\x07👍🏽❤\u{FE0F}x");
     assert_eq!(g.cur.col, 2 + 4 + 1 + 1);
     assert_eq!(g.cluster(g.display_row(0)[6].codepoint), Some("❤\u{FE0F}"));
@@ -544,7 +544,7 @@ fn command_line_input_keeps_per_codepoint_widths() {
     // A flag: two regional indicators of two columns each at the prompt,
     // one two-column cluster in the output.
     let mut g = Grid::new(20, 2);
-    g.grapheme_mode = true;
+    g.modes.grapheme_mode = true;
     feed(&mut g, "\x1b]133;A\x07$ \x1b]133;B\x07🇻🇳");
     assert_eq!(g.cur.col, 2 + 4);
     feed(&mut g, "\r\n\x1b]133;C\x07🇻🇳");
@@ -672,15 +672,15 @@ fn osc_10_11_12_set_query_and_reset_dynamic_colors() {
 fn modify_other_keys_set_query_and_reset() {
     let mut g = Grid::new(8, 1);
     feed(&mut g, "\x1b[>4;2m");
-    assert_eq!(g.modify_other_keys, 2);
+    assert_eq!(g.modes.modify_other_keys, 2);
     feed(&mut g, "\x1b[?4m");
     assert_eq!(std::mem::take(&mut g.response), b"\x1b[>4;2m");
     feed(&mut g, "\x1b[>4m");
-    assert_eq!(g.modify_other_keys, 0);
+    assert_eq!(g.modes.modify_other_keys, 0);
     feed(&mut g, "\x1b[>4;1m\x1b[>4n");
-    assert_eq!(g.modify_other_keys, 0);
+    assert_eq!(g.modes.modify_other_keys, 0);
     feed(&mut g, "\x1b[>4;9m");
-    assert_eq!(g.modify_other_keys, 2, "clamped");
+    assert_eq!(g.modes.modify_other_keys, 2, "clamped");
     assert_eq!(g.display_row(0)[0], Cell::default(), "not mistaken for SGR");
 }
 
@@ -741,7 +741,7 @@ fn pixel_mouse_color_scheme_and_window_size_reports() {
     let mut g = Grid::new(80, 24);
     g.cell_px = (9, 18);
     feed(&mut g, "\x1b[?1016h\x1b[?2031h\x1b[?1016$p\x1b[?2027$p");
-    assert!(g.mouse_sgr_pixels && g.color_scheme_reports);
+    assert!(g.modes.mouse_sgr_pixels && g.modes.color_scheme_reports);
     assert_eq!(std::mem::take(&mut g.response), b"\x1b[?1016;1$y\x1b[?2027;1$y");
     set_color_scheme_dark(false);
     feed(&mut g, "\x1b[?996n");
@@ -827,15 +827,15 @@ fn prompt_marks_survive_reflow() {
 #[test]
 fn mouse_and_focus_modes() {
     let mut g = Grid::new(8, 2);
-    assert_eq!(g.mouse_tracking, MouseTracking::Off);
+    assert_eq!(g.modes.mouse_tracking, MouseTracking::Off);
     feed(&mut g, "\x1b[?1002h\x1b[?1006h\x1b[?1004h");
-    assert_eq!(g.mouse_tracking, MouseTracking::Drag);
-    assert!(g.mouse_sgr && g.focus_events);
+    assert_eq!(g.modes.mouse_tracking, MouseTracking::Drag);
+    assert!(g.modes.mouse_sgr && g.modes.focus_events);
     feed(&mut g, "\x1b[?1002$p");
     assert_eq!(g.response, b"\x1b[?1002;1$y");
     feed(&mut g, "\x1b[?1002l\x1bc");
-    assert_eq!(g.mouse_tracking, MouseTracking::Off);
-    assert!(!g.mouse_sgr && !g.focus_events);
+    assert_eq!(g.modes.mouse_tracking, MouseTracking::Off);
+    assert!(!g.modes.mouse_sgr && !g.modes.focus_events);
 }
 
 #[test]
@@ -931,7 +931,7 @@ fn printable_ascii_keeps_insert_wrap_and_line_drawing() {
 #[test]
 fn only_continuations_join_the_previous_grapheme() {
     let mut g = Grid::new(10, 1);
-    g.grapheme_mode = true;
+    g.modes.grapheme_mode = true;
     // After a ZWJ a non-pictographic character starts its own cell, and
     // the joiner does not carry over to the emoji after it.
     feed(&mut g, "👨\u{200D}中👩");
@@ -944,7 +944,7 @@ fn only_continuations_join_the_previous_grapheme() {
 fn emoji_clusters_copy_back_exactly() {
     let s = "😀 👍🏽 👨‍👩‍👧 🇻🇳 ❤️ #️⃣ 🏳️‍🌈";
     let mut g = Grid::new(40, 3);
-    g.grapheme_mode = true;
+    g.modes.grapheme_mode = true;
     feed(&mut g, &format!("\x1b]133;A\x07$ \x1b]133;B\x07echo '{s}'\r\n\x1b]133;C\x07{s}\r\n"));
     g.set_selection(Some(Selection { start: (1, 0), end: (1, 39) }));
     assert_eq!(g.selected_text().as_deref(), Some(s));

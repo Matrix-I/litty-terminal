@@ -856,7 +856,7 @@ impl Renderer {
                 .map(|(cx, cy)| (active_pane.rect.col + g.cursor_visual_col(cy, cx), active_pane.rect.row + cy + top_rows));
             let dirty = g.all_dirty || g.viewport_dirty || g.dirty.iter().any(|&d| d);
             let cursor_color = g.cursor_color().map_or(self.config_cursor_color, |c| c | 1);
-            let cursor_style = match g.cursor_shape {
+            let cursor_style = match g.modes.cursor_shape {
                 1 | 2 => 0, // Block
                 3 | 4 => 2, // Underline
                 5 | 6 => 1, // Bar

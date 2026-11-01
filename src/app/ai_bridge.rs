@@ -85,7 +85,7 @@ pub(super) fn handle_ai_requests(s: &mut State, waker: &Waker) {
                         if !ai.cancel.load(std::sync::atomic::Ordering::Acquire)
                             && let Some((command, pending)) = outcome.command
                         {
-                            let bracketed = pane.grid.lock().bracketed_paste;
+                            let bracketed = pane.grid.lock().modes.bracketed_paste;
                             let command: String = command
                                 .chars()
                                 .filter(|c| !c.is_control() || *c == '\n')
@@ -165,7 +165,7 @@ pub(super) fn handle_ai_requests(s: &mut State, waker: &Waker) {
                         .command
                         .as_ref()
                         .is_some_and(|(command, _)| command.contains(['\n', '\r']))
-                        && !pane.grid.lock().bracketed_paste
+                        && !pane.grid.lock().modes.bracketed_paste
                     {
                         outcome.command = None;
                         outcome.text.push_str("\nMultiline suggestion requires bracketed paste; command was not inserted.");

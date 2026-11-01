@@ -24,6 +24,7 @@ mod clusters;
 mod control;
 mod images;
 mod links;
+mod modes;
 mod resize;
 mod storage;
 mod viewport;
@@ -32,6 +33,8 @@ mod width;
 
 pub use width::{char_width, is_wide_cp};
 use width::is_pictographic;
+pub use modes::{TerminalModes, set_grapheme_default};
+use modes::GRAPHEME_DEFAULT;
 pub use storage::set_scrollback_limit;
 use storage::scrollback_lines;
 
@@ -47,14 +50,6 @@ use crate::search::SearchText;
 
 
 
-
-/// `grapheme-width-method = unicode`: new terminals start in DEC mode 2027.
-static GRAPHEME_DEFAULT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-
-/// Set the initial state of DEC mode 2027 (grapheme clustering) for new terminals.
-pub fn set_grapheme_default(on: bool) {
-    GRAPHEME_DEFAULT.store(on, Ordering::Relaxed);
-}
 
 
 
@@ -102,33 +97,12 @@ pub struct Grid {
     wrapped: Vec<bool>,
     /// Horizontal tab stops, one flag per column.
     tab_stops: Vec<bool>,
-    /// IRM: printing shifts the rest of the line right instead of overwriting.
-    insert_mode: bool,
     /// Lines ever pushed into scrollback; anchors absolute line numbers.
     lines_pushed: usize,
 
-    pub cursor_visible: bool,
-    /// Last DECSCUSR (`CSI Ps SP q`) value: 0 = config default,
-    /// 1/2 = blinking/steady block, 3/4 = underline, 5/6 = bar.
-    pub cursor_shape: u8,
-    pub app_cursor: bool,
-    pub bracketed_paste: bool,
-    pub sync_output: bool,
-    /// When synchronized output (DECSET 2026) began; rendering is deferred meanwhile.
-    pub sync_started: Option<std::time::Instant>,
-    autowrap: bool,
+    /// DECSET / DECRST and keyboard protocol modes (reset together by RIS).
+    pub modes: TerminalModes,
 
-    pub mouse_tracking: MouseTracking,
-    /// SGR mouse encoding (DECSET 1006).
-    pub mouse_sgr: bool,
-    /// Report focus in/out (DECSET 1004).
-    pub focus_events: bool,
-    /// Translate the mouse wheel into arrow keys on the alternate screen (DECSET 1007).
-    pub alt_scroll: bool,
-    /// SGR mouse reports carry pixel instead of cell coordinates (DECSET 1016).
-    pub mouse_sgr_pixels: bool,
-    /// Report system light/dark appearance changes (DECSET 2031).
-    pub color_scheme_reports: bool,
     /// Cell size in pixels, for XTWINOPS size reports.
     pub cell_px: (u16, u16),
     /// DCS request being collected (`DCS + q` XTGETTCAP or `DCS $ q` DECRQSS).
@@ -142,10 +116,6 @@ pub struct Grid {
     apc_state: u8,
     apc_buf: Vec<u8>,
     apc_start: Option<std::time::Instant>,
-    /// xterm `modifyOtherKeys` level (0 off, 1, 2) set by `CSI > 4 ; level m`.
-    pub modify_other_keys: u8,
-    /// Kitty keyboard protocol state for the main and the alternate screen.
-    kitty_keyboard: [KittyKeyboard; 2],
 
     /// Window/tab title set via OSC 0 / OSC 2 (e.g. `user@host:~/dir` or running command).
     pub title: String,
@@ -204,8 +174,6 @@ pub struct Grid {
     cluster_evictions: usize,
     cluster_marks: Vec<bool>,
     cluster_remap: Vec<u32>,
-    /// DEC mode 2027: emoji sequences (ZWJ, flags, skin tones, VS16) share one cell pair.
-    grapheme_mode: bool,
     /// The last character joined a ZWJ to a cluster: a pictograph after it joins too.
     joiner: bool,
 }
@@ -243,21 +211,26 @@ impl Grid {
             scroll_bot: rows - 1,
             wrapped: vec![false; cap],
             tab_stops: default_tab_stops(cols),
-            insert_mode: false,
             lines_pushed: 0,
-            cursor_visible: true,
-            cursor_shape: 0,
-            app_cursor: false,
-            bracketed_paste: false,
-            sync_output: false,
-            sync_started: None,
-            autowrap: true,
-            mouse_tracking: MouseTracking::Off,
-            mouse_sgr: false,
-            focus_events: false,
-            alt_scroll: true,
-            mouse_sgr_pixels: false,
-            color_scheme_reports: false,
+            modes: TerminalModes {
+                cursor_visible: true,
+                cursor_shape: 0,
+                app_cursor: false,
+                bracketed_paste: false,
+                sync_output: false,
+                sync_started: None,
+                autowrap: true,
+                insert_mode: false,
+                mouse_tracking: MouseTracking::Off,
+                mouse_sgr: false,
+                focus_events: false,
+                alt_scroll: true,
+                mouse_sgr_pixels: false,
+                color_scheme_reports: false,
+                modify_other_keys: 0,
+                kitty_keyboard: [KittyKeyboard::default(); 2],
+                grapheme_mode: GRAPHEME_DEFAULT.load(Ordering::Relaxed),
+            },
             cell_px: (0, 0),
             osc_len: None,
             osc_discard: false,
@@ -272,8 +245,6 @@ impl Grid {
             apc_state: 0,
             apc_buf: Vec::new(),
             apc_start: None,
-            modify_other_keys: 0,
-            kitty_keyboard: [KittyKeyboard::default(); 2],
             title: String::new(),
             title_changed: false,
             reported_cwd: None,
@@ -299,7 +270,6 @@ impl Grid {
             cluster_evictions: 0,
             cluster_marks: Vec::new(),
             cluster_remap: Vec::new(),
-            grapheme_mode: GRAPHEME_DEFAULT.load(Ordering::Relaxed),
             joiner: false,
             palette_override: Vec::new(),
             color_override: [0; 3],
@@ -307,7 +277,7 @@ impl Grid {
     }
 
     pub fn cursor_pos(&self) -> Option<(usize, usize)> {
-        if !self.cursor_visible {
+        if !self.modes.cursor_visible {
             return None;
         }
         let off = if self.alt_active { 0 } else { self.display_offset };
@@ -362,7 +332,7 @@ impl Grid {
             r[col + 1] = Cell { codepoint: 0, ..r[col] };
             if col + 2 >= self.cols {
                 self.cur.col = self.cols - 1;
-                self.wrap_pending = self.autowrap;
+                self.wrap_pending = self.modes.autowrap;
             } else {
                 self.cur.col = col + 2;
             }
@@ -391,7 +361,7 @@ impl Grid {
     /// The cell value and width `c` is printed with, or None when it joins
     /// the previous cell (combining mark, grapheme cluster).
     fn char_cell(&mut self, c: char) -> Option<(u32, usize)> {
-        if self.grapheme_mode && !c.is_ascii() && self.extend_grapheme(c) {
+        if self.modes.grapheme_mode && !c.is_ascii() && self.extend_grapheme(c) {
             return None;
         }
         let mut w = char_width(c);
@@ -415,14 +385,14 @@ impl Grid {
     fn put_char(&mut self, codepoint: u32, w: usize) {
         if self.wrap_pending {
             self.wrap_pending = false;
-            if self.autowrap {
+            if self.modes.autowrap {
                 self.set_wrapped(self.cur.row, true);
                 self.cur.col = 0;
                 self.linefeed();
             }
         }
         if w == 2 && self.cur.col + 1 >= self.cols {
-            if !self.autowrap {
+            if !self.modes.autowrap {
                 return;
             }
             self.clear_cols(self.cur.row, self.cur.col, self.cols);
@@ -434,7 +404,7 @@ impl Grid {
         let (row, col) = (self.cur.row, self.cur.col);
         let blank = self.blank();
         let cols = self.cols;
-        let insert = self.insert_mode;
+        let insert = self.modes.insert_mode;
         let prev_extra = {
             let r = self.row_mut(row);
             if insert && col + w < cols {
@@ -476,7 +446,7 @@ impl Grid {
         let next = col + w;
         if next >= self.cols {
             self.cur.col = self.cols - 1;
-            self.wrap_pending = self.autowrap;
+            self.wrap_pending = self.modes.autowrap;
         } else {
             self.cur.col = next;
         }
@@ -791,24 +761,24 @@ impl Grid {
         self.scroll_top = 0;
         self.scroll_bot = self.rows - 1;
         self.wrap_pending = false;
-        self.cursor_visible = true;
-        self.cursor_shape = 0;
-        self.app_cursor = false;
-        self.bracketed_paste = false;
-        self.autowrap = true;
-        self.insert_mode = false;
-        self.sync_output = false;
-        self.sync_started = None;
-        self.mouse_tracking = MouseTracking::Off;
-        self.mouse_sgr = false;
-        self.focus_events = false;
-        self.alt_scroll = true;
-        self.mouse_sgr_pixels = false;
-        self.color_scheme_reports = false;
-        self.grapheme_mode = GRAPHEME_DEFAULT.load(Ordering::Relaxed);
+        self.modes.cursor_visible = true;
+        self.modes.cursor_shape = 0;
+        self.modes.app_cursor = false;
+        self.modes.bracketed_paste = false;
+        self.modes.autowrap = true;
+        self.modes.insert_mode = false;
+        self.modes.sync_output = false;
+        self.modes.sync_started = None;
+        self.modes.mouse_tracking = MouseTracking::Off;
+        self.modes.mouse_sgr = false;
+        self.modes.focus_events = false;
+        self.modes.alt_scroll = true;
+        self.modes.mouse_sgr_pixels = false;
+        self.modes.color_scheme_reports = false;
+        self.modes.grapheme_mode = GRAPHEME_DEFAULT.load(Ordering::Relaxed);
         self.joiner = false;
-        self.kitty_keyboard = [KittyKeyboard::default(); 2];
-        self.modify_other_keys = 0;
+        self.modes.kitty_keyboard = [KittyKeyboard::default(); 2];
+        self.modes.modify_other_keys = 0;
         self.progress = None;
         self.pointer_shape.clear();
         self.title_changed = true;
@@ -829,11 +799,6 @@ impl Grid {
         self.dcs_buf.shrink_to_fit();
         self.dcs_start = None;
         self.all_dirty = true;
-    }
-
-    /// Active Kitty keyboard protocol flags (`keymap::KITTY_*`) of the current screen.
-    pub fn kitty_keyboard_flags(&self) -> u8 {
-        self.kitty_keyboard[self.alt_active as usize].flags
     }
 
 }
