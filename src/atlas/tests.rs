@@ -1,4 +1,5 @@
 use super::fonts::{parse_font, shaper_mmap_for};
+use super::shaper::{GlyphPiece, Shaper};
 use super::sprites::draw_builtin_sprite;
 use super::*;
 
