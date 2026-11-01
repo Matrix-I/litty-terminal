@@ -101,8 +101,7 @@ fn feed_output(
         let mut g = grid.lock();
         g.defer_images = true;
         while offset < bytes.len() && g.image_job.is_none() {
-            g.feed_byte(parser, bytes[offset]);
-            offset += 1;
+            offset += g.feed_bytes(parser, &bytes[offset..]);
         }
         g.defer_images = false;
         if let Some(job) = g.image_job.take() {

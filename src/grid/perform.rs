@@ -8,6 +8,7 @@ use super::*;
 
 impl Perform for Grid {
     fn print(&mut self, c: char) {
+        self.ground = true;
         let c = if self.cur.line_drawing { dec_line_drawing(c) } else { c };
         let cp = c as u32;
         // Fast path: printable ASCII, Latin-1 supplement (except ©/® which
@@ -47,6 +48,7 @@ impl Perform for Grid {
     }
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
+        self.ground = true;
         if action == 'm' {
             let first = params.iter().next().map_or(0, |p| p[0]);
             match intermediates {
@@ -333,6 +335,11 @@ impl Perform for Grid {
     }
 
     fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+        // An ESC-terminated string fires this while vte moves to its Escape
+        // state; only BEL ends the string in the ground state.
+        if bell_terminated {
+            self.ground = true;
+        }
         if self.osc_discard { return; }
         let st = if bell_terminated { "\x07" } else { "\x1b\\" };
         match params.first().copied().unwrap_or_default() {
@@ -499,6 +506,7 @@ impl Perform for Grid {
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
+        self.ground = true;
         match (intermediates, byte) {
             ([], b'7') => self.saved = self.cur,
             ([], b'8') => {
