@@ -992,7 +992,7 @@ impl Renderer {
             }
 
         if let Some(lines) = inspector {
-            self.build_inspector(cols, top_rows, total_rows, lines, &mut dirty.lo, &mut dirty.hi);
+            ui::inspector::build(&mut self.cells(cols), top_rows, total_rows, lines, &mut dirty);
         }
 
         if total_rows > 0 && cols > 0 && dirty.lo <= dirty.hi {
@@ -1291,75 +1291,6 @@ impl Renderer {
         (self.bidi_chars, self.bidi_levels, self.bidi_order) = (chars, levels, order);
     }
 
-
-    /// Inspector panel in the bottom-right corner: a frame around `lines`,
-    /// the first of which is the title.
-    fn build_inspector(&mut self, cols: usize, top_rows: usize, total_rows: usize, lines: &[String], lo: &mut usize, hi: &mut usize) {
-        const BOX_BG: u32 = 0x1819_2490;
-        const BORDER_FG: u32 = 0x585B_7080;
-        const TITLE_FG: u32 = 0x89DC_EB80;
-        const LABEL_FG: u32 = 0xA6AD_C880;
-        const VALUE_FG: u32 = 0xF2F2_F780;
-        const LABEL_COLS: usize = 10;
-        let Some((title, body)) = lines.split_first() else { return };
-        let width = body.iter().map(|l| l.chars().count()).max().unwrap_or(0).max(title.chars().count() + 4) + 4;
-        let w = width.min(cols);
-        let h = body.len() + 2;
-        if w < 8 || h + top_rows > total_rows {
-            return;
-        }
-        let (x0, y0) = (cols - w, total_rows - h);
-
-        let queue = &self.queue;
-        let atlas = &mut self.atlas;
-        let instances = &mut self.instances;
-        let mut put = |row: usize, col: usize, ch: char, fg: u32| {
-            if col >= w {
-                return;
-            }
-            let width = char_width(ch).max(1);
-            if col + width > w {
-                return;
-            }
-            let (left, right) = atlas.glyph_slots(queue, ch as u32, width, GlyphStyle::default());
-            let i = (y0 + row) * cols + x0 + col;
-            instances[i] = Instance { glyph: left as u32, fg, bg: BOX_BG };
-            if width == 2 {
-                instances[i + 1] = Instance { glyph: right as u32, fg, bg: BOX_BG };
-            }
-        };
-        for row in 0..h {
-            for c in 0..w {
-                let ch = match (row, c) {
-                    (0, 0) => '╭',
-                    (0, _) if c == w - 1 => '╮',
-                    (_, 0) if row == h - 1 => '╰',
-                    (_, _) if row == h - 1 && c == w - 1 => '╯',
-                    (0, _) => '─',
-                    (_, _) if row == h - 1 => '─',
-                    (_, 0) => '│',
-                    (_, _) if c == w - 1 => '│',
-                    _ => ' ',
-                };
-                put(row, c, ch, BORDER_FG);
-            }
-        }
-        for (i, ch) in format!(" {title} ").chars().enumerate() {
-            put(0, 2 + i, ch, TITLE_FG);
-        }
-        for (r, line) in body.iter().enumerate() {
-            let mut col = 2;
-            for (i, ch) in line.chars().enumerate() {
-                if col + 2 >= w {
-                    break;
-                }
-                put(r + 1, col, ch, if i < LABEL_COLS { LABEL_FG } else { VALUE_FG });
-                col += char_width(ch).max(1);
-            }
-        }
-        *lo = (*lo).min(y0);
-        *hi = (*hi).max(y0 + h - 1);
-    }
 
     /// Compute position and dimensions of the history search popup `(x0, y0, width, height, visible_rows)`.
     pub fn history_popup_geometry(
