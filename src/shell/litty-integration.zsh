@@ -15,6 +15,10 @@ _litty_precmd() {
     builtin print -n "\e]133;D;${ret}\a"
     _litty_running=0
   fi
+  if (( ${+_litty_yo_erase} )); then
+    builtin print -n "\e[${_litty_yo_erase}A\e[J"
+    unset _litty_yo_erase
+  fi
   local _litty_pwd="${PWD//[[:cntrl:]]/}"
   builtin print -rn -- $'\e]7;file://'"${HOST//[[:cntrl:]]/}${_litty_pwd// /%20}"$'\a'
   if _litty_has title; then
@@ -55,10 +59,16 @@ _litty_accept_line() {
     local query=${BUFFER#yo}
     query=${query##[[:space:]]#}
     builtin print -s -- "$BUFFER"
+    # `zle -I` keeps the typed line on screen but makes accept-line redraw one
+    # empty prompt below it. Record that prompt's height so `_litty_precmd` can
+    # erase it, and drop its marks so only the real next prompt reports ready.
+    local -a rows=("${(@f)${(%)${(e)PS1}}}")
+    _litty_yo_erase=${#rows}
     zle -I
-    builtin print -r -- "$BUFFER"
     BUFFER=''
     _litty_yo_emit "$query"
+    PS1=${PS1//$'%{\e]133;A\a%}'/}
+    PS1=${PS1//$'%{\e]133;B\a%}'/}
   fi
   zle .accept-line
 }

@@ -125,6 +125,10 @@ impl Drop for Session {
     }
 }
 
+fn count(data: &[u8], needle: &[u8]) -> usize {
+    data.windows(needle.len()).filter(|window| *window == needle).count()
+}
+
 fn has(data: &[u8], needle: &[u8]) -> bool {
     data.windows(needle.len()).any(|window| window == needle)
 }
@@ -237,6 +241,14 @@ fn run(shell: &str) {
         let payload = rest.split(|&byte| byte == 0x07).next().unwrap_or(rest);
         let decoded = base64_decode(payload);
         assert_eq!(text(&decoded).trim(), query, "{shell}: {}", text(&output));
+        // A second prompt-ready mark makes Litty draw `Thinking...` on a prompt the
+        // shell is about to replace, leaving duplicate prompts on screen.
+        assert_eq!(count(rest, b"133;B"), 1, "{shell}: {}", text(&output));
+        if shell == "zsh" {
+            // The empty prompt zsh redraws for the abandoned `yo` line is erased
+            // (one row for this test's single-line prompt) before the real one.
+            assert!(has(rest, b"\x1b[1A\x1b[J"), "{shell}: {}", text(&output));
+        }
         output
     };
     assert!(!has(&output, b"command not found"), "{shell}: {}", text(&output));
