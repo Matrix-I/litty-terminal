@@ -2,22 +2,121 @@
 //! codepoints the configured fonts lack, color emoji, and grapheme clusters
 //! the primary font cannot shape. `linux.rs` is the non-macOS counterpart.
 
+use std::ffi::c_void;
+use std::ptr;
+
 use parking_lot::Mutex;
 
-unsafe fn cached_ct_base_font(is_emoji: bool, size: f64) -> *const std::ffi::c_void { unsafe {
-    use std::ffi::c_void;
-    use std::ptr;
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct CFRange {
+    location: isize,
+    length: isize,
+}
 
-    #[link(name = "CoreFoundation", kind = "framework")]
-    unsafe extern "C" {
-        fn CFStringCreateWithCharacters(alloc: *const c_void, chars: *const u16, n: isize) -> *const c_void;
-        fn CFRetain(cf: *const c_void) -> *const c_void;
-        fn CFRelease(cf: *const c_void);
-    }
-    #[link(name = "CoreText", kind = "framework")]
-    unsafe extern "C" {
-        fn CTFontCreateWithName(name: *const c_void, size: f64, matrix: *const c_void) -> *const c_void;
-    }
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+struct CGPoint {
+    x: f64,
+    y: f64,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+struct CGSize {
+    width: f64,
+    height: f64,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+struct CGRect {
+    origin: CGPoint,
+    size: CGSize,
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFStringCreateWithCharacters(alloc: *const c_void, chars: *const u16, n: isize) -> *const c_void;
+    fn CFRetain(cf: *const c_void) -> *const c_void;
+    fn CFRelease(cf: *const c_void);
+    fn CFStringGetLength(the_string: *const c_void) -> isize;
+    fn CFStringGetCharacters(the_string: *const c_void, range: CFRange, buffer: *mut u16);
+    fn CFDictionaryCreate(
+        alloc: *const c_void,
+        keys: *const *const c_void,
+        values: *const *const c_void,
+        n: isize,
+        key_callbacks: *const c_void,
+        value_callbacks: *const c_void,
+    ) -> *const c_void;
+    fn CFAttributedStringCreate(alloc: *const c_void, s: *const c_void, attributes: *const c_void) -> *const c_void;
+    static kCFTypeDictionaryKeyCallBacks: [usize; 6];
+    static kCFTypeDictionaryValueCallBacks: [usize; 5];
+    static kCFBooleanTrue: *const c_void;
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGColorSpaceCreateDeviceGray() -> *mut c_void;
+    fn CGColorSpaceRelease(space: *mut c_void);
+    fn CGBitmapContextCreate(
+        data: *mut c_void,
+        width: usize,
+        height: usize,
+        bits_per_component: usize,
+        bytes_per_row: usize,
+        space: *mut c_void,
+        bitmap_info: u32,
+    ) -> *mut c_void;
+    fn CGContextRelease(c: *mut c_void);
+    fn CGContextSetGrayFillColor(c: *mut c_void, gray: f64, alpha: f64);
+    fn CGContextSetAllowsAntialiasing(c: *mut c_void, allows: bool);
+    fn CGContextSetShouldAntialias(c: *mut c_void, should: bool);
+    fn CGContextSetAllowsFontSmoothing(c: *mut c_void, allows: bool);
+    fn CGContextSetShouldSmoothFonts(c: *mut c_void, should: bool);
+    fn CGColorSpaceCreateDeviceRGB() -> *mut c_void;
+    fn CGContextSetTextPosition(c: *mut c_void, x: f64, y: f64);
+}
+
+#[link(name = "CoreText", kind = "framework")]
+unsafe extern "C" {
+    fn CTFontCreateWithName(name: *const c_void, size: f64, matrix: *const c_void) -> *const c_void;
+    fn CTFontCreateForString(
+        current_font: *const c_void,
+        string: *const c_void,
+        range: CFRange,
+    ) -> *const c_void;
+    fn CTFontCopyFamilyName(font: *const c_void) -> *const c_void;
+    fn CTFontGetGlyphsForCharacters(
+        font: *const c_void,
+        characters: *const u16,
+        glyphs: *mut u16,
+        count: isize,
+    ) -> bool;
+    fn CTFontGetBoundingRectsForGlyphs(
+        font: *const c_void,
+        orientation: u32,
+        glyphs: *const u16,
+        bounding_rects: *mut CGRect,
+        count: isize,
+    ) -> CGRect;
+    fn CTFontDrawGlyphs(
+        font: *const c_void,
+        glyphs: *const u16,
+        positions: *const CGPoint,
+        count: usize,
+        context: *mut c_void,
+    );
+    fn CTLineCreateWithAttributedString(s: *const c_void) -> *const c_void;
+    fn CTLineGetBoundsWithOptions(line: *const c_void, options: usize) -> CGRect;
+    fn CTLineDraw(line: *const c_void, ctx: *mut c_void);
+    static kCTFontAttributeName: *const c_void;
+    static kCTForegroundColorFromContextAttributeName: *const c_void;
+}
+
+unsafe fn cached_ct_base_font(is_emoji: bool, size: f64) -> *const std::ffi::c_void { unsafe {
+
 
     static BASE_FONT_CACHE: Mutex<[Option<(u64, usize)>; 2]> = parking_lot::const_mutex([None, None]);
     let slot_idx = usize::from(is_emoji);
@@ -58,104 +157,9 @@ pub(crate) fn macos_coretext_rasterize(
     px: f32,
     ch: char,
 ) -> bool {
-    use std::ffi::c_void;
-    use std::ptr;
 
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    struct CFRange {
-        location: isize,
-        length: isize,
-    }
 
-    #[repr(C)]
-    #[derive(Copy, Clone, Default)]
-    struct CGPoint {
-        x: f64,
-        y: f64,
-    }
 
-    #[repr(C)]
-    #[derive(Copy, Clone, Default)]
-    struct CGSize {
-        width: f64,
-        height: f64,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone, Default)]
-    struct CGRect {
-        origin: CGPoint,
-        size: CGSize,
-    }
-
-    #[link(name = "CoreFoundation", kind = "framework")]
-    unsafe extern "C" {
-        fn CFStringCreateWithCharacters(
-            alloc: *const c_void,
-            chars: *const u16,
-            num_chars: isize,
-        ) -> *const c_void;
-        fn CFStringGetLength(the_string: *const c_void) -> isize;
-        fn CFStringGetCharacters(the_string: *const c_void, range: CFRange, buffer: *mut u16);
-        fn CFRelease(cf: *const c_void);
-    }
-
-    #[link(name = "CoreGraphics", kind = "framework")]
-    unsafe extern "C" {
-        fn CGColorSpaceCreateDeviceGray() -> *mut c_void;
-        fn CGColorSpaceRelease(space: *mut c_void);
-        fn CGBitmapContextCreate(
-            data: *mut c_void,
-            width: usize,
-            height: usize,
-            bits_per_component: usize,
-            bytes_per_row: usize,
-            space: *mut c_void,
-            bitmap_info: u32,
-        ) -> *mut c_void;
-        fn CGContextRelease(c: *mut c_void);
-        fn CGContextSetGrayFillColor(c: *mut c_void, gray: f64, alpha: f64);
-        fn CGContextSetAllowsAntialiasing(c: *mut c_void, allows: bool);
-        fn CGContextSetShouldAntialias(c: *mut c_void, should: bool);
-        fn CGContextSetAllowsFontSmoothing(c: *mut c_void, allows: bool);
-        fn CGContextSetShouldSmoothFonts(c: *mut c_void, should: bool);
-    }
-
-    #[link(name = "CoreText", kind = "framework")]
-    unsafe extern "C" {
-        fn CTFontCreateWithName(
-            name: *const c_void,
-            size: f64,
-            matrix: *const c_void,
-        ) -> *const c_void;
-        fn CTFontCreateForString(
-            current_font: *const c_void,
-            string: *const c_void,
-            range: CFRange,
-        ) -> *const c_void;
-        fn CTFontCopyFamilyName(font: *const c_void) -> *const c_void;
-        fn CTFontGetGlyphsForCharacters(
-            font: *const c_void,
-            characters: *const u16,
-            glyphs: *mut u16,
-            count: isize,
-        ) -> bool;
-        fn CTFontGetBoundingRectsForGlyphs(
-            font: *const c_void,
-            orientation: u32,
-            glyphs: *const u16,
-            bounding_rects: *mut CGRect,
-            count: isize,
-        ) -> CGRect;
-        fn CTFontDrawGlyphs(
-            font: *const c_void,
-            glyphs: *const u16,
-            positions: *const CGPoint,
-            count: usize,
-            context: *mut c_void,
-        );
-    }
 
     unsafe {
         let mut u16_buf = [0u16; 2];
@@ -291,71 +295,7 @@ pub(super) fn rasterize_text_cluster(buf: &mut [u8], w: u32, h: u32, baseline: i
 /// centered) when `baseline` is `None`, else text coverage (one byte per px)
 /// from Menlo and the system cascade, centered horizontally on the baseline.
 fn coretext_line(buf: &mut [u8], w: u32, h: u32, px: f32, text: &str, baseline: Option<i32>) -> bool {
-    use std::ffi::c_void;
-    use std::ptr;
 
-    #[repr(C)]
-    #[derive(Copy, Clone, Default)]
-    struct CGPoint {
-        x: f64,
-        y: f64,
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone, Default)]
-    struct CGSize {
-        width: f64,
-        height: f64,
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone, Default)]
-    struct CGRect {
-        origin: CGPoint,
-        size: CGSize,
-    }
-
-    #[link(name = "CoreFoundation", kind = "framework")]
-    unsafe extern "C" {
-        fn CFStringCreateWithCharacters(alloc: *const c_void, chars: *const u16, n: isize) -> *const c_void;
-        fn CFDictionaryCreate(
-            alloc: *const c_void,
-            keys: *const *const c_void,
-            values: *const *const c_void,
-            n: isize,
-            key_callbacks: *const c_void,
-            value_callbacks: *const c_void,
-        ) -> *const c_void;
-        fn CFAttributedStringCreate(alloc: *const c_void, s: *const c_void, attributes: *const c_void) -> *const c_void;
-        fn CFRelease(cf: *const c_void);
-        static kCFTypeDictionaryKeyCallBacks: [usize; 6];
-        static kCFTypeDictionaryValueCallBacks: [usize; 5];
-        static kCFBooleanTrue: *const c_void;
-    }
-    #[link(name = "CoreGraphics", kind = "framework")]
-    unsafe extern "C" {
-        fn CGColorSpaceCreateDeviceRGB() -> *mut c_void;
-        fn CGColorSpaceCreateDeviceGray() -> *mut c_void;
-        fn CGContextSetGrayFillColor(c: *mut c_void, gray: f64, alpha: f64);
-        fn CGColorSpaceRelease(space: *mut c_void);
-        fn CGBitmapContextCreate(
-            data: *mut c_void,
-            width: usize,
-            height: usize,
-            bits_per_component: usize,
-            bytes_per_row: usize,
-            space: *mut c_void,
-            bitmap_info: u32,
-        ) -> *mut c_void;
-        fn CGContextRelease(c: *mut c_void);
-        fn CGContextSetTextPosition(c: *mut c_void, x: f64, y: f64);
-    }
-    #[link(name = "CoreText", kind = "framework")]
-    unsafe extern "C" {
-        fn CTLineCreateWithAttributedString(s: *const c_void) -> *const c_void;
-        fn CTLineGetBoundsWithOptions(line: *const c_void, options: usize) -> CGRect;
-        fn CTLineDraw(line: *const c_void, ctx: *mut c_void);
-        static kCTFontAttributeName: *const c_void;
-        static kCTForegroundColorFromContextAttributeName: *const c_void;
-    }
     /// `kCGImageAlphaPremultipliedLast`: RGBA bytes.
     const PREMULTIPLIED_LAST: u32 = 1;
     /// `kCTLineBoundsUseGlyphPathBounds`: the ink, not the typographic box.
