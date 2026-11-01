@@ -2,7 +2,7 @@
 
 use super::inspector::inspector_lines;
 use super::search_ui::refresh_search;
-use super::state::{ImeState, InspectorState, State, WindowRequests};
+use super::state::{ImeState, InspectorState, PointerState, State, WindowRequests};
 use super::terminal_io::write_pty;
 
 use std::sync::Arc;
@@ -152,24 +152,28 @@ pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Op
         active: 0,
         mods: ModifiersState::default(),
         font_pt,
-        mouse_pos: (0.0, 0.0),
-        selecting: false,
-        drag_moved: false,
-        last_click_time: None,
-        last_click_cell: None,
-        active_click_pane_id: None,
-        click_count: 0,
-        click_on_selected_block: false,
-        extend_drag: false,
-        scrollbar_drag: None,
-        wheel_scroll: scroll::Accumulator::default(),
-        pointer_icon: CursorIcon::Default,
+        pointer: PointerState {
+            mouse_pos: (0.0, 0.0),
+            selecting: false,
+            drag_moved: false,
+            last_click_time: None,
+            last_click_cell: None,
+            active_click_pane_id: None,
+            click_count: 0,
+            click_on_selected_block: false,
+            extend_drag: false,
+            scrollbar_drag: None,
+            wheel_scroll: scroll::Accumulator::default(),
+            pointer_icon: CursorIcon::Default,
+            hovered_link: None,
+            mouse_hidden: false,
+            mouse_button_down: None,
+            last_mouse_report: None,
+        },
         last_notification: None,
         secure_input: false,
-        hovered_link: None,
         config: cfg,
         config_mtime,
-        mouse_hidden: false,
         consumed_keys: Vec::new(),
         locks: 0,
         cursor_blink_epoch: std::time::Instant::now(),
@@ -179,8 +183,6 @@ pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Op
         search: SearchBar::new(),
         first_frame: true,
         ime: ImeState { preedit: String::new(), cursor_cell: None },
-        mouse_button_down: None,
-        last_mouse_report: None,
         sync_pending: false,
         titles_refreshed_at: std::time::Instant::now(),
         requests: WindowRequests {
@@ -390,9 +392,9 @@ pub(super) fn reload_config(s: &mut State) {
         sync_size(s);
     }
 
-    if !new.mouse_hide_while_typing && s.mouse_hidden {
+    if !new.mouse_hide_while_typing && s.pointer.mouse_hidden {
         s.window.set_cursor_visible(true);
-        s.mouse_hidden = false;
+        s.pointer.mouse_hidden = false;
     }
 
     s.config = new;
@@ -445,7 +447,7 @@ pub(super) fn render_active(s: &mut State) {
     tab.prepare_render_panes(total_cols, total_rows, &mut s.pane_rects, &mut s.render_panes);
     let render_panes = &s.render_panes;
 
-    let hovered_link = s.hovered_link.as_ref().map(|l| (l.pane_id, &l.link));
+    let hovered_link = s.pointer.hovered_link.as_ref().map(|l| (l.pane_id, &l.link));
 
     s.renderer.render_panes(
         render_panes,

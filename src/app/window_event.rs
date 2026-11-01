@@ -131,30 +131,30 @@ impl App {
 
     pub(super) fn on_cursor_moved(&mut self, id: WindowId, position: PhysicalPosition<f64>) {
         let Some(s) = self.window_mut(id) else { return };
-        s.mouse_pos = (position.x, position.y);
+        s.pointer.mouse_pos = (position.x, position.y);
         if s.tabs.is_empty() {
             return;
         }
-        if s.mouse_hidden {
+        if s.pointer.mouse_hidden {
             s.window.set_cursor_visible(true);
-            s.mouse_hidden = false;
+            s.pointer.mouse_hidden = false;
         }
         if s.inspector.shown {
             s.window.request_redraw();
         }
         s.renderer.set_mouse(position.x, position.y);
-        if let Some(pane_id) = s.scrollbar_drag {
+        if let Some(pane_id) = s.pointer.scrollbar_drag {
             drag_scrollbar(s, pane_id);
             return;
         }
-        if !s.selecting && !s.history_search.is_open {
-            let button = s.mouse_button_down.unwrap_or(mouse::Button::None);
+        if !s.pointer.selecting && !s.history_search.is_open {
+            let button = s.pointer.mouse_button_down.unwrap_or(mouse::Button::None);
             if report_mouse(s, button, mouse::Action::Motion) {
                 return;
             }
         }
-        if s.selecting {
-            if let (Some(start), Some(pane_id)) = (s.last_click_cell, s.active_click_pane_id) {
+        if s.pointer.selecting {
+            if let (Some(start), Some(pane_id)) = (s.pointer.last_click_cell, s.pointer.active_click_pane_id) {
                 let show_tabs = s.tabs.len() > 1;
                 let (cols, rows) = s.renderer.grid_size_for_tabs(show_tabs);
                 if let Some((cell_row, cell_col)) = s.renderer.pixel_to_cell(position.x, position.y, show_tabs, cols, rows) {
@@ -169,13 +169,13 @@ impl App {
                             (row, g.logical_col(row, pane_col))
                         });
                         let end = (pane_row, pane_col);
-                        if s.extend_drag {
+                        if s.pointer.extend_drag {
                             if let Some(pane) = tab.pane(pane_id) {
                                 pane.grid.lock().set_selection_end(pane_row, pane_col);
                                 s.window.request_redraw();
                             }
-                        } else if end != start || s.drag_moved {
-                            s.drag_moved = true;
+                        } else if end != start || s.pointer.drag_moved {
+                            s.pointer.drag_moved = true;
                             if let Some(pane) = tab.pane(pane_id) {
                                 pane.grid.lock().set_selection(Some(Selection { start, end }));
                                 s.window.request_redraw();
@@ -202,25 +202,25 @@ impl App {
             _ => None,
         };
         if button == MouseButton::Left {
-            if btn_state == ElementState::Released && s.scrollbar_drag.take().is_some() {
+            if btn_state == ElementState::Released && s.pointer.scrollbar_drag.take().is_some() {
                 return;
             }
             if btn_state == ElementState::Pressed && !s.history_search.is_open
                 && let Some(pane_id) = scrollbar_at_mouse(s) {
-                    s.scrollbar_drag = Some(pane_id);
+                    s.pointer.scrollbar_drag = Some(pane_id);
                     drag_scrollbar(s, pane_id);
                     return;
                 }
         }
-        if let (Some(b), false) = (reported, s.history_search.is_open || s.selecting) {
+        if let (Some(b), false) = (reported, s.history_search.is_open || s.pointer.selecting) {
             let action = if btn_state == ElementState::Pressed { mouse::Action::Press } else { mouse::Action::Release };
             if report_mouse(s, b, action) {
-                s.mouse_button_down = (action == mouse::Action::Press).then_some(b);
+                s.pointer.mouse_button_down = (action == mouse::Action::Press).then_some(b);
                 return;
             }
         }
         if btn_state == ElementState::Released {
-            s.mouse_button_down = None;
+            s.pointer.mouse_button_down = None;
         }
         if button != MouseButton::Left {
             return;
@@ -233,7 +233,7 @@ impl App {
                     let show_tabs = s.tabs.len() > 1;
                     let (cols, rows) = s.renderer.grid_size_for_tabs(show_tabs);
                     if let Some((cell_row, cell_col)) =
-                        s.renderer.pixel_to_cell(s.mouse_pos.0, s.mouse_pos.1, show_tabs, cols, rows)
+                        s.renderer.pixel_to_cell(s.pointer.mouse_pos.0, s.pointer.mouse_pos.1, show_tabs, cols, rows)
                     {
                         let r = if show_tabs { cell_row + 1 } else { cell_row };
                         let c = cell_col;
@@ -248,7 +248,7 @@ impl App {
                             if item_idx < s.history_search.filtered.len() {
                                 let now = std::time::Instant::now();
                                 let is_double = s.history_search.selected == item_idx
-                                    && s.last_click_time.is_some_and(|t| now.duration_since(t).as_millis() <= 400);
+                                    && s.pointer.last_click_time.is_some_and(|t| now.duration_since(t).as_millis() <= 400);
                                 if is_double {
                                     let cmd_opt = s.history_search.selected_command().map(|c| c.to_string());
                                     s.history_search.close();
@@ -262,7 +262,7 @@ impl App {
                                     return;
                                 } else {
                                     s.history_search.selected = item_idx;
-                                    s.last_click_time = Some(now);
+                                    s.pointer.last_click_time = Some(now);
                                     s.renderer.invalidate();
                                     s.window.request_redraw();
                                     return;
@@ -286,7 +286,7 @@ impl App {
                 let cmd_pressed = s.mods.control_key() || s.mods.super_key();
 
                 if cmd_pressed
-                    && let Some((pane_id, url, is_path)) = s.hovered_link.as_ref().map(|l| (l.pane_id, l.link.url.clone(), l.link.is_path)) {
+                    && let Some((pane_id, url, is_path)) = s.pointer.hovered_link.as_ref().map(|l| (l.pane_id, l.link.url.clone(), l.link.is_path)) {
                         let cwd = s.tabs.get_mut(s.active)
                             .and_then(|t| t.pane_mut(pane_id))
                             .and_then(|p| p.cwd());
@@ -295,7 +295,7 @@ impl App {
                         return;
                     }
 
-                if let Some(action) = s.renderer.hit_test_tab_bar(s.mouse_pos.0, s.mouse_pos.1, &s.tab_titles) {
+                if let Some(action) = s.renderer.hit_test_tab_bar(s.pointer.mouse_pos.0, s.pointer.mouse_pos.1, &s.tab_titles) {
                     match action {
                         TabBarAction::Select(idx) => select_tab(s, idx),
                         TabBarAction::CloseTab(idx) => close_tab_at(s, idx),
@@ -313,41 +313,41 @@ impl App {
                             tab.active_pane_id = clicked_id;
                             switched_active_pane = true;
                         }
-                        s.active_click_pane_id = Some(clicked_id);
+                        s.pointer.active_click_pane_id = Some(clicked_id);
 
                         // Shift+Click extends the pane's selection to the mouse;
                         // dragging on keeps moving its end.
                         let extended = s.mods.shift_key()
                             && tab.pane(clicked_id).is_some_and(|p| p.grid.lock().extend_selection(pane_row, pane_col));
-                        s.extend_drag = extended;
+                        s.pointer.extend_drag = extended;
                         if extended {
-                            s.selecting = true;
-                            s.drag_moved = true;
+                            s.pointer.selecting = true;
+                            s.pointer.drag_moved = true;
                             s.window.request_redraw();
                         }
 
                         let now = std::time::Instant::now();
                         let multi_click = !extended
-                            && s.last_click_time.is_some_and(|t| now.duration_since(t).as_millis() <= 450)
-                            && s.last_click_cell.is_some_and(|(lr, _)| lr == pane_row);
+                            && s.pointer.last_click_time.is_some_and(|t| now.duration_since(t).as_millis() <= 450)
+                            && s.pointer.last_click_cell.is_some_and(|(lr, _)| lr == pane_row);
 
-                        s.click_count = if multi_click {
-                            (s.click_count % 3) + 1
+                        s.pointer.click_count = if multi_click {
+                            (s.pointer.click_count % 3) + 1
                         } else {
                             1
                         };
                         // A Shift+Click never starts a double-click.
-                        s.last_click_time = (!extended).then_some(now);
-                        s.last_click_cell = Some((pane_row, pane_col));
+                        s.pointer.last_click_time = (!extended).then_some(now);
+                        s.pointer.last_click_cell = Some((pane_row, pane_col));
 
                         if let Some(pane) = tab.pane(clicked_id).filter(|_| !extended) {
-                            match s.click_count {
+                            match s.pointer.click_count {
                                 // Double-click selects a block of text; again on a
                                 // selected block, the whole line.
                                 2 => {
                                     let line_text = {
                                         let mut g = pane.grid.lock();
-                                        if std::mem::take(&mut s.click_on_selected_block) {
+                                        if std::mem::take(&mut s.pointer.click_on_selected_block) {
                                             g.select_smart_line(pane_row, pane_col)
                                         } else {
                                             g.select_block(pane_row, pane_col)
@@ -356,8 +356,8 @@ impl App {
                                     if !line_text.is_empty() && s.config.copy_on_select {
                                         copy_to_clipboard(&line_text);
                                     }
-                                    s.selecting = false;
-                                    s.drag_moved = false;
+                                    s.pointer.selecting = false;
+                                    s.pointer.drag_moved = false;
                                     s.window.request_redraw();
                                 }
                                 3 => {
@@ -365,17 +365,17 @@ impl App {
                                     if !line_text.is_empty() && s.config.copy_on_select {
                                         copy_to_clipboard(&line_text);
                                     }
-                                    s.selecting = false;
-                                    s.drag_moved = false;
+                                    s.pointer.selecting = false;
+                                    s.pointer.drag_moved = false;
                                     s.window.request_redraw();
                                 }
                                 _ => {
                                     let mut g = pane.grid.lock();
-                                    s.click_on_selected_block = g.is_block_selected(pane_row, pane_col);
+                                    s.pointer.click_on_selected_block = g.is_block_selected(pane_row, pane_col);
                                     g.set_selection(None);
                                     drop(g);
-                                    s.selecting = true;
-                                    s.drag_moved = false;
+                                    s.pointer.selecting = true;
+                                    s.pointer.drag_moved = false;
                                     s.window.request_redraw();
                                 }
                             }
@@ -388,19 +388,19 @@ impl App {
                 }
             }
             ElementState::Released => {
-                if s.selecting {
-                    s.selecting = false;
-                    if s.drag_moved {
-                        if let Some(pane_id) = s.active_click_pane_id
+                if s.pointer.selecting {
+                    s.pointer.selecting = false;
+                    if s.pointer.drag_moved {
+                        if let Some(pane_id) = s.pointer.active_click_pane_id
                             && let Some(pane) = s.tabs.get(s.active).and_then(|t| t.pane(pane_id)) {
                                 let text = pane.grid.lock().selected_text();
                                 if let Some(t) = text.filter(|_| s.config.copy_on_select) {
                                     copy_to_clipboard(&t);
                                 }
                             }
-                    } else if s.click_count == 1 && !s.history_search.is_open
+                    } else if s.pointer.click_count == 1 && !s.history_search.is_open
                         && let (Some(pane_id), Some((pane_row, pane_col))) =
-                            (s.active_click_pane_id, s.last_click_cell)
+                            (s.pointer.active_click_pane_id, s.pointer.last_click_cell)
                             && let Some(pane) = s.tabs.get(s.active).and_then(|t| t.pane(pane_id)) {
                                 let move_bytes = pane
                                     .grid
@@ -422,7 +422,7 @@ impl App {
             return;
         }
         if matches!(phase, TouchPhase::Started | TouchPhase::Cancelled) {
-            s.wheel_scroll.reset();
+            s.pointer.wheel_scroll.reset();
         }
         if phase == TouchPhase::Cancelled {
             return;
@@ -450,7 +450,7 @@ impl App {
                     return;
                 }
             }
-        let lines = s.wheel_scroll.push(amount, unit, target, precise);
+        let lines = s.pointer.wheel_scroll.push(amount, unit, target, precise);
         if s.history_search.is_open {
             let visible_rows = s.renderer.history_popup_geometry(&s.history_search).map_or(10, |g| g.4);
             if lines > 0 {
@@ -490,7 +490,7 @@ impl App {
     pub(super) fn on_focused(&mut self, id: WindowId, focused: bool) {
         let Some(s) = self.window_mut(id) else { return };
         if !focused {
-            s.wheel_scroll.reset();
+            s.pointer.wheel_scroll.reset();
         }
         let was_focused = std::mem::replace(&mut s.focused, focused);
         if focused && s.occluded {

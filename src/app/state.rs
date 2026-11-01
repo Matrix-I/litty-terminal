@@ -24,31 +24,13 @@ pub(super) struct State {
     pub(super) active: usize,
     pub(super) mods: ModifiersState,
     pub(super) font_pt: f32,
-    pub(super) mouse_pos: (f64, f64),
-    pub(super) selecting: bool,
-    pub(super) drag_moved: bool,
-    pub(super) last_click_time: Option<std::time::Instant>,
-    pub(super) last_click_cell: Option<(usize, usize)>,
-    pub(super) active_click_pane_id: Option<u64>,
-    pub(super) click_count: u8,
-    /// The press that started this click sequence landed on an already selected
-    /// block, so the double-click widens the selection to the line.
-    pub(super) click_on_selected_block: bool,
-    /// The current drag started with Shift+Click and moves only the selection end.
-    pub(super) extend_drag: bool,
-    /// Pane whose scrollbar thumb is being dragged.
-    pub(super) scrollbar_drag: Option<u64>,
-    pub(super) wheel_scroll: scroll::Accumulator,
-    /// Mouse pointer outside links: the active pane's OSC 22 shape.
-    pub(super) pointer_icon: CursorIcon,
+    pub(super) pointer: PointerState,
     /// Last desktop notification shown, to rate-limit OSC 9 / 777 floods.
     pub(super) last_notification: Option<std::time::Instant>,
     /// Secure Keyboard Entry requested (macOS); held only while focused.
     pub(super) secure_input: bool,
-    pub(super) hovered_link: Option<HoveredPaneLink>,
     pub(super) config: config::Config,
     pub(super) config_mtime: Option<std::time::SystemTime>,
-    pub(super) mouse_hidden: bool,
     /// Keys whose press Litty handled itself (shortcuts, search box), so their
     /// release is not reported to a Kitty-protocol application either.
     pub(super) consumed_keys: Vec<PhysicalKey>,
@@ -65,10 +47,6 @@ pub(super) struct State {
     pub(super) search: SearchBar,
     pub(super) first_frame: bool,
     pub(super) ime: ImeState,
-    /// Mouse button held while the application tracks the mouse (for drag reports).
-    pub(super) mouse_button_down: Option<mouse::Button>,
-    /// Last `(pane, row, col)` reported to a mouse-tracking application.
-    pub(super) last_mouse_report: Option<(u64, usize, usize)>,
     /// A frame was skipped because an application is in synchronized output.
     pub(super) sync_pending: bool,
     /// When tab titles were last recomputed (they also refresh on OSC 0/2/7).
@@ -95,17 +73,17 @@ impl State {
         if self.search.pane_id == Some(pane_id) {
             self.search.close();
         }
-        if self.hovered_link.as_ref().is_some_and(|h| h.pane_id == pane_id) {
-            self.hovered_link = None;
+        if self.pointer.hovered_link.as_ref().is_some_and(|h| h.pane_id == pane_id) {
+            self.pointer.hovered_link = None;
         }
-        if self.scrollbar_drag == Some(pane_id) {
-            self.scrollbar_drag = None;
+        if self.pointer.scrollbar_drag == Some(pane_id) {
+            self.pointer.scrollbar_drag = None;
         }
-        if self.active_click_pane_id == Some(pane_id) {
-            self.active_click_pane_id = None;
+        if self.pointer.active_click_pane_id == Some(pane_id) {
+            self.pointer.active_click_pane_id = None;
         }
-        if self.last_mouse_report.as_ref().is_some_and(|(id, ..)| *id == pane_id) {
-            self.last_mouse_report = None;
+        if self.pointer.last_mouse_report.as_ref().is_some_and(|(id, ..)| *id == pane_id) {
+            self.pointer.last_mouse_report = None;
         }
     }
 }
@@ -142,4 +120,31 @@ pub(super) struct WindowRequests {
     pub(super) quit: bool,
     /// Config reload requested; `App` propagates it to all windows.
     pub(super) reload_config: bool,
+}
+
+/// Mouse pointer, click sequence and hover tracking.
+pub(super) struct PointerState {
+    pub(super) mouse_pos: (f64, f64),
+    pub(super) selecting: bool,
+    pub(super) drag_moved: bool,
+    pub(super) last_click_time: Option<std::time::Instant>,
+    pub(super) last_click_cell: Option<(usize, usize)>,
+    pub(super) active_click_pane_id: Option<u64>,
+    pub(super) click_count: u8,
+    /// The press that started this click sequence landed on an already selected
+    /// block, so the double-click widens the selection to the line.
+    pub(super) click_on_selected_block: bool,
+    /// The current drag started with Shift+Click and moves only the selection end.
+    pub(super) extend_drag: bool,
+    /// Pane whose scrollbar thumb is being dragged.
+    pub(super) scrollbar_drag: Option<u64>,
+    pub(super) wheel_scroll: scroll::Accumulator,
+    /// Mouse pointer outside links: the active pane's OSC 22 shape.
+    pub(super) pointer_icon: CursorIcon,
+    pub(super) hovered_link: Option<HoveredPaneLink>,
+    pub(super) mouse_hidden: bool,
+    /// Mouse button held while the application tracks the mouse (for drag reports).
+    pub(super) mouse_button_down: Option<mouse::Button>,
+    /// Last `(pane, row, col)` reported to a mouse-tracking application.
+    pub(super) last_mouse_report: Option<(u64, usize, usize)>,
 }

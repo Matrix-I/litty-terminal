@@ -15,7 +15,7 @@ pub(super) fn scrollbar_at_mouse(s: &State) -> Option<u64> {
     let show_tabs = s.tabs.len() > 1;
     let (cols, rows) = s.renderer.grid_size_for_tabs(show_tabs);
     let tab = s.tabs.get(s.active)?;
-    let (mx, my) = s.mouse_pos;
+    let (mx, my) = s.pointer.mouse_pos;
     tab.compute_pane_rects(cols, rows).into_iter().find_map(|r| {
         let (right, top, bottom) = s.renderer.scrollbar_track(&r, show_tabs);
         let over = mx <= right && mx >= right - renderer::SCROLLBAR_WIDTH && my >= top && my < bottom;
@@ -36,7 +36,7 @@ pub(super) fn drag_scrollbar(s: &mut State, pane_id: u64) {
     let (history, offset) = g.scroll_position();
     let track_height = (bottom - top).max(0.0);
     let (_, height) = renderer::scrollbar_thumb(track_height, g.rows, history, offset);
-    let frac = ((s.mouse_pos.1 - top - height / 2.0) / (track_height - height).max(1.0)).clamp(0.0, 1.0);
+    let frac = ((s.pointer.mouse_pos.1 - top - height / 2.0) / (track_height - height).max(1.0)).clamp(0.0, 1.0);
     let new_offset = ((1.0 - frac) * history as f64).round() as usize;
     g.scroll_display(new_offset as isize - offset as isize);
     drop(g);
@@ -46,7 +46,7 @@ pub(super) fn drag_scrollbar(s: &mut State, pane_id: u64) {
 pub(super) fn pane_cell_at_mouse(s: &State) -> Option<(u64, usize, usize)> {
     let show_tabs = s.tabs.len() > 1;
     let (cols, rows) = s.renderer.grid_size_for_tabs(show_tabs);
-    let (row, col) = s.renderer.pixel_to_cell(s.mouse_pos.0, s.mouse_pos.1, show_tabs, cols, rows)?;
+    let (row, col) = s.renderer.pixel_to_cell(s.pointer.mouse_pos.0, s.pointer.mouse_pos.1, show_tabs, cols, rows)?;
     let tab = s.tabs.get(s.active)?;
     tab.compute_pane_rects(cols, rows)
         .into_iter()
@@ -57,7 +57,7 @@ pub(super) fn pane_cell_at_mouse(s: &State) -> Option<(u64, usize, usize)> {
             let col = col - r.col;
             let (row, col) = tab.pane(r.id).map_or((row - r.row, col), |p| {
                 let g = p.grid.lock();
-                let row = g.viewport_row(s.mouse_pos.1 - top, s.renderer.cell_size().1 as f64);
+                let row = g.viewport_row(s.pointer.mouse_pos.1 - top, s.renderer.cell_size().1 as f64);
                 (row, g.logical_col(row, col))
             });
             (r.id, row, col)
@@ -86,7 +86,7 @@ pub(super) fn report_mouse(s: &mut State, button: mouse::Button, action: mouse::
     // SGR-Pixels (DECSET 1016): the same report with pane-relative pixel coordinates.
     let (row, col) = if pixels {
         let (cw, ch) = s.renderer.cell_size();
-        let (dx, dy) = s.renderer.offset_in_cell(s.mouse_pos.0, s.mouse_pos.1, s.tabs.len() > 1);
+        let (dx, dy) = s.renderer.offset_in_cell(s.pointer.mouse_pos.0, s.pointer.mouse_pos.1, s.tabs.len() > 1);
         (row * ch as usize + dy, col * cw as usize + dx)
     } else {
         (row, col)
@@ -96,7 +96,7 @@ pub(super) fn report_mouse(s: &mut State, button: mouse::Button, action: mouse::
     let wanted = match action {
         mouse::Action::Press | mouse::Action::Release => true,
         mouse::Action::Motion => {
-            let moved = s.last_mouse_report != Some((pane_id, row, col));
+            let moved = s.pointer.last_mouse_report != Some((pane_id, row, col));
             moved
                 && (tracking == MouseTracking::Motion
                     || (tracking == MouseTracking::Drag && button != mouse::Button::None))
@@ -107,7 +107,7 @@ pub(super) fn report_mouse(s: &mut State, button: mouse::Button, action: mouse::
         if let Some((bytes, len)) = mouse::encode(button, action, mods, row, col, sgr || pixels) {
             write_pty(pane, &bytes[..len]);
         }
-        s.last_mouse_report = Some((pane_id, row, col));
+        s.pointer.last_mouse_report = Some((pane_id, row, col));
     }
     if action == mouse::Action::Press && tab.active_pane_id != pane_id {
         tab.active_pane_id = pane_id;
@@ -177,13 +177,13 @@ pub(super) fn update_hovered_link(s: &mut State) {
     #[cfg(not(target_os = "macos"))]
     let cmd_pressed = s.mods.control_key() || s.mods.super_key();
 
-    if !cmd_pressed && s.hovered_link.is_none() {
+    if !cmd_pressed && s.pointer.hovered_link.is_none() {
         return;
     }
 
     if s.tabs.is_empty() {
-        if s.hovered_link.is_some() {
-            s.hovered_link = None;
+        if s.pointer.hovered_link.is_some() {
+            s.pointer.hovered_link = None;
             s.window.set_cursor(CursorIcon::Default);
         }
         return;
@@ -192,8 +192,8 @@ pub(super) fn update_hovered_link(s: &mut State) {
     let show_tabs = s.tabs.len() > 1;
     let (cols, rows) = s.renderer.grid_size_for_tabs(show_tabs);
 
-    let new_link = if cmd_pressed && !s.selecting {
-        if let Some((cell_row, cell_col)) = s.renderer.pixel_to_cell(s.mouse_pos.0, s.mouse_pos.1, show_tabs, cols, rows) {
+    let new_link = if cmd_pressed && !s.pointer.selecting {
+        if let Some((cell_row, cell_col)) = s.renderer.pixel_to_cell(s.pointer.mouse_pos.0, s.pointer.mouse_pos.1, show_tabs, cols, rows) {
             let rects = s.tabs[s.active].compute_pane_rects(cols, rows);
             if let Some(target) = rects.iter().find(|r| {
                 cell_col >= r.col
@@ -205,13 +205,13 @@ pub(super) fn update_hovered_link(s: &mut State) {
                     let top = s.renderer.cell_origin_px(target.row, target.col, show_tabs).1;
                     let (pane_row, pane_col, candidate) = {
                         let g = pane.grid.lock();
-                        let pane_row = g.viewport_row(s.mouse_pos.1 - top, s.renderer.cell_size().1 as f64);
+                        let pane_row = g.viewport_row(s.pointer.mouse_pos.1 - top, s.renderer.cell_size().1 as f64);
                         let lcol = g.logical_col(pane_row, cell_col - target.col);
                         (pane_row, lcol, g.find_hyperlink_candidate_at(pane_row, lcol))
                     };
                     match candidate {
                         Some(cand) => {
-                            if let Some(existing) = s.hovered_link.as_ref().filter(|h| {
+                            if let Some(existing) = s.pointer.hovered_link.as_ref().filter(|h| {
                                 h.pane_id == target.id
                                     && matches_cached_hover_candidate(&h.link, pane_row, pane_col, &cand)
                             }) {
@@ -240,12 +240,12 @@ pub(super) fn update_hovered_link(s: &mut State) {
         None
     };
 
-    if s.hovered_link != new_link {
-        s.hovered_link = new_link;
-        if s.hovered_link.is_some() {
+    if s.pointer.hovered_link != new_link {
+        s.pointer.hovered_link = new_link;
+        if s.pointer.hovered_link.is_some() {
             s.window.set_cursor(CursorIcon::Pointer);
         } else {
-            s.window.set_cursor(s.pointer_icon);
+            s.window.set_cursor(s.pointer.pointer_icon);
         }
         s.renderer.invalidate();
         s.window.request_redraw();

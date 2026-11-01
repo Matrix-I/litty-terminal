@@ -36,9 +36,9 @@ pub(super) fn handle_key(
     s.locks = keymap::infer_locks(s.locks, &ev.logical_key, ev.location, m.shift);
 
     let is_modifier = keymap::is_modifier_key(&ev.logical_key);
-    if !is_modifier && s.config.mouse_hide_while_typing && !s.mouse_hidden {
+    if !is_modifier && s.config.mouse_hide_while_typing && !s.pointer.mouse_hidden {
         s.window.set_cursor_visible(false);
-        s.mouse_hidden = true;
+        s.pointer.mouse_hidden = true;
     }
     s.cursor_blink_epoch = std::time::Instant::now();
 

@@ -95,9 +95,9 @@ pub(super) fn handle_terminal_requests(s: &mut State) {
     }
 
     let shape = s.tabs.get(s.active).and_then(|t| t.active_pane().map(|p| pointer_icon(&p.grid.lock().pointer_shape)));
-    if let Some(icon) = shape.filter(|&icon| icon != s.pointer_icon) {
-        s.pointer_icon = icon;
-        if s.hovered_link.is_none() {
+    if let Some(icon) = shape.filter(|&icon| icon != s.pointer.pointer_icon) {
+        s.pointer.pointer_icon = icon;
+        if s.pointer.hovered_link.is_none() {
             s.window.set_cursor(icon);
         }
     }
