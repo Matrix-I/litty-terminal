@@ -36,14 +36,14 @@ x11rb = "0.13"
 
 [profile.release]
 opt-level = 3
-lto = "thin"
-codegen-units = 16
+lto = "fat"
+codegen-units = 1
 panic = "abort"
 strip = true
 
 [profile.fast-release]
 inherits = "release"
-lto = false
+lto = "thin"
 codegen-units = 16
 
 [patch.crates-io]
