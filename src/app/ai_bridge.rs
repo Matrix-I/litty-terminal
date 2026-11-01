@@ -33,8 +33,8 @@ pub(super) fn handle_ai_requests(s: &mut State, waker: &Waker) {
             let (request, actual, ready, epoch, exit, alt) = {
                 let mut g = pane.grid.lock();
                 (
-                    g.ai_request.take(),
-                    g.ai_command.take(),
+                    g.ai.request.take(),
+                    g.ai.command.take(),
                     g.prompt_ready(),
                     g.prompt_epoch,
                     g.last_exit,
@@ -49,8 +49,8 @@ pub(super) fn handle_ai_requests(s: &mut State, waker: &Waker) {
                 ai.result = None;
                 ai.repaint_epoch = None;
                 let mut g = pane.grid.lock();
-                g.ai_armed = false;
-                g.ai_track = false;
+                g.ai.armed = false;
+                g.ai.track = false;
                 continue;
             }
             if let Some(actual) = actual {
@@ -85,14 +85,14 @@ pub(super) fn handle_ai_requests(s: &mut State, waker: &Waker) {
                         if !ai.cancel.load(std::sync::atomic::Ordering::Acquire)
                             && let Some((command, pending)) = outcome.command
                         {
-                            let bracketed = pane.grid.lock().bracketed_paste;
+                            let bracketed = pane.grid.lock().modes.bracketed_paste;
                             let command: String = command
                                 .chars()
                                 .filter(|c| !c.is_control() || *c == '\n')
                                 .collect();
                             bytes = history_insert_payload(&command, false, bracketed);
                             ai.suggestion = Some((command, pending));
-                            pane.grid.lock().ai_track = true;
+                            pane.grid.lock().ai.track = true;
                         }
                         if !ai.overflow {
                             bytes.append(&mut ai.queue);
@@ -165,7 +165,7 @@ pub(super) fn handle_ai_requests(s: &mut State, waker: &Waker) {
                         .command
                         .as_ref()
                         .is_some_and(|(command, _)| command.contains(['\n', '\r']))
-                        && !pane.grid.lock().bracketed_paste
+                        && !pane.grid.lock().modes.bracketed_paste
                     {
                         outcome.command = None;
                         outcome.text.push_str("\nMultiline suggestion requires bracketed paste; command was not inserted.");

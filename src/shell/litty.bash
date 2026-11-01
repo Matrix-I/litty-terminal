@@ -22,9 +22,14 @@ _litty_loaded=1
 _litty_feats="${LITTY_SHELL_INTEGRATION_FEATURES-}"
 _litty_has() { [[ ",${_litty_feats}," == *",$1,"* ]]; }
 
+_litty_yo_redraw=
+_litty_yo_query=
+
 _litty_prompt_command() {
   local ret=$?
   _litty_armed=
+  local _litty_yo_pending=$_litty_yo_redraw
+  _litty_yo_redraw=
   printf '\e]133;D;%s\a' "$ret"
   local _litty_pwd="${PWD//[[:cntrl:]]/}"
   printf '\e]7;file://%s%s\a' "${HOSTNAME//[[:cntrl:]]/}" "${_litty_pwd// /%20}"
@@ -33,6 +38,12 @@ _litty_prompt_command() {
   # Prompt start / end marks, re-added whenever something rebuilds PS1.
   [[ $PS1 == *'133;A'* ]] || PS1='\[\e]133;A\a\]'"$PS1"
   [[ $PS1 == *'133;B'* ]] || PS1="$PS1"'\[\e]133;B\a\]'
+  if [[ -n $_litty_yo_pending ]]; then
+    # Emit the query only now, after the prompt Readline redrew for the
+    # abandoned `yo` line is erased, so the next prompt-ready mark is the real one.
+    builtin printf '\e[1A\e[J'
+    _litty_yo_emit "$_litty_yo_query"
+  fi
   return $ret
 }
 
@@ -80,7 +91,10 @@ _litty_yo_accept() {
       builtin printf '\r\n%s\r\n' "$original"
       READLINE_LINE=''
       READLINE_POINT=0
-      _litty_yo_emit "$query"
+      # Readline redraws the prompt (marks included) before the bound \C-j
+      # accepts the empty line; defer the query to the next prompt command.
+      _litty_yo_redraw=1
+      _litty_yo_query=$query
       ;;
   esac
 }

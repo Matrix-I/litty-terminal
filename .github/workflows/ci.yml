@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -D warnings
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    name: Diff hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Check whitespace and conflict markers
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="HEAD~1"
+          fi
+          git diff --check "$base" HEAD
+
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check
+        run: cargo check --all-targets
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: build tests
+        run: cargo test --no-run
+      # TEMPORARY: macOS tests hang in Pty::spawn_in users. If the run is still
+      # going 70s after the tests start, dump the process table and stacks.
+      - name: cargo test
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            (
+              sleep 70
+              echo "::group::watchdog: process table"
+              ps -axo pid,ppid,pgid,stat,etime,command | tail -80
+              echo "::endgroup::"
+              for pid in $(pgrep -f 'target/debug/deps/litty-' || true); do
+                echo "::group::watchdog: sample $pid"
+                sample "$pid" 3 2>&1 | head -150
+                echo "::endgroup::"
+              done
+            ) &
+            watchdog=$!
+          fi
+          rc=0
+          cargo test || rc=$?
+          if [ -n "${watchdog:-}" ]; then kill "$watchdog" 2>/dev/null || true; fi
+          exit $rc

@@ -78,7 +78,7 @@ pub(super) fn report_mouse(s: &mut State, button: mouse::Button, action: mouse::
     let Some(pane) = tab.pane(pane_id) else { return false };
     let (tracking, sgr, pixels) = {
         let g = pane.grid.lock();
-        (g.mouse_tracking, g.mouse_sgr, g.mouse_sgr_pixels)
+        (g.modes.mouse_tracking, g.modes.mouse_sgr, g.modes.mouse_sgr_pixels)
     };
     if tracking == MouseTracking::Off {
         return false;
@@ -125,7 +125,7 @@ pub(super) fn alt_screen_scroll(s: &mut State, lines: isize) -> bool {
     let Some(pane) = tab.active_pane() else { return false };
     let (alt, enabled, app_cursor) = {
         let g = pane.grid.lock();
-        (g.alt_active, g.alt_scroll, g.app_cursor)
+        (g.alt_active, g.modes.alt_scroll, g.modes.app_cursor)
     };
     if !alt || !enabled {
         return false;

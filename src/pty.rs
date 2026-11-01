@@ -77,11 +77,21 @@ pub struct Pty {
     shutdown_rx: Arc<OwnedFd>,
     /// Write end of the shutdown pipe: closing it (on drop) signals shutdown.
     _shutdown_tx: OwnedFd,
-    /// Whether the reader thread was spawned (which takes over reaping the child).
+    /// Must stay the last field: fields drop in declaration order, so the master,
+    /// the writer's channel and the shutdown pipe are released before it waits.
+    reaper: ReapOnDrop,
+}
+
+/// Reaps the shell when the owning `Pty` is dropped, unless the reader thread was
+/// spawned (which takes over reaping the child). Waiting from `Pty::drop` itself would
+/// block while the master is still open: macOS then keeps the exiting shell stuck
+/// draining unread tty output, so the wait never returns.
+struct ReapOnDrop {
+    pid: libc::pid_t,
     reader_spawned: std::sync::atomic::AtomicBool,
 }
 
-impl Drop for Pty {
+impl Drop for ReapOnDrop {
     fn drop(&mut self) {
         if !self.reader_spawned.load(std::sync::atomic::Ordering::SeqCst) {
             reap_child(self.pid);
@@ -114,7 +124,7 @@ fn feed_output(
             drop(g);
         } else {
             reply.append(&mut g.response);
-            return g.sync_output;
+            return g.modes.sync_output;
         }
     }
 }
@@ -374,7 +384,7 @@ impl Pty {
                 tx,
                 shutdown_rx,
                 _shutdown_tx: shutdown_tx,
-                reader_spawned: std::sync::atomic::AtomicBool::new(false),
+                reaper: ReapOnDrop { pid, reader_spawned: std::sync::atomic::AtomicBool::new(false) },
             })
         }
     }
@@ -514,7 +524,7 @@ impl Pty {
             reap_child(self.pid);
             return Err(e);
         }
-        self.reader_spawned.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.reaper.reader_spawned.store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 }

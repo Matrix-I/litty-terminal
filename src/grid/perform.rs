@@ -5,6 +5,7 @@ use std::io::Write;
 use vte::{Params, Perform};
 
 use super::*;
+use super::control::{decode_base64, lossy_join, parse_osc7_path};
 
 impl Perform for Grid {
     fn print(&mut self, c: char) {
@@ -56,12 +57,12 @@ impl Perform for Grid {
                 // XTMODKEYS: `CSI > 4 ; level m` sets modifyOtherKeys; `CSI > 4 m` and
                 // `CSI > m` reset it.
                 b">" if first == 4 => {
-                    self.modify_other_keys = params.iter().nth(1).map_or(0, |p| p[0].min(2) as u8);
+                    self.modes.modify_other_keys = params.iter().nth(1).map_or(0, |p| p[0].min(2) as u8);
                 }
-                b">" if first == 0 => self.modify_other_keys = 0,
+                b">" if first == 0 => self.modes.modify_other_keys = 0,
                 // XTQMODKEYS: `CSI ? 4 m`.
                 b"?" if first == 4 => {
-                    let level = self.modify_other_keys;
+                    let level = self.modes.modify_other_keys;
                     let _ = write!(self.response, "\x1b[>4;{level}m");
                 }
                 _ => {}
@@ -211,7 +212,7 @@ impl Perform for Grid {
             }
             // Kitty keyboard protocol: query, push, pop and set the flags.
             'u' => {
-                let kb = &mut self.kitty_keyboard[self.alt_active as usize];
+                let kb = &mut self.modes.kitty_keyboard[self.alt_active as usize];
                 match intermediates {
                     b"?" => {
                         let flags = kb.flags;
@@ -227,7 +228,7 @@ impl Perform for Grid {
                 let on = action == 'h';
                 for &mode in &p[..n] {
                     if mode == 4 {
-                        self.insert_mode = on;
+                        self.modes.insert_mode = on;
                     }
                 }
             }
@@ -235,34 +236,34 @@ impl Perform for Grid {
                 let on = action == 'h';
                 for &mode in &p[..n] {
                     match mode {
-                        1 => self.app_cursor = on,
+                        1 => self.modes.app_cursor = on,
                         6 => {
                             self.cur.origin_mode = on;
                             self.cur.row = if on { self.scroll_top } else { 0 };
                             self.cur.col = 0;
                         }
-                        7 => self.autowrap = on,
-                        9 | 1000 => self.mouse_tracking = if on { MouseTracking::Click } else { MouseTracking::Off },
-                        1002 => self.mouse_tracking = if on { MouseTracking::Drag } else { MouseTracking::Off },
-                        1003 => self.mouse_tracking = if on { MouseTracking::Motion } else { MouseTracking::Off },
-                        1004 => self.focus_events = on,
-                        1006 => self.mouse_sgr = on,
-                        1007 => self.alt_scroll = on,
-                        1016 => self.mouse_sgr_pixels = on,
-                        2031 => self.color_scheme_reports = on,
-                        2027 => self.grapheme_mode = on,
+                        7 => self.modes.autowrap = on,
+                        9 | 1000 => self.modes.mouse_tracking = if on { MouseTracking::Click } else { MouseTracking::Off },
+                        1002 => self.modes.mouse_tracking = if on { MouseTracking::Drag } else { MouseTracking::Off },
+                        1003 => self.modes.mouse_tracking = if on { MouseTracking::Motion } else { MouseTracking::Off },
+                        1004 => self.modes.focus_events = on,
+                        1006 => self.modes.mouse_sgr = on,
+                        1007 => self.modes.alt_scroll = on,
+                        1016 => self.modes.mouse_sgr_pixels = on,
+                        2031 => self.modes.color_scheme_reports = on,
+                        2027 => self.modes.grapheme_mode = on,
                         25 => {
-                            if self.cursor_visible != on {
-                                self.cursor_visible = on;
+                            if self.modes.cursor_visible != on {
+                                self.modes.cursor_visible = on;
                                 self.mark(self.cur.row);
                             }
                         }
                         47 | 1047 => self.set_alt(on, false),
                         1049 => self.set_alt(on, true),
-                        2004 => self.bracketed_paste = on,
+                        2004 => self.modes.bracketed_paste = on,
                         2026 => {
-                            self.sync_output = on;
-                            self.sync_started = on.then(std::time::Instant::now);
+                            self.modes.sync_output = on;
+                            self.modes.sync_started = on.then(std::time::Instant::now);
                         }
                         _ => {}
                     }
@@ -271,7 +272,7 @@ impl Perform for Grid {
             // `CSI > 4 n` disables modifyOtherKeys.
             'n' if intermediates == b">" => {
                 if raw(0) == 4 {
-                    self.modify_other_keys = 0;
+                    self.modes.modify_other_keys = 0;
                 }
             }
             'n' => match raw(0) {
@@ -288,22 +289,22 @@ impl Perform for Grid {
                 // DECRQM (Request Mode): reply with 2 (reset) or 1 (set) so shells never hang waiting.
                 let mode = raw(0);
                 let state = match mode {
-                    1 => if self.app_cursor { 1 } else { 2 },
+                    1 => if self.modes.app_cursor { 1 } else { 2 },
                     6 => if self.cur.origin_mode { 1 } else { 2 },
-                    7 => if self.autowrap { 1 } else { 2 },
-                    1000 => if self.mouse_tracking == MouseTracking::Click { 1 } else { 2 },
-                    1002 => if self.mouse_tracking == MouseTracking::Drag { 1 } else { 2 },
-                    1003 => if self.mouse_tracking == MouseTracking::Motion { 1 } else { 2 },
-                    1004 => if self.focus_events { 1 } else { 2 },
-                    1006 => if self.mouse_sgr { 1 } else { 2 },
-                    1007 => if self.alt_scroll { 1 } else { 2 },
-                    25 => if self.cursor_visible { 1 } else { 2 },
+                    7 => if self.modes.autowrap { 1 } else { 2 },
+                    1000 => if self.modes.mouse_tracking == MouseTracking::Click { 1 } else { 2 },
+                    1002 => if self.modes.mouse_tracking == MouseTracking::Drag { 1 } else { 2 },
+                    1003 => if self.modes.mouse_tracking == MouseTracking::Motion { 1 } else { 2 },
+                    1004 => if self.modes.focus_events { 1 } else { 2 },
+                    1006 => if self.modes.mouse_sgr { 1 } else { 2 },
+                    1007 => if self.modes.alt_scroll { 1 } else { 2 },
+                    25 => if self.modes.cursor_visible { 1 } else { 2 },
                     1049 => if self.alt_active { 1 } else { 2 },
-                    2004 => if self.bracketed_paste { 1 } else { 2 },
-                    2026 => if self.sync_output { 1 } else { 2 },
-                    1016 => if self.mouse_sgr_pixels { 1 } else { 2 },
-                    2031 => if self.color_scheme_reports { 1 } else { 2 },
-                    2027 => if self.grapheme_mode { 1 } else { 2 },
+                    2004 => if self.modes.bracketed_paste { 1 } else { 2 },
+                    2026 => if self.modes.sync_output { 1 } else { 2 },
+                    1016 => if self.modes.mouse_sgr_pixels { 1 } else { 2 },
+                    2031 => if self.modes.color_scheme_reports { 1 } else { 2 },
+                    2027 => if self.modes.grapheme_mode { 1 } else { 2 },
                     _ => 0,
                 };
                 let _ = write!(self.response, "\x1b[?{mode};{state}$y");
@@ -311,8 +312,8 @@ impl Perform for Grid {
             'q' if intermediates == b" " => {
                 // DECSCUSR: set cursor style.
                 let shape = raw(0).min(6) as u8;
-                if self.cursor_shape != shape {
-                    self.cursor_shape = shape;
+                if self.modes.cursor_shape != shape {
+                    self.modes.cursor_shape = shape;
                     self.mark(self.cur.row);
                 }
             }
@@ -420,21 +421,21 @@ impl Perform for Grid {
             b"8" => {
                 self.osc8(params);
             }
-            b"778" if params[1] == b"init" => {self.ai_available=true;self.ai_direct=params.get(2)==Some(&b"direct".as_slice());}
+            b"778" if params[1] == b"init" => {self.ai.available=true;self.ai.direct=params.get(2)==Some(&b"direct".as_slice());}
             b"778" if params[1] == b"yo" => {
-                if self.ai_armed && !self.alt_active {
-                    self.ai_armed = false;
+                if self.ai.armed && !self.alt_active {
+                    self.ai.armed = false;
                     if let Some(payload)=params.get(2).filter(|p|p.len()<=65536)
                         && let Some(bytes)=decode_base64(payload)
                         && let Ok(query)=String::from_utf8(bytes) {
-                            self.ai_request=Some(query);
+                            self.ai.request=Some(query);
                         }
                 }
             }
             b"133" => {
-                if params[1] == b"C" && self.ai_track && !self.alt_active {
-                    self.ai_track=false;
-                    self.ai_command=Some(self.full_prompt_input());
+                if params[1] == b"C" && self.ai.track && !self.alt_active {
+                    self.ai.track=false;
+                    self.ai.command=Some(self.full_prompt_input());
                 }
                 match params[1].first() {
                     Some(b'B') => {
