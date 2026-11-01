@@ -7,6 +7,9 @@ use crate::atlas::Atlas;
 
 pub(super) mod history_popup;
 pub(super) mod inspector;
+pub(super) mod link_preview;
+pub(super) mod preedit;
+pub(super) mod scrollbar;
 pub(super) mod search_box;
 pub(super) mod tab_bar;
 
