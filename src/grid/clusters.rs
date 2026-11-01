@@ -4,13 +4,28 @@
 
 use super::*;
 
+/// Multi-codepoint graphemes cells refer to (see `CLUSTER_FLAG`), interned,
+/// plus the scratch buffers the collector reuses so it never allocates per row.
+#[derive(Default)]
+pub(super) struct ClusterTable {
+    /// Interned cluster text, indexed by `CLUSTER_ID`.
+    pub(super) texts: Vec<Box<str>>,
+    pub(super) ids: std::collections::HashMap<Box<str>, u32>,
+    /// Reused buffer for building a cluster.
+    pub(super) buf: String,
+    /// Collect at most once per history-sized batch of cluster-bearing evictions.
+    pub(super) evictions: usize,
+    pub(super) marks: Vec<bool>,
+    pub(super) remap: Vec<u32>,
+}
+
 impl Grid {
     /// The grapheme cluster text of a cell's `codepoint`, if it holds one.
     pub fn cluster(&self, cp: u32) -> Option<&str> {
         if cp & (CLUSTER_FLAG | PH_FLAG) != CLUSTER_FLAG {
             return None;
         }
-        self.clusters.get((cp & CLUSTER_ID) as usize).map(|s| &**s)
+        self.clusters.texts.get((cp & CLUSTER_ID) as usize).map(|s| &**s)
     }
 
     /// A cell's character for searching and link detection: a cluster's first
@@ -36,53 +51,53 @@ impl Grid {
         if text.len() > MAX_CLUSTER_BYTES {
             return None;
         }
-        if let Some(&id) = self.cluster_ids.get(text) {
+        if let Some(&id) = self.clusters.ids.get(text) {
             return Some(id);
         }
-        if self.clusters.len() >= MAX_CLUSTERS {
+        if self.clusters.texts.len() >= MAX_CLUSTERS {
             self.gc_clusters();
-            if let Some(&id) = self.cluster_ids.get(text) {
+            if let Some(&id) = self.clusters.ids.get(text) {
                 return Some(id);
             }
-            if self.clusters.len() >= MAX_CLUSTERS {
+            if self.clusters.texts.len() >= MAX_CLUSTERS {
                 return None;
             }
         }
-        let id = self.clusters.len() as u32;
+        let id = self.clusters.texts.len() as u32;
         let boxed: Box<str> = text.into();
-        self.clusters.push(boxed.clone());
-        self.cluster_ids.insert(boxed, id);
+        self.clusters.texts.push(boxed.clone());
+        self.clusters.ids.insert(boxed, id);
         Some(id)
     }
 
     #[cfg(test)]
     pub(crate) fn cluster_count(&self) -> usize {
-        self.clusters.len()
+        self.clusters.texts.len()
     }
 
     #[cfg(test)]
     pub(crate) fn seed_dead_clusters_for_bench(&mut self, count: usize) {
-        self.clusters.clear();
-        self.cluster_ids.clear();
-        self.clusters.reserve(count);
-        self.cluster_ids.reserve(count);
+        self.clusters.texts.clear();
+        self.clusters.ids.clear();
+        self.clusters.texts.reserve(count);
+        self.clusters.ids.reserve(count);
         for i in 0..count {
             let s: Box<str> = format!("dead_cluster_{i}").into_boxed_str();
-            self.clusters.push(s.clone());
-            self.cluster_ids.insert(s, i as u32);
+            self.clusters.texts.push(s.clone());
+            self.clusters.ids.insert(s, i as u32);
         }
     }
 
-    /// Garbage-collect unreferenced grapheme clusters in `self.clusters` and
-    /// `self.cluster_ids`, compacting the table and remapping `CLUSTER_ID` on all
+    /// Garbage-collect unreferenced grapheme clusters in `self.clusters.texts` and
+    /// `self.clusters.ids`, compacting the table and remapping `CLUSTER_ID` on all
     /// active cells (`0..history + rows` and `alt`).
     pub(crate) fn gc_clusters(&mut self) {
-        let total = self.clusters.len();
+        let total = self.clusters.texts.len();
         if total == 0 {
             return;
         }
-        self.cluster_evictions = 0;
-        let mut used = std::mem::take(&mut self.cluster_marks);
+        self.clusters.evictions = 0;
+        let mut used = std::mem::take(&mut self.clusters.marks);
         used.clear();
         used.resize(total, false);
         let mut used_count = 0usize;
@@ -123,27 +138,27 @@ impl Grid {
         }
 
         if used_count == 0 {
-            self.clusters.clear();
-            self.cluster_ids.clear();
-            self.cluster_marks = used;
+            self.clusters.texts.clear();
+            self.clusters.ids.clear();
+            self.clusters.marks = used;
             return;
         }
         if used_count == total {
-            self.cluster_marks = used;
+            self.clusters.marks = used;
             return;
         }
 
-        let mut remap = std::mem::take(&mut self.cluster_remap);
+        let mut remap = std::mem::take(&mut self.clusters.remap);
         remap.clear();
         remap.resize(total, 0);
-        self.cluster_ids.clear();
+        self.clusters.ids.clear();
         let mut old_id = 0;
         let mut new_id = 0;
-        self.clusters.retain(|text| {
+        self.clusters.texts.retain(|text| {
             let live = used[old_id];
             if live {
                 remap[old_id] = new_id;
-                self.cluster_ids.insert(text.clone(), new_id);
+                self.clusters.ids.insert(text.clone(), new_id);
                 new_id += 1;
             }
             old_id += 1;
@@ -181,7 +196,7 @@ impl Grid {
         if !self.alt.is_empty() {
             remap_slice(&mut self.alt);
         }
-        self.cluster_marks = used;
-        self.cluster_remap = remap;
+        self.clusters.marks = used;
+        self.clusters.remap = remap;
     }
 }
