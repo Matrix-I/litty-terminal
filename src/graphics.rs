@@ -846,17 +846,15 @@ impl Store {
 }
 
 fn is_temp_dir(dir: &std::path::Path) -> bool {
-    #[allow(unused_mut)]
-    let mut temp_dirs = vec![
+    let temp_dirs = [
         std::env::temp_dir(),
         std::path::PathBuf::from("/tmp"),
         std::path::PathBuf::from("/var/tmp"),
+        #[cfg(target_os = "macos")]
+        std::path::PathBuf::from("/private/tmp"),
+        #[cfg(target_os = "macos")]
+        std::path::PathBuf::from("/private/var/tmp"),
     ];
-    #[cfg(target_os = "macos")]
-    {
-        temp_dirs.push(std::path::PathBuf::from("/private/tmp"));
-        temp_dirs.push(std::path::PathBuf::from("/private/var/tmp"));
-    }
     let Ok(canonical_dir) = dir.canonicalize() else {
         return false;
     };

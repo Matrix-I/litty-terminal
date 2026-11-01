@@ -100,6 +100,9 @@ struct State {
     locks: u8,
     cursor_blink_epoch: std::time::Instant,
     focused: bool,
+    /// A global X11 key grab briefly loses focus. Defer autohide until that
+    /// transient focus round-trip or the corresponding toggle has completed.
+    quick_autohide_at: Option<std::time::Instant>,
     history_search: HistorySearch,
     /// Find-in-terminal box (`Cmd+F` / `Ctrl+Shift+F`).
     search: SearchBar,
@@ -203,7 +206,8 @@ impl App {
             let s = &mut self.windows[i];
             if s.tabs.is_empty() {
                 open_fresh_tab(s, &waker);
-            } else if s.window.is_visible().unwrap_or(true) && s.focused {
+            } else if s.window.is_visible().unwrap_or(true) && (s.focused || s.quick_autohide_at.is_some()) {
+                s.quick_autohide_at = None;
                 s.window.set_visible(false);
                 let others_visible = self.windows.iter().any(|w| !w.quick && !w.tabs.is_empty() && w.window.is_visible() != Some(false));
                 if !others_visible {
@@ -211,14 +215,12 @@ impl App {
                 }
                 return;
             }
+            s.quick_autohide_at = None;
             place_quick_terminal(&self.windows[i]);
             return;
         }
-        match create_window(event_loop, &waker, None) {
-            Ok(mut s) => {
-                s.quick = true;
-                s.window.set_decorations(false);
-                s.window.set_window_level(winit::window::WindowLevel::AlwaysOnTop);
+        match create_window(event_loop, &waker, None, true) {
+            Ok(s) => {
                 place_quick_terminal(&s);
                 self.drop_tabless_windows();
                 self.windows.push(s);
@@ -259,7 +261,7 @@ impl App {
             }
         }
         for (cwd, parent, from) in requests {
-            match create_window(event_loop, &self.waker, cwd.as_deref()) {
+            match create_window(event_loop, &self.waker, cwd.as_deref(), false) {
                 // The hidden, tab-less window kept for the Dock is no longer needed.
                 Ok(s) => {
                     if let Some(p) = parent.and_then(|id| self.windows.iter().find(|w| w.window.id() == id)) {
@@ -313,7 +315,7 @@ fn font_features(cfg: &config::Config) -> Vec<rustybuzz::Feature> {
 }
 
 /// Create a window with one tab whose shell starts in `cwd`.
-fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Option<&str>) -> std::io::Result<State> {
+fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Option<&str>, quick: bool) -> std::io::Result<State> {
     let cfg = config::Config::load();
     grid::set_default_colors(cfg.foreground, cfg.background);
     grid::set_palette(&cfg.palette);
@@ -339,6 +341,11 @@ fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Option<&str>)
 
     let attrs = Window::default_attributes()
         .with_title("Litty")
+        // Build Quick Terminal in its final mode while hidden. Changing X11
+        // decorations on an already mapped window causes spurious focus loss.
+        .with_decorations(!quick)
+        .with_window_level(if quick { winit::window::WindowLevel::AlwaysOnTop } else { winit::window::WindowLevel::Normal })
+        .with_visible(!quick)
         .with_transparent(cfg.background_opacity < 1.0)
         .with_inner_size(initial_inner_size);
     // Native tabs (`macos-native-tabs`) group under one identifier. Created
@@ -351,7 +358,7 @@ fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Option<&str>)
     };
     let window = Arc::new(event_loop.create_window(attrs).map_err(std::io::Error::other)?);
     macos::set_tabbing_allowed(&window, false);
-    window.set_visible(true);
+    if !quick { window.set_visible(true); }
     // Composed input (Vietnamese Telex/VNI, CJK) arrives as `WindowEvent::Ime`.
     window.set_ime_allowed(true);
     let dark = window.theme() != Some(winit::window::Theme::Light);
@@ -438,7 +445,8 @@ fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Option<&str>)
         consumed_keys: Vec::new(),
         locks: 0,
         cursor_blink_epoch: std::time::Instant::now(),
-        focused: true,
+        focused: !quick,
+        quick_autohide_at: None,
         history_search: HistorySearch::new(),
         search: SearchBar::new(),
         first_frame: true,
@@ -452,7 +460,7 @@ fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Option<&str>)
         occluded: false,
         new_window_requested: false,
         native_tab_requested: false,
-        quick: false,
+        quick,
         quick_terminal_requested: false,
         quit_requested: false,
         reload_config_requested: false,
@@ -474,7 +482,7 @@ impl ApplicationHandler<AppEvent> for App {
         if !self.windows.is_empty() {
             return;
         }
-        let state = create_window(event_loop, &self.waker, None).expect("spawn initial PTY");
+        let state = create_window(event_loop, &self.waker, None, false).expect("spawn initial PTY");
         self.windows.push(state);
 
         #[cfg(target_os = "macos")]
@@ -765,6 +773,16 @@ impl ApplicationHandler<AppEvent> for App {
         let mut deadline: Option<std::time::Instant> = None;
         let now = std::time::Instant::now();
         for s in &mut self.windows {
+            if let Some(hide_at) = s.quick_autohide_at {
+                if now >= hide_at {
+                    s.quick_autohide_at = None;
+                    if !s.focused && s.config.quick_terminal_autohide {
+                        s.window.set_visible(false);
+                    }
+                } else {
+                    deadline = Some(deadline.map_or(hide_at, |d| d.min(hide_at)));
+                }
+            }
             if let Some(next_prune) = s.renderer.prune_idle_images(now) {
                 deadline = Some(deadline.map_or(next_prune, |d| d.min(next_prune)));
             }
@@ -1217,7 +1235,7 @@ impl App {
             }
 
             WindowEvent::Focused(focused) => {
-                s.focused = focused;
+                let was_focused = std::mem::replace(&mut s.focused, focused);
                 if focused && s.occluded {
                     s.occluded = false;
                     let sz = s.window.inner_size();
@@ -1234,9 +1252,12 @@ impl App {
                     macos::set_secure_input(focused);
                 }
                 if focused {
+                    s.quick_autohide_at = None;
                     macos::set_secure_input_menu_state(s.secure_input);
-                } else if s.quick && s.config.quick_terminal_autohide {
-                    s.window.set_visible(false);
+                } else if was_focused && s.quick && s.config.quick_terminal_autohide {
+                    // A passive X11 keyboard grab emits FocusOut/FocusIn even
+                    // while the panel remains the active application window.
+                    s.quick_autohide_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(50));
                 }
                 if let Some(tab) = s.tabs.get_mut(s.active).filter(|t| focused && t.bell) {
                     tab.bell = false;

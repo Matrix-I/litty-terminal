@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Isolated PTY smoke tests for yo interception on macOS zsh and Bash 3.2.
+"""Isolated PTY smoke tests for yo interception on zsh, Bash, and fish.
 Run outside a PTY-restricted sandbox; no API keys or network requests are used.
 """
 import os, pty, select, time, signal, tempfile, pathlib, fcntl, termios, struct, base64, shutil, shlex
@@ -12,7 +12,7 @@ def read(fd, seconds=.4):
         try: data+=os.read(fd,65536)
         except OSError: break
     return data
-for shell in ['zsh','bash']:
+for shell in ['zsh','bash','fish']:
     binary=shutil.which(shell)
     if not binary:
         print(shell+': skipped (not installed)')
@@ -21,6 +21,11 @@ for shell in ['zsh','bash']:
         if shell=='zsh':
             pathlib.Path(home,'.zshrc').write_text(f"PROMPT='test> '\nsource {shlex.quote(str(ROOT / 'src/shell/litty-integration.zsh'))}\n")
             args=[binary,'-i']
+        elif shell=='fish':
+            config=pathlib.Path(home,'.config/fish/config.fish')
+            config.parent.mkdir(parents=True)
+            config.write_text(f"source {shlex.quote(str(ROOT / 'src/shell/litty-integration.fish'))}\n")
+            args=[binary,'--interactive']
         else:
             args=[binary,'--noprofile','--rcfile',str(ROOT/'src/shell/litty.bash'),'-i']
         pid,fd=pty.fork()

@@ -196,16 +196,18 @@ Each item lists what to run inside a Litty window and the expected result.
 - [x] Manually test OSC 8 hover (`Cmd`/`Ctrl` + mouse move underlines the link, preview pill shows the URI)
 - [ ] **Needs a Linux machine: Kitty lock modifiers (Linux)**
   - `kitten show-key -m kitty`, Caps Lock on, press `a` → modifiers include `caps_lock`; off → not; Num Lock on + keypad `7` → `num_lock`
+  - Native Linux container coverage: Xvfb/XTEST verifies Caps/Num Lock encoding in the running app; physical-keyboard and Wayland checks remain manual.
 - [ ] **Needs a Linux machine: Quick Terminal (Linux)**
   - X11: `keybind = global:ctrl+grave_accent=toggle_quick_terminal` + reload; from another window press it → a borderless Litty panel at the top, again → hidden
   - Wayland: create a desktop shortcut running `litty +toggle-quick-terminal` → toggles the same way; with Litty not running it prints "no running Litty"
+  - X11 headless coverage verifies global-hotkey show/hide, geometry, socket restoration, session reuse and autohide. Fixed initial mapping focus loss and transient global-key-grab FocusOut; autohide uses a single 50 ms deadline, then returns to normal wait scheduling. Real desktop/Wayland verification remains open.
 
 - [ ] **Needs a Linux desktop: xdg-open smoke test**
   - Open terminal URL/path links and a release link, including spaces and hyphen-leading filenames; verify executable/script paths still open their containing directory. Command arguments and Linux compilation are covered automatically; actual desktop dispatch is not exercised here.
 
 - [ ] **LLM assistant release validation on additional environments**
   - Implementation is complete (see [implementation record](./docs/yosh_implementation_plan.md#implementation-record-2026-11-01)); mock provider/tool/continuation/cancellation/compaction tests and isolated zsh/Bash 3.2 smoke tests pass.
-  - Still requires fish/Nushell runtime checks (not installed here), a live-provider smoke test with configured credentials, and GPU-window visual/idle-memory profiling. These are release validation, not unimplemented assistant features.
+  - fish PTY interception/repaint/editable-prefill checks passed in the Linux container. Still requires Nushell runtime checks, a live-provider smoke test with configured credentials, and hardware GPU-window visual/idle-memory profiling. These are release validation, not unimplemented assistant features.
 
 ## Tech debt (v0.4.1)
 
@@ -620,3 +622,5 @@ run passed all 10 tests (`cargo test --profile fast-release osc -- --test-thread
 `python3 scripts/test-yo-shells.py` passed isolated zsh and macOS Bash 3.2
 bridge/repaint/editable-prefill checks without provider credentials. Remaining
 checkboxes are environment-dependent release/runtime verification, listed above.
+
+Native Linux container validation (2026-11-01): see [run report](./docs/linux-container-test-2026-11-01.md) and [reproducible runner](./scripts/linux/README.md). X11/XTEST checks supplement the manual verification debt; they do not claim physical keyboard, Wayland, real browser/file-manager or hardware GPU validation.

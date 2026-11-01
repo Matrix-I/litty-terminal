@@ -1,0 +1,18 @@
+FROM docker.io/library/rust:1.99.1-trixie
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libvulkan1 mesa-vulkan-drivers \
+    fonts-dejavu-core fonts-liberation dbus-x11 xvfb xauth openbox \
+    xterm xdotool x11-utils x11-xserver-utils xdg-utils python3 fish zsh \
+    && rm -rf /var/lib/apt/lists/*
+# Optional host-trusted CA bundle for networks with an enterprise TLS proxy.
+# Only public certificates enter the test image; TLS verification stays enabled.
+RUN --mount=type=secret,id=host-ca \
+    if [ -s /run/secrets/host-ca ]; then \
+      python3 -c 'import pathlib,re; data=pathlib.Path("/run/secrets/host-ca").read_bytes(); [pathlib.Path("/usr/local/share/ca-certificates/litty-host-%d.crt"%i).write_bytes(c+b"\n") for i,c in enumerate(re.findall(b"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----",data,re.S))]'; \
+      update-ca-certificates; \
+    fi && rustup component add clippy
+ENV CARGO_BUILD_JOBS=1 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
+WORKDIR /workspace
+COPY . .
+CMD ["bash", "scripts/linux/run.sh"]
