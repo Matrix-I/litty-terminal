@@ -478,7 +478,7 @@ impl Perform for Grid {
 
     fn unhook(&mut self) {
         self.dcs_start = None;
-        let buf = std::mem::take(&mut self.dcs_buf);
+        let mut buf = std::mem::take(&mut self.dcs_buf);
         match self.dcs.take() {
             Some(DcsRequest::XtGetTcap) => {
                 for name in buf.split(|&b| b == b';') {
@@ -487,10 +487,7 @@ impl Perform for Grid {
             }
             Some(DcsRequest::Decrqss) => self.reply_decrqss(&buf),
             Some(DcsRequest::Sixel(transparent)) => {
-                if let Some((w, h, rgba)) = crate::graphics::decode_sixel(&buf, transparent) {
-                    let id = self.graphics.insert(0, w, h, rgba);
-                    self.place_image(id, [0, 0, w, h], 0, 0, 0, 0, false, true);
-                }
+                self.queue_image(super::ImageJob::Sixel(std::mem::take(&mut buf), transparent));
             }
             None => {}
         }

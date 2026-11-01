@@ -108,10 +108,30 @@ impl Tab {
         self.panes.iter_mut().find(|p| p.id == id)
     }
 
+    pub fn prepare_render_panes(&self, cols: usize, rows: usize, rects: &mut Vec<PaneRect>, out: &mut Vec<crate::renderer::RenderPane>) {
+        self.compute_pane_rects_into(cols, rows, rects);
+        out.clear();
+        out.extend(rects.iter().filter_map(|&rect| {
+            self.pane(rect.id).map(|pane| crate::renderer::RenderPane {
+                id: pane.id,
+                grid: Arc::clone(&pane.grid),
+                rect,
+                is_active: pane.id == self.active_pane_id,
+            })
+        }));
+    }
+
     pub fn compute_pane_rects(&self, total_cols: usize, total_rows: usize) -> Vec<PaneRect> {
+        let mut rects = Vec::with_capacity(self.panes.len());
+        self.compute_pane_rects_into(total_cols, total_rows, &mut rects);
+        rects
+    }
+
+    pub fn compute_pane_rects_into(&self, total_cols: usize, total_rows: usize, rects: &mut Vec<PaneRect>) {
+        rects.clear();
         if let Some(z_id) = self.zoomed_pane_id
             && self.panes.iter().any(|p| p.id == z_id) {
-                return vec![PaneRect {
+                rects.push(PaneRect {
                     id: z_id,
                     col: 0,
                     row: 0,
@@ -119,7 +139,8 @@ impl Tab {
                     rows: total_rows,
                     has_border_right: false,
                     has_border_bottom: false,
-                }];
+                });
+                return;
             }
         let area = Rect {
             col: 0,
@@ -127,9 +148,7 @@ impl Tab {
             cols: total_cols,
             rows: total_rows,
         };
-        let mut rects = Vec::with_capacity(self.panes.len());
-        self.layout.compute_rects(area, &mut rects);
-        rects
+        self.layout.compute_rects(area, rects);
     }
 }
 
@@ -137,4 +156,40 @@ impl Tab {
 pub struct HoveredPaneLink {
     pub pane_id: u64,
     pub link: Hyperlink,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_buffers_allocate_only_when_growing() {
+        let pane = |id| Pane::new(id, Arc::new(Mutex::new(Grid::new(80, 24))),
+            Pty::spawn_in(80, 24, 8, 16, None, None).unwrap());
+        let mut tab = Tab::new(1, pane(1));
+        let mut rects = Vec::new();
+        let mut render = Vec::new();
+        tab.prepare_render_panes(160, 50, &mut rects, &mut render);
+        let allocations = crate::test_alloc::allocations(|| {
+            for _ in 0..1000 { tab.prepare_render_panes(160, 50, &mut rects, &mut render); }
+        });
+        assert_eq!(allocations, 0, "single-pane CPU render preparation");
+        tab.layout.split_pane(1, 2, crate::split::SplitDirection::Vertical);
+        tab.panes.push(pane(2));
+        tab.prepare_render_panes(160, 50, &mut rects, &mut render);
+        assert_eq!(rects.len(), 2);
+        let allocations = crate::test_alloc::allocations(|| {
+            for _ in 0..1000 { tab.prepare_render_panes(160, 50, &mut rects, &mut render); }
+        });
+        assert_eq!(allocations, 0, "split-pane CPU render preparation");
+        tab.zoomed_pane_id = Some(2);
+        tab.prepare_render_panes(160, 50, &mut rects, &mut render);
+        assert_eq!(render.len(), 1);
+        assert_eq!(render[0].id, 2);
+        assert_eq!(render[0].rect.cols, 160);
+        tab.zoomed_pane_id = Some(99); // stale zoom falls back to the split layout
+        tab.prepare_render_panes(160, 50, &mut rects, &mut render);
+        assert_eq!(render.len(), 2);
+        render.clear();
+    }
 }

@@ -127,7 +127,34 @@ pub fn set_grapheme_default(on: bool) {
 
 
 
+/// A single image operation, completed by the PTY reader before parsing more
+/// bytes. No grid reference is retained while decoding or accessing files.
+pub(crate) enum ImageJob {
+    Sixel(Vec<u8>, bool),
+    Kitty(crate::graphics::KittyCommand, Vec<u8>),
+}
+
+pub(crate) enum ImageCompletion {
+    Sixel(Option<(u32, u32, Vec<u8>)>),
+    Kitty(crate::graphics::KittyCommand, crate::graphics::DecodedImage),
+}
+
+impl ImageJob {
+    pub(crate) fn decode(self) -> ImageCompletion {
+        match self {
+            Self::Sixel(data, transparent) => ImageCompletion::Sixel(crate::graphics::decode_sixel(&data, transparent)),
+            Self::Kitty(cmd, data) => {
+                let decoded = crate::graphics::decode_kitty(&cmd, &data);
+                ImageCompletion::Kitty(cmd, decoded)
+            }
+        }
+    }
+}
+
 pub struct Grid {
+    pub(crate) defer_images: bool,
+    pub(crate) image_job: Option<ImageJob>,
+    pub(crate) image_epoch: u64,
     /// AI bridge is armed only by a user submission at a known shell prompt.
     pub ai_available: bool,
     pub ai_direct: bool,
@@ -265,6 +292,10 @@ pub struct Grid {
     cluster_ids: std::collections::HashMap<Box<str>, u32>,
     /// Reused buffer for building a cluster.
     cluster_buf: String,
+    /// Collect at most once per history-sized batch of cluster-bearing evictions.
+    cluster_evictions: usize,
+    cluster_marks: Vec<bool>,
+    cluster_remap: Vec<u32>,
     /// DEC mode 2027: emoji sequences (ZWJ, flags, skin tones, VS16) share one cell pair.
     grapheme_mode: bool,
     /// The last character joined a ZWJ to a cluster: a pictograph after it joins too.
@@ -328,6 +359,9 @@ impl Grid {
             mouse_sgr_pixels: false,
             color_scheme_reports: false,
             cell_px: (0, 0),
+            defer_images: false,
+            image_job: None,
+            image_epoch: 0,
             dcs: None,
             dcs_buf: Vec::new(),
             dcs_start: None,
@@ -359,6 +393,9 @@ impl Grid {
             clusters: Vec::new(),
             cluster_ids: std::collections::HashMap::new(),
             cluster_buf: String::new(),
+            cluster_evictions: 0,
+            cluster_marks: Vec::new(),
+            cluster_remap: Vec::new(),
             grapheme_mode: GRAPHEME_DEFAULT.load(Ordering::Relaxed),
             joiner: false,
             palette_override: Vec::new(),
@@ -790,6 +827,7 @@ impl Grid {
     }
 
     pub fn clear_history(&mut self) {
+        self.image_epoch = self.image_epoch.wrapping_add(1);
         self.prompts.clear();
         self.graphics.prune(self.lines_pushed);
         self.history = 0;
@@ -1479,7 +1517,10 @@ impl Grid {
         if total == 0 {
             return;
         }
-        let mut used = vec![false; total];
+        self.cluster_evictions = 0;
+        let mut used = std::mem::take(&mut self.cluster_marks);
+        used.clear();
+        used.resize(total, false);
         let mut used_count = 0usize;
 
         let mut mark_slice = |slice: &[Cell]| {
@@ -1520,24 +1561,30 @@ impl Grid {
         if used_count == 0 {
             self.clusters.clear();
             self.cluster_ids.clear();
+            self.cluster_marks = used;
             return;
         }
         if used_count == total {
+            self.cluster_marks = used;
             return;
         }
 
-        let mut remap = vec![0u32; total];
-        let mut new_clusters = Vec::with_capacity(used_count);
+        let mut remap = std::mem::take(&mut self.cluster_remap);
+        remap.clear();
+        remap.resize(total, 0);
         self.cluster_ids.clear();
-        for (old_id, text) in self.clusters.drain(..).enumerate() {
-            if used[old_id] {
-                let new_id = new_clusters.len() as u32;
+        let mut old_id = 0;
+        let mut new_id = 0;
+        self.clusters.retain(|text| {
+            let live = used[old_id];
+            if live {
                 remap[old_id] = new_id;
                 self.cluster_ids.insert(text.clone(), new_id);
-                new_clusters.push(text);
+                new_id += 1;
             }
-        }
-        self.clusters = new_clusters;
+            old_id += 1;
+            live
+        });
 
         let remap_slice = |slice: &mut [Cell]| {
             for cell in slice {
@@ -1570,6 +1617,8 @@ impl Grid {
         if !self.alt.is_empty() {
             remap_slice(&mut self.alt);
         }
+        self.cluster_marks = used;
+        self.cluster_remap = remap;
     }
 
     /// Append `c` to the grapheme in cell `(row, col)`, turning it into a
@@ -1878,7 +1927,7 @@ impl Grid {
         }
         if to_history && !self.alt_active && t == 0 && b == self.rows - 1 {
             let mut evicted_had_ph = false;
-            let mut evicted_had_cluster = false;
+
             for _ in 0..n {
                 if self.history + self.rows >= self.cap && self.cap < self.scrollback + self.rows {
                     self.grow_capacity();
@@ -1891,7 +1940,7 @@ impl Grid {
                         evicted_had_ph = true;
                     }
                     if self.clusters.len() >= 4096 && self.cells[start..end].iter().any(|c| c.codepoint & (CLUSTER_FLAG | PH_FLAG) == CLUSTER_FLAG) {
-                        evicted_had_cluster = true;
+                        self.cluster_evictions = self.cluster_evictions.saturating_add(1);
                     }
                     if self.cells[start..end].iter().any(|c| ((c.fg & FG_EXTRA) | (c.bg & BG_EXTRA)) != 0) {
                         self.extras_dirty = true;
@@ -1914,7 +1963,10 @@ impl Grid {
             if evicted_had_ph {
                 self.prune_dead_virtuals();
             }
-            if evicted_had_cluster {
+            // Amortize a history scan across a history-sized batch, even when
+            // every interned cluster is still live. MAX_CLUSTERS also triggers
+            // demand collection so dead IDs never permanently exhaust the pool.
+            if self.cluster_evictions >= self.history.max(self.rows).max(256) {
                 self.gc_clusters();
             }
             self.all_dirty = true;
@@ -2009,31 +2061,51 @@ impl Grid {
     fn apc_dispatch(&mut self) {
         let body = std::mem::take(&mut self.apc_buf);
         if let Some((cmd, payload)) = crate::graphics::parse_kitty(&body) {
-            let (src, cols, rows, z, place_id, no_move, unicode) = (
-                [cmd.x, cmd.y, cmd.src_w, cmd.src_h],
-                cmd.cols,
-                cmd.rows,
-                cmd.z,
-                cmd.placement_id,
-                cmd.no_cursor_move,
-                cmd.unicode,
-            );
-            let (outcome, reply) = self.graphics.kitty(cmd, payload);
-            if let crate::graphics::KittyOutcome::Place { id } = outcome {
-                if unicode {
-                    self.place_virtual(id, cols, rows, z, place_id);
-                } else {
-                    self.place_image(id, src, cols, rows, z, place_id, no_move, false);
-                }
-            }
-            if let Some(r) = reply {
-                self.response.extend_from_slice(b"\x1b_G");
-                self.response.extend_from_slice(r.as_bytes());
-                self.response.extend_from_slice(b"\x1b\\");
+            match self.graphics.prepare_kitty(cmd.clone(), payload) {
+                crate::graphics::KittyPreparation::Complete(outcome, reply) => self.apply_kitty(&cmd, outcome, reply),
+                crate::graphics::KittyPreparation::Decode(cmd, data) => self.queue_image(ImageJob::Kitty(cmd, data)),
             }
         }
         // Keep the buffer's capacity only for ordinary-sized chunks.
         self.apc_buf = if body.capacity() > 65536 { Vec::new() } else { body };
+    }
+
+    fn queue_image(&mut self, job: ImageJob) {
+        if self.defer_images {
+            debug_assert!(self.image_job.is_none());
+            self.image_job = Some(job);
+        } else {
+            self.complete_image(job.decode());
+        }
+    }
+
+    pub(crate) fn complete_image(&mut self, result: ImageCompletion) {
+        match result {
+            ImageCompletion::Sixel(Some((w, h, rgba))) => {
+                let id = self.graphics.insert(0, w, h, rgba);
+                self.place_image(id, [0, 0, w, h], 0, 0, 0, 0, false, true);
+            }
+            ImageCompletion::Sixel(None) => {},
+            ImageCompletion::Kitty(cmd, decoded) => {
+                let (outcome, reply) = self.graphics.finish_kitty(cmd.clone(), decoded);
+                self.apply_kitty(&cmd, outcome, reply);
+            }
+        }
+    }
+
+    fn apply_kitty(&mut self, cmd: &crate::graphics::KittyCommand, outcome: crate::graphics::KittyOutcome, reply: Option<String>) {
+        if let crate::graphics::KittyOutcome::Place { id } = outcome {
+            if cmd.unicode {
+                self.place_virtual(id, cmd.cols, cmd.rows, cmd.z, cmd.placement_id);
+            } else {
+                self.place_image(id, [cmd.x, cmd.y, cmd.src_w, cmd.src_h], cmd.cols, cmd.rows, cmd.z, cmd.placement_id, cmd.no_cursor_move, false);
+            }
+        }
+        if let Some(r) = reply {
+            self.response.extend_from_slice(b"\x1b_G");
+            self.response.extend_from_slice(r.as_bytes());
+            self.response.extend_from_slice(b"\x1b\\");
+        }
     }
 
     /// Show image `id` at the cursor. `src` is x, y, width, height in image
@@ -2371,6 +2443,7 @@ impl Grid {
 
     fn full_reset(&mut self) {
         self.set_alt(false, false);
+        self.image_epoch = self.image_epoch.wrapping_add(1);
         self.graphics.clear();
         self.cur = Cursor::default();
         self.saved = Cursor::default();
@@ -5089,6 +5162,64 @@ mod tests {
             p2,
             "cell(0,1) with swapped palette 2 must reset to p2"
         );
+    }
+
+    fn populated_cluster_history() -> Grid {
+        let mut g = Grid::new(80, 50);
+        // Keep this benchmark independent of process-global config tests.
+        g.scrollback = 5000;
+        let mut parser = vte::Parser::new();
+        for i in 0..5200 {
+            let base = char::from_u32(0x4e00 + i % 5000).unwrap();
+            for b in format!("{base}\u{301}\r\n").bytes() { g.feed_byte(&mut parser, b); }
+        }
+        assert_eq!(g.history, 5000);
+        g.gc_clusters();
+        assert!(g.clusters.len() >= 4096);
+        g
+    }
+
+    #[test]
+    fn cluster_eviction_gc_is_amortized_and_preserves_live_text() {
+        let mut g = populated_cluster_history();
+        let start_count = g.clusters.len();
+        let start_evictions = g.cluster_evictions;
+        let allocations = crate::test_alloc::allocations(|| {
+            for _ in 0..200 { g.scroll_up_in(0, g.rows - 1, 1, true); }
+        });
+        assert_eq!(allocations, 0, "scrolling must not allocate a mark vector per row");
+        assert_eq!(g.clusters.len(), start_count, "no collection during a small eviction batch");
+        assert_eq!(g.cluster_evictions, start_evictions + 200);
+        // Finish a full eviction interval. GC must reclaim dead clusters and
+        // remap the surviving cells, even after wrapping the ring.
+        for _ in 0..4800 { g.scroll_up_in(0, g.rows - 1, 1, true); }
+        assert!(g.clusters.len() < start_count);
+        assert_eq!(g.cluster_evictions, 0);
+        for i in 0..50 {
+            let row = (g.top + g.cap - g.history + i) % g.cap;
+            let cp = g.cells[row * g.cols].codepoint;
+            let base = char::from_u32((0x4e00 + (5151 + i) % 5000) as u32).unwrap();
+            if i < 49 { assert_eq!(g.cluster(cp), Some(format!("{base}\u{301}").as_str())); }
+        }
+        let marks = g.cluster_marks.as_ptr();
+        g.gc_clusters();
+        assert_eq!(g.cluster_marks.as_ptr(), marks, "mark storage is reused");
+    }
+
+    #[test]
+    #[ignore = "manual performance measurement"]
+    fn benchmark_cluster_scrollback_eviction() {
+        let mut g = populated_cluster_history();
+        let start = std::time::Instant::now();
+        for _ in 0..200 { g.scroll_up_in(0, g.rows - 1, 1, true); }
+        let amortized = start.elapsed();
+        let mut legacy = populated_cluster_history();
+        let start = std::time::Instant::now();
+        for _ in 0..200 {
+            legacy.scroll_up_in(0, legacy.rows - 1, 1, true);
+            legacy.gc_clusters();
+        }
+        eprintln!("Cluster history, 200 evictions: amortized {amortized:?}; full GC per row {:?}", start.elapsed());
     }
 
     #[test]

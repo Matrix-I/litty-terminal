@@ -49,6 +49,7 @@ pub struct ImageLayer {
     uniforms: wgpu::Buffer,
     quads: wgpu::Buffer,
     quads_cap: usize,
+    quad_data: Vec<Quad>,
     texture_format: wgpu::TextureFormat,
     /// Image key → bind group with its texture, last frame, and timestamp.
     textures: HashMap<u64, TextureEntry>,
@@ -146,6 +147,7 @@ impl ImageLayer {
             uniforms,
             quads: make_quads(device, 16),
             quads_cap: 16,
+            quad_data: Vec::with_capacity(16),
             texture_format,
             textures: HashMap::new(),
             frame: 0,
@@ -163,6 +165,7 @@ impl ImageLayer {
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, placed: &[Placed], screen: (u32, u32), flip: bool) {
         self.frame += 1;
         self.batch.clear();
+        self.quad_data.clear();
         let now = Instant::now();
         if placed.is_empty() {
             self.textures.retain(|_, entry| {
@@ -177,7 +180,6 @@ impl ImageLayer {
             self.quads_cap = placed.len().next_power_of_two();
             self.quads = make_quads(device, self.quads_cap);
         }
-        let mut quads = Vec::with_capacity(placed.len());
         for p in placed {
             let d = &p.draw;
             if !self.textures.contains_key(&d.key) {
@@ -188,16 +190,9 @@ impl ImageLayer {
                 entry.last_frame = self.frame;
                 entry.last_seen = now;
             }
-            let (w, h) = (d.width as f32, d.height as f32);
-            let [sx, sy, sw, sh] = d.src;
-            quads.push(Quad { rect: p.rect, uv: [sx / w, sy / h, (sx + sw) / w, (sy + sh) / h] });
-            // Clip to the pane and the target (wgpu rejects scissors outside it).
-            let [cx, cy, cw, ch] = p.clip;
-            let (x, y) = (cx.min(screen.0), cy.min(screen.1));
-            let clip = [x, y, cw.min(screen.0 - x), ch.min(screen.1 - y)];
-            self.batch.push((d.key, clip, d.z));
+            push_quad(p, screen, &mut self.quad_data, &mut self.batch);
         }
-        queue.write_buffer(&self.quads, 0, bytemuck::cast_slice(&quads));
+        queue.write_buffer(&self.quads, 0, bytemuck::cast_slice(&self.quad_data));
         self.textures.retain(|_, entry| {
             entry.last_frame == self.frame
                 || (self.frame.saturating_sub(entry.last_frame) < KEEP_FRAMES
@@ -288,6 +283,19 @@ pub(crate) fn compute_scissor_rect([x, y, w, h]: [u32; 4], flip: bool, height: u
     Some([x, scissor_y, w, clamped_h])
 }
 
+/// CPU geometry preparation shares the retained frame buffers.
+fn push_quad(p: &Placed, screen: (u32, u32), quads: &mut Vec<Quad>, batch: &mut Vec<(u64, [u32; 4], i32)>) {
+    let d = &p.draw;
+    let (w, h) = (d.width as f32, d.height as f32);
+    let [sx, sy, sw, sh] = d.src;
+    quads.push(Quad { rect: p.rect, uv: [sx / w, sy / h, (sx + sw) / w, (sy + sh) / h] });
+    // Clip to the pane and the target (wgpu rejects scissors outside it).
+    let [cx, cy, cw, ch] = p.clip;
+    let (x, y) = (cx.min(screen.0), cy.min(screen.1));
+    let clip = [x, y, cw.min(screen.0 - x), ch.min(screen.1 - y)];
+    batch.push((d.key, clip, d.z));
+}
+
 fn make_quads(device: &wgpu::Device, n: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("image quads"),
@@ -300,6 +308,36 @@ fn make_quads(device: &wgpu::Device, n: usize) -> wgpu::Buffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_geometry_reuses_frame_buffers_after_warmup() {
+        let placed = Placed {
+            draw: ImageDraw {
+                key: 1, width: 10, height: 10, rgba: vec![0; 400].into(),
+                src: [0.0, 0.0, 10.0, 10.0], row: 0, col: 0, cols: 1, rows: 1,
+                fit: false, z: 0, px: None,
+            },
+            rect: [0.0, 0.0, 10.0, 10.0], clip: [90, 95, 30, 30],
+        };
+        let mut quads = Vec::new();
+        let mut batch = Vec::new();
+        for count in [1, 4, 16] {
+            quads.clear();
+            batch.clear();
+            for _ in 0..count { push_quad(&placed, (100, 100), &mut quads, &mut batch); }
+            let allocations = crate::test_alloc::allocations(|| {
+                for _ in 0..1000 {
+                    quads.clear();
+                    batch.clear();
+                    for _ in 0..count { push_quad(&placed, (100, 100), &mut quads, &mut batch); }
+                }
+            });
+            assert_eq!(allocations, 0, "steady CPU image geometry");
+            assert_eq!(quads.len(), count);
+            assert_eq!(quads[0].uv, [0.0, 0.0, 1.0, 1.0]);
+            assert_eq!(batch[0].1, [90, 95, 10, 5]);
+        }
+    }
 
     #[test]
     fn test_compute_scissor_rect_flipped_underflow_prevention() {

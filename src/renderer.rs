@@ -17,10 +17,10 @@ use crate::history::HistorySearch;
 use crate::search::SearchBar;
 use crate::split::PaneRect;
 
-pub struct RenderPane<'a> {
+pub struct RenderPane {
     #[allow(dead_code)]
     pub id: u64,
-    pub grid: &'a Mutex<Grid>,
+    pub grid: std::sync::Arc<Mutex<Grid>>,
     pub rect: PaneRect,
     pub is_active: bool,
 }

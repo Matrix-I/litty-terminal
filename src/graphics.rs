@@ -283,7 +283,7 @@ impl Store {
     /// `a=f`: add (or with `r=`, edit) an animation frame. The frame data
     /// (`s`/`v` sized, default the whole image) goes at `x`,`y` over a copy
     /// of frame `c` (or a transparent canvas), blended unless `X=1`.
-    fn kitty_frame(&mut self, cmd: &KittyCommand, data: &[u8]) -> Result<(), String> {
+    fn kitty_frame(&mut self, cmd: &KittyCommand, decoded: DecodedImage) -> Result<(), String> {
         let img = self.images.get(&cmd.id).ok_or("ENOENT:image not found")?;
         let (edit, base) = (cmd.rows as usize, cmd.cols as usize);
         let n = img.frame_count();
@@ -300,10 +300,7 @@ impl Store {
                 return Err("EBIG:animation exceeds memory limit".into());
             }
         }
-        let mut sized = cmd.clone();
-        sized.width = if cmd.width == 0 { iw } else { cmd.width };
-        sized.height = if cmd.height == 0 { ih } else { cmd.height };
-        let (fw, fh, pixels) = decode_kitty(&sized, data)?;
+        let (fw, fh, pixels) = decoded?;
         let mut canvas = match (edit, base) {
             (0, 0) => vec![0u8; (iw * ih * 4) as usize],
             (0, b) => img.frame(b - 1).1.to_vec(),
@@ -681,24 +678,44 @@ pub enum KittyOutcome {
     Place { id: u32 },
 }
 
+pub(crate) type DecodedImage = Result<(u32, u32, Vec<u8>), String>;
+
+pub(crate) enum KittyPreparation {
+    Complete(KittyOutcome, Option<String>),
+    Decode(KittyCommand, Vec<u8>),
+}
+
+fn kitty_reply(c: &KittyCommand, msg: &str) -> Option<String> {
+    let ok = msg == "OK";
+    if (c.id == 0 && c.number == 0) || (ok && c.quiet >= 1) || c.quiet >= 2 {
+        return None;
+    }
+    let mut r = format!("i={}", c.id);
+    if c.number != 0 {
+        r.push_str(&format!(",I={}", c.number));
+    }
+    if c.placement_id != 0 {
+        r.push_str(&format!(",p={}", c.placement_id));
+    }
+    Some(format!("{r};{msg}"))
+}
+
 impl Store {
     /// Run a Kitty command. Returns the outcome and the reply body (`OK` or an
     /// error such as `ENOENT:...`), already filtered by `q=`.
+    #[cfg(test)]
     pub fn kitty(&mut self, cmd: KittyCommand, payload: &[u8]) -> (KittyOutcome, Option<String>) {
-        let reply = |c: &KittyCommand, msg: &str| -> Option<String> {
-            let ok = msg == "OK";
-            if (c.id == 0 && c.number == 0) || (ok && c.quiet >= 1) || c.quiet >= 2 {
-                return None;
+        match self.prepare_kitty(cmd, payload) {
+            KittyPreparation::Complete(outcome, reply) => (outcome, reply),
+            KittyPreparation::Decode(cmd, data) => {
+                let decoded = decode_kitty(&cmd, &data);
+                self.finish_kitty(cmd, decoded)
             }
-            let mut r = format!("i={}", c.id);
-            if c.number != 0 {
-                r.push_str(&format!(",I={}", c.number));
-            }
-            if c.placement_id != 0 {
-                r.push_str(&format!(",p={}", c.placement_id));
-            }
-            Some(format!("{r};{msg}"))
-        };
+        }
+    }
+
+    /// Assemble chunks under the grid lock; the returned decode runs without it.
+    pub(crate) fn prepare_kitty(&mut self, cmd: KittyCommand, payload: &[u8]) -> KittyPreparation {
         // Abandoned chunked transmission timeout: free buffers if sender stalled > 5s.
         const CHUNKED_TIMEOUT: Duration = Duration::from_secs(5);
         let now = Instant::now();
@@ -712,59 +729,75 @@ impl Store {
             Some((first, mut data, _)) if matches!(first.action, b't' | b'T' | b'q' | b'f') => {
                 data.extend_from_slice(payload);
                 if data.len() > STORE_LIMIT {
-                    return (KittyOutcome::None, reply(&first, "EBIG:chunked transmission exceeds size limit"));
+                    return KittyPreparation::Complete(KittyOutcome::None, kitty_reply(&first, "EBIG:chunked transmission exceeds size limit"));
                 }
                 if cmd.more {
                     self.pending = Some((first, data, now));
-                    return (KittyOutcome::None, None);
+                    return KittyPreparation::Complete(KittyOutcome::None, None);
                 }
                 (first, data)
             }
             _ if cmd.more && matches!(cmd.action, b't' | b'T' | b'q' | b'f') => {
                 if payload.len() > STORE_LIMIT {
-                    return (KittyOutcome::None, reply(&cmd, "EBIG:chunked transmission exceeds size limit"));
+                    return KittyPreparation::Complete(KittyOutcome::None, kitty_reply(&cmd, "EBIG:chunked transmission exceeds size limit"));
                 }
                 self.pending = Some((cmd, payload.to_vec(), now));
-                return (KittyOutcome::None, None);
+                return KittyPreparation::Complete(KittyOutcome::None, None);
             }
             _ => (cmd, payload.to_vec()),
         };
+        if matches!(cmd.action, b't' | b'T' | b'q' | b'f') {
+            let mut cmd = cmd;
+            if cmd.action == b'f' {
+                let Some(img) = self.images.get(&cmd.id) else {
+                    return KittyPreparation::Complete(KittyOutcome::None, kitty_reply(&cmd, "ENOENT:image not found"));
+                };
+                if cmd.width == 0 { cmd.width = img.width; }
+                if cmd.height == 0 { cmd.height = img.height; }
+            }
+            return KittyPreparation::Decode(cmd, data);
+        }
+        let (outcome, reply) = self.finish_kitty(cmd, Err(String::new()));
+        KittyPreparation::Complete(outcome, reply)
+    }
+
+    pub(crate) fn finish_kitty(&mut self, cmd: KittyCommand, decoded: DecodedImage) -> (KittyOutcome, Option<String>) {
         match cmd.action {
-            b't' | b'T' | b'q' => match decode_kitty(&cmd, &data) {
+            b't' | b'T' | b'q' => match decoded {
                 Ok((w, h, rgba)) => {
                     if cmd.action == b'q' {
-                        return (KittyOutcome::None, reply(&cmd, "OK"));
+                        return (KittyOutcome::None, kitty_reply(&cmd, "OK"));
                     }
                     let id = self.insert(cmd.id, w, h, rgba);
                     let out = if cmd.action == b'T' { KittyOutcome::Place { id } } else { KittyOutcome::None };
-                    (out, reply(&cmd, "OK"))
+                    (out, kitty_reply(&cmd, "OK"))
                 }
-                Err(e) => (KittyOutcome::None, reply(&cmd, &e)),
+                Err(e) => (KittyOutcome::None, kitty_reply(&cmd, &e)),
             },
             b'p' => {
                 if self.images.contains_key(&cmd.id) {
-                    (KittyOutcome::Place { id: cmd.id }, reply(&cmd, "OK"))
+                    (KittyOutcome::Place { id: cmd.id }, kitty_reply(&cmd, "OK"))
                 } else {
-                    (KittyOutcome::None, reply(&cmd, "ENOENT:image not found"))
+                    (KittyOutcome::None, kitty_reply(&cmd, "ENOENT:image not found"))
                 }
             }
             b'd' => {
                 self.kitty_delete(&cmd);
                 (KittyOutcome::None, None)
             }
-            b'f' => match self.kitty_frame(&cmd, &data) {
-                Ok(()) => (KittyOutcome::None, reply(&cmd, "OK")),
-                Err(e) => (KittyOutcome::None, reply(&cmd, &e)),
+            b'f' => match self.kitty_frame(&cmd, decoded) {
+                Ok(()) => (KittyOutcome::None, kitty_reply(&cmd, "OK")),
+                Err(e) => (KittyOutcome::None, kitty_reply(&cmd, &e)),
             },
             b'c' => match self.kitty_compose(&cmd) {
-                Ok(()) => (KittyOutcome::None, reply(&cmd, "OK")),
-                Err(e) => (KittyOutcome::None, reply(&cmd, &e)),
+                Ok(()) => (KittyOutcome::None, kitty_reply(&cmd, "OK")),
+                Err(e) => (KittyOutcome::None, kitty_reply(&cmd, &e)),
             },
             b'a' => match self.kitty_animate(&cmd, Instant::now()) {
-                Ok(()) => (KittyOutcome::None, reply(&cmd, "OK")),
-                Err(e) => (KittyOutcome::None, reply(&cmd, &e)),
+                Ok(()) => (KittyOutcome::None, kitty_reply(&cmd, "OK")),
+                Err(e) => (KittyOutcome::None, kitty_reply(&cmd, &e)),
             },
-            _ => (KittyOutcome::None, reply(&cmd, "EINVAL:unsupported action")),
+            _ => (KittyOutcome::None, kitty_reply(&cmd, "EINVAL:unsupported action")),
         }
     }
 
@@ -1096,6 +1129,9 @@ pub fn decode_sixel(data: &[u8], transparent: bool) -> Option<(u32, u32, Vec<u8>
     let mut px: Vec<u16> = Vec::new();
     let (mut x, mut band) = (0usize, 0usize);
     let mut color = 0usize;
+    // Up to eight full-canvas passes: allow normal multi-color images while
+    // bounding tiny streams which repeatedly overpaint a single band.
+    let mut work_left = MAX_PIXELS / 6 * 8;
     let mut i = 0;
     let num = |i: &mut usize| -> u32 {
         let mut n = 0u32;
@@ -1164,7 +1200,9 @@ pub fn decode_sixel(data: &[u8], transparent: bool) -> Option<(u32, u32, Vec<u8>
                 if i < data.len() && (0x3F..=0x7E).contains(&data[i]) {
                     let bits = data[i] - 0x3F;
                     i += 1;
-                    for _ in 0..n.min(MAX_SIDE as usize) {
+                    let count = n.min(MAX_SIDE as usize);
+                    work_left = work_left.checked_sub(count)?;
+                    for _ in 0..count {
                         canvas.put(x, band, bits, color)?;
                         x += 1;
                     }
@@ -1180,6 +1218,7 @@ pub fn decode_sixel(data: &[u8], transparent: bool) -> Option<(u32, u32, Vec<u8>
                 i += 1;
             }
             0x3F..=0x7E => {
+                work_left = work_left.checked_sub(1)?;
                 canvas.put(x, band, b - 0x3F, color)?;
                 x += 1;
                 i += 1;
@@ -1276,6 +1315,31 @@ fn hls_to_rgb(h: u32, l: u32, s: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sixel_rejects_cumulative_overpainting() {
+        let attack = b"!8192~$".repeat(8192);
+        assert!(decode_sixel(&attack, true).is_none());
+        // Normal repeated colors and overpainting are supported.
+        let image = b"#1;2;100;0;0!800~$#2;2;0;100;0!800@-".repeat(100);
+        let (w, h, rgba) = decode_sixel(&image, true).unwrap();
+        assert_eq!((w, h), (800, 600));
+        assert_eq!(&rgba[..4], &[0, 255, 0, 255]);
+        assert_eq!(&rgba[800 * 4..800 * 4 + 4], &[255, 0, 0, 255]);
+    }
+
+    #[test]
+    #[ignore = "manual performance measurement"]
+    fn benchmark_sixel_legitimate_image() {
+        let image = b"#1;2;100;0;0!800~$#2;2;0;100;0!800@-".repeat(100);
+        let start = Instant::now();
+        for _ in 0..50 {
+            let decoded = decode_sixel(std::hint::black_box(&image), true).unwrap();
+            assert_eq!((decoded.0, decoded.1), (800, 600));
+            std::hint::black_box(decoded);
+        }
+        eprintln!("Sixel 800x600, two color passes: {:?}/image", start.elapsed() / 50);
+    }
 
     #[test]
     fn base64_round_trip() {

@@ -63,6 +63,37 @@ impl Drop for Pty {
     }
 }
 
+/// Stop at every image boundary. Decode/file I/O runs on this reader thread
+/// with no grid guard; following bytes cannot overtake the result. Keeping the
+/// job local also bounds outstanding work to one operation per pane.
+fn feed_output(
+    grid: &Mutex<Grid>, parser: &mut vte::Parser, bytes: &[u8], reply: &mut Vec<u8>,
+    mut decode: impl FnMut(crate::grid::ImageJob) -> crate::grid::ImageCompletion,
+) -> bool {
+    let mut offset = 0;
+    loop {
+        let mut g = grid.lock();
+        g.defer_images = true;
+        while offset < bytes.len() && g.image_job.is_none() {
+            g.feed_byte(parser, bytes[offset]);
+            offset += 1;
+        }
+        g.defer_images = false;
+        if let Some(job) = g.image_job.take() {
+            let epoch = g.image_epoch;
+            drop(g);
+            let result = decode(job);
+            let mut g = grid.lock();
+            // A UI clear/reset during decoding cancels the old image.
+            if g.image_epoch == epoch { g.complete_image(result); }
+            drop(g);
+        } else {
+            reply.append(&mut g.response);
+            return g.sync_output;
+        }
+    }
+}
+
 fn winsize(cols: u16, rows: u16, cell_w: u32, cell_h: u32) -> libc::winsize {
     libc::winsize {
         ws_row: rows,
@@ -416,14 +447,7 @@ impl Pty {
                     loop {
                         let mut sync_active = false;
                         for chunk in buf[..chunk_len].chunks(FEED_CHUNK_SIZE) {
-                            let mut g = grid.lock();
-                            for &b in chunk {
-                                g.feed_byte(&mut parser, b);
-                            }
-                            if !g.response.is_empty() {
-                                reply.append(&mut g.response);
-                            }
-                            sync_active = g.sync_output;
+                            sync_active = feed_output(&grid, &mut parser, chunk, &mut reply, |job| job.decode());
                         }
                         if !reply.is_empty() {
                             // Same queue as keyboard input, so replies never interleave with a paste.
@@ -594,6 +618,84 @@ pub(crate) fn pid_cwd(pid: libc::pid_t) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_jobs_release_grid_lock_and_preserve_stream_order() {
+        let grid = Arc::new(Mutex::new(Grid::new(80, 24)));
+        let mut parser = vte::Parser::new();
+        let mut reply = Vec::new();
+        let mut jobs = 0;
+        // The final chunk intentionally omits the placement keys. They must be
+        // carried from the first chunk through decode and application.
+        let stream = b"\x1b_Ga=T,i=7,f=32,s=1,v=1,c=3,r=2,C=1,m=1;AAAA\x1b\\\x1b_Gm=0;AA==\x1b\\\x1bP0;1q#1~\x1b\\Z";
+        feed_output(&grid, &mut parser, stream, &mut reply, |job| {
+            jobs += 1;
+            let other = Arc::clone(&grid);
+            std::thread::spawn(move || {
+                let g = other.try_lock().expect("UI can acquire grid during image work");
+                assert_ne!(g.display_row(0)[0].codepoint, b'Z' as u32, "following text must wait");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }).join().unwrap();
+            job.decode()
+        });
+        assert_eq!(jobs, 2);
+        let g = grid.lock();
+        assert!(g.graphics.image(7).is_some());
+        let placement = g.graphics.placements.iter().find(|p| p.image_id == 7).unwrap();
+        assert_eq!((placement.cols, placement.rows), (3, 2));
+        assert!(reply.windows(6).any(|b| b == b"i=7;OK"));
+        assert!(g.display_row(1).iter().any(|c| c.codepoint == b'Z' as u32));
+    }
+
+    #[test]
+    fn kitty_file_reads_are_deferred_and_ui_clear_cancels_inflight_image() {
+        let grid = Arc::new(Mutex::new(Grid::new(80, 24)));
+        let mut parser = vte::Parser::new();
+        let mut reply = Vec::new();
+        let path = std::env::temp_dir().join(format!("tty-graphics-protocol-deferred-{}-{}.raw",
+            std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
+        std::io::Write::write_all(&mut file, &[255, 0, 0, 255]).unwrap();
+        drop(file);
+        let mut encoded = String::new();
+        const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        for bytes in path.to_str().unwrap().as_bytes().chunks(3) {
+            let n = (bytes[0] as u32) << 16 | (*bytes.get(1).unwrap_or(&0) as u32) << 8 | *bytes.get(2).unwrap_or(&0) as u32;
+            for i in 0..=bytes.len() { encoded.push(B64[(n >> (18 - 6 * i) & 63) as usize] as char); }
+        }
+        let stream = format!("\x1b_Ga=T,t=t,i=8,f=32,s=1,v=1,C=1;{encoded}\x1b\\");
+        feed_output(&grid, &mut parser, stream.as_bytes(), &mut reply, |job| {
+            // Emulate a slow filesystem at the decode boundary. The UI can
+            // still acquire its guard while the reader is stalled here.
+            let other = Arc::clone(&grid);
+            let ui = std::thread::spawn(move || {
+                assert!(other.try_lock().is_some());
+            });
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            ui.join().unwrap();
+            assert!(path.exists(), "temporary input has not been read under the grid lock");
+            job.decode()
+        });
+        assert!(!path.exists(), "temporary medium is removed after reading");
+        assert_eq!(&*grid.lock().graphics.image(8).unwrap().rgba, &[255, 0, 0, 255]);
+        assert!(String::from_utf8_lossy(&reply).contains("i=8;OK"));
+        reply.clear();
+        // A denied path must still pass through the unlocked job, returning
+        // exactly the same uniform protocol error as synchronous decoding.
+        feed_output(&grid, &mut parser, b"\x1b_Ga=t,t=f,i=9,f=32,s=1,v=1;L2V0Yy9wYXNzd2Q=\x1b\\", &mut reply, |job| {
+            assert!(grid.try_lock().is_some());
+            job.decode()
+        });
+        assert!(String::from_utf8_lossy(&reply).contains("EPERM"));
+        assert!(grid.lock().graphics.image(9).is_none());
+        reply.clear();
+        feed_output(&grid, &mut parser, b"\x1b_Ga=T,i=10,f=32,s=1,v=1;AAAAAA==\x1b\\", &mut reply, |job| {
+            grid.lock().clear_screen_and_history();
+            job.decode()
+        });
+        assert!(grid.lock().graphics.image(10).is_none());
+        assert!(reply.is_empty());
+    }
 
     #[test]
     fn dropping_pty_before_spawn_reader_reaps_the_shell() {

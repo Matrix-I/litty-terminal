@@ -34,9 +34,12 @@ pub use tab::{HoveredPaneLink, next_id, Pane, Tab};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(test)]
+mod test_alloc;
 
 use parking_lot::Mutex;
 use winit::application::ApplicationHandler;
@@ -60,6 +63,8 @@ struct State {
     renderer: Renderer,
     tabs: Vec<Tab>,
     tab_titles: Vec<String>,
+    pane_rects: Vec<PaneRect>,
+    render_panes: Vec<renderer::RenderPane>,
     active: usize,
     mods: ModifiersState,
     font_pt: f32,
@@ -408,6 +413,8 @@ fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Option<&str>)
         renderer,
         tabs: vec![tab],
         tab_titles: vec![title],
+        pane_rects: Vec::new(),
+        render_panes: Vec::new(),
         active: 0,
         mods: ModifiersState::default(),
         font_pt,
@@ -1837,24 +1844,13 @@ fn render_active(s: &mut State) {
     let (total_cols, total_rows) = s.renderer.grid_size_for_tabs(show_tabs);
 
     let tab = &s.tabs[s.active];
-    let rects = tab.compute_pane_rects(total_cols, total_rows);
-
-    let render_panes: Vec<renderer::RenderPane> = rects
-        .into_iter()
-        .filter_map(|rect| {
-            tab.pane(rect.id).map(|pane| renderer::RenderPane {
-                id: pane.id,
-                grid: &pane.grid,
-                rect,
-                is_active: pane.id == tab.active_pane_id,
-            })
-        })
-        .collect();
+    tab.prepare_render_panes(total_cols, total_rows, &mut s.pane_rects, &mut s.render_panes);
+    let render_panes = &s.render_panes;
 
     let hovered_link = s.hovered_link.as_ref().map(|l| (l.pane_id, &l.link));
 
     s.renderer.render_panes(
-        &render_panes,
+        render_panes,
         tab_bar,
         hovered_link,
         blink_on,
@@ -1878,6 +1874,7 @@ fn render_active(s: &mut State) {
         }
     }
 
+    s.render_panes.clear();
     if s.first_frame {
         s.first_frame = false;
         macos::release_free_memory();
