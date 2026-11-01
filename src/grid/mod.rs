@@ -25,6 +25,11 @@ mod images;
 mod links;
 mod resize;
 mod viewport;
+mod visual;
+mod width;
+
+pub use width::{char_width, is_wide_cp};
+use width::is_pictographic;
 
 pub use colors::{color_scheme_is_dark, color_scheme_report, set_color_scheme_dark, set_default_colors, set_palette};
 pub(crate) use images::{ImageCompletion, ImageJob};
@@ -229,11 +234,6 @@ pub struct Grid {
     grapheme_mode: bool,
     /// The last character joined a ZWJ to a cluster: a pictograph after it joins too.
     joiner: bool,
-}
-
-thread_local! {
-    static BIDI_SCRATCH: std::cell::RefCell<(Vec<char>, Vec<u8>, Vec<u16>)> =
-        const { std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
 }
 
 impl Grid {
@@ -445,72 +445,6 @@ impl Grid {
         Some((row, col))
     }
 
-    /// Visual order of display row `r` (see [`crate::bidi::visual_order`]),
-    /// with `chars` and `levels` as scratch space. False when the row has no
-    /// right-to-left text, or on the alternate screen: full-screen
-    /// applications lay out their own bidirectional text.
-    pub fn bidi_order(&self, r: usize, chars: &mut Vec<char>, levels: &mut Vec<u8>, order: &mut Vec<u16>) -> bool {
-        order.clear();
-        let row = self.display_row(r);
-        // Nothing below the Hebrew block is right-to-left.
-        if self.alt_active
-            || !row.iter().any(|c| {
-                let cp = c.codepoint;
-                if cp & (CLUSTER_FLAG | PH_FLAG) == 0 {
-                    cp >= 0x0590
-                } else if cp & (CLUSTER_FLAG | PH_FLAG) == CLUSTER_FLAG {
-                    self.cluster(cp).is_some_and(|text| text.chars().any(|ch| ch >= '\u{0590}'))
-                } else {
-                    false
-                }
-            })
-        {
-            return false;
-        }
-        chars.clear();
-        chars.extend(row.iter().map(|c| if c.codepoint == 0 { '\0' } else { self.cell_char(c) }));
-        crate::bidi::visual_order(chars, levels, order)
-    }
-
-
-    /// The logical column drawn at visual column `col` of display row `r`.
-    pub fn logical_col(&self, r: usize, col: usize) -> usize {
-        if r >= self.rows + usize::from(self.scroll_fraction > 0.0) {
-            return col;
-        }
-        BIDI_SCRATCH.with(|scratch| {
-            let (chars, levels, order) = &mut *scratch.borrow_mut();
-            if self.bidi_order(r, chars, levels, order) {
-                order.get(col).map_or(col, |&l| l as usize)
-            } else {
-                col
-            }
-        })
-    }
-
-    /// The visual column the cursor at logical column `col` of display row
-    /// `r` is drawn at. After left-to-right text the cursor stays right after
-    /// that text, even when the cell under it starts a right-to-left run
-    /// (drawn at the run's right end): typing `echo '` before a right-to-left
-    /// autosuggestion keeps the cursor next to the quote.
-    pub fn cursor_visual_col(&self, r: usize, col: usize) -> usize {
-        if r >= self.rows + usize::from(self.scroll_fraction > 0.0) {
-            return col;
-        }
-        BIDI_SCRATCH.with(|scratch| {
-            let (chars, levels, order) = &mut *scratch.borrow_mut();
-            if self.bidi_order(r, chars, levels, order) {
-                let visual = |l: usize| order.iter().position(|&o| o as usize == l);
-                if let Some(prev) = col.checked_sub(1).filter(|&p| levels.get(p) == Some(&0))
-                    && let Some(v) = visual(prev).map(|v| v + 1).filter(|&v| v < order.len()) {
-                        return v;
-                    }
-                visual(col).unwrap_or(col)
-            } else {
-                col
-            }
-        })
-    }
 
     /// The grapheme cluster text of a cell's `codepoint`, if it holds one.
     pub fn cluster(&self, cp: u32) -> Option<&str> {
@@ -1338,78 +1272,6 @@ impl Grid {
         self.kitty_keyboard[self.alt_active as usize].flags
     }
 
-}
-
-/// Display width of a character: 0 (combining / zero-width), 1, or 2 (CJK / emoji),
-/// following the Unicode East Asian Width and emoji presentation tables.
-pub fn char_width(c: char) -> usize {
-    use unicode_width::UnicodeWidthChar;
-    // Regional indicators have emoji presentation: two columns each, as in
-    // zsh, kitty and Ghostty (a flag pair joins into one two-column cluster).
-    if (0x1F1E6..=0x1F1FF).contains(&(c as u32)) {
-        return 2;
-    }
-    let w = c.width().unwrap_or(0).min(2);
-    #[cfg(target_os = "macos")]
-    if w == 1 && is_spacing_mark_range(c as u32) && macos_wcwidth(c) == Some(0) {
-        return 0;
-    }
-    w
-}
-
-/// Scripts with spacing combining marks (Indic, Southeast Asian, Brahmic).
-#[cfg(target_os = "macos")]
-fn is_spacing_mark_range(cp: u32) -> bool {
-    matches!(cp, 0x0900..=0x0DFF | 0x0F00..=0x109F | 0x1700..=0x1CFF | 0xA800..=0xABFF | 0x11000..=0x11FFF)
-}
-
-/// What macOS's own `wcwidth` says. Shells (zsh, bash, readline) count with it, so
-/// for spacing marks such as Devanagari U+093F, which it treats as zero-width,
-/// disagreeing would leave the line editor's cursor columns off.
-#[cfg(target_os = "macos")]
-fn macos_wcwidth(c: char) -> Option<usize> {
-    use std::sync::OnceLock;
-    unsafe extern "C" {
-        fn wcwidth_l(wc: libc::wchar_t, loc: libc::locale_t) -> libc::c_int;
-    }
-    static LOCALE: OnceLock<usize> = OnceLock::new();
-    // SAFETY: newlocale gets a valid NUL-terminated name and a null base; the
-    // locale is never freed, so the pointer stays valid for wcwidth_l.
-    let loc = *LOCALE.get_or_init(|| unsafe {
-        libc::newlocale(libc::LC_CTYPE_MASK, c"en_US.UTF-8".as_ptr(), std::ptr::null_mut()) as usize
-    });
-    if loc == 0 {
-        return None;
-    }
-    // SAFETY: loc is a live locale from newlocale.
-    let w = unsafe { wcwidth_l(c as libc::wchar_t, loc as libc::locale_t) };
-    usize::try_from(w).ok()
-}
-
-/// Smallest codepoint `char_width` reports as double-width (Hangul Jamo).
-const FIRST_WIDE: u32 = 0x1100;
-
-/// Whether a cell's codepoint is a double-width character. Called for every
-/// printed character, so ASCII and other narrow text skip the width tables.
-#[inline]
-pub fn is_wide_cp(cp: u32) -> bool {
-    if cp & (CLUSTER_FLAG | PH_FLAG) == CLUSTER_FLAG {
-        return cp & CLUSTER_WIDE != 0;
-    }
-    // Fast-reject common narrow ranges above FIRST_WIDE (0x1100):
-    // Vietnamese Latin Extended Additional (0x1EA0..=0x1EF9),
-    // Box Drawing and Block Elements (0x2500..=0x259F).
-    if (0x1EA0..=0x1EF9).contains(&cp) || (0x2500..=0x259F).contains(&cp) {
-        return false;
-    }
-    cp >= FIRST_WIDE && char::from_u32(cp).is_some_and(|c| char_width(c) == 2)
-}
-
-/// Extended pictographic (emoji) codepoints that join a ZWJ sequence.
-fn is_pictographic(cp: u32) -> bool {
-    matches!(cp, 0x00A9 | 0x00AE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x2194..=0x21AA | 0x231A..=0x23FF
-        | 0x24C2 | 0x25AA..=0x25FE | 0x2600..=0x27BF | 0x2934 | 0x2935 | 0x2B05..=0x2B55 | 0x3030 | 0x303D
-        | 0x3297 | 0x3299 | 0x1F000..=0x1FAFF)
 }
 
 fn default_tab_stops(cols: usize) -> Vec<bool> {
