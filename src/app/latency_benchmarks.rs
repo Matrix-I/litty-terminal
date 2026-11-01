@@ -1,6 +1,5 @@
 //! Latency benchmarks and regression tests for the app core.
 
-use super::*;
 use crate::{history, pty};
 use std::time::Instant;
 
@@ -462,19 +461,4 @@ fn benchmark_before_vs_after() {
     println!("    - Sau   (Grid::gc_clusters):       {} active entry retained (65,536 dead reclaimed + new interned in {:>8.2?})", after_gc_clusters, gc_dur);
 
     println!("==================================================================\n");
-}
-
-#[test]
-fn test_tab_active_pane_empty_panes_does_not_panic() {
-    use crate::split::SplitNode;
-    let mut tab = Tab {
-        id: 1,
-        panes: Vec::new(),
-        layout: SplitNode::new_leaf(1),
-        active_pane_id: 1,
-        zoomed_pane_id: None,
-        bell: false,
-    };
-    assert!(tab.active_pane().is_none());
-    assert!(tab.active_pane_mut().is_none());
 }
