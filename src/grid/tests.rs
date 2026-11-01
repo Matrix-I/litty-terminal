@@ -4,6 +4,7 @@
 use super::*;
 use super::colors::{default_bg, default_fg, palette, parse_x11_color, palette_with};
 use super::links::osc8_target;
+use super::storage::{MAX_SCROLLBACK, SCROLLBACK, lines_for_bytes};
 
 fn feed(g: &mut Grid, s: &str) {
     let mut p = vte::Parser::new();
