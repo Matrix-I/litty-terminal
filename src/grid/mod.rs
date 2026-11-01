@@ -16,6 +16,9 @@ pub mod perform;
 pub mod prompt;
 pub mod selection;
 
+#[cfg(test)]
+mod perf_probe;
+
 pub use cell::*;
 pub use prompt::*;
 pub use selection::*;
