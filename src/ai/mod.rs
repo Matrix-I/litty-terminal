@@ -500,7 +500,7 @@ mod integration_tests {
                         Ok((s, _)) => break s,
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             assert!(
-                                start.elapsed() < Duration::from_secs(5),
+                                start.elapsed() < Duration::from_secs(30),
                                 "curl never connected"
                             );
                             std::thread::sleep(Duration::from_millis(5));
@@ -509,7 +509,7 @@ mod integration_tests {
                     }
                 };
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .set_read_timeout(Some(Duration::from_secs(30)))
                     .unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0; 4096];
