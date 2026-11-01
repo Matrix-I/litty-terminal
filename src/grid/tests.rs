@@ -83,10 +83,10 @@ fn line(g: &Grid, r: usize) -> String {
 #[test]
 fn ai_bridge_requires_user_arming_and_bounds_payloads() {
     let mut g=Grid::new(20,6);
-    feed(&mut g,"\x1b]778;yo;aGVsbG8=\x07");assert!(g.ai_request.is_none());
-    g.ai_armed=true;feed(&mut g,"\x1b]778;yo;aGVsbG8=\x07");assert_eq!(g.ai_request.take().as_deref(),Some("hello"));assert!(!g.ai_armed);
-    g.ai_armed=true;feed(&mut g,"\x1b]778;yo;%%%\x07");assert!(g.ai_request.is_none());
-    g.ai_armed=true;feed(&mut g,"\x1b[?1049h\x1b]778;yo;aGVsbG8=\x07");assert!(g.ai_request.is_none());
+    feed(&mut g,"\x1b]778;yo;aGVsbG8=\x07");assert!(g.ai.request.is_none());
+    g.ai.armed=true;feed(&mut g,"\x1b]778;yo;aGVsbG8=\x07");assert_eq!(g.ai.request.take().as_deref(),Some("hello"));assert!(!g.ai.armed);
+    g.ai.armed=true;feed(&mut g,"\x1b]778;yo;%%%\x07");assert!(g.ai.request.is_none());
+    g.ai.armed=true;feed(&mut g,"\x1b[?1049h\x1b]778;yo;aGVsbG8=\x07");assert!(g.ai.request.is_none());
 }
 
 #[test]
@@ -159,8 +159,8 @@ fn ai_execution_reads_full_edited_wrapped_input_and_exit() {
     feed(&mut g,"\x1b]133;A\x07$ \x1b]133;B\x07printf hello_world");
     feed(&mut g,"\x1b[D\x1b[D");
     assert_eq!(g.full_prompt_input(),"printf hello_world");
-    g.ai_track=true;feed(&mut g,"\r\n\x1b]133;C\x07output\r\n\x1b]133;D;7\x07\x1b]133;A\x07$ \x1b]133;B\x07");
-    assert_eq!(g.ai_command.as_deref(),Some("printf hello_world"));assert_eq!(g.last_exit,Some(7));assert_eq!(g.prompt_epoch,2);
+    g.ai.track=true;feed(&mut g,"\r\n\x1b]133;C\x07output\r\n\x1b]133;D;7\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    assert_eq!(g.ai.command.as_deref(),Some("printf hello_world"));assert_eq!(g.last_exit,Some(7));assert_eq!(g.prompt_epoch,2);
 }
 
 #[test]

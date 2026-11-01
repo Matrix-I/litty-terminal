@@ -65,13 +65,8 @@ pub struct Grid {
     pub(crate) defer_images: bool,
     pub(crate) image_job: Option<ImageJob>,
     pub(crate) image_epoch: u64,
-    /// AI bridge is armed only by a user submission at a known shell prompt.
-    pub ai_available: bool,
-    pub ai_direct: bool,
-    pub ai_armed: bool,
-    pub ai_track: bool,
-    pub ai_command: Option<String>,
-    pub ai_request: Option<String>,
+    /// AI bridge state (see `AiTrack`).
+    pub ai: AiTrack,
     pub prompt_epoch: u64,
     pub last_exit: Option<i32>,
     pub cols: usize,
@@ -225,12 +220,7 @@ impl Grid {
         // The ring buffer doubles dynamically on demand up to max_cap when lines scroll off screen.
         let cap = (rows * 2).max(64).min(max_cap);
         Grid {
-            ai_available: false,
-            ai_direct: false,
-            ai_armed: false,
-            ai_track: false,
-            ai_command: None,
-            ai_request: None,
+            ai: AiTrack::default(),
             prompt_epoch: 0,
             last_exit: None,
             cols,

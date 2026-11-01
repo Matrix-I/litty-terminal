@@ -113,8 +113,8 @@ pub(super) fn handle_key(
                 // that was never started (including a malformed OSC payload).
                 {
                     let mut g = pane.grid.lock();
-                    g.ai_armed = false;
-                    g.ai_request = None;
+                    g.ai.armed = false;
+                    g.ai.request = None;
                 }
                 ai.submitted = None;
                 ai.result = Some(ai::Outcome {
@@ -151,7 +151,7 @@ pub(super) fn handle_key(
             (g.full_prompt_input(), g.prompt_ready(), g.prompt_epoch)
         };
         if ready
-            && pane.grid.lock().ai_available
+            && pane.grid.lock().ai.available
             && let Some(query) = ai::query(&input)
         {
             let ai = s.ai.entry(pane_id).or_default();
@@ -162,7 +162,7 @@ pub(super) fn handle_key(
             ai.cancel = Arc::new(AtomicBool::new(false));
             ai.busy = true;
             ai.prompt_epoch = epoch;
-            let direct = pane.grid.lock().ai_direct
+            let direct = pane.grid.lock().ai.direct
                 || input.starts_with(char::is_whitespace)
                 || query.len() > 4096;
             if direct {
@@ -170,8 +170,8 @@ pub(super) fn handle_key(
                 // natural language is never parsed or executed by the shell.
                 {
                     let mut g = pane.grid.lock();
-                    g.ai_track = false;
-                    g.ai_request = Some(query.into());
+                    g.ai.track = false;
+                    g.ai.request = Some(query.into());
                 }
                 ai.display_query = Some(input.clone());
                 s.history_search.add_session_command(&input);
@@ -181,13 +181,13 @@ pub(super) fn handle_key(
             }
             {
                 let mut g = pane.grid.lock();
-                g.ai_track = false;
-                g.ai_armed = true;
+                g.ai.track = false;
+                g.ai.armed = true;
             }
         } else if let Some(ai) = s.ai.get_mut(&pane_id) {
             if input.trim().is_empty() {
                 ai.submitted("");
-                pane.grid.lock().ai_track = false;
+                pane.grid.lock().ai.track = false;
             }
             ai.prompt_epoch = epoch;
         }
@@ -198,7 +198,7 @@ pub(super) fn handle_key(
         ai.suggestion = None;
         ai.awaiting = false;
         ai.executed = None;
-        pane.grid.lock().ai_track = false;
+        pane.grid.lock().ai.track = false;
     }
 
     let (app_cursor, kitty_flags, modify_other_keys, ctrl_u_bytes) = {

@@ -414,21 +414,21 @@ impl Perform for Grid {
             b"8" => {
                 self.osc8(params);
             }
-            b"778" if params[1] == b"init" => {self.ai_available=true;self.ai_direct=params.get(2)==Some(&b"direct".as_slice());}
+            b"778" if params[1] == b"init" => {self.ai.available=true;self.ai.direct=params.get(2)==Some(&b"direct".as_slice());}
             b"778" if params[1] == b"yo" => {
-                if self.ai_armed && !self.alt_active {
-                    self.ai_armed = false;
+                if self.ai.armed && !self.alt_active {
+                    self.ai.armed = false;
                     if let Some(payload)=params.get(2).filter(|p|p.len()<=65536)
                         && let Some(bytes)=decode_base64(payload)
                         && let Ok(query)=String::from_utf8(bytes) {
-                            self.ai_request=Some(query);
+                            self.ai.request=Some(query);
                         }
                 }
             }
             b"133" => {
-                if params[1] == b"C" && self.ai_track && !self.alt_active {
-                    self.ai_track=false;
-                    self.ai_command=Some(self.full_prompt_input());
+                if params[1] == b"C" && self.ai.track && !self.alt_active {
+                    self.ai.track=false;
+                    self.ai.command=Some(self.full_prompt_input());
                 }
                 match params[1].first() {
                     Some(b'B') => {
