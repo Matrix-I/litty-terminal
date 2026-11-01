@@ -35,9 +35,10 @@ impl Session {
     fn spawn(program: &Path, args: &[String], home: &Path, extra_env: &[(&str, &Path)]) -> Self {
         let (mut master, mut slave) = (-1, -1);
         let mut size = libc::winsize { ws_row: 24, ws_col: 120, ws_xpixel: 0, ws_ypixel: 0 };
-        // SAFETY: both out-pointers are valid; termios is optional (null).
+        // SAFETY: both out-pointers are valid; termios is optional (null). `winp` is
+        // `*mut` on macOS but `*const` on Linux, so pass a raw pointer to fit both.
         let rc = unsafe {
-            libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &mut size)
+            libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &raw mut size)
         };
         assert_eq!(rc, 0, "openpty: {}", Error::last_os_error());
         // SAFETY: openpty returned two fresh descriptors that nothing else owns.
