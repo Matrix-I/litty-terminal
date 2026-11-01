@@ -200,7 +200,7 @@ fn poc_cwe770_placements_are_bounded() {
 fn poc_cwe78_history_edit_never_executes() {
     let cmd = "echo safe\nrm -rf ~/important";
     for bracketed in [false, true] {
-        let p = crate::history_insert_payload(cmd, false, bracketed);
+        let p = crate::paste::history_insert_payload(cmd, false, bracketed);
         let body = if bracketed {
             let inner = p.strip_prefix(b"\x05\x15\x1b[200~".as_slice()).expect("bracketed start");
             inner.strip_suffix(b"\x1b[201~".as_slice()).expect("bracketed end").to_vec()
@@ -216,7 +216,7 @@ fn poc_cwe78_history_edit_never_executes() {
 
 #[test]
 fn poc_cwe150_history_cannot_break_out_of_bracketed_paste() {
-    let p = crate::history_insert_payload("ls\x1b[201~\nid\x07", false, true);
+    let p = crate::paste::history_insert_payload("ls\x1b[201~\nid\x07", false, true);
     let esc = p.iter().filter(|&&b| b == 0x1b).count();
     assert_eq!(esc, 2, "only the paste brackets may contain ESC: {p:?}");
     assert!(!p.contains(&0x07));
@@ -308,7 +308,7 @@ fn perf_legit_images() {
     let place_ms = t.elapsed().as_secs_f64() * 1e3 / N as f64;
     let t = Instant::now();
     for _ in 0..N * 100 {
-        std::hint::black_box(crate::history_insert_payload("git commit -m \"fix: something long enough\"", false, true));
+        std::hint::black_box(crate::paste::history_insert_payload("git commit -m \"fix: something long enough\"", false, true));
     }
     let hist_us = t.elapsed().as_secs_f64() * 1e6 / (N * 100) as f64;
     println!("PERF sixel_800x600_ms={sixel_ms:.3} kitty_rgba_1000x1000_ms={kitty_ms:.3} place_2000_ms={place_ms:.3} history_payload_us={hist_us:.3}");

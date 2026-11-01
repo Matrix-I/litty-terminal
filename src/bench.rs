@@ -694,7 +694,7 @@ pub fn run_critical_features_benchmark() -> FeatureMetrics {
     // 4. Bracketed Paste Injection Security
     println!("\n  [4] Bracketed Paste Security & Escape Injection Sanitization...");
     let evil_payload = "echo safe\x1b[201~rm -rf / --no-preserve-root\n";
-    let sanitized = crate::paste_payload(evil_payload, true);
+    let sanitized = crate::paste::paste_payload(evil_payload, true);
     let sanitized_str = String::from_utf8_lossy(&sanitized);
     // Must contain exactly one start and one end marker, and the injected \x1b[201~ is stripped
     let start_count = sanitized.windows(6).filter(|w| *w == b"\x1b[200~").count();
