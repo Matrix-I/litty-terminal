@@ -35,10 +35,29 @@ Cross-platform, zero-latency GPU terminal emulator (macOS Metal / Linux Vulkan, 
 - `src/split.rs`: Pane tree layout management.
 
 ## Workflow & PR Checklist
+### Implement
+- **Scope**: Change only what the task needs. Note unrelated bugs or refactors as follow-ups (or in `ROADMAP.md`) instead of fixing them in passing.
+- **Branching**: Non-trivial work (new feature, multi-file refactor, anything touching invariants above) goes on a branch `feat/<topic>`, `fix/<topic>`, `refactor/<topic>`. Small docs/typo fixes may go straight to `main`.
+- **Tests**: Bug fixes start with a failing regression test that reproduces the bug. New logic in pure modules (`keymap`, `grid`, `split`, `search`, `history`, `config`) gets unit tests in the same file.
+- **Platform code**: Gate with `#[cfg(target_os = ...)]`; every platform-specific path needs a counterpart (or an explicit no-op) on the other platform so both targets compile.
+- **Docs**: Update `ROADMAP.md` when a roadmap item is completed or descoped; update `README.md` when user-visible behavior, config keys, or keybindings change.
+- **Done means verified**: Never report a task done without running the verification steps below and stating the result. If a step could not run (sandbox, missing toolchain), say so explicitly.
+
+### Verification (run before every commit that touches `src/`)
 1. All keybinding additions must update `src/keymap.rs` for both platforms with dedicated unit tests.
 2. Verification steps:
    - `cargo check`
    - `cargo check --target x86_64-unknown-linux-gnu`
    - `cargo test` (run outside sandbox; PTY tests require `openpty`)
-   - `cargo clippy --all-targets` (zero warnings tolerated)
-3. Conventional Commits format (`feat(scope):`, `fix(scope):`, `docs(scope):`).
+   - `cargo clippy --all-targets -- -D warnings` (zero warnings tolerated)
+   - `git diff --check` (no trailing whitespace / conflict markers)
+
+### Commit
+- **Format**: Conventional Commits — `type(scope): summary` in imperative mood, lowercase, no trailing period, ≤ 72 chars. Types: `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `chore`, `build`. Scope is the module or area (`grid`, `keymap`, `render`, `pty`, `linux`, `macos`, `update`, `release`).
+- **Body**: Explain *why* and any trade-off; reference roadmap items or CWE IDs where relevant. Wrap at 72 chars.
+- **Granularity**: One logical change per commit; each commit must build and pass tests on its own. Don't mix formatting/refactors with behavior changes.
+- **Never commit**: `target/`, `dist/` build outputs, benchmark scratch logs, secrets or signing keys, or unrelated working-tree changes (stage files explicitly, no `git add -A`).
+- **Permission**: Commit only when asked. Never push, force-push, rewrite published history, tag, or create releases without explicit approval.
+
+### Release
+Releases are published via GitHub Releases. Follow `docs/release.md` (read it only when preparing a release).
