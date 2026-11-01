@@ -1,3 +1,4 @@
+use super::fonts::{parse_font, shaper_mmap_for};
 use super::sprites::draw_builtin_sprite;
 use super::*;
 
