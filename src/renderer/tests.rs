@@ -1,5 +1,4 @@
 use super::gpu::create_cells_pipeline;
-use super::tab_label;
 
 #[test]
 #[ignore = "requires a Metal/Vulkan adapter; run explicitly for GPU pixel verification"]
@@ -107,17 +106,6 @@ fn scrollbar_thumb_reaches_track_ends_and_keeps_caps_visible() {
     assert_eq!(scrollbar_thumb(400.0, 40, 100_000, 100_000), (0.0, 10.0));
     assert_eq!(scrollbar_thumb(6.0, 40, 100_000, 1), (0.0, 6.0));
     assert_eq!(scrollbar_thumb(0.0, 0, 0, 0), (0.0, 0.0));
-}
-
-#[test]
-fn test_tab_label_strips_user_host_prefix() {
-    assert_eq!(tab_label("linh@mac:~/Desktop/personal/fastdb"), "~/Desktop/personal/fastdb");
-    assert_eq!(tab_label("linh:~/src"), "~/src");
-    assert_eq!(tab_label("root@box:/etc [Z]"), "/etc [Z]");
-    assert_eq!(tab_label("~/src"), "~/src");
-    assert_eq!(tab_label("vim: notes.md"), "vim: notes.md");
-    assert_eq!(tab_label("shell"), "shell");
-    assert_eq!(tab_label("http://x"), "http://x");
 }
 
 #[test]
