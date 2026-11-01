@@ -30,7 +30,7 @@ if "cursor" in $litty_features {
 # This function also supports a normally parsed, explicitly quoted invocation.
 def --env --wrapped yo [...rest: string] {
     let payload = ($rest | str join ' ' | encode base64)
-    print -n $"(char escape)]778;yo;($payload)(char bel)"
+    print -n $"(char -i 27)]778;yo;($payload)(char bel)"
 }
 $env.config.keybindings = ($env.config.keybindings | append {
     name: litty_ai_repaint
@@ -40,4 +40,5 @@ $env.config.keybindings = ($env.config.keybindings | append {
     event: {send: repaint}
 })
 
-print -n $"(char escape)]778;init;direct(char bel)"
+# `char escape` no longer exists in newer Nushell; ESC is `char -i 27`.
+print -n $"(char -i 27)]778;init;direct(char bel)"

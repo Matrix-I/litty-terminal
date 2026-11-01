@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Isolated PTY smoke tests for yo interception on zsh, Bash, and fish.
+"""Isolated PTY smoke tests for yo interception on zsh, Bash, fish, and nushell.
 Run outside a PTY-restricted sandbox; no API keys or network requests are used.
 """
 import os, pty, select, time, signal, tempfile, pathlib, fcntl, termios, struct, base64, shutil, shlex
@@ -9,14 +9,18 @@ def read(fd, seconds=.4):
     while time.monotonic()<end:
         ready,_,_=select.select([fd],[],[],max(0,end-time.monotonic()))
         if not ready: break
-        try: data+=os.read(fd,65536)
+        try: chunk=os.read(fd,65536)
         except OSError: break
+        data+=chunk
+        # Answer cursor-position queries as a real terminal would (reedline waits for it).
+        for _ in range(chunk.count(b'\x1b[6n')): os.write(fd,b'\x1b[1;1R')
     return data
-for shell in ['zsh','bash','fish']:
+for shell in ['zsh','bash','fish','nu']:
     binary=shutil.which(shell)
     if not binary:
         print(shell+': skipped (not installed)')
         continue
+    extra={}
     with tempfile.TemporaryDirectory(prefix='litty-yo-') as home:
         if shell=='zsh':
             pathlib.Path(home,'.zshrc').write_text(f"PROMPT='test> '\nsource {shlex.quote(str(ROOT / 'src/shell/litty-integration.zsh'))}\n")
@@ -26,16 +30,23 @@ for shell in ['zsh','bash','fish']:
             config.parent.mkdir(parents=True)
             config.write_text(f"source {shlex.quote(str(ROOT / 'src/shell/litty-integration.fish'))}\n")
             args=[binary,'--interactive']
+        elif shell=='nu':
+            # Mirror Litty's injection: the script is autoloaded from XDG_DATA_DIRS.
+            autoload=pathlib.Path(home,'data/nushell/vendor/autoload')
+            autoload.mkdir(parents=True)
+            shutil.copy(ROOT/'src/shell/litty.nu',autoload/'litty.nu')
+            extra=dict(XDG_DATA_DIRS=str(pathlib.Path(home,'data')),XDG_CONFIG_HOME=str(pathlib.Path(home,'.config')))
+            args=[binary]
         else:
             args=[binary,'--noprofile','--rcfile',str(ROOT/'src/shell/litty.bash'),'-i']
         pid,fd=pty.fork()
         if pid==0:
             os.chdir(home)
-            os.environ.update(HOME=home,ZDOTDIR=home,TERM='xterm-256color',PS1='test> ',HISTFILE='/dev/null')
+            os.environ.update(HOME=home,ZDOTDIR=home,TERM='xterm-256color',PS1='test> ',HISTFILE='/dev/null',**extra)
             os.execv(args[0],args)
         try:
             fcntl.ioctl(fd,termios.TIOCSWINSZ,struct.pack('HHHH',24,120,0,0))
-            initial=read(fd)
+            initial=read(fd,4 if shell=='nu' else .4)  # nu writes its default config on first start
             assert b'778;init' in initial,(shell,initial)
             query='find files > 100MB; echo SHOULD_NOT_EXECUTE'
             if b'778;init;direct' in initial:
