@@ -659,9 +659,11 @@ Carried over from v0.7.0 release validation; none of these block v0.7.0 and each
 
 ### Structural refactor (4 phases, zero behavior change)
 
-Plans are written and committed; execution is deferred. Run in order, each phase after the previous one lands.
+Plans are written and committed; run in order, each phase after the previous one lands.
 
-- [ ] **Phase 1 — Split `src/main.rs` into `src/app/*`, `src/platform/*`, `src/cli.rs`, `src/paste.rs`** — [plan](./docs/plans/2026-11-01-split-main-rs.md)
+- [x] **Phase 1 — Split `src/main.rs` into `src/app/*`, `src/platform/*`, `src/cli.rs`, `src/paste.rs`** — [plan](./docs/plans/2026-11-01-split-main-rs.md)
+  - Done on branch `refactor/split-main`: `main.rs` went from 4666 to 98 lines; `State` fields grouped into `PointerState`, `ImeState`, `WindowRequests`, `InspectorState`. Evidence: `cargo test` 310 passed (304 before plus 6 new `cli` tests), token census unchanged apart from import `#[cfg]` lines and two `waker.clone()` sites, and `+bench-ram` / `+bench-perf` / `+bench-features` passing on both `main` and the branch.
+  - Follow-ups found on the way (not fixed, out of scope): the doc comment above `shell_quote` in `src/paste.rs` belongs to `paste_payload`; `litty +bench-stress 200` exits 1 although every SLA line passes (also on `main`); `ai::integration_tests::tool_loop_reads_grid_and_preserves_actual_execution` failed with `curl exit 7` in three full runs during the refactor and passed on rerun; `use` lines in `src/app/*.rs` are one name per line; `src/app/latency_benchmarks.rs` is a grab-bag; `handle_window_event` is 93 lines (plan target < 80, `Occluded` could become `on_occluded`).
 - [ ] **Phase 2 — Split `src/grid/mod.rs` into submodules and group fields into `AiTrack`, `TerminalModes`, `ClusterTable`, `Ring`** — [plan](./docs/plans/2026-11-01-split-grid.md)
 - [ ] **Phase 3 — Split `src/renderer.rs` and `src/atlas.rs` into module directories** — [plan](./docs/plans/2026-11-01-split-renderer-atlas.md)
 - [ ] **Phase 4 — Layered layout `src/terminal/`, `src/render/`, `src/platform/{macos,linux}/` with an enforced dependency-rule test** — [plan](./docs/plans/2026-11-01-layered-layout.md)

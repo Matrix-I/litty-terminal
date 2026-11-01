@@ -27,7 +27,9 @@ Cross-platform, zero-latency GPU terminal emulator (macOS Metal / Linux Vulkan, 
   - UI hints: macOS renders `⌘`, Linux renders `^` or `Alt+`.
 
 ## Architecture & Modules
-- `src/main.rs`: winit loop, state coordination, action dispatch, mouse & IME.
+- `src/main.rs`: crate root and CLI dispatch (`src/cli.rs`); starts `app::run`.
+- `src/app/`: winit loop and per-window `State` (`state`, `window`); `window_event` / `user_event` handlers; input (`keyboard`, `pointer`, `ime`, `search_ui`, `inspector`), `tabs`, `actions`, `terminal_io` and `ai_bridge`.
+- `src/platform/`: clipboard and detached processes (`open` / `xdg-open`, notifications, sounds). `src/paste.rs`: pure paste / shell-quote payloads.
 - `src/keymap.rs`: Pure key-to-byte / shortcut resolution for `Platform::MacOs` & `Platform::Linux` + Kitty protocol.
 - `src/pty.rs`: `openpty` + `fork`/`execve`, reader thread pushing bytes to grid.
 - `src/grid.rs`: 12-byte `Cell`, ring buffer, `vte::Perform`. Responses (DSR, DA) go to `Grid::response`.
