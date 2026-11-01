@@ -11,11 +11,12 @@ use winit::window::Window;
 mod gpu;
 mod ui;
 use gpu::{make_bind_group, make_instance_buf, make_viewport_buffer};
+pub use ui::scrollbar::{scrollbar_thumb, SCROLLBAR_WIDTH};
 use ui::DirtyRows;
 
 use crate::atlas::{Atlas, FontSet, GlyphStyle};
 use crate::grid::{
-    char_width, Grid, Hyperlink, SearchHit, BG_EXTRA, BG_SET, BG_STRIKE, BG_UNDERLINE, BG_UNDERLINE_MASK, FG_BOLD,
+    char_width, Grid, Hyperlink, SearchHit, BG_EXTRA, BG_SET, BG_STRIKE, BG_UNDERLINE_MASK, FG_BOLD,
     FG_EXTRA, FG_ITALIC, FG_SET, UNDERLINE_SINGLE,
 };
 use crate::history::HistorySearch;
@@ -30,19 +31,6 @@ pub struct RenderPane {
     pub is_active: bool,
 }
 
-/// Dedicated scrollbar instance (preview + thumb bits); upper bits store height.
-const SCROLLBAR_OVERLAY: u32 = 0x30;
-pub const SCROLLBAR_WIDTH: f64 = 10.0;
-
-/// Thumb position within the track and height, shared by drawing and dragging.
-pub fn scrollbar_thumb(track_height: f64, rows: usize, history: usize, offset: usize) -> (f64, f64) {
-    let track_height = track_height.max(0.0);
-    let total = (history + rows).max(1) as f64;
-    let height = (track_height * rows as f64 / total).max(SCROLLBAR_WIDTH).min(track_height).round().min(track_height);
-    let travel = (track_height - height).max(0.0);
-    let y = travel * history.saturating_sub(offset) as f64 / history.max(1) as f64;
-    (y, height)
-}
 /// Instance `bg` bit: the cell belongs to an unfocused split.
 const UNFOCUSED: u32 = 0x40;
 /// Instance `fg` bit: the slot is a color glyph (emoji) in the color atlas.
@@ -810,11 +798,7 @@ impl Renderer {
                 })) << 1),
                 _pad: 0,
             });
-            self.instances[scrollbar_start + pane_index] = Instance {
-                glyph: ((right - SCROLLBAR_WIDTH) as f32).to_bits(),
-                fg: (y as f32).to_bits(),
-                bg: SCROLLBAR_OVERLAY | (if offset > 0 { (height as u32).min(0xFF_FFFF) } else { 0 } << 8),
-            };
+            self.instances[scrollbar_start + pane_index] = ui::scrollbar::instance(right, y, height, offset);
 
             // Collect visible images while g is locked to eliminate redundant grid locking in subsequent passes.
             g.visible_images(&mut self.image_draws);
@@ -927,39 +911,7 @@ impl Renderer {
 
         if let Some((_, link)) = hovered_link
             && total_rows > 0 && cols > 0 {
-                let max_chars = cols.saturating_sub(2).min(120);
-                let display_url = if link.url.chars().count() > max_chars {
-                    format!("{}...", link.url.chars().take(max_chars.saturating_sub(3)).collect::<String>())
-                } else {
-                    link.url.clone()
-                };
-                let preview_row = total_rows - 1;
-                let row_start = preview_row * cols;
-                // Naturally blend with terminal background without any background box or borders:
-                // bit 4 is set so is_preview=true (suppresses cursor), while bit 7 is 0 so background matches default_bg.
-                const PREVIEW_BG: u32 = 16;
-                const PREVIEW_FG: u32 = 0xF2F2_F780;
-                for (col, ch) in display_url.chars().enumerate() {
-                    if col < cols && row_start + col < self.instances.len() {
-                        let slot = self.atlas.slot(&self.queue, ch as u32);
-                        self.instances[row_start + col] = Instance {
-                            glyph: slot as u32,
-                            fg: PREVIEW_FG,
-                            bg: PREVIEW_BG,
-                        };
-                    }
-                }
-                let end_col = display_url.chars().count();
-                for col in end_col..cols {
-                    if row_start + col < self.instances.len() {
-                        self.instances[row_start + col] = Instance {
-                            glyph: 0,
-                            fg: PREVIEW_FG,
-                            bg: PREVIEW_BG,
-                        };
-                    }
-                }
-                dirty.mark(preview_row, preview_row);
+                ui::link_preview::build(&mut self.cells(cols), total_rows, link, &mut dirty);
             }
 
         // IME composition (e.g. Telex / Pinyin preedit): underlined text at the cursor,
@@ -967,28 +919,7 @@ impl Renderer {
         let mut cursor = active_cur;
         if let (false, Some((cx, cy))) = (preedit.is_empty(), active_cur)
             && cols > 0 && cy < total_rows && cx < cols {
-                let row_start = cy * cols;
-                let mut col = cx;
-                for ch in preedit.chars() {
-                    let w = char_width(ch);
-                    if w == 0 {
-                        continue;
-                    }
-                    if col + w > cols {
-                        break;
-                    }
-                    let (left, right) = self.atlas.glyph_slots(&self.queue, ch as u32, w, GlyphStyle::default());
-                    let idx = row_start + col;
-                    if idx < self.instances.len() {
-                        self.instances[idx] = Instance { glyph: left as u32, fg: 0, bg: BG_UNDERLINE };
-                    }
-                    if w == 2 && idx + 1 < self.instances.len() {
-                        self.instances[idx + 1] = Instance { glyph: right as u32, fg: 0, bg: BG_UNDERLINE };
-                    }
-                    col += w;
-                }
-                cursor = Some((col.min(cols.saturating_sub(1)), cy));
-                dirty.mark(cy, cy);
+                cursor = Some(ui::preedit::build(&mut self.cells(cols), preedit, (cx, cy), &mut dirty));
             }
 
         if search.is_open {

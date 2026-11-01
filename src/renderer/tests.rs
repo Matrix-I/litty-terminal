@@ -1,4 +1,5 @@
 use super::gpu::create_cells_pipeline;
+use super::ui::scrollbar::SCROLLBAR_OVERLAY;
 
 #[test]
 #[ignore = "requires a Metal/Vulkan adapter; run explicitly for GPU pixel verification"]
@@ -95,17 +96,6 @@ fn precise_scroll_gpu_pixels() {
             png.write_header().unwrap().write_image_data(&pixels).unwrap();
         }
     }
-}
-
-#[test]
-fn scrollbar_thumb_reaches_track_ends_and_keeps_caps_visible() {
-    use super::scrollbar_thumb;
-    assert_eq!(scrollbar_thumb(400.0, 40, 360, 360), (0.0, 40.0));
-    assert_eq!(scrollbar_thumb(400.0, 40, 360, 0), (360.0, 40.0));
-    assert_eq!(scrollbar_thumb(400.0, 40, 360, 180), (180.0, 40.0));
-    assert_eq!(scrollbar_thumb(400.0, 40, 100_000, 100_000), (0.0, 10.0));
-    assert_eq!(scrollbar_thumb(6.0, 40, 100_000, 1), (0.0, 6.0));
-    assert_eq!(scrollbar_thumb(0.0, 0, 0, 0), (0.0, 0.0));
 }
 
 #[test]
