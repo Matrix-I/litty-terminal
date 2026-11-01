@@ -18,6 +18,8 @@ pub mod selection;
 
 #[cfg(test)]
 mod perf_probe;
+#[cfg(test)]
+mod ascii_run_tests;
 
 mod colors;
 mod clusters;
@@ -170,6 +172,10 @@ pub struct Grid {
     clusters: ClusterTable,
     /// The last character joined a ZWJ to a cluster: a pictograph after it joins too.
     joiner: bool,
+    /// True when the vte parser is known to be in its ground state with no
+    /// partial UTF-8 pending (vte does not expose this). Set by the dispatch
+    /// callbacks, cleared by ESC and any non-ASCII byte.
+    ground: bool,
 }
 
 impl Grid {
@@ -260,6 +266,7 @@ impl Grid {
             extras_full: false,
             clusters: ClusterTable::default(),
             joiner: false,
+            ground: false,
             palette_override: Vec::new(),
             color_override: [0; 3],
         }
@@ -523,10 +530,91 @@ impl Grid {
         Cell { codepoint: 0, fg: 0, bg: self.cur.pen.bg }
     }
 
+    /// Feed a prefix of `bytes` and return how many were consumed (at least 1).
+    /// Behaves exactly like calling `feed_byte` on those bytes, but a run of
+    /// printable ASCII in the parser's ground state is written in one batch.
+    #[inline]
+    pub fn feed_bytes(&mut self, parser: &mut vte::Parser, bytes: &[u8]) -> usize {
+        // Cheap reject first: most bytes outside a long run fail here without
+        // touching any grid state.
+        if bytes.len() >= MIN_ASCII_RUN
+            && bytes[..MIN_ASCII_RUN].iter().all(|b| (0x20..0x7f).contains(b))
+            && self.ground
+            && self.osc_len.is_none()
+            && self.apc_state == 0
+            // Redundant today (ASCII ignores `joiner`) but kept so the fast path
+            // never rests on that subtlety alone.
+            && !self.joiner
+            && !self.cur.line_drawing
+            && !self.modes.insert_mode
+            && self.modes.autowrap
+        {
+            let run = printable_ascii_prefix(bytes);
+            self.print_ascii_run(&bytes[..run]);
+            return run;
+        }
+        self.feed_byte(parser, bytes[0]);
+        1
+    }
+
+    /// Same result as `put_char(b, 1)` for every byte of `run`, with the
+    /// per-cell bookkeeping done once per row segment. Requires autowrap on,
+    /// insert mode off and a run of printable ASCII.
+    fn print_ascii_run(&mut self, run: &[u8]) {
+        let mut rest = run;
+        while !rest.is_empty() {
+            if self.wrap_pending {
+                self.wrap_pending = false;
+                self.set_wrapped(self.cur.row, true);
+                self.cur.col = 0;
+                self.linefeed();
+            }
+            let (row, col, cols) = (self.cur.row, self.cur.col, self.cols);
+            let n = rest.len().min(cols - col);
+            let (seg, tail) = rest.split_at(n);
+            let (fg, bg) = self.colors();
+            let blank = self.blank();
+            let last = col + n - 1;
+            let r = self.row_mut(row);
+            let mut prev_extra = false;
+            // Overwriting half of a wide glyph blanks the orphaned other half.
+            if col > 0 && r[col].codepoint == 0 && is_wide_cp(r[col - 1].codepoint) {
+                prev_extra |= r[col - 1].extra() != 0;
+                r[col - 1] = blank;
+            }
+            if last + 1 < cols && r[last + 1].codepoint == 0 && is_wide_cp(r[last].codepoint) {
+                prev_extra |= r[last + 1].extra() != 0;
+                r[last + 1] = blank;
+            }
+            let dst = &mut r[col..=last];
+            prev_extra |= dst.iter().any(|c| c.extra() != 0);
+            for (cell, &b) in dst.iter_mut().zip(seg) {
+                *cell = Cell { codepoint: b as u32, fg, bg };
+            }
+            if prev_extra {
+                self.extras_dirty = true;
+            }
+            if col + n >= cols {
+                self.set_wrapped(row, false);
+            }
+            self.mark(row);
+            if col + n >= cols {
+                self.cur.col = cols - 1;
+                self.wrap_pending = true;
+            } else {
+                self.cur.col = col + n;
+            }
+            rest = tail;
+        }
+    }
+
     /// Feed one byte from the PTY. APC strings (the Kitty graphics protocol)
     /// are handled here, because vte drops them; everything else goes to `parser`.
     #[inline]
     pub fn feed_byte(&mut self, parser: &mut vte::Parser, b: u8) {
+        if b == 0x1b || b >= 0x80 {
+            self.ground = false;
+        }
         if let Some(len) = self.osc_len {
             match b {
                 0x07 | 0x18 | 0x1a => {
@@ -809,3 +897,25 @@ fn dec_line_drawing(c: char) -> char {
 
 #[cfg(test)]
 mod tests;
+
+/// Shortest printable-ASCII run worth batching; shorter ones cost more to set up.
+const MIN_ASCII_RUN: usize = 4;
+
+/// Length of the leading run of bytes in `0x20..=0x7E`. Branch-free per block
+/// so the compiler can vectorize the scan.
+#[inline]
+fn printable_ascii_prefix(bytes: &[u8]) -> usize {
+    const BLOCK: usize = 32;
+    let mut i = 0;
+    while i + BLOCK <= bytes.len() {
+        let bad = bytes[i..i + BLOCK].iter().fold(0u8, |acc, &b| acc | (b.wrapping_sub(0x20) >= 0x5f) as u8);
+        if bad != 0 {
+            break;
+        }
+        i += BLOCK;
+    }
+    while i < bytes.len() && (0x20..0x7f).contains(&bytes[i]) {
+        i += 1;
+    }
+    i
+}
