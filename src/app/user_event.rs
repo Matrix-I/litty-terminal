@@ -66,7 +66,7 @@ impl App {
             s.invalidate_pane_state(exited_id);
             s.tabs.remove(tab_pos);
             if s.tabs.is_empty() {
-                s.close_requested = true;
+                s.requests.close = true;
                 self.process_window_requests(event_loop);
                 return;
             }
@@ -169,7 +169,7 @@ impl App {
             }
             bench::BenchCommand::OpenWindow => {
                 if let Some(s) = self.windows.last_mut() {
-                    s.new_window_requested = true;
+                    s.requests.new_window = true;
                     self.process_window_requests(event_loop);
                 }
             }

@@ -73,22 +73,11 @@ pub(super) struct State {
     pub(super) sync_pending: bool,
     /// When tab titles were last recomputed (they also refresh on OSC 0/2/7).
     pub(super) titles_refreshed_at: std::time::Instant,
-    /// The last tab closed; `App` removes the window (or hides the last one).
-    pub(super) close_requested: bool,
+    pub(super) requests: WindowRequests,
     /// The window is completely covered, minimized or on an inactive Space.
     pub(super) occluded: bool,
-    /// A shortcut asked for a new window; `App` opens it after the event.
-    pub(super) new_window_requested: bool,
-    /// New tab as a native macOS window tab (`macos-native-tabs`).
-    pub(super) native_tab_requested: bool,
     /// This is the Quick Terminal window.
     pub(super) quick: bool,
-    /// A binding asked to show / hide the Quick Terminal.
-    pub(super) quick_terminal_requested: bool,
-    /// `Cmd+Q` / `Ctrl+Shift+Q`: `App` confirms across all windows, then exits.
-    pub(super) quit_requested: bool,
-    /// Config reload requested; `App` propagates it to all windows.
-    pub(super) reload_config_requested: bool,
     pub(super) inspector: InspectorState,
 }
 
@@ -137,4 +126,20 @@ pub(super) struct ImeState {
     pub(super) preedit: String,
     /// Last cursor cell reported to the IME for candidate window placement.
     pub(super) cursor_cell: Option<(usize, usize)>,
+}
+
+/// Requests a window raises during an event; `App` acts on them afterwards.
+pub(super) struct WindowRequests {
+    /// The last tab closed; `App` removes the window (or hides the last one).
+    pub(super) close: bool,
+    /// A shortcut asked for a new window; `App` opens it after the event.
+    pub(super) new_window: bool,
+    /// New tab as a native macOS window tab (`macos-native-tabs`).
+    pub(super) native_tab: bool,
+    /// A binding asked to show / hide the Quick Terminal.
+    pub(super) quick_terminal: bool,
+    /// `Cmd+Q` / `Ctrl+Shift+Q`: `App` confirms across all windows, then exits.
+    pub(super) quit: bool,
+    /// Config reload requested; `App` propagates it to all windows.
+    pub(super) reload_config: bool,
 }

@@ -35,14 +35,14 @@ pub(super) fn run_action(
 
     // These work even with no open tab (macOS keeps running without windows).
     match action {
-        A::Quit => s.quit_requested = true,
+        A::Quit => s.requests.quit = true,
         A::Minimize => s.window.set_minimized(true),
         A::OpenConfig => config::open_config_in_editor(),
-        A::ReloadConfig => s.reload_config_requested = true,
-        A::NewWindow => s.new_window_requested = true,
-        A::ToggleQuickTerminal => s.quick_terminal_requested = true,
+        A::ReloadConfig => s.requests.reload_config = true,
+        A::NewWindow => s.requests.new_window = true,
+        A::ToggleQuickTerminal => s.requests.quick_terminal = true,
         A::NewTab if s.tabs.is_empty() => open_fresh_tab(s, waker),
-        A::NewTab if cfg!(target_os = "macos") && s.config.macos_native_tabs => s.native_tab_requested = true,
+        A::NewTab if cfg!(target_os = "macos") && s.config.macos_native_tabs => s.requests.native_tab = true,
         A::NewTab => duplicate_active_tab(s, waker),
         A::CheckUpdate => {
             macos::show_progress_dialog("Checking for Updates…", "Checking for new releases of Litty…");

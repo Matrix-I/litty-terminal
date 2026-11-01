@@ -104,15 +104,15 @@ impl App {
 
     /// Apply what event handlers asked for: quit, open new windows, close emptied ones.
     fn process_window_requests(&mut self, event_loop: &ActiveEventLoop) {
-        if self.windows.iter_mut().any(|s| std::mem::take(&mut s.reload_config_requested)) {
+        if self.windows.iter_mut().any(|s| std::mem::take(&mut s.requests.reload_config)) {
             for s in &mut self.windows {
                 reload_config(s);
             }
         }
-        if self.windows.iter_mut().any(|s| std::mem::take(&mut s.quick_terminal_requested)) {
+        if self.windows.iter_mut().any(|s| std::mem::take(&mut s.requests.quick_terminal)) {
             self.toggle_quick_terminal(event_loop);
         }
-        if self.windows.iter_mut().any(|s| std::mem::take(&mut s.quit_requested)) {
+        if self.windows.iter_mut().any(|s| std::mem::take(&mut s.requests.quit)) {
             let config = &self.windows[0].config;
             let panes = self.windows.iter().flat_map(|s| s.tabs.iter().flat_map(|t| &t.panes));
             if confirm_close(config, panes, "Litty") {
@@ -123,8 +123,8 @@ impl App {
         // (cwd, window to attach the new one to as a native tab, position to cascade from)
         let mut requests = Vec::new();
         for s in &mut self.windows {
-            let new_window = std::mem::take(&mut s.new_window_requested);
-            let native_tab = std::mem::take(&mut s.native_tab_requested);
+            let new_window = std::mem::take(&mut s.requests.new_window);
+            let native_tab = std::mem::take(&mut s.requests.native_tab);
             if new_window || native_tab {
                 let cwd = s.tabs.get_mut(s.active).and_then(|t| t.active_pane_mut()?.cwd());
                 let from = (!native_tab && s.window.is_visible() != Some(false))
@@ -153,7 +153,7 @@ impl App {
             }
         }
 
-        while let Some(pos) = self.windows.iter().position(|s| s.close_requested) {
+        while let Some(pos) = self.windows.iter().position(|s| s.requests.close) {
             if self.windows.len() > 1 {
                 // Dropping the state closes the window and hangs up its shells.
                 self.windows.remove(pos).renderer.shrink_drawables();
@@ -162,7 +162,7 @@ impl App {
                 continue;
             }
             let s = &mut self.windows[pos];
-            s.close_requested = false;
+            s.requests.close = false;
             hide_or_exit_last_window(s, event_loop);
         }
     }

@@ -531,7 +531,7 @@ impl App {
             s.cursor_blink_epoch = std::time::Instant::now();
             let mtime = config::config_mtime();
             if mtime != s.config_mtime {
-                s.reload_config_requested = true;
+                s.requests.reload_config = true;
             }
         }
         if !s.tabs.is_empty() {

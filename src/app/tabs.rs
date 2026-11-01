@@ -129,7 +129,7 @@ pub(super) fn confirm_close<'a>(cfg: &config::Config, mut panes: impl Iterator<I
 /// window. On macOS the app keeps running in the Dock (at 0% CPU) and a Dock
 /// click reopens a fresh tab; elsewhere the process exits.
 pub(super) fn close_last_window(s: &mut State) {
-    s.close_requested = true;
+    s.requests.close = true;
 }
 
 pub(super) fn hide_or_exit_last_window(s: &mut State, event_loop: &ActiveEventLoop) {

@@ -2,7 +2,7 @@
 
 use super::inspector::inspector_lines;
 use super::search_ui::refresh_search;
-use super::state::{ImeState, InspectorState, State};
+use super::state::{ImeState, InspectorState, State, WindowRequests};
 use super::terminal_io::write_pty;
 
 use std::sync::Arc;
@@ -183,14 +183,16 @@ pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Op
         last_mouse_report: None,
         sync_pending: false,
         titles_refreshed_at: std::time::Instant::now(),
-        close_requested: false,
+        requests: WindowRequests {
+            close: false,
+            new_window: false,
+            native_tab: false,
+            quick_terminal: false,
+            quit: false,
+            reload_config: false,
+        },
         occluded: false,
-        new_window_requested: false,
-        native_tab_requested: false,
         quick,
-        quick_terminal_requested: false,
-        quit_requested: false,
-        reload_config_requested: false,
         inspector: InspectorState { shown: false, last_key: String::new() },
     })
 }
@@ -523,7 +525,7 @@ pub(super) fn zoom(s: &mut State, delta_pt: f32) {
 /// applications that set DECSET 2031.
 pub(super) fn apply_system_appearance(s: &mut State) {
     if s.config.theme.as_deref().is_some_and(config::theme_is_conditional) {
-        s.reload_config_requested = true;
+        s.requests.reload_config = true;
     }
     for pane in s.tabs.iter().flat_map(|t| &t.panes) {
         let report_scheme = pane.grid.lock().color_scheme_reports;
