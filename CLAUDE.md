@@ -27,22 +27,22 @@ Cross-platform, zero-latency GPU terminal emulator (macOS Metal / Linux Vulkan, 
   - UI hints: macOS renders `⌘`, Linux renders `^` or `Alt+`.
 
 ## Architecture & Modules
+Layers (enforced by `src/layering_tests.rs`): `terminal` → nothing; `render` → `terminal`; `platform` → nothing; `app` and crate-root modules → anything. Exceptions are listed in `TOLERATED` with their reason.
 - `src/main.rs`: crate root and CLI dispatch (`src/cli.rs`); starts `app::run`.
-- `src/app/`: winit loop and per-window `State` (`state`, `window`); `window_event` / `user_event` handlers; input (`keyboard`, `pointer`, `ime`, `search_ui`, `inspector`), `tabs`, `actions`, `terminal_io` and `ai_bridge`.
-- `src/platform/`: clipboard and detached processes (`open` / `xdg-open`, notifications, sounds). `src/paste.rs`: pure paste / shell-quote payloads.
+- `src/app/`: winit loop and per-window `State`; input (`keyboard`, `pointer`, `ime`), `tabs`, `actions`, `window_event` / `user_event` handlers.
+- `src/paste.rs`: pure paste / shell-quote payloads.
 - `src/keymap.rs`: Pure key-to-byte / shortcut resolution for `Platform::MacOs` & `Platform::Linux` + Kitty protocol.
-- `src/pty.rs`: `openpty` + `fork`/`execve`, reader thread pushing bytes to grid.
-- `src/grid/`: `Grid` terminal state. `mod.rs` holds the struct and the print / parse hot path (`feed_byte`, `put_char`); `cell.rs` the 12-byte `Cell`; `storage.rs` the scrollback ring (row addressing, scrolling); `perform.rs` the `vte::Perform` impl; `modes.rs`, `colors.rs`, `control.rs`, `images.rs`, `clusters.rs`, `links.rs`, `prompt.rs`, `selection.rs`, `viewport.rs`, `resize.rs`, `visual.rs`, `width.rs` one concern each; unit tests in `tests.rs`. Responses (DSR, DA) go to `Grid::response`.
-- `src/renderer/`: `Renderer` API (`mod.rs`), wgpu setup (`gpu.rs`), per-frame phases (`frame.rs`), pane rows (`pane_row.rs`), overlay widgets over a borrowed `Cells` context (`ui/`); one instanced cell draw per layer (`shader.wgsl`).
-- `src/atlas/`: glyph cache and slot LRU (`mod.rs`), rasterization (`raster.rs`), procedural sprites, ligature shaper, font discovery, CoreText (`coretext.rs`) / non-macOS (`linux.rs`) system rasterizers.
 - `src/split.rs`: Pane tree layout management.
+- `src/terminal/`: `grid/` (12-byte `Cell`, scrollback ring, `vte::Perform`; responses (DSR, DA) go to `Grid::response`), `pty.rs` (`openpty` + `fork`/`execve`, reader thread pushing bytes to grid), search, shell history, bidi, graphics, shell integration.
+- `src/render/`: `renderer/` and `atlas/` (wgpu pipelines, one instanced cell draw per layer (`shaders/shader.wgsl`), glyph cache, CoreText / non-macOS rasterizers), fontdb, postfx, image layer, frame metrics.
+- `src/platform/`: one API (`platform::*`, listed by name in `platform/mod.rs`) implemented by `macos/` and `linux/` with identical file and function names; plus clipboard, detached processes (`open` / `xdg-open`, notifications, sounds) and the control socket.
 
 ## Workflow & PR Checklist
 ### Implement
 - **Scope**: Change only what the task needs. Note unrelated bugs or refactors as follow-ups (or in `ROADMAP.md`) instead of fixing them in passing.
 - **Branching**: Non-trivial work (new feature, multi-file refactor, anything touching invariants above) goes on a branch `feat/<topic>`, `fix/<topic>`, `refactor/<topic>`. Small docs/typo fixes may go straight to `main`.
-- **Tests**: Bug fixes start with a failing regression test that reproduces the bug. New logic in pure modules (`keymap`, `grid`, `split`, `search`, `history`, `config`) gets unit tests in the same file (`grid` keeps its tests in `src/grid/tests.rs`).
-- **Platform code**: Gate with `#[cfg(target_os = ...)]`; every platform-specific path needs a counterpart (or an explicit no-op) on the other platform so both targets compile.
+- **Tests**: Bug fixes start with a failing regression test that reproduces the bug. New logic in pure modules (`keymap`, `grid`, `split`, `search`, `history`, `config`) gets unit tests in the same file (`grid` keeps its tests in `src/terminal/grid/tests.rs`).
+- **Platform code**: OS integration goes in `src/platform/{macos,linux}/` with the same `pub fn` in both (an explicit no-op is fine) and is exported by name from `src/platform/mod.rs`. Elsewhere, gate with `#[cfg(target_os = ...)]`; every platform-specific path needs a counterpart (or an explicit no-op) on the other platform so both targets compile.
 - **Docs**: Update `ROADMAP.md` when a roadmap item is completed or descoped; update `README.md` when user-visible behavior, config keys, or keybindings change.
 - **Done means verified**: Never report a task done without running the verification steps below and stating the result. If a step could not run (sandbox, missing toolchain), say so explicitly.
 

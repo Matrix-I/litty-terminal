@@ -676,5 +676,14 @@ Plans are written and committed; run in order, each phase after the previous one
 - [ ] Render loop: remove per-frame heap allocations found during phase 3 — tab bar `Vec<char>` per title (`ui/tab_bar.rs`), find box status `format!` / `to_string` and query `Vec<char>` (`ui/search_box.rs`), history popup `format!` badges, per-item `Vec<char>` and `preview_lines: Vec<String>` (`ui/history_popup.rs`), inspector title `format!` (`ui/inspector.rs`), hovered-URL `format!` / `clone` (`ui/link_preview.rs`), Arabic joined-cluster `String` (`pane_row.rs`).
 - [ ] Share the tab span math (`c0`, `c1`, close / badge reserve) between `Renderer::hit_test_tab_bar` and `ui::tab_bar::build`.
 - [ ] Phase 4: one CoreFoundation / CoreGraphics FFI module shared by `atlas/coretext.rs`, `macos.rs` (`NSRect` / `NSPoint` are layout-identical to `CGRect` / `CGPoint`) and the CoreText benchmark's own extern block in `app/latency_benchmarks.rs`.
-- [ ] **Phase 4 — Layered layout `src/terminal/`, `src/render/`, `src/platform/{macos,linux}/` with an enforced dependency-rule test** — [plan](./docs/plans/2026-11-01-layered-layout.md)
-  - Before executing, re-check line numbers against current `main` and gate each phase on the release-mode throughput baseline (`lto = "fat"`).
+- [x] **Phase 4 — Layered layout `src/terminal/`, `src/render/`, `src/platform/{macos,linux}/` with an enforced dependency-rule test** — [plan](./docs/plans/2026-11-01-layered-layout.md)
+- [ ] Remove tolerated `render → split`: move `PaneRect` into `render`.
+- [ ] Remove tolerated `render → platform`: let `Renderer::new` expose a post-surface hook for Metal drawable setup.
+- [ ] Remove tolerated `platform → config`: pass a platform-owned `WindowLook` to `apply_window_config`.
+- [ ] Remove tolerated `platform → keymap` / `AppEvent`: platform takes a resolved key code + modifier mask and a `Send` callback instead of `EventLoopProxy<AppEvent>`.
+- [ ] Linux `confirm_close` fallback (`zenity` missing → close) differs from `platform::confirm` (missing → cancel); unify after deciding the intended behavior.
+- [ ] `platform::prepare_window_attributes` for the `WindowAttributesExtMacOS` block in `app::window::create_window`.
+- [ ] Linux behavior gaps behind explicit no-ops: `caps_lock` (Kitty never reports Caps Lock), `system_dark` (no appearance detection; e.g. xdg-desktop-portal `color-scheme`), `beep`, update progress dialog.
+- [ ] Linux has no `wcwidth` override for spacing marks (`grid` uses `macos_wcwidth` only on macOS); check glibc `wcwidth` vs unicode-width for Indic scripts.
+- [ ] `render/atlas/coretext.rs` exports `macos_coretext_rasterize`, which `render/atlas/linux.rs` has no twin for.
+- [ ] Optional: lib target (see Task 9 of the phase 4 plan).
