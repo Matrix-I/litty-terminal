@@ -232,4 +232,3 @@ fn discover_nerd_fonts() -> (Vec<String>, Vec<String>) {
     symbols.sort();
     (mono_nerd, symbols)
 }
-

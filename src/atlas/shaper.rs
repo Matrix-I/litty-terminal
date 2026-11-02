@@ -141,4 +141,3 @@ pub fn set_font_features(features: &[rustybuzz::Feature]) {
         *FONT_CACHE.lock() = None;
     }
 }
-

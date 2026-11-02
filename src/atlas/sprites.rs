@@ -768,4 +768,3 @@ pub(super) fn draw_nerd_icon_fallback(buf: &mut [u8], cw: u32, ch: u32, cp: u32)
         _ => false,
     }
 }
-
