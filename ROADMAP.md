@@ -212,7 +212,7 @@ Each item lists what to run inside a Litty window and the expected result.
   - Anthropic live-provider smoke test **passed** (2026-11-01, `LITTY_AI_LIVE_MODEL=claude-haiku-5-5`, `bash scripts/test-ai-live.sh`, 1 passed in 9.57s): docs + scrollback tool round trips + chat; pending suggestion + edited execution + continuation; context compaction + post-compaction request; transport cancellation in 221 ms. See [scope](./docs/ai-live-validation.md). Other providers (OpenAI, OpenRouter, etc.) were not live-tested.
   - Nushell 0.116.1 (aarch64 Linux container, official GitHub release binary, checksum not verified: no SHA file published at the tried URL) **passed** `python3 scripts/test-yo-shells.py` after a fix: `src/shell/litty.nu` used `char escape`, which no longer exists, so the script errored on load and never emitted `778;init;direct` (`yo` was dead on current Nushell). Now uses `char -i 27`. The harness also answers `ESC[6n` cursor queries and waits longer for Nushell's first start. Older Nushell versions (header claims 0.101+) were not tested.
   - Idle profile, macOS arm64 release build, 1 window/1 tab, no `yo` used (2026-11-01): CPU **0.0%** (CPU time flat at 0.49 s over 60 s, matches `ControlFlow::Wait`); RSS ~113 MB; `footprint` **84 MB**, of which 45 MB is IOSurface (window swapchain), ~11 MB Malloc Small, ~7 MB IOAccelerator. Meets the 85 MB `+bench-ram` budget but **not** the <50 MB invariant in `CLAUDE.md` if GPU surfaces are counted; heap alone is ~12 MB. The invariant needs a decision on what it measures. Per-session memory after `yo` is not measured.
-  - Still open: real-app keyboard checks (Ctrl+C, queued Enter, prompt repaint, editable prefill), which need someone driving the GPU window. fish on real Linux is skipped for now (no Linux machine).
+  - Real-app keyboard checks (Ctrl+C, queued Enter, prompt repaint, editable prefill) were done by hand in a real GPU window (2026-11-02, v0.7.1). fish on real Linux is skipped for now (no Linux machine).
 
 ## Open for release
 
@@ -220,7 +220,7 @@ Noted 2026-11-01 so these do not get lost; details live in "Verification debt" a
 
 - [x] **Run `linux_xdg_open_dispatch_smoke` in the Podman container** (passed 2026-11-01 with `LITTY_TEST_CA_BUNDLE=~/warp-ca.crt`)
   - Fixed the Linux-only Clippy error in `tests/yo_shells.rs:40`; full `scripts/linux/test.sh` now passes end to end (291 passed, 6 ignored, `yo_shells` 4 passed, xdg-open smoke, both X11 probes). The image has no nushell, so `yo_nu` is skipped there.
-- [ ] **Manual keyboard checks in a real GPU window** (Ctrl+C, queued Enter, prompt repaint, editable prefill)
+- [x] **Manual keyboard checks in a real GPU window** (Ctrl+C, queued Enter, prompt repaint, editable prefill)
   - Owner: user, by hand. Agreed ("ok"); no automation possible.
 - [x] **Decision: what the <50 MB idle invariant measures**
   - Decided: the budget applies when the app is idle with **all windows closed** (running in the Dock/background), so the 45 MB window swapchain (IOSurface) is not counted against it.
@@ -650,9 +650,9 @@ Native Linux container validation (2026-11-01): see [run report](./docs/linux-co
 
 ## Planned (v0.8.0)
 
-Carried over from v0.7.0 release validation; none of these block v0.7.0 and each is listed under **Known limitations** in its release notes.
+Carried over from v0.7.0 and v0.7.1 release validation; none of these block a release and each is listed under **Known limitations** in its release notes. The structural refactor below shipped in v0.7.1; its unticked follow-ups are candidates for v0.8.0.
 
-- [ ] Manual keyboard checks in a real GPU window (Ctrl+C, queued Enter, prompt repaint, editable prefill)
+- [ ] Linux runtime run of `scripts/linux/test.sh` on a machine with enough RAM (or a bigger podman VM) for the v0.7.1 layered layout; v0.7.1 only compile- and clippy-checked the Linux twins
 - [ ] Linux desktop checks: Kitty lock modifiers, Quick Terminal (X11 and Wayland), real `xdg-open` dispatch, fish on real Linux
 - [ ] Live-provider smoke tests for OpenAI, OpenRouter and other non-Anthropic providers; Nushell older than 0.116.1
 - [ ] Measure per-session memory after `yo` usage
@@ -662,14 +662,15 @@ Carried over from v0.7.0 release validation; none of these block v0.7.0 and each
   - If it reappears: record the commit, whether the run followed a build or test, and the full "Memory Profile" step lines (RSS and footprint for all four steps) before rerunning. A repeat at +20 MB with a quiet machine would point to a real retained allocation after closing windows (compare against the 41 MB footprint measured with all windows closed on 2026-11-01); a footprint that varies between 66 MB and 100 MB for the same workload suggests allocator or IOSurface release timing and may warrant sampling the footprint several times after cleanup instead of once.
   - Mentioned under "Validation" in the published v0.7.0 release notes as an unexplained single outlier.
 
-### Structural refactor (4 phases, zero behavior change)
+### Structural refactor (4 phases, zero behavior change; shipped in v0.7.1)
 
-Plans are written and committed; run in order, each phase after the previous one lands.
+All four phases are on `main` and ship in v0.7.1. Unticked items are follow-ups found along the way.
 
 - [x] **Phase 1 — Split `src/main.rs` into `src/app/*`, `src/platform/*`, `src/cli.rs`, `src/paste.rs`** — [plan](./docs/plans/2026-11-01-split-main-rs.md)
-  - Done on branch `refactor/split-main`: `main.rs` went from 4666 to 98 lines; `State` fields grouped into `PointerState`, `ImeState`, `WindowRequests`, `InspectorState`. Evidence: `cargo test` 310 passed (304 before plus 6 new `cli` tests), token census unchanged apart from import `#[cfg]` lines and two `waker.clone()` sites, and `+bench-ram` / `+bench-perf` / `+bench-features` passing on both `main` and the branch.
+  - Landed on `main`: `main.rs` went from 4666 to 98 lines; `State` fields grouped into `PointerState`, `ImeState`, `WindowRequests`, `InspectorState`. Evidence: `cargo test` 310 passed (304 before plus 6 new `cli` tests), token census unchanged apart from import `#[cfg]` lines and two `waker.clone()` sites, and `+bench-ram` / `+bench-perf` / `+bench-features` passing on both `main` and the branch.
   - Follow-ups found on the way (not fixed, out of scope): the doc comment above `shell_quote` in `src/paste.rs` belongs to `paste_payload`; `litty +bench-stress 200` exits 1 although every SLA line passes (also on `main`); `ai::integration_tests::tool_loop_reads_grid_and_preserves_actual_execution` failed with `curl exit 7` in three full runs during the refactor and passed on rerun; `use` lines in `src/app/*.rs` are one name per line; `src/app/latency_benchmarks.rs` is a grab-bag; `handle_window_event` is 93 lines (plan target < 80, `Occluded` could become `on_occluded`).
-- [ ] **Phase 2 — Split `src/grid/mod.rs` into submodules and group fields into `AiTrack`, `TerminalModes`, `ClusterTable`, `Ring`** — [plan](./docs/plans/2026-11-01-split-grid.md)
+- [x] **Phase 2 — Split `src/grid/mod.rs` into submodules and group fields into `AiTrack`, `TerminalModes`, `ClusterTable`, `Ring`** — [plan](./docs/plans/2026-11-01-split-grid.md)
+  - Landed on `main` except the `Ring` sub-struct (Task 15), which was dropped after it cost 1.7-4.1 % throughput against a 1.5 % limit; see the Phase 2 entry under "Features & Hardening (v0.7.0)" for the numbers and follow-ups.
 - [x] **Phase 3 — Split `src/renderer.rs` and `src/atlas.rs` into module directories** — [plan](./docs/plans/2026-11-01-split-renderer-atlas.md)
   - `renderer.rs` 2270 -> `renderer/` (`gpu`, `frame`, `pane_row`, `ui/*` widgets over a borrowed `Cells`); `render_panes` 505 -> 81 lines; `atlas.rs` 2904 -> `atlas/` (`raster`, `sprites`, `shaper`, `fonts`, `coretext` / `linux`, CoreText FFI declared once). `cargo test` 332 passed (328 before, 4 new geometry / scrollbar / dirty-row tests). GPU pixel test image byte-identical to `main`; `+bench-scroll-fps` (3 interleaved runs each) and `+bench-ram` within noise of `main`.
   - Not measured: the CoreText `benchmark_before_vs_after` section [8] and the manual visual checklist from the plan.
@@ -677,6 +678,7 @@ Plans are written and committed; run in order, each phase after the previous one
 - [ ] Share the tab span math (`c0`, `c1`, close / badge reserve) between `Renderer::hit_test_tab_bar` and `ui::tab_bar::build`.
 - [ ] Phase 4: one CoreFoundation / CoreGraphics FFI module shared by `atlas/coretext.rs`, `macos.rs` (`NSRect` / `NSPoint` are layout-identical to `CGRect` / `CGPoint`) and the CoreText benchmark's own extern block in `app/latency_benchmarks.rs`.
 - [x] **Phase 4 — Layered layout `src/terminal/`, `src/render/`, `src/platform/{macos,linux}/` with an enforced dependency-rule test** — [plan](./docs/plans/2026-11-01-layered-layout.md)
+  - Landed on `main` (v0.7.1). `cargo test` 332 passed, clippy clean on macOS and `x86_64-unknown-linux-gnu`. Manual macOS smoke test passed (2026-11-02). Not run: Linux runtime part of `scripts/linux/test.sh` (no Linux machine; the podman VM's 1 GiB RAM gets the rustc test build SIGKILLed), so the Linux twins are compile- and clippy-checked only.
 - [ ] Remove tolerated `render → split`: move `PaneRect` into `render`.
 - [ ] Remove tolerated `render → platform`: let `Renderer::new` expose a post-surface hook for Metal drawable setup.
 - [ ] Remove tolerated `platform → config`: pass a platform-owned `WindowLook` to `apply_window_config`.
