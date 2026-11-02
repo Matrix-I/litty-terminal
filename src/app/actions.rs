@@ -18,7 +18,7 @@ use super::window::refresh_tab_titles;
 use super::window::zoom;
 
 use crate::{config, keymap, update};
-use crate::platform::macos;
+use crate::platform;
 use crate::Waker;
 
 use crate::paste::paste_payload;
@@ -46,7 +46,7 @@ pub(super) fn run_action(
         A::NewTab if cfg!(target_os = "macos") && s.config.macos_native_tabs => s.requests.native_tab = true,
         A::NewTab => duplicate_active_tab(s, waker),
         A::CheckUpdate => {
-            macos::show_progress_dialog("Checking for Updates…", "Checking for new releases of Litty…");
+            platform::show_progress_dialog("Checking for Updates…", "Checking for new releases of Litty…");
             update::start_interactive_check(waker.proxy.clone(), s.config.auto_update_channel);
         }
         _ if s.tabs.is_empty() => {}
@@ -116,9 +116,9 @@ pub(super) fn run_tab_action(
         A::ToggleSecureInput => {
             s.secure_input = !s.secure_input;
             if s.focused {
-                macos::set_secure_input(s.secure_input);
+                platform::set_secure_input(s.secure_input);
             }
-            macos::set_secure_input_menu_state(s.secure_input);
+            platform::set_secure_input_menu_state(s.secure_input);
             // Force the window title (and its 🔒) to be rewritten.
             s.tab_titles.clear();
             refresh_tab_titles(s);
@@ -160,7 +160,7 @@ pub(super) fn run_tab_action(
                         let msg = format!(
                             "Pasting {line_count} lines into a shell without bracketed paste may execute commands immediately.\n\nPreview:\n{preview}\n\nDo you want to paste anyway?"
                         );
-                        if !macos::confirm("Confirm Multi-Line Paste", &msg, "Paste") {
+                        if !platform::confirm("Confirm Multi-Line Paste", &msg, "Paste") {
                             return true;
                         }
                     }
@@ -169,9 +169,9 @@ pub(super) fn run_tab_action(
                 }
         }
         // A single in-window tab: move between native macOS tabs, if any.
-        A::PrevTab if tabs < 2 => return macos::select_native_tab(&s.window, -1, None),
-        A::NextTab if tabs < 2 => return macos::select_native_tab(&s.window, 1, None),
-        A::SelectTab(n) if tabs < 2 => return macos::select_native_tab(&s.window, 0, Some(n)),
+        A::PrevTab if tabs < 2 => return platform::select_native_tab(&s.window, -1, None),
+        A::NextTab if tabs < 2 => return platform::select_native_tab(&s.window, 1, None),
+        A::SelectTab(n) if tabs < 2 => return platform::select_native_tab(&s.window, 0, Some(n)),
         A::PrevTab => select_tab(s, (s.active + tabs - 1) % tabs),
         A::NextTab => select_tab(s, (s.active + 1) % tabs),
         A::SelectTab(n) => select_tab(s, if n == 8 { tabs - 1 } else { n }),

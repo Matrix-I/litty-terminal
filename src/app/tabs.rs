@@ -7,8 +7,7 @@ use super::window::spawn_pane;
 use super::window::sync_size;
 use super::window::tab_title;
 
-#[cfg(target_os = "macos")]
-use crate::platform::macos;
+use crate::platform;
 #[cfg(target_os = "linux")]
 use crate::platform::process::system_bin;
 use crate::{config, split};
@@ -52,8 +51,7 @@ pub(super) fn open_fresh_tab(
             s.cursor_blink_epoch = std::time::Instant::now();
             s.window.set_visible(true);
             s.window.focus_window();
-            #[cfg(target_os = "macos")]
-            macos::activate_app();
+            platform::activate_app();
             sync_size(s);
             s.renderer.invalidate();
             s.window.request_redraw();
@@ -116,7 +114,7 @@ pub(super) fn confirm_close<'a>(cfg: &config::Config, mut panes: impl Iterator<I
         _ => (format!("Close {what}?"), "Close"),
     };
     #[cfg(target_os = "macos")]
-    return macos::confirm(&title, text, button);
+    return platform::confirm(&title, text, button);
     // Linux: zenity when installed; without a dialog tool, close as asked.
     #[cfg(not(target_os = "macos"))]
     std::process::Command::new(system_bin("zenity"))
@@ -135,8 +133,7 @@ pub(super) fn close_last_window(s: &mut State) {
 pub(super) fn hide_or_exit_last_window(s: &mut State, event_loop: &ActiveEventLoop) {
     if cfg!(target_os = "macos") {
         if s.secure_input && s.focused {
-            #[cfg(target_os = "macos")]
-            macos::set_secure_input(false);
+            platform::set_secure_input(false);
         }
         s.history_search.close();
         close_search(s);
@@ -146,8 +143,7 @@ pub(super) fn hide_or_exit_last_window(s: &mut State, event_loop: &ActiveEventLo
         s.active = 0;
         s.window.set_visible(false);
         s.renderer.shrink_drawables();
-        #[cfg(target_os = "macos")]
-        macos::release_free_memory();
+        platform::release_free_memory();
     } else {
         event_loop.exit();
     }
@@ -183,8 +179,7 @@ pub(super) fn close_active_tab(s: &mut State) {
     refresh_tab_titles(s);
     s.renderer.invalidate();
     s.window.request_redraw();
-    #[cfg(target_os = "macos")]
-    macos::release_free_memory();
+    platform::release_free_memory();
 }
 
 pub(super) fn close_tab_at(s: &mut State, idx: usize) {
@@ -212,8 +207,7 @@ pub(super) fn close_tab_at(s: &mut State, idx: usize) {
     refresh_tab_titles(s);
     s.renderer.invalidate();
     s.window.request_redraw();
-    #[cfg(target_os = "macos")]
-    macos::release_free_memory();
+    platform::release_free_memory();
 }
 
 pub(super) fn split_active_pane(
@@ -329,8 +323,7 @@ pub(super) fn close_active_pane_or_tab(s: &mut State) {
         refresh_tab_titles(s);
         s.renderer.invalidate();
         s.window.request_redraw();
-        #[cfg(target_os = "macos")]
-        macos::release_free_memory();
+        platform::release_free_memory();
     } else {
         close_active_tab(s);
     }

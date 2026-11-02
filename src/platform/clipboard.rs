@@ -1,8 +1,7 @@
 //! System clipboard through `pbcopy` / `pbpaste` or `wl-copy` / `xclip` / `xsel`,
 //! bounded in concurrency, time, and size.
 
-#[cfg(target_os = "macos")]
-use crate::platform::macos;
+use crate::platform;
 
 /// A clipboard helper command. pbcopy / pbpaste convert text with the locale's
 /// encoding, and an app started from Finder has no `LANG`: without a UTF-8
@@ -19,11 +18,8 @@ static IN_FLIGHT_COPIES: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 const MAX_CONCURRENT_COPIES: usize = 2;
 
 pub(crate) fn copy_to_clipboard(text: &str) {
-    #[cfg(target_os = "macos")]
-    {
-        if macos::clipboard_write_string(text) {
-            return;
-        }
+    if platform::clipboard_write_string(text) {
+        return;
     }
     if IN_FLIGHT_COPIES.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= MAX_CONCURRENT_COPIES {
         IN_FLIGHT_COPIES.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
@@ -78,11 +74,8 @@ static IN_FLIGHT_PASTES: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 const MAX_CONCURRENT_PASTES: usize = 2;
 
 pub(crate) fn paste_from_clipboard() -> Option<String> {
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(text) = macos::clipboard_string() {
-            return Some(text);
-        }
+    if let Some(text) = platform::clipboard_string() {
+        return Some(text);
     }
 
     #[cfg(target_os = "macos")]
@@ -217,7 +210,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn direct_macos_clipboard_read_write() {
         let msg = "litty_test_clipboard_12345";
-        assert!(crate::platform::macos::clipboard_write_string(msg));
-        assert_eq!(crate::platform::macos::clipboard_string().as_deref(), Some(msg));
+        assert!(crate::platform::clipboard_write_string(msg));
+        assert_eq!(crate::platform::clipboard_string().as_deref(), Some(msg));
     }
 }

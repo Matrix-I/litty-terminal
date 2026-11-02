@@ -85,3 +85,7 @@ pub fn set_global_hotkey(trigger: Option<&crate::keymap::Trigger>) {
         }
     }
 }
+
+/// The control socket is Linux-only: on macOS the Carbon hotkey and the Dock
+/// cover the Quick Terminal, and `litty +toggle-quick-terminal` exits early.
+pub fn listen_for_toggle(_proxy: winit::event_loop::EventLoopProxy<crate::AppEvent>) {}

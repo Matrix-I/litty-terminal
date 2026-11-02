@@ -4,7 +4,7 @@ use super::state::State;
 use super::window::refresh_tab_titles;
 
 use crate::{ai};
-use crate::platform::macos;
+use crate::platform;
 use crate::Pane;
 
 use winit::window::CursorIcon;
@@ -81,7 +81,7 @@ pub(super) fn handle_terminal_requests(s: &mut State) {
         s.window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
     }
     if ring {
-        macos::beep();
+        platform::beep();
     }
     if audio
         && let Some(path) = &s.config.bell_audio_path {

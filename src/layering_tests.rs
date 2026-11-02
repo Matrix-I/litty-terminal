@@ -13,7 +13,11 @@ use std::path::Path;
 const TEST_INFRA: &[&str] = &["test_alloc"];
 
 /// `(layer, used crate module, why it is still allowed)`.
-const TOLERATED: &[(&str, &str, &str)] = &[];
+const TOLERATED: &[(&str, &str, &str)] = &[
+    ("platform", "config", "apply_window_config reads Config / ColorSpace; follow-up: a platform-owned WindowLook"),
+    ("platform", "keymap", "hotkeys take keymap::Trigger, the menu dispatches keymap::Action; follow-up: pass key code + mods"),
+    ("platform", "AppEvent", "reopen, menu, hotkey and socket handlers post AppEvent; follow-up: take a Send callback"),
+];
 
 /// First path segment of every `crate::` path in `src`, including each
 /// branch of a `use crate::{a, b::{c, d}}` group.
@@ -101,4 +105,10 @@ fn crate_heads_reads_paths_and_nested_groups() {
 fn terminal_layer_is_self_contained() {
     let bad = violations("terminal", &[]);
     assert!(bad.is_empty(), "terminal must not depend on other layers:\n{}", bad.join("\n"));
+}
+
+#[test]
+fn platform_layer_is_self_contained() {
+    let bad = violations("platform", &[]);
+    assert!(bad.is_empty(), "platform must not depend on other layers:\n{}", bad.join("\n"));
 }
