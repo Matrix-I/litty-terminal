@@ -39,6 +39,11 @@
 
 ## 📊 Performance & Memory Footprint
 
+When the 65,536-entry grapheme table fills, collection retries are bounded to
+avoid scanning scrollback for every new cluster. Existing clusters remain
+available; new clusters may temporarily lose combining marks until a later
+collection reclaims unused entries.
+
 Tested on macOS Sequoia / Sonoma (Apple Silicon M-series, empty idle shell):
 
 | Terminal Emulator | Idle RAM (Activity Monitor) | Idle RAM (RSS) | Idle CPU | Startup Time | Binary Size | GPU Backend |

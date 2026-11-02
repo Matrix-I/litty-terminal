@@ -1871,3 +1871,117 @@ fn explicit_high_image_id_survives_grid_scroll_pruning() {
         "explicit image after scrolling must remain intact"
     );
 }
+
+fn full_live_cluster_table() -> Grid {
+    let mut g = Grid::new(256, MAX_CLUSTERS / 256);
+    for id in 0..MAX_CLUSTERS {
+        let text = format!("q\u{301}{id}");
+        assert_eq!(g.intern_cluster(&text), Some(id as u32));
+        g.cells[id].codepoint = CLUSTER_FLAG | id as u32;
+    }
+    g
+}
+
+#[test]
+fn full_cluster_table_bounds_collection_retries() {
+    let mut g = full_live_cluster_table();
+    assert_eq!(g.intern_cluster("missing"), None);
+    // GC resets this existing counter: a deterministic witness of rescanning.
+    g.clusters.evictions = 1;
+    let allocations = crate::test_alloc::allocations(|| {
+        for _ in 0..1000 {
+            assert_eq!(g.intern_cluster("missing"), None);
+            assert_eq!(g.intern_cluster("q\u{301}0"), Some(0));
+        }
+    });
+    assert_eq!(g.clusters.evictions, 1, "misses must not rescan live cells");
+    assert_eq!(allocations, 0);
+}
+
+#[test]
+fn full_cluster_table_recovers_after_reference_changes() {
+    for change in ["overwrite", "ascii_batch", "insert", "delete", "delete_line", "history", "erase", "reset", "resize", "alternate"] {
+        let mut g = full_live_cluster_table();
+        if change == "alternate" {
+            g.set_alt(true, true);
+            g.alt.copy_from_slice(&g.cells[..MAX_CLUSTERS]);
+            g.cells.fill(Cell::default());
+        }
+        if change == "history" { g.scroll_up_in(0, g.rows - 1, 1, true); }
+        assert_eq!(g.intern_cluster("missing"), None);
+        match change {
+            "overwrite" => feed(&mut g, "x"),
+            "ascii_batch" => {
+                feed(&mut g, "\x1b[H");
+                let mut parser = vte::Parser::new();
+                assert_eq!(g.feed_bytes(&mut parser, b"ABCD"), 4);
+            }
+            "insert" => feed(&mut g, "\x1b[@"),
+            "delete" => feed(&mut g, "\x1b[P"),
+            "delete_line" => feed(&mut g, "\x1b[M"),
+            "history" => feed(&mut g, "\x1b[3J"),
+            "erase" => feed(&mut g, "\x1b[2K"),
+            "reset" => g.full_reset(),
+            "resize" => { g.scrollback = 0; g.resize(256, 1); }
+            "alternate" => g.set_alt(false, true),
+            _ => unreachable!(),
+        }
+        let mut recovered = None;
+        for _ in 0..=2 * MAX_CLUSTERS {
+            recovered = g.intern_cluster("recovered");
+            if recovered.is_some() { break; }
+        }
+        let id = recovered.unwrap_or_else(|| panic!("capacity must recover after {change}"));
+        assert_eq!(g.cluster(CLUSTER_FLAG | id), Some("recovered"));
+        if change == "overwrite" || change == "erase" {
+            assert_eq!(g.cluster(g.cells[256].codepoint), Some("q\u{301}256"));
+        }
+    }
+}
+
+#[test]
+#[ignore = "manual performance measurement"]
+fn benchmark_full_cluster_table() {
+    let mut g = full_live_cluster_table();
+    let start = std::time::Instant::now();
+    for _ in 0..1000 { assert_eq!(std::hint::black_box(g.intern_cluster("missing")), None); }
+    eprintln!("Full table, 1000 misses: {:?}", start.elapsed());
+}
+
+#[test]
+fn full_cluster_table_bounds_retries_after_small_reclamation() {
+    let mut g = full_live_cluster_table();
+    g.cells[0] = Cell::default();
+    assert!(g.intern_cluster("replacement").is_some());
+    g.clusters.evictions = 1;
+    for _ in 0..1000 { assert_eq!(g.intern_cluster("another"), None); }
+    assert_eq!(g.clusters.evictions, 1, "small reclamations must also amortize scans");
+    assert_eq!(g.cluster(g.cells[1].codepoint), Some("q\u{301}1"));
+}
+
+#[test]
+#[ignore = "manual performance measurement"]
+fn benchmark_full_cluster_parser() {
+    fn cluster(i: usize) -> String {
+        let base = char::from_u32(0x4e00 + (i % 20000) as u32).unwrap();
+        let mark = char::from_u32(0x300 + (i / 20000) as u32).unwrap();
+        format!("{base}{mark}")
+    }
+    let mut g = Grid::new(80, 24);
+    g.scrollback = 5000;
+    let mut parser = vte::Parser::new();
+    for i in 0..MAX_CLUSTERS {
+        for b in cluster(i).bytes() { g.feed_byte(&mut parser, b); }
+    }
+    assert_eq!(g.cluster_count(), MAX_CLUSTERS);
+    g.gc_clusters();
+    assert_eq!(g.cluster_count(), MAX_CLUSTERS, "every ID is live");
+    let input: String = (MAX_CLUSTERS..MAX_CLUSTERS + 1000).map(cluster).collect();
+    let start = std::time::Instant::now();
+    for b in input.bytes() { g.feed_byte(&mut parser, b); }
+    eprintln!("Full table parser, 1000 clusters: {:?}", start.elapsed());
+    let mut fresh = Grid::new(80, 24);
+    let start = std::time::Instant::now();
+    for b in input.bytes() { fresh.feed_byte(&mut parser, b); }
+    eprintln!("Fresh table parser, 1000 clusters: {:?}", start.elapsed());
+}
