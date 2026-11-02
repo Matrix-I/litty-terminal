@@ -28,6 +28,11 @@ unsafe extern "C" {
     pub(super) fn objc_getClass(name: *const std::ffi::c_char) -> Id;
     pub(super) fn sel_registerName(name: *const std::ffi::c_char) -> Id;
     pub(super) fn objc_msgSend();
+    /// Required on x86_64 for methods returning a struct larger than 16 bytes
+    /// (e.g. `NSRect`): the caller passes the return buffer in `%rdi`. arm64
+    /// has no such entry point; it returns small structs in registers.
+    #[cfg(target_arch = "x86_64")]
+    pub(super) fn objc_msgSend_stret();
     pub(super) fn class_addMethod(cls: Id, name: Id, imp: *const (), types: *const std::ffi::c_char) -> bool;
     pub(super) fn class_getInstanceMethod(cls: Id, name: Id) -> Id;
     pub(super) fn method_setImplementation(m: Id, imp: *const ()) -> *const ();
@@ -47,9 +52,39 @@ pub(super) fn class(name: &CStr) -> Option<Id> {
     (!cls.is_null()).then_some(cls)
 }
 
+/// Whether a method returning `T` must go through `objc_msgSend_stret` (Apple
+/// x86_64 System V ABI: aggregates over 16 bytes are returned in memory).
+#[cfg(any(target_arch = "x86_64", test))]
+pub(super) const fn returns_in_memory<T>() -> bool {
+    cfg!(target_arch = "x86_64") && std::mem::size_of::<T>() > 16
+}
+
 /// Send an Objective-C message with an explicit C signature:
 /// `msg_send!(receiver, c"selector:", arg: Type, ... => ReturnType)`.
+/// Struct returns that the ABI passes in memory are routed to
+/// `objc_msgSend_stret` on x86_64 (CWE-686).
 /// Must be used inside `unsafe`: the signature has to match the method.
+#[cfg(target_arch = "x86_64")]
+macro_rules! msg_send {
+    ($recv:expr_2021, $sel:expr_2021 $(, $arg:expr_2021 => $ty:ty)* ; -> $ret:ty) => {{
+        if returns_in_memory::<$ret>() {
+            let f: unsafe extern "C" fn(*mut $ret, Id, Id $(, $ty)*) =
+                std::mem::transmute(objc_msgSend_stret as *const ());
+            let mut out = std::mem::MaybeUninit::<$ret>::uninit();
+            f(out.as_mut_ptr(), $recv, sel($sel) $(, $arg)*);
+            out.assume_init()
+        } else {
+            let f: unsafe extern "C" fn(Id, Id $(, $ty)*) -> $ret =
+                std::mem::transmute(objc_msgSend as *const ());
+            f($recv, sel($sel) $(, $arg)*)
+        }
+    }};
+    ($recv:expr_2021, $sel:expr_2021 $(, $arg:expr_2021 => $ty:ty)*) => {
+        msg_send!($recv, $sel $(, $arg => $ty)* ; -> ())
+    };
+}
+
+#[cfg(not(target_arch = "x86_64"))]
 macro_rules! msg_send {
     ($recv:expr_2021, $sel:expr_2021 $(, $arg:expr_2021 => $ty:ty)* ; -> $ret:ty) => {{
         let f: unsafe extern "C" fn(Id, Id $(, $ty)*) -> $ret =
@@ -109,4 +144,31 @@ pub(super) fn ns_window_of(window: &Window) -> Option<(Id, Id)> {
     // SAFETY: `ns_view` is the live NSView backing this winit window.
     let ns_window = unsafe { send_id(ns_view, c"window")? };
     Some((ns_view, ns_window))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_structs_over_16_bytes_use_stret_on_x86_64() {
+        assert_eq!(std::mem::size_of::<NSRect>(), 32);
+        assert_eq!(returns_in_memory::<NSRect>(), cfg!(target_arch = "x86_64"));
+        assert!(!returns_in_memory::<NSPoint>());
+        assert!(!returns_in_memory::<Id>());
+        assert!(!returns_in_memory::<bool>());
+    }
+
+    #[test]
+    fn struct_return_roundtrips_through_a_real_objc_call() {
+        // NSValue links via Foundation, which winit/AppKit already load.
+        let rect = NSRect { x: 1.0, y: 2.0, w: 300.0, h: 400.0 };
+        // SAFETY: valueWithRect: / rectValue have exactly these signatures.
+        let got = unsafe {
+            let value = msg_send!(class(c"NSValue").unwrap(), c"valueWithRect:", rect => NSRect; -> Id);
+            assert!(!value.is_null());
+            msg_send!(value, c"rectValue"; -> NSRect)
+        };
+        assert_eq!((got.x, got.y, got.w, got.h), (1.0, 2.0, 300.0, 400.0));
+    }
 }
