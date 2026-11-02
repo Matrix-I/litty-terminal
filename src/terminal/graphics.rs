@@ -1095,6 +1095,11 @@ pub fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     }
     let mut buf = vec![0; buf_size];
     let info = reader.next_frame(&mut buf).map_err(|_| "EINVAL:bad PNG")?;
+    // A sub-frame smaller than the canvas would leave the pixel buffer short
+    // and make the uploader / animation compositor read out of bounds.
+    if (info.width, info.height) != (w, h) {
+        return Err("EINVAL:bad PNG".into());
+    }
     let buf = &buf[..info.buffer_size()];
     let rgba = match info.color_type {
         png::ColorType::Rgba => buf.to_vec(),
@@ -1103,6 +1108,9 @@ pub fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
         png::ColorType::Grayscale => buf.iter().flat_map(|&g| [g, g, g, 255]).collect(),
         png::ColorType::Indexed => return Err("EINVAL:bad PNG".into()),
     };
+    if rgba.len() != (w as usize) * (h as usize) * 4 {
+        return Err("EINVAL:bad PNG".into());
+    }
     Ok((w, h, rgba))
 }
 
@@ -1783,6 +1791,43 @@ mod tests {
         let res = decode_png(&png_data);
         assert!(res.is_err());
         assert_eq!(res.unwrap_err(), "EINVAL:image too large");
+    }
+
+    /// 4x4 canvas whose default image (first frame) is only 2x2: the decoder
+    /// reports the frame size, not the canvas size (CWE-125, CWE-754).
+    fn sub_frame_apng() -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, 4, 4);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.set_animated(1, 0).unwrap();
+            let mut writer = encoder.write_header().unwrap();
+            writer.set_frame_dimension(2, 2).unwrap();
+            writer.write_image_data(&[255; 2 * 2 * 4]).unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn decode_png_never_returns_a_buffer_smaller_than_the_canvas() {
+        match decode_png(&sub_frame_apng()) {
+            Ok((w, h, rgba)) => assert_eq!(rgba.len(), (w * h * 4) as usize),
+            Err(e) => assert_eq!(e, "EINVAL:bad PNG"),
+        }
+    }
+
+    #[test]
+    fn decode_png_full_frame_roundtrips() {
+        let mut out = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, 2, 1);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[1, 2, 3, 4, 5, 6]).unwrap();
+        }
+        assert_eq!(decode_png(&out).unwrap(), (2, 1, vec![1, 2, 3, 255, 4, 5, 6, 255]));
     }
 
     #[test]
