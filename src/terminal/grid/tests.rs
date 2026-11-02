@@ -572,7 +572,7 @@ fn kitty_unicode_placeholders_show_virtual_placements() {
     feed(&mut g, &format!("\x1b_Ga=t,f=32,s=20,v=40,i=7,q=2;{payload}\x1b\\\x1b_Ga=p,U=1,i=7,c=2,r=2,q=2\x1b\\"));
     assert!(g.graphics.placements.is_empty(), "nothing placed at the cursor");
     assert_eq!((g.cur.row, g.cur.col), (0, 0), "a virtual placement does not move the cursor");
-    let d = |i: usize| char::from_u32(crate::graphics::PLACEHOLDER_DIACRITICS[i]).unwrap();
+    let d = |i: usize| char::from_u32(crate::terminal::graphics::PLACEHOLDER_DIACRITICS[i]).unwrap();
     // Row 0 with explicit row + column, the next cell inherits; row 1 by
     // 256-color index 7 with only a row diacritic.
     feed(&mut g, &format!("\x1b[38;2;0;0;7m\u{10EEEE}{}{}\u{10EEEE}\r\n", d(0), d(0)));
@@ -1306,7 +1306,7 @@ fn clear_screen_and_history_trims_extras() {
 fn clear_screen_and_history_prunes_images() {
     let mut g = Grid::new(20, 5);
     let id = g.graphics.insert(0, 10, 10, vec![0; 400]);
-    g.graphics.place(crate::graphics::Placement {
+    g.graphics.place(crate::terminal::graphics::Placement {
         image_id: id,
         placement_id: 1,
         line: 0,
@@ -1330,7 +1330,7 @@ fn clear_screen_and_history_prunes_images() {
 fn clear_screen_and_history_prunes_virtual_placements() {
     let mut g = Grid::new(20, 5);
     let id = g.graphics.insert(0, 10, 10, vec![0; 400]);
-    g.graphics.virtuals.push(crate::graphics::VirtualPlacement {
+    g.graphics.virtuals.push(crate::terminal::graphics::VirtualPlacement {
         image_id: id,
         placement_id: 1,
         cols: 2,
@@ -1350,7 +1350,7 @@ fn clear_screen_and_history_prunes_virtual_placements() {
 fn alt_screen_exit_prunes_virtual_placements_and_frees_auto_ids() {
     let mut g = Grid::new(20, 5);
     let main_id = g.graphics.insert(0, 10, 10, vec![0; 400]);
-    g.graphics.virtuals.push(crate::graphics::VirtualPlacement {
+    g.graphics.virtuals.push(crate::terminal::graphics::VirtualPlacement {
         image_id: main_id,
         placement_id: 1,
         cols: 2,
@@ -1442,7 +1442,7 @@ fn scrollback_eviction_prunes_dead_virtual_placements() {
     let id = g.graphics.insert(0, 10, 10, vec![0; 400]);
     assert!(id >= (1 << 24));
     g.place_virtual(id, 2, 1, 0, 0);
-    let d = |i: usize| char::from_u32(crate::graphics::PLACEHOLDER_DIACRITICS[i]).unwrap();
+    let d = |i: usize| char::from_u32(crate::terminal::graphics::PLACEHOLDER_DIACRITICS[i]).unwrap();
     let msb = (id >> 24) as usize;
     let r = ((id >> 16) & 0xFF) as u8;
     let g_col = ((id >> 8) & 0xFF) as u8;
@@ -1472,7 +1472,7 @@ fn clear_history_prunes_scrollback_only_virtual_placements() {
     let mut g = Grid::new(20, 2);
     let id = g.graphics.insert(0, 10, 10, vec![0; 400]);
     g.place_virtual(id, 2, 1, 0, 0);
-    let d = |i: usize| char::from_u32(crate::graphics::PLACEHOLDER_DIACRITICS[i]).unwrap();
+    let d = |i: usize| char::from_u32(crate::terminal::graphics::PLACEHOLDER_DIACRITICS[i]).unwrap();
     let msb = (id >> 24) as usize;
     let r = ((id >> 16) & 0xFF) as u8;
     let g_col = ((id >> 8) & 0xFF) as u8;
@@ -1533,7 +1533,7 @@ fn test_bidi_order_no_false_trigger_on_clusters_and_placeholders() {
     // 3. Image placeholder cell
     let id = g.graphics.insert(0, 10, 10, vec![0; 400]);
     g.place_virtual(id, 2, 1, 0, 0);
-    let d = |i: usize| char::from_u32(crate::graphics::PLACEHOLDER_DIACRITICS[i]).unwrap();
+    let d = |i: usize| char::from_u32(crate::terminal::graphics::PLACEHOLDER_DIACRITICS[i]).unwrap();
     let msb = (id >> 24) as usize;
     let r = ((id >> 16) & 0xFF) as u8;
     let g_col = ((id >> 8) & 0xFF) as u8;

@@ -2,7 +2,7 @@
 
 use super::super::Instance;
 use super::{Cells, DirtyRows};
-use crate::history::HistorySearch;
+use crate::terminal::history::HistorySearch;
 
 /// Position and size of the popup `(x0, y0, width, height, visible_rows)` in a
 /// `cols × total_rows` window.

@@ -8,9 +8,9 @@ use crate::{HoveredPaneLink, Tab};
 use winit::keyboard::{ModifiersState, PhysicalKey};
 use winit::window::{CursorIcon, Window};
 
-use crate::history::HistorySearch;
+use crate::terminal::history::HistorySearch;
 use crate::renderer::Renderer;
-use crate::search::SearchBar;
+use crate::terminal::search::SearchBar;
 use crate::split::PaneRect;
 
 pub(super) struct State {

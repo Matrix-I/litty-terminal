@@ -5,9 +5,9 @@ use super::gpu::{make_instance_buf, make_viewport_buffer};
 use super::pane_row::{build_pane_row, PaneRowCtx};
 use super::ui::{self, DirtyRows};
 use super::{scrollbar_thumb, Instance, RenderPane, Renderer, Uniforms, Viewport};
-use crate::grid::Hyperlink;
-use crate::history::HistorySearch;
-use crate::search::SearchBar;
+use crate::terminal::grid::Hyperlink;
+use crate::terminal::history::HistorySearch;
+use crate::terminal::search::SearchBar;
 use crate::split::PaneRect;
 
 /// Instance-buffer layout of one frame.
@@ -570,7 +570,7 @@ impl Renderer {
             let instances = 0..instance_count as u32;
             if layered {
                 // Kitty z order: below cell backgrounds, below the text, above it.
-                use crate::graphics::Z_BELOW_BG;
+                use crate::terminal::graphics::Z_BELOW_BG;
                 self.images.draw(&mut pass, flip, target.1, i32::MIN..Z_BELOW_BG);
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &self.bind_group, &[]);

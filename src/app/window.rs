@@ -7,7 +7,8 @@ use super::terminal_io::write_pty;
 
 use std::sync::Arc;
 
-use crate::{atlas, config, grid, hotkey, macos, scroll};
+use crate::terminal::grid;
+use crate::{atlas, config, hotkey, macos, scroll};
 use crate::{next_id, AppEvent, Pane, Tab, Waker};
 
 use parking_lot::Mutex;
@@ -16,11 +17,11 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::ModifiersState;
 use winit::window::{CursorIcon, Window};
 
-use crate::grid::Grid;
-use crate::history::HistorySearch;
-use crate::pty::Pty;
+use crate::terminal::grid::Grid;
+use crate::terminal::history::HistorySearch;
+use crate::terminal::pty::Pty;
 use crate::renderer::Renderer;
-use crate::search::SearchBar;
+use crate::terminal::search::SearchBar;
 
 /// Drop the Quick Terminal from the top of its screen: full width, 40% height,
 /// then bring it to the front.

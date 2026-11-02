@@ -4,7 +4,7 @@
 use super::ui::Cells;
 use super::{Instance, Renderer, COLOR_GLYPH, UNFOCUSED};
 use crate::atlas::GlyphStyle;
-use crate::grid::{char_width, Grid, Hyperlink, SearchHit, BG_EXTRA, BG_SET, BG_STRIKE, BG_UNDERLINE_MASK, FG_BOLD, FG_EXTRA, FG_ITALIC, FG_SET, UNDERLINE_SINGLE};
+use crate::terminal::grid::{char_width, Grid, Hyperlink, SearchHit, BG_EXTRA, BG_SET, BG_STRIKE, BG_UNDERLINE_MASK, FG_BOLD, FG_EXTRA, FG_ITALIC, FG_SET, UNDERLINE_SINGLE};
 use crate::split::PaneRect;
 
 /// Inputs shared by every row of one pane in one frame.
@@ -91,7 +91,7 @@ pub(super) fn build_pane_row(
         // Arabic contextual form from the logical neighbours.
         let form = if bidi {
             let c = chars[col];
-            let joined = crate::bidi::arabic_form(col.checked_sub(1).map(|i| chars[i]), c, chars.get(col + 1).copied());
+            let joined = crate::terminal::bidi::arabic_form(col.checked_sub(1).map(|i| chars[i]), c, chars.get(col + 1).copied());
             (joined != c).then_some(joined)
         } else {
             None
@@ -101,9 +101,9 @@ pub(super) fn build_pane_row(
             _ if shaped_key != 0 => cells.atlas.slot(cells.queue, shaped_key),
             (0, Some(right)) => right,
             // Kitty unicode placeholder: the image is drawn over it.
-            (cp, _) if cp & crate::grid::PH_FLAG != 0 => crate::atlas::BLANK_SLOT,
-            (cp, _) if cp & crate::grid::CLUSTER_FLAG != 0 => {
-                let width = if crate::grid::is_wide_cp(cp) { 2 } else { 1 };
+            (cp, _) if cp & crate::terminal::grid::PH_FLAG != 0 => crate::atlas::BLANK_SLOT,
+            (cp, _) if cp & crate::terminal::grid::CLUSTER_FLAG != 0 => {
+                let width = if crate::terminal::grid::is_wide_cp(cp) { 2 } else { 1 };
                 let style = GlyphStyle { bold: cell.fg & FG_BOLD != 0, italic: cell.fg & FG_ITALIC != 0 };
                 let text = g.cluster(cp).unwrap_or("");
                 // A joined Arabic letter keeps its marks.

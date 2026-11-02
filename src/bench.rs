@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use winit::event_loop::EventLoopProxy;
 
 use crate::event::AppEvent;
-use crate::grid::Grid;
-use crate::history;
+use crate::terminal::grid::Grid;
+use crate::terminal::history;
 
 #[derive(Debug, Clone)]
 pub enum BenchCommand {
@@ -390,7 +390,7 @@ pub fn run_latency_benchmark() -> LatencyMetrics {
     let mut spawn_times = Vec::new();
     for _ in 0..3 {
         let t_sp = Instant::now();
-        if let Ok(pty) = crate::pty::Pty::spawn_in(80, 24, 8, 16, None, None) {
+        if let Ok(pty) = crate::terminal::pty::Pty::spawn_in(80, 24, 8, 16, None, None) {
             spawn_times.push(t_sp.elapsed().as_secs_f64() * 1000.0);
             if let Err(error) = pty.write(b"exit\r") {
                 eprintln!("litty: benchmark PTY input failed: {error}");

@@ -10,7 +10,7 @@ thread_local! {
 }
 
 impl Grid {
-    /// Visual order of display row `r` (see [`crate::bidi::visual_order`]),
+    /// Visual order of display row `r` (see [`crate::terminal::bidi::visual_order`]),
     /// with `chars` and `levels` as scratch space. False when the row has no
     /// right-to-left text, or on the alternate screen: full-screen
     /// applications lay out their own bidirectional text.
@@ -34,7 +34,7 @@ impl Grid {
         }
         chars.clear();
         chars.extend(row.iter().map(|c| if c.codepoint == 0 { '\0' } else { self.cell_char(c) }));
-        crate::bidi::visual_order(chars, levels, order)
+        crate::terminal::bidi::visual_order(chars, levels, order)
     }
 
     /// The logical column drawn at visual column `col` of display row `r`.

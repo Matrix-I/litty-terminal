@@ -21,13 +21,14 @@ use super::App;
 use super::ime::handle_ime;
 use super::keyboard::handle_key;
 
-use crate::{config, grid, macos, mouse, scroll};
+use crate::terminal::grid;
+use crate::{config, macos, mouse, scroll};
 
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::window::WindowId;
 
-use crate::grid::Selection;
+use crate::terminal::grid::Selection;
 use crate::paste::{history_insert_payload, paste_payload, shell_quote};
 use crate::platform::clipboard::copy_to_clipboard;
 use crate::platform::process::open_target;

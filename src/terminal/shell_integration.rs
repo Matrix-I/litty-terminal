@@ -16,12 +16,12 @@ use std::sync::OnceLock;
 
 use crate::config::ShellIntegration;
 
-const ZSHENV: &str = include_str!("shell/zshenv");
-const ZSH: &str = include_str!("shell/litty-integration.zsh");
-const BASH: &str = include_str!("shell/litty.bash");
-const FISH: &str = include_str!("shell/litty-integration.fish");
-const NU: &str = include_str!("shell/litty.nu");
-const ELVISH: &str = include_str!("shell/litty.elv");
+const ZSHENV: &str = include_str!("../shell/zshenv");
+const ZSH: &str = include_str!("../shell/litty-integration.zsh");
+const BASH: &str = include_str!("../shell/litty.bash");
+const FISH: &str = include_str!("../shell/litty-integration.fish");
+const NU: &str = include_str!("../shell/litty.nu");
+const ELVISH: &str = include_str!("../shell/litty.elv");
 
 /// How to start a shell with the integration loaded.
 #[derive(Debug, Default, PartialEq, Eq)]

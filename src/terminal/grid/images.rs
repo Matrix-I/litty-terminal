@@ -9,20 +9,20 @@ use super::colors::palette_with;
 /// bytes. No grid reference is retained while decoding or accessing files.
 pub(crate) enum ImageJob {
     Sixel(Vec<u8>, bool),
-    Kitty(crate::graphics::KittyCommand, Vec<u8>),
+    Kitty(crate::terminal::graphics::KittyCommand, Vec<u8>),
 }
 
 pub(crate) enum ImageCompletion {
     Sixel(Option<(u32, u32, Vec<u8>)>),
-    Kitty(crate::graphics::KittyCommand, crate::graphics::DecodedImage),
+    Kitty(crate::terminal::graphics::KittyCommand, crate::terminal::graphics::DecodedImage),
 }
 
 impl ImageJob {
     pub(crate) fn decode(self) -> ImageCompletion {
         match self {
-            Self::Sixel(data, transparent) => ImageCompletion::Sixel(crate::graphics::decode_sixel(&data, transparent)),
+            Self::Sixel(data, transparent) => ImageCompletion::Sixel(crate::terminal::graphics::decode_sixel(&data, transparent)),
             Self::Kitty(cmd, data) => {
-                let decoded = crate::graphics::decode_kitty(&cmd, &data);
+                let decoded = crate::terminal::graphics::decode_kitty(&cmd, &data);
                 ImageCompletion::Kitty(cmd, decoded)
             }
         }
@@ -32,10 +32,10 @@ impl ImageJob {
 impl Grid {
     pub(super) fn apc_dispatch(&mut self) {
         let body = std::mem::take(&mut self.apc_buf);
-        if let Some((cmd, payload)) = crate::graphics::parse_kitty(&body) {
+        if let Some((cmd, payload)) = crate::terminal::graphics::parse_kitty(&body) {
             match self.graphics.prepare_kitty(cmd.clone(), payload) {
-                crate::graphics::KittyPreparation::Complete(outcome, reply) => self.apply_kitty(&cmd, outcome, reply),
-                crate::graphics::KittyPreparation::Decode(cmd, data) => self.queue_image(ImageJob::Kitty(cmd, data)),
+                crate::terminal::graphics::KittyPreparation::Complete(outcome, reply) => self.apply_kitty(&cmd, outcome, reply),
+                crate::terminal::graphics::KittyPreparation::Decode(cmd, data) => self.queue_image(ImageJob::Kitty(cmd, data)),
             }
         }
         // Keep the buffer's capacity only for ordinary-sized chunks.
@@ -65,8 +65,8 @@ impl Grid {
         }
     }
 
-    pub(super) fn apply_kitty(&mut self, cmd: &crate::graphics::KittyCommand, outcome: crate::graphics::KittyOutcome, reply: Option<String>) {
-        if let crate::graphics::KittyOutcome::Place { id } = outcome {
+    pub(super) fn apply_kitty(&mut self, cmd: &crate::terminal::graphics::KittyCommand, outcome: crate::terminal::graphics::KittyOutcome, reply: Option<String>) {
+        if let crate::terminal::graphics::KittyOutcome::Place { id } = outcome {
             if cmd.unicode {
                 self.place_virtual(id, cmd.cols, cmd.rows, cmd.z, cmd.placement_id);
             } else {
@@ -101,7 +101,7 @@ impl Grid {
         let rows = if rows > 0 { rows } else { h.div_ceil(ch) }.clamp(1, 1000) as usize;
         let start_col = self.cur.col;
         let line = self.lines_pushed + self.cur.row;
-        self.graphics.place(crate::graphics::Placement {
+        self.graphics.place(crate::terminal::graphics::Placement {
             image_id: id,
             placement_id,
             line,
@@ -141,7 +141,7 @@ impl Grid {
         let (cw, ch) = self.image_cell_px();
         let cols = if cols > 0 { cols } else { img.width.div_ceil(cw) }.clamp(1, 1000) as usize;
         let rows = if rows > 0 { rows } else { img.height.div_ceil(ch) }.clamp(1, 1000) as usize;
-        self.graphics.place_virtual(crate::graphics::VirtualPlacement {
+        self.graphics.place_virtual(crate::terminal::graphics::VirtualPlacement {
             image_id: id,
             placement_id,
             cols,
@@ -192,8 +192,8 @@ impl Grid {
         self.graphics.next_frame_at(now, top, self.rows, self.alt_active)
     }
 
-    /// Images to draw on the visible screen (see [`crate::graphics::ImageDraw`]).
-    pub fn visible_images(&self, out: &mut Vec<crate::graphics::ImageDraw>) {
+    /// Images to draw on the visible screen (see [`crate::terminal::graphics::ImageDraw`]).
+    pub fn visible_images(&self, out: &mut Vec<crate::terminal::graphics::ImageDraw>) {
         if !self.graphics.placements.is_empty() {
             let top = if self.alt_active { self.lines_pushed } else { self.lines_pushed - self.display_offset };
             self.graphics.visible(top, self.rows + usize::from(self.scroll_fraction > 0.0), self.alt_active, std::time::Instant::now(), out);
@@ -227,7 +227,7 @@ impl Grid {
     /// Image pieces for the placeholder cells of visible row `r`. A cell
     /// without a column diacritic continues the one to its left, and one
     /// without any diacritics also keeps its row.
-    pub(super) fn placeholder_images(&self, r: usize, out: &mut Vec<crate::graphics::ImageDraw>) {
+    pub(super) fn placeholder_images(&self, r: usize, out: &mut Vec<crate::terminal::graphics::ImageDraw>) {
         // Run in progress: (image id, placement id, image row, image column, screen column, length).
         let mut run: Option<(u32, u32, u32, u32, usize, usize)> = None;
         let mut prev: Option<(u32, u32, u32, u32)> = None;
@@ -271,7 +271,7 @@ impl Grid {
         &self,
         r: usize,
         (id, pid, row, col, screen_col, len): (u32, u32, u32, u32, usize, usize),
-        out: &mut Vec<crate::graphics::ImageDraw>,
+        out: &mut Vec<crate::terminal::graphics::ImageDraw>,
     ) {
         let Some(vp) = self.graphics.virtual_for(id, pid) else { return };
         let Some(img) = self.graphics.image(id) else { return };
@@ -291,7 +291,7 @@ impl Grid {
         if x1 <= x0 || y1 <= y0 {
             return;
         }
-        out.push(crate::graphics::ImageDraw {
+        out.push(crate::terminal::graphics::ImageDraw {
             key,
             width: img.width,
             height: img.height,

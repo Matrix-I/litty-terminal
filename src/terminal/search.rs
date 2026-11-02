@@ -8,7 +8,7 @@
 
 use regex::{Regex, RegexBuilder};
 
-use crate::grid::Selection;
+use crate::terminal::grid::Selection;
 
 /// Upper bound on highlighted matches (keeps memory bounded for `.` and friends).
 pub const MAX_MATCHES: usize = 10_000;
@@ -127,7 +127,7 @@ impl SearchText {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::grid::Grid;
+    use crate::terminal::grid::Grid;
 
     fn feed(g: &mut Grid, s: &str) {
         let mut p = vte::Parser::new();

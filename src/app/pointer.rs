@@ -4,7 +4,8 @@ use super::state::State;
 use super::terminal_io::write_pty;
 use super::window::refresh_tab_titles;
 
-use crate::{grid, mouse, renderer};
+use crate::terminal::grid;
+use crate::{mouse, renderer};
 use crate::HoveredPaneLink;
 
 use winit::window::CursorIcon;
@@ -69,7 +70,7 @@ pub(super) fn pane_cell_at_mouse(s: &State) -> Option<(u64, usize, usize)> {
 /// owns the mouse, so the event must not drive selection or scrollback. Holding
 /// Shift bypasses reporting, as in other terminals; Cmd/Super stays free for links.
 pub(super) fn report_mouse(s: &mut State, button: mouse::Button, action: mouse::Action) -> bool {
-    use crate::grid::MouseTracking;
+    use crate::terminal::grid::MouseTracking;
     if s.mods.shift_key() || s.mods.super_key() {
         return false;
     }
@@ -256,7 +257,7 @@ pub(super) fn update_hovered_link(s: &mut State) {
 mod tests {
     #[test]
     fn test_cached_hover_candidate_invalidated_when_row_overwritten() {
-        let mut g = crate::grid::Grid::new(80, 24);
+        let mut g = crate::terminal::grid::Grid::new(80, 24);
         let mut p = vte::Parser::new();
         for &b in b"Open ./Cargo.toml now" {
             g.feed_byte(&mut p, b);

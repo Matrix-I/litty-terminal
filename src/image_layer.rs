@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::graphics::ImageDraw;
+use crate::terminal::graphics::ImageDraw;
 
 /// Frame count without being rendered before an unplaced texture is freed during active rendering.
 const KEEP_FRAMES: u64 = 60;

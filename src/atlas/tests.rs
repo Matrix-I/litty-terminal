@@ -60,8 +60,8 @@ fn ligatures_shape_into_glyph_pieces() {
         .map(|(m, idx)| (Some(m), idx))
         .unwrap_or((None, 0));
     let fonts = FontSet { primary: parse_font(&path, 0, true).unwrap(), fallbacks: Vec::new(), shaper_mmap, shaper_index };
-    let row: Vec<crate::grid::Cell> =
-        "ab -> cd != ef".chars().map(|c| crate::grid::Cell { codepoint: c as u32, ..Default::default() }).collect();
+    let row: Vec<crate::terminal::grid::Cell> =
+        "ab -> cd != ef".chars().map(|c| crate::terminal::grid::Cell { codepoint: c as u32, ..Default::default() }).collect();
     let mut out = Vec::new();
     let mut on = Shaper::new(Vec::new());
     assert!(on.shape_row(&fonts, 28.0, 17, &row, &mut out).0);
@@ -171,7 +171,7 @@ fn test_dynamic_atlas_growth_and_shaper_cap() {
     assert_eq!(atlas.map.get(&dummy_key).copied(), Some(piece_slot));
 
     let mut out = Vec::new();
-    let row = vec![crate::grid::Cell { codepoint: b'a' as u32, ..Default::default() }];
+    let row = vec![crate::terminal::grid::Cell { codepoint: b'a' as u32, ..Default::default() }];
     atlas.shape_row(&row, &mut out);
     assert!(atlas.shaper.pieces.is_empty(), "shaper pieces must reset at 4096 cap");
     assert!(!atlas.map.contains_key(&dummy_key), "GLYPH_PIECE slot keys must be evicted on shaper reset");

@@ -11,7 +11,7 @@ use crate::{next_id, Waker};
 
 use parking_lot::Mutex;
 
-use crate::grid::Grid;
+use crate::terminal::grid::Grid;
 use crate::paste::history_insert_payload;
 
 /// Feed trusted, locally generated UI bytes without ever writing to the PTY under lock.

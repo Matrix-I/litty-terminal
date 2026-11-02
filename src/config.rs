@@ -303,7 +303,7 @@ impl Config {
         // As in Ghostty, the theme is applied first, so every other setting in
         // the file wins over it wherever it appears.
         if let Some(&(n, (_, value))) = entries.iter().rev().find(|(_, (k, _))| *k == "theme") {
-            let name = theme_variant(value, crate::grid::color_scheme_is_dark());
+            let name = theme_variant(value, crate::terminal::grid::color_scheme_is_dark());
             if !value.is_empty() && !cfg.apply_theme(name) {
                 errors.push(format!("line {n}: theme: unknown theme `{value}`"));
             }
@@ -883,7 +883,7 @@ fn parse_multiplier(v: &str) -> Result<f64, String> {
 
 /// Parse `#rrggbb`, `rrggbb`, `#rgb` or standard X11 color names into `0xRRGGBB00`.
 pub fn parse_color(v: &str) -> Result<u32, String> {
-    if let Some(rgb) = crate::x11colors::lookup(v) {
+    if let Some(rgb) = crate::terminal::x11colors::lookup(v) {
         return Ok(rgb << 8);
     }
     let hex = v.strip_prefix('#').unwrap_or(v);

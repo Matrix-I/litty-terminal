@@ -3,7 +3,7 @@
 use super::super::Instance;
 use super::{Cells, DirtyRows};
 use crate::atlas::GlyphStyle;
-use crate::grid::char_width;
+use crate::terminal::grid::char_width;
 
 /// Inspector panel in the bottom-right corner: a frame around `lines`,
 /// the first of which is the title.

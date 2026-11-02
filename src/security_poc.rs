@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use crate::graphics::{self, KittyCommand, Placement, Store, STORE_LIMIT};
+use crate::terminal::graphics::{self, KittyCommand, Placement, Store, STORE_LIMIT};
 use crate::update::{self, AutoUpdateChannel, ReleaseAsset, ReleaseInfo, Version, SUMS_NAME};
 
 fn temp_dir(name: &str) -> PathBuf {
