@@ -49,6 +49,19 @@ pub fn send_toggle() -> std::io::Result<()> {
     UnixStream::connect(socket_path())?.write_all(TOGGLE)
 }
 
+/// Binds the socket and restricts it to the owner. The parent directory is
+/// already `0o700`, so the window before `chmod` is not reachable by others;
+/// this avoids a process-wide `umask` change racing with other threads (CWE-362).
+fn bind_private(path: &std::path::Path) -> std::io::Result<UnixListener> {
+    use std::os::unix::fs::PermissionsExt;
+    let listener = UnixListener::bind(path)?;
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        let _ = std::fs::remove_file(path);
+        return Err(e);
+    }
+    Ok(listener)
+}
+
 /// Remember the event proxy for hotkey presses and serve the control socket
 /// for the rest of the process. Another running instance keeps the socket; a
 /// stale file left by a crash is replaced.
@@ -65,11 +78,7 @@ pub fn listen(proxy: EventLoopProxy<AppEvent>) {
         return;
     }
     let _ = std::fs::remove_file(&path);
-    // Set restrictive umask 0o177 so socket is created with 0o600 atomically (zero race window)
-    let old_umask = unsafe { libc::umask(0o177) };
-    let bound = UnixListener::bind(&path);
-    unsafe { libc::umask(old_umask) };
-    let Ok(listener) = bound else { return };
+    let Ok(listener) = bind_private(&path) else { return };
     let spawned = std::thread::Builder::new().name("litty-control".into()).spawn(move || {
         for stream in listener.incoming().flatten() {
             let mut buf = [0u8; 64];
@@ -83,5 +92,33 @@ pub fn listen(proxy: EventLoopProxy<AppEvent>) {
     });
     if spawned.is_err() {
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn bound_socket_is_owner_only() {
+        let dir = std::env::temp_dir().join(format!("litty-sock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = dir.join("litty.sock");
+        let listener = bind_private(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn listen_does_not_touch_process_umask() {
+        // umask is process-wide: changing it races with concurrent file creation.
+        let source = include_str!("control_socket.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap();
+        assert!(!code.contains("libc::umask"));
     }
 }
