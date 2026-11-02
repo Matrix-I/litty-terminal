@@ -1012,7 +1012,7 @@ mod imp {
                     return;
                 }
 
-            const ICON_BYTES: &[u8] = include_bytes!("../resources/icon.png");
+            const ICON_BYTES: &[u8] = include_bytes!("../../../resources/icon.png");
             let Some(data_cls) = class(c"NSData") else { return };
             let ns_data = msg_send!(
                 data_cls, c"dataWithBytes:length:", ICON_BYTES.as_ptr() => *const u8, ICON_BYTES.len() => usize; -> Id

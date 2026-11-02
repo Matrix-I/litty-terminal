@@ -8,7 +8,8 @@ use super::terminal_io::write_pty;
 use std::sync::Arc;
 
 use crate::terminal::grid;
-use crate::{atlas, config, hotkey, macos, scroll};
+use crate::{atlas, config, scroll};
+use crate::platform::{control_socket, macos};
 use crate::{next_id, AppEvent, Pane, Tab, Waker};
 
 use parking_lot::Mutex;
@@ -380,7 +381,7 @@ pub(super) fn reload_config(s: &mut State) {
     atlas::set_font_features(&font_features(&new));
     if new.quick_terminal_hotkey != old.quick_terminal_hotkey {
         macos::set_global_hotkey(new.quick_terminal_hotkey.as_ref());
-        hotkey::set_global_hotkey(new.quick_terminal_hotkey.as_ref());
+        control_socket::set_global_hotkey(new.quick_terminal_hotkey.as_ref());
     }
     let tweaks_changed = (new.adjust_cell_width, new.adjust_cell_height, new.font_thicken, &new.font_features)
         != (old.adjust_cell_width, old.adjust_cell_height, old.font_thicken, &old.font_features);

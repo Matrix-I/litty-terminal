@@ -22,7 +22,8 @@ use super::ime::handle_ime;
 use super::keyboard::handle_key;
 
 use crate::terminal::grid;
-use crate::{config, macos, mouse, scroll};
+use crate::{config, mouse, scroll};
+use crate::platform::macos;
 
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};

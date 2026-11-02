@@ -11,7 +11,8 @@ use super::terminal_io::write_pty;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use crate::{ai, keymap, macos};
+use crate::{ai, keymap};
+use crate::platform::macos;
 use crate::{next_id, Waker};
 
 use winit::event::{ElementState, KeyEvent};

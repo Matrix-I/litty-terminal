@@ -3,7 +3,8 @@
 use super::state::State;
 use super::window::refresh_tab_titles;
 
-use crate::{ai, macos};
+use crate::{ai};
+use crate::platform::macos;
 use crate::Pane;
 
 use winit::window::CursorIcon;

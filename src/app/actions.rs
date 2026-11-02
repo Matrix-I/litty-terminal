@@ -17,7 +17,8 @@ use super::terminal_io::write_pane_input;
 use super::window::refresh_tab_titles;
 use super::window::zoom;
 
-use crate::{config, keymap, macos, update};
+use crate::{config, keymap, update};
+use crate::platform::macos;
 use crate::Waker;
 
 use crate::paste::paste_payload;
