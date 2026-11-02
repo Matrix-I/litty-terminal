@@ -15,6 +15,9 @@ pub(super) struct ClusterTable {
     pub(super) buf: String,
     /// Collect at most once per history-sized batch of cluster-bearing evictions.
     pub(super) evictions: usize,
+    /// Full-table misses to skip before another demand collection. Charging
+    /// for the scanned cells also bounds retries when GC frees only one ID.
+    pub(super) retry_misses: usize,
     pub(super) marks: Vec<bool>,
     pub(super) remap: Vec<u32>,
 }
@@ -55,6 +58,10 @@ impl Grid {
             return Some(id);
         }
         if self.clusters.texts.len() >= MAX_CLUSTERS {
+            if self.clusters.retry_misses > 0 {
+                self.clusters.retry_misses -= 1;
+                return None;
+            }
             self.gc_clusters();
             if let Some(&id) = self.clusters.ids.get(text) {
                 return Some(id);
@@ -64,6 +71,9 @@ impl Grid {
             }
         }
         let id = self.clusters.texts.len() as u32;
+        if id == 0 {
+            self.clusters.retry_misses = 0;
+        }
         let boxed: Box<str> = text.into();
         self.clusters.texts.push(boxed.clone());
         self.clusters.ids.insert(boxed, id);
@@ -97,6 +107,11 @@ impl Grid {
             return;
         }
         self.clusters.evictions = 0;
+        // Retry eventually even after overwrites, erases, resize or leaving
+        // the alternate screen, without invalidating on each cell mutation.
+        // Existing history/eviction collections can recover capacity sooner.
+        self.clusters.retry_misses = ((self.history + self.rows).min(self.cap)
+            * self.cols + self.alt.len()).max(total);
         let mut used = std::mem::take(&mut self.clusters.marks);
         used.clear();
         used.resize(total, false);
