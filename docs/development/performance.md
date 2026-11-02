@@ -9,7 +9,7 @@ Tested on macOS Sequoia / Sonoma (Apple Silicon M-series, empty idle shell):
 
 | Terminal Emulator | Idle RAM (Activity Monitor) | Idle RAM (RSS) | Idle CPU | Startup Time | Binary Size | GPU Backend |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Litty** | **~36 MB** | **~85 – 108 MB** | **0.0%** | **< 30 ms** | **5.7 MB** | Metal (Direct) |
+| **Litty** | **~36 MB** | **~85 – 108 MB** | **0.0%** | **< 30 ms** | **6.2 MB** | Metal (Direct) |
 | Ghostty | ~70 – 85 MB | ~110 – 125 MB | 0.0% | ~50 ms | ~45 MB | Metal |
 | Alacritty | ~75 – 95 MB | ~115 – 135 MB | 0.0% | ~60 ms | ~18 MB | OpenGL / Metal |
 | WezTerm | ~130 – 160 MB | ~170 – 210 MB | 0.0% – 0.5% | ~120 ms | ~95 MB | OpenGL / Vulkan |

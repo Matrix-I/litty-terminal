@@ -9,7 +9,7 @@ New fix plans contain only issues reproduced by execution.
 | Version | Record |
 | --- | --- |
 | [v0.8.0](./docs/plans/0.8.0.md) | Planned follow-ups |
-| [v0.7.2](./docs/plans/0.7.2.md) | Upcoming release — runtime-confirmed bug, security and platform fixes |
+| [v0.7.2](./docs/plans/0.7.2.md) | Release record — runtime-confirmed bug, security and platform fixes |
 | [v0.7.1](./docs/plans/0.7.1.md) | Historical release record |
 | [v0.7.0](./docs/plans/0.7.0.md) | Historical release record |
 | [v0.6.0](./docs/plans/0.6.0.md) | Historical release record |
