@@ -938,7 +938,7 @@ pub fn apply_update(downloaded_file: &Path, asset_name: &str) -> Result<(), Stri
     // Standalone binary replacement
     check_binary_arch(downloaded_file)?;
     let temp_dest = current_exe.with_extension("new");
-    fs::copy(downloaded_file, &temp_dest).map_err(|e| format!("cannot copy binary: {e}"))?;
+    stage_binary(downloaded_file, &temp_dest).map_err(|e| format!("cannot copy binary: {e}"))?;
 
     struct FileCleanup<'a>(&'a Path, bool);
     impl Drop for FileCleanup<'_> {
@@ -949,12 +949,6 @@ pub fn apply_update(downloaded_file: &Path, asset_name: &str) -> Result<(), Stri
         }
     }
     let mut file_guard = FileCleanup(&temp_dest, true);
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&temp_dest, fs::Permissions::from_mode(0o755));
-    }
 
     #[cfg(target_os = "macos")]
     {
@@ -970,6 +964,27 @@ pub fn apply_update(downloaded_file: &Path, asset_name: &str) -> Result<(), Stri
 
     fs::rename(&temp_dest, &current_exe).map_err(|e| format!("failed to replace binary {exe_str}: {e}"))?;
     file_guard.1 = false;
+    Ok(())
+}
+
+/// Copies `src` to a fresh executable file at `dest`. A stale or planted entry
+/// at `dest` is unlinked (never followed) and the new file is created with
+/// `O_EXCL | O_NOFOLLOW`, so the copy cannot write through a symlink (CWE-59).
+pub(crate) fn stage_binary(src: &Path, dest: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    match fs::remove_file(dest) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    let mut input = fs::File::open(src)?;
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o755)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(dest)?;
+    std::io::copy(&mut input, &mut output)?;
     Ok(())
 }
 

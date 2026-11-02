@@ -331,6 +331,32 @@ fn poc_cwe377_bench_report_does_not_follow_symlinks() {
     assert_eq!(content, b"SAFE", "report write followed a planted symlink");
 }
 
+// ---------------------------------------------------------------------------
+// CWE-59: predictable `<exe>.new` staging path
+// ---------------------------------------------------------------------------
+
+#[test]
+fn poc_cwe59_update_staging_does_not_follow_symlinks() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_dir("stage");
+    let src = dir.join("downloaded");
+    let victim = dir.join("victim");
+    let dest = dir.join("litty.new");
+    std::fs::write(&src, b"NEW").unwrap();
+    std::fs::write(&victim, b"SAFE").unwrap();
+    std::os::unix::fs::symlink(&victim, &dest).unwrap();
+    let result = update::stage_binary(&src, &dest);
+    let victim_content = std::fs::read(&victim).unwrap();
+    let meta = std::fs::symlink_metadata(&dest).unwrap();
+    let staged = std::fs::read(&dest).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(result.is_ok(), "staging should replace the planted link: {result:?}");
+    assert_eq!(victim_content, b"SAFE", "staging wrote through a planted symlink");
+    assert!(meta.file_type().is_file(), "dest must be a regular file");
+    assert_eq!(meta.permissions().mode() & 0o777, 0o755);
+    assert_eq!(staged, b"NEW");
+}
+
 #[test]
 fn poc_dead_windows_shell_code_removed() {
     // Scan every source file: the opener code left main.rs in phase 1.
