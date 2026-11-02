@@ -42,16 +42,7 @@ pub enum ColorSpace {
     DisplayP3,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShellIntegration {
-    Detect,
-    None,
-    Zsh,
-    Bash,
-    Fish,
-    Nushell,
-    Elvish,
-}
+pub use crate::terminal::shell_integration::{ShellFeatures, ShellIntegration};
 
 /// What a BEL does (`bell-features`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,13 +66,6 @@ pub enum ConfirmClose {
     /// Only while a program other than the shell is running.
     Running,
     Always,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ShellFeatures {
-    pub cursor: bool,
-    pub sudo: bool,
-    pub title: bool,
 }
 
 pub const DEFAULT_PALETTE: [u32; 16] = [

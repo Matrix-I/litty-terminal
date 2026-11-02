@@ -14,7 +14,23 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use crate::config::ShellIntegration;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellIntegration {
+    Detect,
+    None,
+    Zsh,
+    Bash,
+    Fish,
+    Nushell,
+    Elvish,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShellFeatures {
+    pub cursor: bool,
+    pub sudo: bool,
+    pub title: bool,
+}
 
 const ZSHENV: &str = include_str!("../shell/zshenv");
 const ZSH: &str = include_str!("../shell/litty-integration.zsh");

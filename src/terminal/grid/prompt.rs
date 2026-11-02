@@ -7,7 +7,7 @@ use super::*;
 pub const MAX_PROMPTS: usize = 1000;
 
 /// Shell-integration state for the AI bridge (OSC 778 `init` / `yo`, OSC 133 `C`).
-/// The grid only records it; `crate::ai` and the app decide what it means.
+/// The grid only records it; the AI module and the app decide what it means.
 #[derive(Default)]
 pub struct AiTrack {
     /// AI bridge is armed only by a user submission at a known shell prompt.
@@ -113,7 +113,7 @@ impl Grid {
                 break;
             }
         }
-        crate::ai::markdown::clean(&out)
+        crate::terminal::text::strip_controls(&out)
     }
 
     /// Extract text typed by user on the active prompt line (before the cursor).
