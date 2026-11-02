@@ -30,7 +30,13 @@ checksum manifest are part of the contract — do not rename them casually.
 3. Update `ROADMAP.md`: mark completed items, move unfinished ones to the next
    milestone.
 4. Draft release notes in `dist/vX.Y.Z/RELEASE_NOTES.md` (template below).
-5. Commit: `chore(release): prepare vX.Y.Z`.
+5. Commit: `chore(release): prepare vX.Y.Z`. Stage files explicitly; the
+   release commit must not contain unrelated working-tree changes.
+
+The release commit lands on `main` (an exception to the branch rule for
+non-trivial work, since it only bumps versions, badges and docs). Once the
+release is published, set the **Status** line of `docs/plans/X.Y.Z.md` to
+"released" with the date and the `ROADMAP.md` row to a historical record.
 
 > The measured README badges (**idle CPU**, **idle RAM**, **binary size**) and
 > the table in `docs/development/performance.md` must match the numbers of the release
@@ -52,10 +58,16 @@ scripts/pre-release-check.sh
 - `scripts/pre-release-check.sh` must exit 0. It writes
   `scripts/release-test-report.md`; copy it to `dist/vX.Y.Z/VERIFICATION.md`.
 - Update the README badges **idle CPU**, **idle RAM** and **binary size**, and
-  the Litty row of `docs/development/performance.md`, from the report's numbers and the
-  size of the release binary. If a figure could not be measured, leave the old
+  the Litty row of `docs/development/performance.md`. The suite checks budgets
+  only and does not report idle CPU or idle RAM, so measure those yourself
+  (macOS `footprint` with the app idle and all windows closed). Binary size is
+  the byte size of the release binary in decimal MB (`ls -l`, divided by
+  1,000,000, one decimal). If a figure could not be measured, leave the old
   value only after noting it under **Known limitations**. Fold the change into
   the release commit (amend before tagging, or a `docs(readme)` commit).
+- Fill the release commit SHA in `RELEASE_NOTES.md` and `VERIFICATION.md`
+  only after the last amend, since amending changes the SHA. If code changed
+  after the checks ran, rerun them on the final commit.
 - Linux runtime smoke test (when Docker/Podman is available):
   `scripts/linux/test.sh` — see `scripts/linux/README.md`.
 - Record anything that could not be run (e.g. Linux runtime, idle CPU) under
@@ -88,6 +100,24 @@ LITTY_MINISIGN_PUBKEY="$(tail -n 1 resources/minisign.pub)" \
 cp target/x86_64-unknown-linux-gnu/release/litty "$OUT/litty-linux-x86_64"
 tar -C "$OUT" -czf "$OUT/litty-linux-x86_64.tar.gz" litty-linux-x86_64
 ```
+
+### Verify the artifacts
+
+Do not run the binary with `--version`: it starts the GUI. Inspect instead:
+
+```bash
+VER=${VERSION#v}
+unzip -p "$OUT/Litty-macos-aarch64.zip" Litty.app/Contents/Info.plist \
+  | plutil -extract CFBundleShortVersionString raw -o - -   # expect $VER
+KEY="$(tail -n 1 resources/minisign.pub)"
+for f in litty-macos-aarch64 litty-linux-x86_64; do
+  strings -a "$OUT/$f" | grep -Fq "$KEY" && echo "$f: key pinned" || echo "$f: KEY MISSING"
+  strings -a "$OUT/$f" | grep -Fq "$VER" && echo "$f: version ok" || echo "$f: VERSION MISSING"
+done
+```
+
+A binary without the pinned key refuses every auto-update, so a `KEY MISSING`
+result blocks the release.
 
 ### Required asset names
 
@@ -158,10 +188,20 @@ say so under **Known limitations** (users must update manually).
 
 - `gh release view "$VERSION"` lists every asset from §4.
 - Download `SHA256SUMS.txt` plus one asset from the release page and run
-  `shasum -a 256 -c` against it.
+  `shasum -a 256 -c` against it, and download `SHA256SUMS.txt.minisig` and run
+  `minisign -Vm SHA256SUMS.txt -p resources/minisign.pub`.
 - On an older installed build, run the update check and confirm it sees the
   new version (and, if signed, installs it).
 - Open the next milestone in `ROADMAP.md`.
+
+## Failed or bad release
+
+If publishing fails or a published asset is wrong, mark the release as a
+draft or delete it (`gh release delete "$VERSION"`). Delete the tag
+(`git push --delete origin "$VERSION"` and `git tag -d "$VERSION"`) only while
+no user can have downloaded it. Once a release has been public, never reuse
+its tag: ship a new `PATCH` version instead. Agents need explicit approval for
+each of these steps.
 
 ## Hotfix releases
 
