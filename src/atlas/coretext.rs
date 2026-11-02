@@ -388,4 +388,3 @@ fn coretext_line(buf: &mut [u8], w: u32, h: u32, px: f32, text: &str, baseline: 
         Some(_) => buf.iter().any(|&v| v != 0),
     }
 }
-

@@ -43,4 +43,3 @@ pub(super) fn rasterize_color(buf: &mut [u8], w: u32, h: u32, _px: f32, text: &s
     blit_fit(&rgba, sw, sh, buf, w, h);
     true
 }
-
