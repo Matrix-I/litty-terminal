@@ -171,6 +171,22 @@ pub struct Atlas {
     cluster_ids: HashMap<Box<str>, u32>,
 }
 
+/// Ascent / descent split used when a font has no `hhea` table (typical
+/// proportions of monospace faces).
+const FALLBACK_ASCENT: f32 = 0.8;
+const FALLBACK_DESCENT: f32 = 0.2;
+
+/// Line metrics at `px`, synthesized when the font lacks horizontal ones so a
+/// user-configured font can never panic startup (CWE-754).
+fn line_metrics(font: &fontdue::Font, px: f32) -> fontdue::LineMetrics {
+    font.horizontal_line_metrics(px).unwrap_or_else(|| synthesized_line_metrics(px))
+}
+
+fn synthesized_line_metrics(px: f32) -> fontdue::LineMetrics {
+    let (ascent, descent) = (px * FALLBACK_ASCENT, -px * FALLBACK_DESCENT);
+    fontdue::LineMetrics { ascent, descent, line_gap: 0.0, new_line_size: ascent - descent }
+}
+
 impl Atlas {
     /// Vertical positions inside a cell, in px from its top: where the underline
     /// starts (just below the baseline) and the center of a strikethrough
@@ -184,9 +200,7 @@ impl Atlas {
     /// Cell dimensions in logical points for a given font and point size.
     pub fn cell_size_pt(fonts: &FontSet, pt: f32) -> (f64, f64) {
         let font = &fonts.primary;
-        let lm = font
-            .horizontal_line_metrics(pt)
-            .expect("font has no horizontal line metrics");
+        let lm = line_metrics(font, pt);
         let natural_w = font.metrics('M', pt).advance_width.round().max(1.0) as u32;
         let natural_h = (lm.ascent - lm.descent + lm.line_gap).ceil().max(1.0) as u32;
         let (adjust_w, adjust_h) = *CELL_ADJUST.lock();
@@ -195,9 +209,7 @@ impl Atlas {
 
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, fonts: Arc<FontSet>, px: f32) -> Self {
         let font = &fonts.primary;
-        let lm = font
-            .horizontal_line_metrics(px)
-            .expect("font has no horizontal line metrics");
+        let lm = line_metrics(font, px);
         let natural_w = font.metrics('M', px).advance_width.round().max(1.0) as u32;
         let natural_h = (lm.ascent - lm.descent + lm.line_gap).ceil().max(1.0) as u32;
         let (adjust_w, adjust_h) = *CELL_ADJUST.lock();

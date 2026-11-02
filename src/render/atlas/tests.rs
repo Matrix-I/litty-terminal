@@ -177,3 +177,19 @@ fn test_dynamic_atlas_growth_and_shaper_cap() {
     assert!(!atlas.map.contains_key(&dummy_key), "GLYPH_PIECE slot keys must be evicted on shaper reset");
     assert!(atlas.take_evicted(), "shaper reset must flag atlas eviction");
 }
+
+#[test]
+fn synthesized_line_metrics_give_a_sane_cell_height() {
+    let lm = synthesized_line_metrics(20.0);
+    assert!(lm.ascent > 0.0 && lm.descent < 0.0);
+    assert_eq!(lm.line_gap, 0.0);
+    assert_eq!((lm.ascent - lm.descent + lm.line_gap).ceil() as u32, 20);
+    assert_eq!(lm.new_line_size, lm.ascent - lm.descent);
+}
+
+#[test]
+fn line_metrics_prefers_the_font_when_it_has_them() {
+    let fonts = load_font(&[]);
+    let real = fonts.primary.horizontal_line_metrics(16.0).expect("system font has hhea");
+    assert_eq!(line_metrics(&fonts.primary, 16.0), real);
+}
