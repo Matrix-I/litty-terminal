@@ -1911,11 +1911,53 @@ fn cluster_table_exhaustion_does_not_repeatedly_scan_grid() {
     assert_eq!(g.cluster_gc_count(), gc_mark_resize + 1);
 }
 
+/// Feeds `seq` on an exhausted table where every interned cluster is live and
+/// checks that dropping a reference makes its slot reusable again.
+fn assert_cluster_release_unblocks_intern(seq: &str) {
+    let mut g = Grid::new(80, 1000);
+    let mut parser = vte::Parser::new();
+    g.seed_live_clusters(super::MAX_CLUSTERS);
+    assert_eq!(g.intern_cluster("miss_before"), None);
+    let gc_before = g.cluster_gc_count();
+
+    for b in seq.bytes() {
+        g.feed_byte(&mut parser, b);
+    }
+
+    assert!(g.intern_cluster("after_release").is_some(), "{seq:?} must unblock cluster GC");
+    assert_eq!(g.cluster_gc_count(), gc_before + 1);
+}
+
+#[test]
+fn cluster_exhaustion_unblocks_after_insert_chars() {
+    assert_cluster_release_unblocks_intern("\x1b[H\x1b[@");
+}
+
+#[test]
+fn cluster_exhaustion_unblocks_after_delete_chars() {
+    assert_cluster_release_unblocks_intern("\x1b[H\x1b[P");
+}
+
+#[test]
+fn cluster_exhaustion_unblocks_after_delete_lines() {
+    assert_cluster_release_unblocks_intern("\x1b[H\x1b[M");
+}
+
+#[test]
+fn cluster_exhaustion_unblocks_after_scroll_region_overwrite() {
+    // A partial scroll region copies rows instead of rotating the ring. Rows
+    // 811..=831 (1-based) hold clusters at the top but not at the bottom, so
+    // only the overwritten destination row drops a reference.
+    assert_cluster_release_unblocks_intern("\x1b[811;831r\x1b[811;1H\x1b[M");
+}
+
 #[test]
 #[ignore = "manual performance measurement"]
 fn benchmark_cluster_exhaustion_1000_misses() {
-    let mut g = Grid::new(80, 24);
+    let mut g = Grid::new(80, 1000);
     g.seed_live_clusters(super::MAX_CLUSTERS);
+    assert_eq!(g.intern_cluster("bench_warmup"), None);
+    assert!(g.clusters.exhausted, "benchmark must start from an exhausted live table");
     let start = std::time::Instant::now();
     for i in 0..1000 {
         let tag = format!("bench_miss_{i}");

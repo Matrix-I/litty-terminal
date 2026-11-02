@@ -150,9 +150,14 @@ impl Grid {
         let s = self.row_start(src);
         let d = self.row_start(dst);
         let c = self.cols;
+        let exhausted = self.clusters.exhausted;
         let buf = self.buf_mut();
+        let dropped_cluster = exhausted && super::clusters::has_cluster(&buf[d..d + c]);
         if buf[d..d + c].iter().any(|cell| ((cell.fg & FG_EXTRA) | (cell.bg & BG_EXTRA)) != 0) {
             self.extras_dirty = true;
+        }
+        if dropped_cluster {
+            self.clusters.exhausted = false;
         }
         self.buf_mut().copy_within(s..s + c, d);
         if !self.alt_active {

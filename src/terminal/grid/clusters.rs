@@ -21,6 +21,11 @@ pub(super) struct ClusterTable {
     pub(super) gc_count: usize,
 }
 
+/// Whether any of `cells` holds a cluster reference.
+pub(super) fn has_cluster(cells: &[Cell]) -> bool {
+    cells.iter().any(|c| c.codepoint & (CLUSTER_FLAG | PH_FLAG) == CLUSTER_FLAG)
+}
+
 impl Grid {
     /// The grapheme cluster text of a cell's `codepoint`, if it holds one.
     pub fn cluster(&self, cp: u32) -> Option<&str> {

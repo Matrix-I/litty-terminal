@@ -169,6 +169,9 @@ impl Perform for Grid {
                 if had_extra {
                     self.extras_dirty = true;
                 }
+                if self.clusters.exhausted && super::clusters::has_cluster(&self.row_mut(r)[cols - k..]) {
+                    self.clusters.exhausted = false;
+                }
                 let row = self.row_mut(r);
                 row.copy_within(c..cols - k, c + k);
                 row[c..c + k].fill(b);
@@ -182,6 +185,9 @@ impl Perform for Grid {
                 let had_extra = self.row_mut(r)[c..c + k].iter().any(|cell| ((cell.fg & FG_EXTRA) | (cell.bg & BG_EXTRA)) != 0);
                 if had_extra {
                     self.extras_dirty = true;
+                }
+                if self.clusters.exhausted && super::clusters::has_cluster(&self.row_mut(r)[c..c + k]) {
+                    self.clusters.exhausted = false;
                 }
                 let row = self.row_mut(r);
                 row.copy_within(c + k..cols, c);
