@@ -49,7 +49,8 @@ fn once(
     }
     if let Some(b) = body {
         config.push_str("request = \"POST\"\n");
-        config.push_str(&format!("data-binary = {}\n", quote(b)));
+        // data-raw: data-binary treats a leading '@' as a local file to upload (CWE-73).
+        config.push_str(&format!("data-raw = {}\n", quote(b)));
     }
     let bin = if std::path::Path::new("/usr/bin/curl").exists() {
         "/usr/bin/curl"
@@ -229,5 +230,67 @@ mod cancellation_tests {
         assert_eq!(result.err().as_deref(), Some("Cancelled"));
         assert!(start.elapsed() < Duration::from_secs(1));
         server.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod body_tests {
+    use super::*;
+
+    /// Serves one request and returns the raw request body it received.
+    fn capture_body(payload: &'static str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                raw.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&raw);
+                if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                    let len = head
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if body.len() >= len || n == 0 {
+                        break;
+                    }
+                }
+                if n == 0 {
+                    break;
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            String::from_utf8_lossy(&raw)
+                .split_once("\r\n\r\n")
+                .map(|(_, b)| b.to_string())
+                .unwrap_or_default()
+        });
+        let cancel = Arc::new(AtomicBool::new(false));
+        let reply = once(&url, &[], Some(payload), &cancel).unwrap();
+        assert_eq!(reply.status, 200);
+        server.join().unwrap()
+    }
+
+    #[test]
+    fn payload_starting_with_at_is_sent_literally() {
+        // CWE-73: curl's data-binary would read /etc/hosts from disk.
+        assert_eq!(capture_body("@/etc/hosts"), "@/etc/hosts");
+    }
+
+    #[test]
+    fn plain_payload_is_sent_verbatim() {
+        assert_eq!(capture_body("{\"a\":\"b\\n\"}"), "{\"a\":\"b\\n\"}");
     }
 }
