@@ -66,10 +66,17 @@ mkdir -p "$DMG_STAGING"
 cp -R "$APP_DIR" "$DMG_STAGING/"
 ln -s /Applications "$DMG_STAGING/Applications"
 
-hdiutil create -volname "Litty" \
-    -srcfolder "$DMG_STAGING" \
-    -ov -format UDZO \
-    "$DMG_PATH"
+# `hdiutil create` is deprecated in favour of `diskutil image`; older macOS
+# releases ship without the latter, so keep hdiutil as the fallback there.
+if diskutil image create from --help >/dev/null 2>&1; then
+    diskutil image create from --format UDZO --volumeName "Litty" \
+        "$DMG_STAGING" "$DMG_PATH"
+else
+    hdiutil create -volname "Litty" \
+        -srcfolder "$DMG_STAGING" \
+        -ov -format UDZO \
+        "$DMG_PATH"
+fi
 
 rm -rf "$DMG_STAGING"
 
