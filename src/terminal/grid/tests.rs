@@ -1924,3 +1924,39 @@ fn benchmark_cluster_exhaustion_1000_misses() {
     let elapsed = start.elapsed();
     eprintln!("1000 misses on exhausted table took: {elapsed:?}");
 }
+
+#[test]
+fn explicit_high_image_id_survives_grid_scroll_pruning() {
+    let mut g = Grid::new(80, 24);
+    let mut parser = vte::Parser::new();
+
+    // 1. Display image 1
+    let place_cmd = b"\x1b_Ga=T,f=24,s=1,v=1,i=1;/wAAAAD/\x1b\\";
+    for &b in place_cmd {
+        g.feed_byte(&mut parser, b);
+    }
+    assert!(g.graphics.image(1).is_some());
+
+    // 2. Transmit explicit image 16777216 (boundary 1 << 24) without placing it
+    let explicit_id = 16777216u32;
+    let transmit_cmd = format!("\x1b_Ga=t,f=24,s=1,v=1,i={explicit_id};/wAAAAD/\x1b\\");
+    for b in transmit_cmd.bytes() {
+        g.feed_byte(&mut parser, b);
+    }
+    assert!(
+        g.graphics.image(explicit_id).is_some(),
+        "explicit image must exist before scrolling"
+    );
+
+    // 3. Move cursor to row 24 and newline to trigger scroll at bottom of screen
+    let scroll_cmd = b"\x1b[24;1H\r\n";
+    for &b in scroll_cmd {
+        g.feed_byte(&mut parser, b);
+    }
+
+    // 4. Assert explicit image still exists after scrolling!
+    assert!(
+        g.graphics.image(explicit_id).is_some(),
+        "explicit image after scrolling must remain intact"
+    );
+}
