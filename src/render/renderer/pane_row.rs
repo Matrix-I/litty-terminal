@@ -3,7 +3,7 @@
 
 use super::ui::Cells;
 use super::{Instance, Renderer, COLOR_GLYPH, UNFOCUSED};
-use crate::atlas::GlyphStyle;
+use crate::render::atlas::GlyphStyle;
 use crate::terminal::grid::{char_width, Grid, Hyperlink, SearchHit, BG_EXTRA, BG_SET, BG_STRIKE, BG_UNDERLINE_MASK, FG_BOLD, FG_EXTRA, FG_ITALIC, FG_SET, UNDERLINE_SINGLE};
 use crate::split::PaneRect;
 
@@ -97,11 +97,11 @@ pub(super) fn build_pane_row(
             None
         };
         let slot = match (cell.codepoint, wide_right.take()) {
-            _ if shaped_key == crate::atlas::SHAPED_BLANK => crate::atlas::BLANK_SLOT,
+            _ if shaped_key == crate::render::atlas::SHAPED_BLANK => crate::render::atlas::BLANK_SLOT,
             _ if shaped_key != 0 => cells.atlas.slot(cells.queue, shaped_key),
             (0, Some(right)) => right,
             // Kitty unicode placeholder: the image is drawn over it.
-            (cp, _) if cp & crate::terminal::grid::PH_FLAG != 0 => crate::atlas::BLANK_SLOT,
+            (cp, _) if cp & crate::terminal::grid::PH_FLAG != 0 => crate::render::atlas::BLANK_SLOT,
             (cp, _) if cp & crate::terminal::grid::CLUSTER_FLAG != 0 => {
                 let width = if crate::terminal::grid::is_wide_cp(cp) { 2 } else { 1 };
                 let style = GlyphStyle { bold: cell.fg & FG_BOLD != 0, italic: cell.fg & FG_ITALIC != 0 };

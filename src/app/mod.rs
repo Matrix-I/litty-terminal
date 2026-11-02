@@ -33,7 +33,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use crate::terminal::grid;
-use crate::{bench, frame_metrics, update};
+use crate::render::frame_metrics;
+use crate::{bench, update};
 use crate::platform;
 use crate::{AppEvent, Waker};
 

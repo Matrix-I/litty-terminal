@@ -317,7 +317,7 @@ fn benchmark_before_vs_after() {
         let menlo_u16: Vec<u16> = "Menlo".encode_utf16().collect();
 
         // Warm up CoreText cascade once
-        let _ = crate::atlas::macos_coretext_rasterize(&mut wide_buf, 2 * cw, ch_px, 26, 28.0, '中');
+        let _ = crate::render::atlas::macos_coretext_rasterize(&mut wide_buf, 2 * cw, ch_px, 26, 28.0, '中');
 
         // Before: uncached CTFontCreateWithName("Menlo") + rasterize 2*cw twice (once for WIDE_LEFT, once for WIDE_RIGHT)
         let t_cjk_old = Instant::now();
@@ -334,7 +334,7 @@ fn benchmark_before_vs_after() {
                     }
                 }
                 wide_buf.fill(0);
-                let _ = crate::atlas::macos_coretext_rasterize(&mut wide_buf, 2 * cw, ch_px, 26, 28.0, ch);
+                let _ = crate::render::atlas::macos_coretext_rasterize(&mut wide_buf, 2 * cw, ch_px, 26, 28.0, ch);
                 let x0 = half * cw as usize;
                 for y in 0..ch_px as usize {
                     left_slot[y * cw as usize..(y + 1) * cw as usize]
@@ -348,7 +348,7 @@ fn benchmark_before_vs_after() {
         let t_cjk_new = Instant::now();
         for &ch in &cjk_chars {
             wide_buf.fill(0);
-            let _ = crate::atlas::macos_coretext_rasterize(&mut wide_buf, 2 * cw, ch_px, 26, 28.0, ch);
+            let _ = crate::render::atlas::macos_coretext_rasterize(&mut wide_buf, 2 * cw, ch_px, 26, 28.0, ch);
             for y in 0..ch_px as usize {
                 left_slot[y * cw as usize..(y + 1) * cw as usize]
                     .copy_from_slice(&wide_buf[y * 2 * cw as usize..y * 2 * cw as usize + cw as usize]);

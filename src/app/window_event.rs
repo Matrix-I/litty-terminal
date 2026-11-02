@@ -33,7 +33,7 @@ use crate::terminal::grid::Selection;
 use crate::paste::{history_insert_payload, paste_payload, shell_quote};
 use crate::platform::clipboard::copy_to_clipboard;
 use crate::platform::process::open_target;
-use crate::renderer::TabBarAction;
+use crate::render::renderer::TabBarAction;
 
 
 impl App {

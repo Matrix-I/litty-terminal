@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use crate::{ai, config, mouse, renderer, scroll};
+use crate::render::renderer;
+use crate::{ai, config, mouse, scroll};
 use crate::platform;
 use crate::{HoveredPaneLink, Tab};
 
@@ -10,7 +11,7 @@ use winit::keyboard::{ModifiersState, PhysicalKey};
 use winit::window::{CursorIcon, Window};
 
 use crate::terminal::history::HistorySearch;
-use crate::renderer::Renderer;
+use crate::render::renderer::Renderer;
 use crate::terminal::search::SearchBar;
 use crate::split::PaneRect;
 

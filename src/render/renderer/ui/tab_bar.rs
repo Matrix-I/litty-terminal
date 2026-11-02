@@ -3,7 +3,7 @@
 use super::super::Instance;
 use super::Cells;
 
-pub(in crate::renderer) fn build(cells: &mut Cells, titles: &[String], active_idx: usize) {
+pub(in crate::render::renderer) fn build(cells: &mut Cells, titles: &[String], active_idx: usize) {
     let cols = cells.cols;
     const ACTIVE_FG: u32 = 0xF2F2_F780;
     const ACTIVE_BADGE_FG: u32 = 0xA6A8_B380;

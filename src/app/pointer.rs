@@ -5,7 +5,8 @@ use super::terminal_io::write_pty;
 use super::window::refresh_tab_titles;
 
 use crate::terminal::grid;
-use crate::{mouse, renderer};
+use crate::render::renderer;
+use crate::mouse;
 use crate::HoveredPaneLink;
 
 use winit::window::CursorIcon;

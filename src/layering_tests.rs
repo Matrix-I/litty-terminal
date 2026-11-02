@@ -17,6 +17,8 @@ const TOLERATED: &[(&str, &str, &str)] = &[
     ("platform", "config", "apply_window_config reads Config / ColorSpace; follow-up: a platform-owned WindowLook"),
     ("platform", "keymap", "hotkeys take keymap::Trigger, the menu dispatches keymap::Action; follow-up: pass key code + mods"),
     ("platform", "AppEvent", "reopen, menu, hotkey and socket handlers post AppEvent; follow-up: take a Send callback"),
+    ("render", "split", "Renderer takes split::PaneRect; split.rs has no crate deps. Follow-up: move PaneRect into render"),
+    ("render", "platform", "Renderer::new configures Metal drawables between surface setup and atlas creation"),
 ];
 
 /// First path segment of every `crate::` path in `src`, including each
@@ -111,4 +113,10 @@ fn terminal_layer_is_self_contained() {
 fn platform_layer_is_self_contained() {
     let bad = violations("platform", &[]);
     assert!(bad.is_empty(), "platform must not depend on other layers:\n{}", bad.join("\n"));
+}
+
+#[test]
+fn render_layer_uses_only_terminal() {
+    let bad = violations("render", &["terminal"]);
+    assert!(bad.is_empty(), "render may only depend on terminal:\n{}", bad.join("\n"));
 }

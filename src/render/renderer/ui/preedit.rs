@@ -2,11 +2,11 @@
 
 use super::super::Instance;
 use super::{Cells, DirtyRows};
-use crate::atlas::GlyphStyle;
+use crate::render::atlas::GlyphStyle;
 use crate::terminal::grid::{char_width, BG_UNDERLINE};
 
 /// Draws `preedit` at `cursor` and returns the cursor moved to the end of the composition.
-pub(in crate::renderer) fn build(
+pub(in crate::render::renderer) fn build(
     cells: &mut Cells,
     preedit: &str,
     cursor: (usize, usize),

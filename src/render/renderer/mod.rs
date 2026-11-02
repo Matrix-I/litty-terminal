@@ -16,7 +16,7 @@ mod ui;
 use gpu::{make_bind_group, make_instance_buf, make_viewport_buffer};
 pub use ui::scrollbar::{scrollbar_thumb, SCROLLBAR_WIDTH};
 
-use crate::atlas::{Atlas, FontSet};
+use crate::render::atlas::{Atlas, FontSet};
 use crate::terminal::grid::{Grid, Hyperlink};
 use crate::terminal::history::HistorySearch;
 use crate::split::PaneRect;
@@ -112,7 +112,7 @@ struct Viewport {
 }
 
 pub struct Renderer {
-    frame_capture: Option<crate::frame_metrics::Capture>,
+    frame_capture: Option<crate::render::frame_metrics::Capture>,
     surface: wgpu::Surface<'static>,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
@@ -162,11 +162,11 @@ pub struct Renderer {
     /// Per-row scratch buffers reused across rows and frames.
     row_scratch: RowScratch,
     /// Inline images and this frame's placements (reused buffers).
-    images: crate::image_layer::ImageLayer,
+    images: crate::render::image_layer::ImageLayer,
     image_draws: Vec<crate::terminal::graphics::ImageDraw>,
-    placed: Vec<crate::image_layer::Placed>,
+    placed: Vec<crate::render::image_layer::Placed>,
     /// `custom-shader` passes, if any.
-    postfx: Option<crate::postfx::PostFx>,
+    postfx: Option<crate::render::postfx::PostFx>,
     /// Shaders animate (`iTime`) and `custom-shader-animation` allows it.
     animate: bool,
     /// Mouse position in px, for the shaders' `iMouse`.
@@ -179,7 +179,7 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn start_frame_capture(&mut self, occluded: bool) {
-        let mut capture = crate::frame_metrics::Capture::new();
+        let mut capture = crate::render::frame_metrics::Capture::new();
         capture.occluded(occluded);
         self.frame_capture = Some(capture);
     }
@@ -261,7 +261,7 @@ impl Renderer {
         let scale_factor = window.scale_factor();
         let pad_px = (scale_factor * 4.0).round() as u32;
 
-        let images = crate::image_layer::ImageLayer::new(&device, format);
+        let images = crate::render::image_layer::ImageLayer::new(&device, format);
         Renderer {
             frame_capture: None,
             surface,
@@ -365,8 +365,8 @@ impl Renderer {
     /// `animation`: `None` never, `Some(false)` when a shader uses time,
     /// `Some(true)` always.
     pub fn set_custom_shaders(&mut self, paths: &[std::path::PathBuf], animation: Option<bool>) {
-        let (sources, uses_time) = crate::postfx::load(paths);
-        self.postfx = crate::postfx::PostFx::new(&self.device, self.config.format, &sources);
+        let (sources, uses_time) = crate::render::postfx::load(paths);
+        self.postfx = crate::render::postfx::PostFx::new(&self.device, self.config.format, &sources);
         self.animate = self.postfx.is_some() && animation.is_some_and(|always| always || uses_time);
         self.force_full = true;
     }

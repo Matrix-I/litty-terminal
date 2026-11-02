@@ -4,7 +4,7 @@ use super::super::Instance;
 use super::{Cells, DirtyRows};
 use crate::terminal::grid::Hyperlink;
 
-pub(in crate::renderer) fn build(cells: &mut Cells, total_rows: usize, link: &Hyperlink, dirty: &mut DirtyRows) {
+pub(in crate::render::renderer) fn build(cells: &mut Cells, total_rows: usize, link: &Hyperlink, dirty: &mut DirtyRows) {
     let cols = cells.cols;
     let max_chars = cols.saturating_sub(2).min(120);
     let display_url = if link.url.chars().count() > max_chars {

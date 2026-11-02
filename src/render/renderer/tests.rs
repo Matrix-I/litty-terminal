@@ -100,7 +100,7 @@ fn precise_scroll_gpu_pixels() {
 
 #[test]
 fn test_shader_wgsl_syntax() {
-    let shader_src = include_str!("../shader.wgsl");
+    let shader_src = include_str!("../shaders/shader.wgsl");
     let module = wgpu::naga::front::wgsl::parse_str(shader_src).expect("Failed to parse WGSL");
     let mut validator = wgpu::naga::valid::Validator::new(
         wgpu::naga::valid::ValidationFlags::all(),
