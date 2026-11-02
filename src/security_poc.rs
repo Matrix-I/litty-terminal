@@ -333,6 +333,21 @@ fn poc_cwe377_bench_report_does_not_follow_symlinks() {
 
 #[test]
 fn poc_dead_windows_shell_code_removed() {
-    let src = include_str!("main.rs");
-    assert!(!src.contains(concat!("\"/c\", ", "\"start\"")), "`cmd /c start` code is still present");
+    // Scan every source file: the opener code left main.rs in phase 1.
+    let needle = concat!("\"/c\", ", "\"start\"");
+    let mut stack = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    let mut scanned = 0;
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read src dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let src = std::fs::read_to_string(&path).expect("read source");
+                assert!(!src.contains(needle), "`cmd /c start` code is still present in {}", path.display());
+                scanned += 1;
+            }
+        }
+    }
+    assert!(scanned > 50, "source scan found only {scanned} files");
 }
