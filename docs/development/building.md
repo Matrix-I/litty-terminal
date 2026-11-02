@@ -33,6 +33,11 @@ This will:
 2. Generate `Litty.app` signed with ad-hoc certificates.
 3. Install `Litty.app` to `~/Applications/Litty.app`.
 4. Create an installable drag-and-drop disk image: `dist/Litty.dmg`.
+5. Bake the release public key (`resources/minisign.pub`, or
+   `LITTY_MINISIGN_PUBKEY` if set) into the binary so it can self-update.
+6. Write `dist/SHA256SUMS.txt` for the macOS assets and, when `minisign` and
+   a secret key (`~/.minisign/minisign.key`, or `MINISIGN_SECRET_KEY`) are
+   available, sign it as `dist/SHA256SUMS.txt.minisig`.
 
 ---
 

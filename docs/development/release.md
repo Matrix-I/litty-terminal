@@ -83,7 +83,8 @@ cp dist/Litty.dmg dist/Litty-macos-aarch64.zip dist/litty-macos-aarch64 "$OUT/"
 Cross-compiled with `cargo-zigbuild` (`brew install zig cargo-zigbuild`):
 
 ```bash
-cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.34
+LITTY_MINISIGN_PUBKEY="$(tail -n 1 resources/minisign.pub)" \
+  cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.34
 cp target/x86_64-unknown-linux-gnu/release/litty "$OUT/litty-linux-x86_64"
 tar -C "$OUT" -czf "$OUT/litty-linux-x86_64.tar.gz" litty-linux-x86_64
 ```
@@ -113,16 +114,16 @@ The updater (`asset_candidates` in `src/update.rs`) looks for exactly these:
 
 The updater **fails closed** on releases without a signature it can verify
 against a key pinned at build time (`LITTY_MINISIGN_PUBKEY` or
-`LITTY_GPG_FINGERPRINT`). To ship auto-updatable releases:
+`LITTY_GPG_FINGERPRINT`). `bundle_macos.sh` pins the key from
+`resources/minisign.pub` unless `LITTY_MINISIGN_PUBKEY` is set, and the Linux
+command in §4 passes the same key.
+
+`bundle_macos.sh` also signs a macOS-only `dist/SHA256SUMS.txt`; the release
+needs the combined file above signed instead:
 
 ```bash
 minisign -Sm "$OUT/SHA256SUMS.txt"     # produces SHA256SUMS.txt.minisig
-```
-
-and build the binaries with the matching public key in the environment:
-
-```bash
-LITTY_MINISIGN_PUBKEY=RWQ... ./bundle_macos.sh --no-install
+minisign -Vm "$OUT/SHA256SUMS.txt" -p resources/minisign.pub
 ```
 
 Signing keys never enter the repository. If a release is shipped unsigned,

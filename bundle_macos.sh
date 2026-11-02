@@ -18,6 +18,18 @@ CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 
+# The updater only installs releases signed by the key baked in at build time
+# (`LITTY_MINISIGN_PUBKEY`, see src/update.rs); default to the project's key.
+MINISIGN_PUB_FILE="$DIR/resources/minisign.pub"
+MINISIGN_SEC_FILE="${MINISIGN_SECRET_KEY:-$HOME/.minisign/minisign.key}"
+if [ -z "${LITTY_MINISIGN_PUBKEY:-}" ] && [ -f "$MINISIGN_PUB_FILE" ]; then
+    LITTY_MINISIGN_PUBKEY="$(tail -n 1 "$MINISIGN_PUB_FILE")"
+    export LITTY_MINISIGN_PUBKEY
+fi
+if [ -z "${LITTY_MINISIGN_PUBKEY:-}" ]; then
+    echo "WARNING: no minisign public key; this build will refuse all auto-updates." >&2
+fi
+
 echo "==> Building optimized macOS release binary..."
 if [ -z "${SDKROOT:-}" ]; then
     export SDKROOT="$(xcrun --show-sdk-path 2>/dev/null || true)"
@@ -91,8 +103,29 @@ ARCH="$(uname -m)"
 cp "$DIST_DIR/litty-macos" "$DIST_DIR/litty-macos-$ARCH"
 cp "$DIST_DIR/Litty-macos.zip" "$DIST_DIR/Litty-macos-$ARCH.zip"
 
+echo "==> Writing checksums and minisign signature..."
+SUMS="$DIST_DIR/SHA256SUMS.txt"
+rm -f "$SUMS" "$SUMS.minisig"
+(cd "$DIST_DIR" && shasum -a 256 "$DMG_NAME" "Litty-macos-$ARCH.zip" "litty-macos-$ARCH" > SHA256SUMS.txt)
+if ! command -v minisign >/dev/null 2>&1; then
+    echo "WARNING: minisign not installed (brew install minisign); $SUMS left unsigned." >&2
+elif [ ! -f "$MINISIGN_SEC_FILE" ]; then
+    echo "WARNING: no minisign secret key at $MINISIGN_SEC_FILE; $SUMS left unsigned." >&2
+else
+    minisign -S -s "$MINISIGN_SEC_FILE" -m "$SUMS"
+    # Catch a secret key that does not match the key baked into the binary.
+    if [ -n "${LITTY_MINISIGN_PUBKEY:-}" ]; then
+        if ! minisign -V -q -m "$SUMS" -P "$LITTY_MINISIGN_PUBKEY"; then
+            rm -f "$SUMS.minisig"
+            echo "ERROR: $MINISIGN_SEC_FILE does not match LITTY_MINISIGN_PUBKEY." >&2
+            exit 1
+        fi
+    fi
+fi
+
 echo "==> Done! Outputs ready:"
 ls -lh "$APP_DIR"
 ls -lh "$DMG_PATH"
 ls -lh "$DIST_DIR/litty-macos"
 ls -lh "$DIST_DIR/Litty-macos.zip"
+ls -lh "$SUMS"*
