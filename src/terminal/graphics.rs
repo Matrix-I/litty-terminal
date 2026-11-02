@@ -40,6 +40,8 @@ pub struct Image {
     pub width: u32,
     pub height: u32,
     pub rgba: Arc<[u8]>,
+    /// Whether this image was automatically assigned an ID by the terminal.
+    pub auto: bool,
     /// Kitty animation frames 2.. (`a=f`) and playback state (`a=a`).
     frames: Vec<Frame>,
     anim: Animation,
@@ -81,7 +83,7 @@ struct Animation {
 impl Image {
     fn new(width: u32, height: u32, rgba: Vec<u8>) -> Self {
         let anim = Animation { root_gap: DEFAULT_GAP, ..Animation::default() };
-        Image { key: next_key(), width, height, rgba: rgba.into(), frames: Vec::new(), anim }
+        Image { key: next_key(), width, height, rgba: rgba.into(), auto: false, frames: Vec::new(), anim }
     }
 
     fn frame_count(&self) -> usize {
@@ -250,7 +252,8 @@ impl Store {
 
     /// Store an image under `id` (0 = pick one), replacing an older one.
     pub fn insert(&mut self, id: u32, width: u32, height: u32, rgba: Vec<u8>) -> u32 {
-        let id = if id == 0 { self.auto_id() } else { id };
+        let is_auto = id == 0;
+        let id = if is_auto { self.auto_id() } else { id };
         self.remove_image(id, false);
         // Reject a single root frame above the store limit up front without
         // wiping existing images or converting `Vec<u8>` into `Arc<[u8]>`.
@@ -258,7 +261,9 @@ impl Store {
             return id;
         }
         self.bytes += rgba.len();
-        self.images.insert(id, Image::new(width, height, rgba));
+        let mut img = Image::new(width, height, rgba);
+        img.auto = is_auto;
+        self.images.insert(id, img);
         self.order.push(id);
         self.evict();
         id
@@ -424,7 +429,11 @@ impl Store {
     fn auto_id(&mut self) -> u32 {
         loop {
             // Kitty reserves small ids for applications; count down from the top.
-            self.next_auto_id = self.next_auto_id.wrapping_sub(1).max(1 << 24);
+            if self.next_auto_id <= (1 << 24) {
+                self.next_auto_id = u32::MAX;
+            } else {
+                self.next_auto_id -= 1;
+            }
             if !self.images.contains_key(&self.next_auto_id) {
                 return self.next_auto_id;
             }
@@ -474,14 +483,14 @@ impl Store {
         of_image.clone().find(|v| v.placement_id == placement_id).or_else(|| of_image.next())
     }
 
-    /// Prune any auto-assigned images (`id >= 1 << 24`) that have no remaining
-    /// regular or virtual placements.
+    /// Prune any auto-assigned images that have no remaining regular or
+    /// virtual placements.
     pub fn prune_dead_auto_ids(&mut self) {
         let dead: Vec<u32> = self
             .images
-            .keys()
-            .copied()
-            .filter(|&id| id >= (1 << 24))
+            .iter()
+            .filter(|(_, img)| img.auto)
+            .map(|(&id, _)| id)
             .filter(|&id| !self.placements.iter().any(|p| p.image_id == id) && !self.virtuals.iter().any(|v| v.image_id == id))
             .collect();
         for id in dead {
@@ -1693,6 +1702,56 @@ mod tests {
         store.prune(7);
         assert!(store.placements.is_empty());
         assert!(store.image(id).is_none(), "auto-assigned image must be removed when placements are gone");
+    }
+
+    #[test]
+    fn explicit_high_image_ids_survive_pruning() {
+        let mut store = Store::default();
+        let boundary_id = 1 << 24;
+        let max_id = u32::MAX;
+        store.insert(boundary_id, 10, 10, vec![0; 400]);
+        store.insert(max_id, 10, 10, vec![0; 400]);
+
+        let auto_id = store.insert(0, 10, 10, vec![0; 400]);
+        store.placements.push(Placement {
+            image_id: auto_id,
+            placement_id: 1,
+            line: 5,
+            col: 0,
+            cols: 2,
+            rows: 2,
+            src: [0, 0, 10, 10],
+            z: 0,
+            alt: false,
+            fit: false,
+        });
+
+        // Pruning should only prune dead auto ids, not explicit images without placements
+        store.prune_dead_auto_ids();
+        assert!(store.image(boundary_id).is_some(), "explicit boundary ID 1<<24 must not be pruned");
+        assert!(store.image(max_id).is_some(), "explicit u32::MAX ID must not be pruned");
+        assert!(store.image(auto_id).is_some(), "auto image with placement must not be pruned");
+
+        // When auto image placement is removed, only auto_id is pruned
+        store.placements.clear();
+        store.prune_dead_auto_ids();
+        assert!(store.image(auto_id).is_none(), "auto image without placement must be pruned");
+        assert!(store.image(boundary_id).is_some(), "explicit boundary ID must still survive");
+        assert!(store.image(max_id).is_some(), "explicit u32::MAX ID must still survive");
+
+        // Replacing an auto-assigned ID with explicit transmission:
+        let auto_id_2 = store.insert(0, 10, 10, vec![0; 400]);
+        assert!(store.image(auto_id_2).unwrap().auto);
+        // Overwrite with explicit transmission of that same numeric ID
+        store.insert(auto_id_2, 10, 10, vec![0; 400]);
+        assert!(!store.image(auto_id_2).unwrap().auto, "must no longer be marked auto");
+        store.prune_dead_auto_ids();
+        assert!(store.image(auto_id_2).is_some(), "replaced explicit image must not be pruned");
+
+        // Clear resets all
+        store.clear();
+        assert!(store.image(boundary_id).is_none());
+        assert!(store.image(auto_id_2).is_none());
     }
 
     #[test]
