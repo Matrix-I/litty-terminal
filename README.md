@@ -15,418 +15,48 @@
 
 ## ⚡ Highlights
 
-- **Native GPU Rendering:** Powered by `wgpu` targeting native **Metal** on macOS and **Vulkan** on Linux. Renders the entire terminal grid in a **single instanced draw call** using a custom WGSL shader.
-- **Zero-Allocation Ring Buffer:** Character cells are packed into just **12 bytes** (`codepoint`, packed `fg`, packed `bg`). Scrolling and heavy logging stream directly through an in-place circular ring buffer without runtime heap thrashing.
-- **True 0.0% Idle CPU:** Pure event-driven execution using `ControlFlow::Wait`. Litty sleeps completely when inactive, never running unnecessary polling loops.
-- **Ghostty-Compatible Configuration:** Reads `~/.litty/config` with full Ghostty syntax and keybinding compatibility. Supports live config reloading (`Cmd+,` / `Ctrl+,` and `Cmd+Shift+,` / `Ctrl+Shift+,`) and auto-reloads on window focus.
-- **Native macOS Lifecycle:** Closing the last tab or window keeps Litty running in the background (Dock) at 0% CPU. Clicking the Dock icon or running `open -a Litty` immediately restores a fresh tab. Press `Cmd+Q` (or `Ctrl+Shift+Q` on Linux) to quit; with `confirm-close-surface` (default) Litty asks first while a program is still running. A native menu bar exposes the main actions, including **Secure Keyboard Entry**.
-- **Multiple Windows:** `Cmd+N` / `Ctrl+Shift+N` opens another window in the current directory; each window has its own tabs and splits.
-- **Tabs with CWD Inheritance:** Seamless multi-tab experience (`Cmd+T`/`Ctrl+Shift+T`, `Cmd+W`/`Ctrl+Shift+W`, tab cycling, 1..9 direct jumps). New tabs automatically open in the current working directory of the active tab.
-- **Ghostty-Style Splits / Panes:** Split any tab horizontally or vertically (`Cmd+D` / `Cmd+Shift+D` on macOS, `Ctrl+Shift+D` / `Ctrl+Shift+E` on Linux). Seamlessly navigate between panes (`Cmd+Option+Arrows` / `Cmd+[` / `Cmd+]`), resize splits (`Cmd+Ctrl+Arrows`), toggle zoom (`Cmd+Shift+Enter`), or equalize ratios (`Cmd+Option+=`). Renders sleek hairline divider borders with zero overhead in the same single GPU instanced draw call.
-- **Smart Hyperlink & Path Detection:** `Cmd+Click` (macOS) / `Ctrl+Click` (Linux) on URLs or local filesystem paths (`~/...`, `./...`, or absolute paths) to open them directly in your default browser or editor. Explicit **OSC 8 hyperlinks** (`ls --hyperlink`, `gcc`, `delta`, `rg --hyperlink-format`) take priority: hovering shows the real target, `file://` links open the local file, and only `http(s)`, `ftp(s)` and `mailto` URIs are opened.
-- **Built-in CLI History Search:** Press `Ctrl+R` (or `Cmd+R` on macOS, `Super+R` on Linux) to open a zero-latency fuzzy history search popup with character-level match highlighting. Press `Enter` to run, `Tab` to insert into the prompt for editing, and `Esc` to close. Preserves `Ctrl+R` redo inside vim/nano!
-- **Find in Terminal (Regex):** Press `Cmd+F` (macOS) or `Ctrl+Shift+F` / `Super+F` (Linux) to open a search box in the top-right corner. Queries are regular expressions by default (`Ctrl+R` toggles literal mode) with smart case. All matches in the scrollback are highlighted; `Enter` / `↑` / `Cmd+G` jump to the previous (older) match, `Shift+Enter` / `↓` / `Cmd+Shift+G` to the next, and `Esc` closes.
-- **Click-to-Position Cursor:** Click anywhere on the active command line, including its soft-wrapped rows and multiline input with shell integration, to immediately move the shell cursor to that character, with automatic alignment for wide Unicode glyphs, CJK characters, and multi-byte prompt symbols (`❯`, `🦀`, emojis).
-- **Ergonomic Line & Word Editing:** Out-of-the-box support for word jumping (`Option+Left/Right` on macOS without interfering with Mission Control Spaces, `Ctrl+Left/Right` on Linux), prompt-aware deletion before cursor (`Ctrl+U`), delete to line end (`Ctrl+K`), and instant scrollback clear (`Cmd+K` / `Ctrl+Shift+K`).
-- **Automatic Shell Integration:** zsh, bash (including macOS's 3.2), fish and nushell (0.101+) get OSC 133 prompt marks and OSC 7 directory reports without editing any dotfile (injected via `ZDOTDIR`, `bash --rcfile`, or `XDG_DATA_DIRS`); elvish needs one line, `use litty`, in `rc.elv`. This powers jumping between prompts (`Cmd+Shift+↑/↓`), selecting the last command's output (`Cmd+Shift+O`), new tabs in the current directory, and optionally a bar cursor at the prompt and the window title (`shell-integration-features = cursor,title`).
-- **Kitty Keyboard Protocol:** Full support for all five progressive enhancements (`CSI > flags u`): disambiguated `Esc`/`Ctrl`/`Alt` keys, key repeat & release events, alternate (shifted and US-layout) keys, every key as an escape code, and associated text — with separate flag stacks for the main and alternate screens. Neovim, Helix, fish 4 and Kakoune can tell `Ctrl+I` from `Tab`, `Ctrl+Shift+<key>` from `Ctrl+<key>`, and see key releases.
-- **xterm `modifyOtherKeys`:** levels 1 and 2 (`CSI > 4 ; n m`) encode modified keys such as `Ctrl+Enter`, `Ctrl+1` or `Ctrl+Tab` as `CSI 27 ; mods ; code ~` for applications that do not speak the Kitty protocol. Unbound `Cmd`/`Super` combinations reach Kitty-protocol applications (e.g. Neovim `<D-…>` mappings).
-- **Full-Screen App & Unicode Support:** Mouse reporting (X10/SGR, click, drag and motion tracking) for vim, tmux and htop; focus events; alternate scroll in `less`/`man`; IME input (Vietnamese Telex/VNI, CJK); combining-mark composition; double-width CJK glyphs; color emoji (Apple Color Emoji on macOS, Noto Color Emoji bitmaps on Linux) with grapheme clustering (DEC mode 2027: ZWJ sequences, flags, skin tones, VS16 and keycaps share one cell pair, marks without a precomposed form stay with their base); right-to-left Hebrew and Arabic shown in visual order with joined Arabic letters on the primary screen; bold/italic text; strikethrough (SGR 9) and styled underlines (SGR `4:1`..`4:5` single/double/curly/dotted/dashed, `21` double) with their own color (SGR 58/59), as used by Neovim diagnostics; reflow of wrapped lines on resize; synchronized output; XTGETTCAP / DECRQSS / XTWINOPS replies, SGR pixel mouse (1016), light/dark color scheme reports (2031, DSR 996), OSC 9 / OSC 777 desktop notifications, OSC 9;4 progress in the tab title, OSC 22 pointer shape, a bell that bounces the Dock and marks the tab with 🔔, OSC 4 / 10 / 11 / 12 (set and query the palette, default foreground/background and cursor color per terminal, reset with OSC 104 / 110 / 111 / 112), OSC 7 (cwd), OSC 8 (hyperlinks), OSC 52 (set clipboard) and OSC 133 (prompt marks).
-- **Inline Images:** the Kitty graphics protocol (PNG / RGB / RGBA, chunked, file, temp-file or shared-memory transfers — `kitten icat`, `timg`, `chafa`, yazi previews; images under the text with `z < 0`; unicode placeholders for tmux and other multiplexers; animation frames) and Sixel (`img2sixel`, `chafa -f sixel`); images scroll with the text and survive reflow.
-- **Aesthetics & Window Effects:** Native macOS vibrancy blur, transparent backgrounds, 24-bit TrueColor support, and 861 bundled themes from [iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes) (`litty +list-themes`; custom themes in `~/.litty/themes` or `~/.config/ghostty/themes` override them). As in Ghostty, a theme is applied before the rest of the config, so your own colors always win.
+- **Native GPU rendering** on Metal (macOS) and Vulkan (Linux): the whole grid in a single instanced draw call.
+- **12-byte cells in a zero-allocation ring buffer**, so heavy output never thrashes the heap.
+- **0.0% idle CPU** and ~36 MB idle RAM (`ControlFlow::Wait`, event-driven).
+- **Ghostty-compatible configuration** with live reload.
+- **Tabs, windows and splits** that inherit the working directory.
+- **Built-in history search, regex find, click-to-position cursor and hyperlink detection.**
+- **Automatic shell integration** (zsh, bash, fish, nushell, elvish) and the **Kitty keyboard / graphics protocols**, Sixel and full Unicode support.
+- **`yo` AI shell assistant** with multiple providers, including local Ollama.
+
+See [Features](docs/features.md) for the full list.
 
 ---
 
-## 📊 Performance & Memory Footprint
+## 🚀 Quick Start
 
-When the 65,536-entry grapheme table fills, collection retries are bounded to
-avoid scanning scrollback for every new cluster. Existing clusters remain
-available; new clusters may temporarily lose combining marks until a later
-collection reclaims unused entries.
-
-Tested on macOS Sequoia / Sonoma (Apple Silicon M-series, empty idle shell):
-
-| Terminal Emulator | Idle RAM (Activity Monitor) | Idle RAM (RSS) | Idle CPU | Startup Time | Binary Size | GPU Backend |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Litty** | **~36 MB** | **~85 – 108 MB** | **0.0%** | **< 30 ms** | **5.7 MB** | Metal (Direct) |
-| Ghostty | ~70 – 85 MB | ~110 – 125 MB | 0.0% | ~50 ms | ~45 MB | Metal |
-| Alacritty | ~75 – 95 MB | ~115 – 135 MB | 0.0% | ~60 ms | ~18 MB | OpenGL / Metal |
-| WezTerm | ~130 – 160 MB | ~170 – 210 MB | 0.0% – 0.5% | ~120 ms | ~95 MB | OpenGL / Vulkan |
-
-> [!NOTE]
-> **Measuring Memory Footprint on macOS**: macOS Activity Monitor displays **Physical Footprint** (`task_vm_info.phys_footprint`: actual private dirty memory + compressed memory), which accurately reflects the real memory cost attributed to the process (**~36 MB** for Litty). The legacy Unix `ps -o rss` metric includes shared read-only framework pages (Metal, AppKit, and system dylib caches) shared across all macOS GUI applications.
-
-### 🚀 Measured Engine Latencies & Microbenchmarks
-
-| Component / Subsystem | Optimization / Architecture | Measured Latency | Throughput / Speedup |
-| :--- | :--- | :---: | :---: |
-| **Glyph Atlas Direct Cache** | Direct `[u16; 128]` ASCII cache bypasses hash maps | **39.78 µs** / 8,000 cells | **38.8x faster** (97.4% less time vs SipHash) |
-| **FZF History Search** | Zero-heap-allocation slice tokens & smart-case matching | **23.34 ms** / 10,000 cmds | Sub-frame fuzzy interactive filtering |
-| **PTY Keystroke Drain** | Non-blocking `poll(timeout=0)` stream drain | **1.0 µs** / keystroke | **99.9% reduction** (~1.0 ms saved per key) |
-| **Kernel Syscall Overhead** | Throttled CWD & Tab title queries with `OnceLock` | **188.0 ns** / frame | **10.2x reduction** (90.2% syscall reduction) |
-| **GPU Swapchain Passes** | Coalesced single-pass rendering per wake event | **1 pass** / WakeUp | **50% fewer** swapchain acquires & V-Sync waits |
-| **Grid Cell Packing** | Packed `Cell` (`codepoint`, packed `fg`, packed `bg`) | **12 bytes** / cell | Zero runtime heap allocation on scroll/output |
-
-
----
-
-## 🏗 Architecture
-
-Litty decouples I/O throughput from rendering to guarantee smooth UI interaction even during heavy terminal output:
-
-```text
-               ┌──────────────────────────────┐
-               │    Shell Process (zsh/bash)  │
-               └──────────────┬───────────────┘
-                              │ OS PTY Pipe
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Thread 1: PTY Reader Thread                                  │
-│  • Reads raw stream via 64 KB static buffer                 │
-│  • Parses ANSI / VT sequences via `vte` state machine       │
-│  • Writes directly into locked contiguous RingBuffer Grid   │
-│  • Dispatches throttled WakeUp event to EventLoop           │
-└─────────────────────────────┬───────────────────────────────┘
-                              │ Atomic Dirty Flag + WakeUp
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Thread 2: Main Event & Render Thread (winit + wgpu)          │
-│  • Event-driven: Sleeps at 0.0% CPU when idle               │
-│  • Synchronized to display V-Sync (120Hz on ProMotion)      │
-│  • Maps visible cells into single GPU Instance Buffer       │
-│  • 1 Instanced Draw Call via custom WGSL shader             │
-└─────────────────────────────────────────────────────────────┘
-```
-
----
-
-## ⌨️ Default Shortcuts
-
-Litty provides complete shortcut parity across macOS and Linux, adhering strictly to terminal conventions on each platform:
-
-| Action | macOS (`Cmd`) | Linux (`Ctrl` / `Super`) | Notes |
-| :--- | :--- | :--- | :--- |
-| **New tab** *(inherits active CWD)* | <kbd>Cmd</kbd> + <kbd>T</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>T</kbd> *(or <kbd>Super</kbd> + <kbd>T</kbd>)* | Preserves bare `Ctrl+T` (transpose/fzf) |
-| **New window** *(inherits active CWD)* | <kbd>Cmd</kbd> + <kbd>N</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>N</kbd> *(or <kbd>Super</kbd> + <kbd>N</kbd>)* | Preserves bare `Ctrl+N` (history) |
-| **Close active pane / tab** | <kbd>Cmd</kbd> + <kbd>W</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>W</kbd> *(or <kbd>Super</kbd> + <kbd>W</kbd>)* | Closes active split pane; closes tab if last pane remaining |
-| **Split pane right (Vertical)** | <kbd>Cmd</kbd> + <kbd>D</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd> *(or <kbd>Super</kbd> + <kbd>D</kbd>)* | Splits active pane vertically with hairline divider |
-| **Split pane down (Horizontal)** | <kbd>Cmd</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>E</kbd> / <kbd>Super</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd> | Splits active pane horizontally |
-| **Toggle split zoom** | <kbd>Cmd</kbd> + <kbd>Shift</kbd> + <kbd>Enter</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Enter</kbd> *(or <kbd>Super</kbd> + <kbd>Shift</kbd> + <kbd>Enter</kbd>)* | Expands active split to fill window; press again to restore |
-| **Equalize split sizes** | <kbd>Cmd</kbd> + <kbd>Option</kbd> + <kbd>=</kbd> | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>=</kbd> *(or <kbd>Super</kbd> + <kbd>Alt</kbd> + <kbd>=</kbd>)* | Resets all split dividers in current tab to equal ratios |
-| **Navigate splits / tabs** | <kbd>Cmd</kbd> + <kbd>←</kbd> / <kbd>→</kbd> / <kbd>↑</kbd> / <kbd>↓</kbd> *(or + <kbd>Option</kbd>)* | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + Arrows *(or <kbd>Super</kbd> + Arrows)* | Spatial focus navigation (falls back to cycling tabs at edge) |
-| **Cycle splits (Prev / Next)** | <kbd>Cmd</kbd> + <kbd>[</kbd> / <kbd>]</kbd> | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>[</kbd> / <kbd>]</kbd> *(or <kbd>Super</kbd> + <kbd>[</kbd> / <kbd>]</kbd>)* | Cycles focus across split panes in active tab |
-| **Resize active split** | <kbd>Cmd</kbd> + <kbd>Ctrl</kbd> + Arrows | <kbd>Super</kbd> + <kbd>Ctrl</kbd> + Arrows / <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + Arrows | Dynamically expands or shrinks active split pane |
-| **Quit Litty** | <kbd>Cmd</kbd> + <kbd>Q</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Q</kbd> *(or <kbd>Super</kbd> + <kbd>Q</kbd>)* | Preserves bare `Ctrl+Q` (XON flow control) |
-| **Minimize window** | <kbd>Cmd</kbd> + <kbd>M</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd> *(or <kbd>Super</kbd> + <kbd>M</kbd>)* | Preserves bare `Ctrl+M` (Enter / Carriage return) |
-| **Cycle tabs (Prev / Next)** | <kbd>Cmd</kbd> + <kbd>Shift</kbd> + <kbd>[</kbd> / <kbd>]</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>[</kbd> / <kbd>]</kbd> | Circular tab switching |
-| **Cycle tabs (Next / Prev)** | <kbd>Ctrl</kbd> + <kbd>Tab</kbd> / <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Tab</kbd> | <kbd>Ctrl</kbd> + <kbd>Tab</kbd> / <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Tab</kbd> | Cross-platform standard |
-| **Navigate tabs (Left / Right)** | <kbd>Cmd</kbd> + <kbd>Option</kbd> + <kbd>←</kbd> / <kbd>→</kbd> | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>←</kbd> / <kbd>→</kbd> *(or <kbd>Super</kbd> + <kbd>Alt</kbd>)* | Direct spatial switching |
-| **Jump to tab 1..9** | <kbd>Cmd</kbd> + <kbd>1</kbd> .. <kbd>9</kbd> | <kbd>Ctrl</kbd> + <kbd>1</kbd> .. <kbd>9</kbd>, <kbd>Alt</kbd> + <kbd>1</kbd> .. <kbd>9</kbd> | Matches `^1`..`^9` badges; `9` jumps to last tab |
-| **Copy selection** | <kbd>Cmd</kbd> + <kbd>C</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>C</kbd> *(or <kbd>Super</kbd> + <kbd>C</kbd>)* | Preserves `Ctrl+C` (SIGINT) |
-| **Paste clipboard** | <kbd>Cmd</kbd> + <kbd>V</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>V</kbd> *(or <kbd>Super</kbd> + <kbd>V</kbd>)* | Bracketed paste aware; preserves `Ctrl+V` (literal escape) |
-| **Zoom in (+1.0 pt)** | <kbd>Cmd</kbd> + <kbd>+</kbd> / <kbd>=</kbd> | <kbd>Ctrl</kbd> + <kbd>+</kbd> / <kbd>=</kbd> *(with/without Shift, or Super)* | Font size clamps between 6.0 – 72.0 pt |
-| **Zoom out (-1.0 pt)** | <kbd>Cmd</kbd> + <kbd>-</kbd> | <kbd>Ctrl</kbd> + <kbd>-</kbd> / <kbd>_</kbd> *(with/without Shift, or Super)* | Font size clamps between 6.0 – 72.0 pt |
-| **Reset zoom** | <kbd>Cmd</kbd> + <kbd>0</kbd> | <kbd>Ctrl</kbd> + <kbd>0</kbd> *(with/without Shift, or Super)* | Resets to configured default font size |
-| **Open config editor** | <kbd>Cmd</kbd> + <kbd>,</kbd> | <kbd>Ctrl</kbd> + <kbd>,</kbd> *(or <kbd>Super</kbd> + <kbd>,</kbd>)* | Opens `~/.litty/config` in `$EDITOR` |
-| **Reload config file** | <kbd>Cmd</kbd> + <kbd>Shift</kbd> + <kbd>,</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>,</kbd> | Live reload without losing shell session |
-| **Open URL or path** | <kbd>Cmd</kbd> + <kbd>Click</kbd> | <kbd>Ctrl</kbd> + <kbd>Click</kbd> *(or <kbd>Super</kbd> + <kbd>Click</kbd>)* | Opens in default browser / editor via `open` or `xdg-open` |
-| **Hover URL preview** | <kbd>Cmd</kbd> + <kbd>Mouse Move</kbd> | <kbd>Ctrl</kbd> + <kbd>Mouse Move</kbd> *(or <kbd>Super</kbd>)* | Underlines URL and displays preview pill |
-| **Jump to previous / next prompt** | <kbd>Cmd</kbd> + <kbd>Shift</kbd> + <kbd>↑</kbd> / <kbd>↓</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>↑</kbd> / <kbd>↓</kbd> | Scrolls between shell prompts (needs shell integration) |
-| **Select last command output** | <kbd>Cmd</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd> | Selects and copies the output of the last command (needs shell integration) |
-| **Terminal inspector** | <kbd>Cmd</kbd> + <kbd>Option</kbd> + <kbd>I</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>I</kbd> *(or <kbd>Super</kbd> + <kbd>Alt</kbd> + <kbd>I</kbd>)* | Debug overlay: modes, protocols, cell under the mouse, last key's bytes |
-| **Select all** | <kbd>Cmd</kbd> + <kbd>A</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>A</kbd> *(or <kbd>Super</kbd> + <kbd>A</kbd>)* | Selects all scrollback and screen text; copy with <kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd>. Preserves bare `Ctrl+A` (beginning of line) |
-| **Extend selection** | <kbd>Shift</kbd> + <kbd>Click</kbd> / <kbd>Drag</kbd> | <kbd>Shift</kbd> + <kbd>Click</kbd> / <kbd>Drag</kbd> | Moves the nearest end of the current selection to the mouse and copies it |
-| **Select text in mouse apps** | <kbd>Shift</kbd> + <kbd>Drag</kbd> | <kbd>Shift</kbd> + <kbd>Drag</kbd> | Bypasses mouse reporting in vim/tmux/htop to select and copy locally |
-| **Click to position cursor** | <kbd>Mouse Left Click</kbd> | <kbd>Mouse Left Click</kbd> | Repositions cursor to clicked character on active command line (Unicode & wide-char aligned) |
-| **Jump word backward / forward** | <kbd>Option</kbd> + <kbd>←</kbd> / <kbd>→</kbd> | <kbd>Ctrl</kbd> + <kbd>←</kbd> / <kbd>→</kbd> *(or <kbd>Alt</kbd> + Arrows)* | Jumps cursor backward/forward by word (`\x1bb` / `\x1bf`). On macOS, strictly `Option+Arrows` to avoid Mission Control Spaces collision |
-| **Delete before cursor** | <kbd>Ctrl</kbd> + <kbd>U</kbd> | <kbd>Ctrl</kbd> + <kbd>U</kbd> | Prompt-aware deletion from prompt to cursor (preserves prompt & text after cursor; preserves Vim scroll in alt screen) |
-| **Delete after cursor** | <kbd>Ctrl</kbd> + <kbd>K</kbd> | <kbd>Ctrl</kbd> + <kbd>K</kbd> | Deletes all text from cursor to end of command line (`kill-line`) |
-| **Clear screen & scrollback** | <kbd>Cmd</kbd> + <kbd>K</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>K</kbd> | Clears scrollback history buffer and redraws prompt at top (matches Terminal.app / iTerm2 / Ghostty) |
-| **CLI History Search** | <kbd>Ctrl</kbd> + <kbd>R</kbd> *(or <kbd>Cmd</kbd> + <kbd>R</kbd>)* | <kbd>Ctrl</kbd> + <kbd>R</kbd> *(or <kbd>Super</kbd> + <kbd>R</kbd> / <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>R</kbd>)* | Built-in fuzzy history search; `Enter`: execute, `Tab`: insert, `Esc`: close; preserves vim redo |
-| **Find in Terminal** | <kbd>Cmd</kbd> + <kbd>F</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>F</kbd> *(or <kbd>Super</kbd> + <kbd>F</kbd>)* | Regex search box (top-right); `Enter`/`↑`: older match, `Shift+Enter`/`↓`: newer, `Ctrl+R`: toggle regex/literal, `Esc`: close |
-| **Scroll history locally** | <kbd>Shift</kbd> + <kbd>PageUp</kbd> / <kbd>PageDown</kbd> | <kbd>Shift</kbd> + <kbd>PageUp</kbd> / <kbd>PageDown</kbd> | Scrolls active tab's scrollback buffer |
-
----
-
-## ⚙️ Configuration
-
-## AI shell assistance (`yo`)
-
-With shell integration enabled, type `yo <task or question>` in zsh, bash, fish, or nushell. The assistant can suggest a command in your editable prompt, answer inline, or inspect recent terminal output. Commands run when you press Enter. Ctrl+C cancels thinking; typing, paste, and Enter during thinking wait in a per-pane queue until the response and prompt are ready. An Enter queued during thinking can run the suggestion once it appears.
-
-For example, add this to `~/.litty/config` and set `OPENAI_API_KEY` in Litty's environment:
-
-```ini
-ai-provider = openai
-ai-model = gpt-5.2
-ai-thinking = off
-ai-web-search = false
-```
-
-Providers are `anthropic`, `openai`, `openrouter`, `deepseek`, `kimi`, `qwen`, `zai`, and `ollama`. OpenAI uses Responses by default; a full `ai-base-url` ending in `/chat/completions` selects Chat Completions. For Ollama, use `ai-provider = ollama` and `ai-model = <your installed model>`; no key is required. `ai-base-url` accepts an API root such as `http://localhost:11434/v1` or a complete endpoint. Custom models can set `ai-context-window` in tokens.
-
-Keys resolve from `ai-api-key`, the selected provider's environment variable (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `KIMI_API_KEY`, `QWEN_API_KEY`, or `ZAI_API_KEY`), Yosh `~/.yoconf`, or the matching `~/.<provider>key` file. Explicit Litty provider/model/endpoint settings override Yosh fallback values. Configuration is read when a query starts. Thinking and web search are off by default; server web search is available through Anthropic and Responses endpoints.
-
-Multi-step suggestions still require Enter for every command. Editing a pending suggestion continues the workflow with the command actually executed and its output. Empty Enter, Ctrl+C, or a new `yo` query cancels the previous chain. Model-requested scrollback and continuation output are sent to the configured provider; sessions and the last response stay in memory per pane. Local commands are `yo reset`, `yo show last response`, and `yo show documentation`.
-
-Litty reads its configuration from:
-```text
-~/.litty/config
-```
-
-- Press <kbd>Cmd</kbd> + <kbd>,</kbd> (macOS) or <kbd>Ctrl</kbd> + <kbd>,</kbd> (Linux) inside Litty to create a documented template and open it in your default `$EDITOR`.
-- Press <kbd>Cmd</kbd> + <kbd>Shift</kbd> + <kbd>,</kbd> / <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>,</kbd> to live-reload.
-- Configuration is also **automatically reloaded on window focus** whenever the file is modified on disk.
-- Litty maintains full syntax compatibility with Ghostty configuration keys and loads custom themes from `~/.litty/themes` or `~/.config/ghostty/themes`.
-
----
-
-### 🗺️ Configuration Reference (ConfigMap)
-
-| Category | Option Key | Type / Accepted Values | Default | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| **Window & Layout** | `window-width` | Integer $\ge 10$ | `None` (auto) | Initial terminal width in grid columns (must be set with `window-height`) |
-| | `window-height` | Integer $\ge 4$ | `None` (auto) | Initial terminal height in grid rows (must be set with `window-width`) |
-| | `background-opacity` | Float `0.0` .. `1.0` | `1.0` | Window transparency (0 = transparent, 1 = opaque) |
-| | `background-blur` | `true`, `false`, or uint `0`..`255` | `0` (off) | macOS vibrancy blur radius behind transparent windows (`true` = 20 pt) |
-| | `window-colorspace` | `srgb`, `display-p3` | `srgb` | Surface rendering color space (macOS) |
-| | `window-padding-x` | Float (points) or `left,right` | `4.0` | Horizontal padding between window edge and terminal grid |
-| | `window-padding-y` | Float (points) or `top,bottom` | `4.0` | Vertical padding between window edge and terminal grid |
-| | `window-padding-balance` | `true`, `false` | `false` | Spread leftover window margin pixels evenly around the grid |
-| | `macos-native-tabs` | `true`, `false` | `false` | Use macOS native NSWindow tab bar instead of built-in GPU tab bar |
-| | `title` | String | Shell CWD / Title | Force a fixed window title instead of the running program's |
-| **Fonts & Typography** | `font-family` | String (name or file path) | System monospace | Monospace font family. Repeatable to define fallback chain in priority order |
-| | `font-size` | Float `6.0` .. `72.0` | `14.0` | Base font size in points (<kbd>Cmd+0</kbd> resets to this size) |
-| | `adjust-cell-width` | Percentage (`10%`) or px (`-1`, `2`) | `0` | Adjust cell width metric |
-| | `adjust-cell-height` | Percentage (`10%`) or px (`-1`, `2`) | `0` | Adjust cell height / line spacing |
-| | `font-thicken` | `true`, `false` | `false` | Enable synthetic bold/thickening for thin fonts |
-| | `font-feature` | Comma-separated or repeatable | None | OpenType font features (e.g. `-calt`, `ss01`, `liga=0`) |
-| | `grapheme-width-method` | `unicode`, `legacy`, `wcswidth` | `unicode` | `unicode` enables DEC mode 2027 (emoji ZWJ clustering); `legacy` is 1 cell/codepoint |
-| **Colors & Themes** | `background` | `#rrggbb` or named color | `#121316` | Default terminal background color |
-| | `foreground` | `#rrggbb` or named color | `#e6e6e6` | Default terminal foreground color |
-| | `theme` | Theme name or `light:X,dark:Y` | `None` | Color theme (861 bundled; dynamic light/dark OS switching supported) |
-| | `palette` | `N=color` (0..15) | Default 16-color | Override specific ANSI palette index (`palette = 1=#ff0000`) |
-| | `cursor-color` | `#rrggbb` | `foreground` | Initial cursor color (OSC 12 dynamically overrides per terminal) |
-| | `selection-background` | `#rrggbb` | Default blue | Background fill for selected text |
-| | `selection-foreground` | `#rrggbb` | Default light | Text color for selected text |
-| | `minimum-contrast` | Float `1.0` .. `21.0` | `1.0` (off) | Enforce WCAG minimum contrast ratio between text & background |
-| **Cursor & Mouse** | `cursor-style` | `block`, `bar`, `underline`, `block_hollow` | `block` | Initial cursor shape |
-| | `cursor-style-blink` | `true`, `false`, or empty | Unset (app-set) | Cursor blinking state (`true`/`false` force overrides) |
-| | `mouse-hide-while-typing` | `true`, `false` | `false` | Automatically hide cursor pointer when keystrokes occur |
-| | `mouse-scroll-multiplier` | Float or `precision:P,discrete:D` | `precision:1,discrete:3` | Scroll speed factor for trackpads (precision) and wheels (discrete) |
-| | `copy-on-select` | `true`, `false`, `clipboard` | `true` | Automatically copy text selection to system clipboard on mouse release |
-| | `clipboard-write` | `true`, `allow`, `false`, `deny` | `true` | Allow programs to write to system clipboard via OSC 52 |
-| **Shell Integration** | `shell-integration` | `detect`, `zsh`, `bash`, `fish`, `nushell`, `elvish`, `none` | `detect` | Automatic shell prompt mark and CWD reporting injection |
-| | `shell-integration-features` | Comma-separated: `cursor`, `sudo`, `title` (or `no-*`) | `cursor,title` | Injected shell features (`cursor` sets bar prompt cursor; `title` reports CWD) |
-| **Splits & Scrollback** | `scrollback-limit` | Integer (bytes) | 5000 lines | Total scrollback buffer memory limit in bytes |
-| | `unfocused-split-opacity` | Float `0.15` .. `1.0` | `0.7` | Opacity/dim factor applied to inactive split panes |
-| | `unfocused-split-fill` | `#rrggbb` | Background | Color inactive splits fade toward |
-| | `confirm-close-surface` | `true` (`running`), `false` (`never`), `always` | `running` | Ask confirmation before closing a pane with running child process |
-| **Bell & Notifications** | `bell-features` | Comma-separated: `system`, `attention`, `title`, `audio`, `border` | `attention,title` | Actions triggered on terminal `BEL` (`\a`) |
-| | `bell-audio-path` | Path to audio file | System Glass | Custom audio sound file for bell alerts |
-| | `bell-audio-volume` | Float `0.0` .. `1.0` | `0.5` | Bell audio playback volume |
-| **Shaders & Effects** | `custom-shader` | Path to GLSL file (repeatable) | None | Shadertoy GLSL post-processing shader pass (chains in file order) |
-| | `custom-shader-animation` | `true` (focused), `false` (off), `always` | `true` | Animation frame loop policy for custom GLSL shaders |
-| **Keybindings & Actions** | `keybind` | `trigger=action`, `trigger=text:<val>`, `unbind`, `clear` | Defaults | Custom shortcut mapping (Ghostty syntax) |
-| | `quick-terminal-autohide` | `true`, `false` | `true` | Dismiss drop-down Quick Terminal when losing window focus |
-| **Auto Update** | `auto-update` | `check`, `download`, `off` (`false`) | `check` | GitHub self-update checking and downloading policy |
-| | `auto-update-channel` | `stable`, `tip` | `stable` | Update release channel (`tip` includes prereleases) |
-
----
-
-### ⌨️ Keybinding Actions (`keybind = trigger=action`)
-
-Custom shortcuts can be bound to any action below:
-
-```ini
-# Syntax: keybind = [global:]<modifiers>+<key>=<action>
-# Example:
-keybind = cmd+t=new_split:right
-keybind = ctrl+shift+h=text:hello\n
-keybind = global:cmd+grave_accent=toggle_quick_terminal
-keybind = cmd+d=unbind
-```
-
-| Action Name | Description |
-| :--- | :--- |
-| `new_tab` | Create a new tab in current working directory |
-| `new_window` | Create a new window in current working directory |
-| `close_surface` / `close_tab` | Close active pane (or tab if last pane) |
-| `quit` | Quit terminal application |
-| `toggle_minimize` / `minimize` | Minimize window |
-| `new_split:right` / `new_split:down` | Split active pane vertically (right) or horizontally (down) |
-| `goto_split:left\|right\|up\|down\|next\|previous` | Move focus spatially across split panes |
-| `resize_split:left\|right\|up\|down` | Dynamically expand or shrink active split ratio |
-| `equalize_splits` | Reset all split divider ratios evenly |
-| `toggle_split_zoom` | Maximize active pane to fill tab (toggle) |
-| `previous_tab` / `next_tab` / `last_tab` | Cycle between tabs |
-| `goto_tab:1` .. `goto_tab:9` | Switch directly to tab 1 through 9 |
-| `copy_to_clipboard` / `paste_from_clipboard` | Copy selection / Paste clipboard (bracketed-paste safe) |
-| `select_all` | Select all scrollback buffer text |
-| `clear_screen` | Clear scrollback history and redraw prompt at top |
-| `start_search` / `search` | Open regex Find in Terminal overlay |
-| `history_search` | Open zero-latency CLI fuzzy history search popup |
-| `open_config` / `reload_config` | Open `~/.litty/config` in editor / Live-reload configuration |
-| `jump_to_prompt:-1` / `jump_to_prompt:1` | Jump to previous / next command prompt mark (OSC 133) |
-| `select_last_output` / `select_command_output` | Select and copy output of last completed command |
-| `inspector` / `inspector:toggle` | Toggle terminal debug overlay |
-| `toggle_secure_input` | Toggle macOS Secure Keyboard Entry |
-| `check_for_updates` / `check_update` | Check for latest GitHub release |
-| `text:<string>` | Send verbatim string / keystrokes to shell |
-| `csi:<bytes>` / `esc:<bytes>` | Send raw CSI / Escape byte sequence |
-| `toggle_quick_terminal` | Drop-down global Quick Terminal (can use `global:` modifier) |
-| `unbind` / `ignore` | Disable default shortcut |
-| `clear` | Drop all custom keybindings and restore defaults |
-
----
-
-### Example `~/.litty/config`
-
-```ini
-# Font Configuration
-font-family = "SF Mono"
-font-family = "MesloLGS NF"
-font-family = "Symbols Nerd Font Mono"
-font-size = 14.0
-
-# Window Appearance
-background-opacity = 0.92
-background-blur = 20
-window-colorspace = "display-p3"
-# window-width = 120
-# window-height = 36
-
-# Colors & Palette
-background = #121316
-foreground = #e6e6e6
-# theme = "Catppuccin Mocha"     # any name from `litty +list-themes`
-# theme = light:Horizon Bright,dark:Dracula
-
-# Cursor
-cursor-style = "block"          # "block", "bar", "underline", "block_hollow"
-cursor-style-blink = true
-
-# Mouse & Scrolling
-mouse-hide-while-typing = true
-mouse-scroll-multiplier = precision:1.0,discrete:3.0
-
-# Shell Integration
-shell-integration = "detect"     # "detect", "zsh", "bash", "fish", "nushell", "elvish", "none"
-shell-integration-features = "cursor,title"
-
-# Padding & Layout
-window-padding-x = 8
-window-padding-y = 6
-window-padding-balance = true
-
-# Colors & Behavior
-# cursor-color = #f38ba8
-# selection-background = #3d59a1
-# selection-foreground = #ffffff
-# copy-on-select = true
-# title = Work
-# bell-features = border,audio,no-attention
-# bell-audio-path = /System/Library/Sounds/Glass.aiff
-# font-feature = -calt          # ligatures are on with fonts that have them; also ss01, liga=0
-# adjust-cell-height = 10%       # or pixels: 2 / -1; also adjust-cell-width
-# font-thicken = true
-# grapheme-width-method = unicode # unicode (DEC mode 2027) or legacy
-# custom-shader = ~/.litty/shaders/crt.glsl   # Ghostty/Shadertoy GLSL; repeat to chain
-# macos-native-tabs = false      # Cmd+T opens native macOS window tabs
-# confirm-close-surface = running # running (default), never, always
-# scrollback-limit = 10000000    # bytes, as in Ghostty (default: 5000 lines)
-# unfocused-split-opacity = 0.7  # fade inactive splits (0.15 - 1.0)
-# unfocused-split-fill = #000000
-# minimum-contrast = 1.1         # force readable text (1 = off, 21 = black/white)
-
-# Auto Update
-auto-update = "check"           # "check" (default), "download", or "off"
-auto-update-channel = "stable"  # "stable" (default) or "tip"
-
-# Key bindings (Ghostty syntax; the last match wins, `keybind = clear` drops them all)
-keybind = cmd+t=new_split:right
-keybind = ctrl+shift+h=text:hello\n
-keybind = cmd+d=unbind
-keybind = global:cmd+grave_accent=toggle_quick_terminal
-```
-
-## 🔄 Auto-Update & CLI Commands
-
-Litty includes a built-in, zero-dependency self-updater that checks for releases on GitHub, validates SHA-256 checksums from `SHA256SUMS.txt`, and safely updates `Litty.app` (with ad-hoc codesigning) or standalone binaries in-place.
-
-- **macOS Menu Bar**: Choose **Litty ▸ Check for Updates…** to check and install updates interactively with native Cocoa alerts.
-- **CLI Commands**:
-  - `litty +check-update` (or `--check-update`): Check if a new version is available without installing.
-  - `litty +update` (or `--update`): Download and install the newest release directly in your terminal (use `--force` to reinstall current version).
-- **Background checks** (at most once a day, at startup): `auto-update = check` notifies when a release is out; `auto-update = download` also downloads and verifies it, and the next **Check for Updates…** / `litty +update` installs that copy without downloading again. Nothing is installed without asking.
-- **Channels**: `stable` follows the latest release; `tip` also considers prereleases and picks the highest version.
-- **Architecture-safe**: the updater picks the asset for this machine's CPU (`litty-macos-<arch>`, `Litty-macos-<arch>.zip`, `litty-linux-<arch>`, with `<arch>` = `aarch64` or `x86_64`; the unsuffixed names of older releases count as arm64 on macOS and x86_64 on Linux) and refuses a binary whose Mach-O / ELF header is built for another CPU.
-- Only one update runs at a time (a lock in `~/.cache/litty/updates`, shared with `litty +update`), and every network request has connect and transfer timeouts.
-
----
-
-## 📦 Installation
-
-### macOS (Pre-built DMG / App)
-
-1. Download **`Litty.dmg`** (or `Litty-macos.zip`) from the [Latest Release](https://github.com/Matrix-I/litty-terminal/releases/latest).
-2. Open `Litty.dmg` and drag `Litty.app` into your `/Applications` folder.
-3. **macOS Gatekeeper Notice**: Because Litty is not yet notarized with an Apple Developer Certificate, macOS will mark downloaded apps with a quarantine attribute. Run the following command in Terminal to allow it to open:
+Download the [latest release](https://github.com/Matrix-I/litty-terminal/releases/latest), then follow the [installation guide](docs/installation.md). To build from source:
 
 ```bash
-xattr -dr com.apple.quarantine /Applications/Litty.app
-```
-
-Now you can launch Litty from Spotlight, Launchpad, or the Applications folder!
-
-### Linux (Pre-built Binary)
-
-1. Download **`litty-linux`** (or `litty-linux-x86_64.tar.gz`) from the [Latest Release](https://github.com/Matrix-I/litty-terminal/releases/latest).
-2. Make it executable and place it in your `$PATH`:
-
-```bash
-chmod +x litty-linux
-sudo mv litty-linux /usr/local/bin/litty
-```
-
----
-
-## 🚀 Building & Packaging
-
-### Prerequisites
-
-- [Rust & Cargo](https://rustup.rs/) (edition 2021, Rust 1.80+)
-- **macOS:** Xcode Command Line Tools (`xcode-select --install`)
-- **Linux:** Vulkan drivers, `libxkbcommon`, `fontconfig`
-
-### Build from Source
-
-```bash
-# Clone the repository
 git clone https://github.com/Matrix-I/litty-terminal.git
 cd litty-terminal
-
-# Run tests
-cargo test
-
-# Build optimized release binary
 cargo build --release
 ```
 
-### macOS Application Bundle & DMG
+Press <kbd>Cmd</kbd> + <kbd>,</kbd> (macOS) or <kbd>Ctrl</kbd> + <kbd>,</kbd> (Linux) inside Litty to create and open `~/.litty/config`.
 
-Run the automated bundling script:
+---
 
-```bash
-./bundle_macos.sh
-```
+## 📚 Documentation
 
-This will:
-1. Build Litty with aggressive LTO and size stripping.
-2. Generate `Litty.app` signed with ad-hoc certificates.
-3. Install `Litty.app` to `~/Applications/Litty.app`.
-4. Create an installable drag-and-drop disk image: `dist/Litty.dmg`.
-
+| Topic | Description |
+| :--- | :--- |
+| [Features](docs/features.md) | Everything Litty can do: rendering, input protocols, Unicode, images, themes |
+| [Performance & Memory Footprint](docs/performance.md) | Comparison with other terminals and engine microbenchmarks |
+| [Architecture](docs/architecture.md) | PTY reader / render thread design |
+| [Default Shortcuts](docs/shortcuts.md) | macOS and Linux shortcut matrix |
+| [Configuration](docs/configuration.md) | Config file location, option reference, example config |
+| [Keybinding Actions](docs/keybinding-actions.md) | Actions available to `keybind = trigger=action` |
+| [AI Shell Assistance (`yo`)](docs/ai-assistant.md) | Providers, keys and workflow |
+| [Auto-Update & CLI Commands](docs/updates-and-cli.md) | `litty +update`, channels, background checks |
+| [Installation](docs/installation.md) | Pre-built macOS and Linux binaries |
+| [Building & Packaging](docs/building.md) | Build from source, app bundle and DMG |
+| [Release process](docs/release.md) | Maintainer release checklist |
 
 ---
 
