@@ -4,7 +4,7 @@
 
 **Goal:** Regroup the flat `src/` tree into three layers — `src/terminal/` (emulation core), `src/render/` (GPU, glyphs, fonts) and `src/platform/{macos,linux}/` (OS integration with one symmetric API) — using `git mv` plus path fixes, with zero behavior change, so that the dependency rules *terminal → nothing, render → terminal, platform → nothing, app → everything* hold and are enforced by a test.
 
-**Architecture:** Phase 4 of the 4-phase structural refactor outlined in `docs/plans/2026-11-01-split-main-rs.md`. It runs after phase 1 (`src/app/*`, `src/platform/{mod,process,clipboard}.rs`, `src/cli.rs`, `src/paste.rs`), phase 2 (`src/grid/` split into submodules) and phase 3 (`src/renderer/{mod.rs,ui/*}`, `src/atlas/{mod,shaper,coretext,linux,tests}.rs`). Every directory move is its own commit made with `git mv` and only path edits, so `git log --follow` crosses it. The two edits that are not pure moves — cutting the terminal layer's two upward dependencies and splitting `macos.rs` by concern with Linux twins — are separate commits, each guarded by a layering test added in the same commit.
+**Architecture:** Phase 4 of the 4-phase structural refactor outlined in `plans/2026-11-01-split-main-rs.md`. It runs after phase 1 (`src/app/*`, `src/platform/{mod,process,clipboard}.rs`, `src/cli.rs`, `src/paste.rs`), phase 2 (`src/grid/` split into submodules) and phase 3 (`src/renderer/{mod.rs,ui/*}`, `src/atlas/{mod,shaper,coretext,linux,tests}.rs`). Every directory move is its own commit made with `git mv` and only path edits, so `git log --follow` crosses it. The two edits that are not pure moves — cutting the terminal layer's two upward dependencies and splitting `macos.rs` by concern with Linux twins — are separate commits, each guarded by a layering test added in the same commit.
 
 **Tech Stack:** Rust 2024 edition, winit 0.30, wgpu 24, parking_lot, x11rb (Linux); cargo targets `aarch64-apple-darwin` (host) and `x86_64-unknown-linux-gnu`.
 
@@ -362,7 +362,7 @@ Expected: the second line is a commit older than this one (history crosses the r
 `src/layering_tests.rs`:
 
 ```rust
-//! Layer rules for the source tree (docs/plans/2026-11-01-layered-layout.md):
+//! Layer rules for the source tree (plans/2026-11-01-layered-layout.md):
 //!
 //! - `terminal` uses no crate module outside itself;
 //! - `render` uses only itself and `terminal`;
@@ -909,7 +909,7 @@ pub(crate) use imp::{
     show_progress_dialog, system_dark,
 };
 // Only called from macOS-gated code (see the cfg inventory in
-// docs/plans/2026-11-01-layered-layout.md); the Linux twin keeps the API symmetric.
+// plans/2026-11-01-layered-layout.md); the Linux twin keeps the API symmetric.
 #[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
 pub(crate) use imp::set_window_represented_filename;
 pub(crate) use control_socket::send_toggle;
@@ -1221,7 +1221,7 @@ git commit -m "test(security): scan the whole source tree for removed shell code
 **Files:**
 - Modify: `CLAUDE.md` (`AGENTS.md` and `GEMINI.md` are symlinks to it), `ROADMAP.md`
 
-No other file hard-codes a moved path: `Cargo.toml` (`src/main.rs`), `scripts/bench-scroll.rs` (`../src/scroll.rs`), `scripts/test-yo-shells.py` and `tests/yo_shells.rs` (`src/shell/*`), `scripts/pre-release-check.sh` (`src/bench.rs`), `docs/release.md` (`src/update.rs`) all name files that stay. `README.md` has no source paths and no user-visible change. There is no `.github/` and no `build.rs`. `ROADMAP.md`'s `src/grid.rs`, `src/atlas.rs`, `src/macos.rs`, … mentions are in completed (`[x]`) audit entries: historical, leave them. `docs/yosh_implementation_plan.md` and `docs/plans/2026-11-01-split-main-rs.md` are historical plans: leave them.
+No other file hard-codes a moved path: `Cargo.toml` (`src/main.rs`), `scripts/bench-scroll.rs` (`../src/scroll.rs`), `scripts/test-yo-shells.py` and `tests/yo_shells.rs` (`src/shell/*`), `scripts/pre-release-check.sh` (`src/bench.rs`), `docs/release.md` (`src/update.rs`) all name files that stay. `README.md` has no source paths and no user-visible change. There is no `.github/` and no `build.rs`. `ROADMAP.md`'s `src/grid.rs`, `src/atlas.rs`, `src/macos.rs`, … mentions are in completed (`[x]`) audit entries: historical, leave them. `plans/yosh_implementation_plan.md` and `plans/2026-11-01-split-main-rs.md` are historical plans: leave them.
 
 - [ ] **Step 1: Re-check for stale paths**
 
@@ -1260,7 +1260,7 @@ Add a section at the end:
 ```markdown
 ### Code Health — Layered Layout (Phase 4, 2026-11-01)
 
-- [x] Phase 4 done: `src/terminal/`, `src/render/`, `src/platform/{macos,linux}/` with one symmetric platform API and a layering test (plan: `docs/plans/2026-11-01-layered-layout.md`).
+- [x] Phase 4 done: `src/terminal/`, `src/render/`, `src/platform/{macos,linux}/` with one symmetric platform API and a layering test (plan: `plans/2026-11-01-layered-layout.md`).
 - [ ] Remove tolerated `render → split`: move `PaneRect` into `render`.
 - [ ] Remove tolerated `render → platform`: let `Renderer::new` expose a post-surface hook for Metal drawable setup.
 - [ ] Remove tolerated `platform → config`: pass a platform-owned `WindowLook` to `apply_window_config`.

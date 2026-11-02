@@ -1082,7 +1082,7 @@ Replace the `src/main.rs` bullet with:
 
 - [ ] **Step 2: Update `ROADMAP.md`**
 
-Add under the code-health section: "Phase 1 done: `main.rs` split into `app/` + `platform/` (plan: `docs/plans/2026-11-01-split-main-rs.md`). Next: phase 2 `grid/mod.rs`."
+Add under the code-health section: "Phase 1 done: `main.rs` split into `app/` + `platform/` (plan: `plans/2026-11-01-split-main-rs.md`). Next: phase 2 `grid/mod.rs`."
 
 - [ ] **Step 3: Full verification and size check**
 

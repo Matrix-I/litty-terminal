@@ -4,13 +4,13 @@
 
 **Goal:** Break the 2270-line `src/renderer.rs` (a 505-line `render_panes`, five overlay builders that take `&mut Renderer`) and the 2904-line `src/atlas.rs` (glyph cache, ligature shaper, ~770 lines of procedural sprites, CoreText FFI with duplicated declarations, font discovery, tests) into `src/renderer/` and `src/atlas/` module directories, with zero behavior, timing or allocation change.
 
-**Architecture:** Phase 3 of the 4-phase structural refactor outlined at the end of `docs/plans/2026-11-01-split-main-rs.md`. Atlas first (pure leaf moves, then the cfg-sensitive platform split and FFI dedupe), then renderer: directory + tests, wgpu object creation, overlay widgets as free functions over a small borrowed `Cells` context (no `&mut Renderer`), the per-pane row builder with narrowed borrows, and finally `render_panes` split into named frame phases. Every commit compiles and passes clippy on macOS and `x86_64-unknown-linux-gnu`, and passes the full test suite.
+**Architecture:** Phase 3 of the 4-phase structural refactor outlined at the end of `plans/2026-11-01-split-main-rs.md`. Atlas first (pure leaf moves, then the cfg-sensitive platform split and FFI dedupe), then renderer: directory + tests, wgpu object creation, overlay widgets as free functions over a small borrowed `Cells` context (no `&mut Renderer`), the per-pane row builder with narrowed borrows, and finally `render_panes` split into named frame phases. Every commit compiles and passes clippy on macOS and `x86_64-unknown-linux-gnu`, and passes the full test suite.
 
 **Tech Stack:** Rust edition 2024, wgpu 24 (Metal on macOS, Vulkan elsewhere), fontdue 0.9, rustybuzz 0.20, memmap2; CoreText / CoreGraphics / CoreFoundation FFI on macOS; cargo targets `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`.
 
 ## Prerequisites
 
-- **Phase 1 is merged** (`docs/plans/2026-11-01-split-main-rs.md`). After it, the external callers of these two files live in `src/app/*.rs` instead of `src/main.rs`; this plan finds them with `grep`, never by path.
+- **Phase 1 is merged** (`plans/2026-11-01-split-main-rs.md`). After it, the external callers of these two files live in `src/app/*.rs` instead of `src/main.rs`; this plan finds them with `grep`, never by path.
 - **Phase 2 (`grid/`) is independent.** The renderer only uses grid items re-exported from `crate::grid` (`Grid`, `Hyperlink`, `SearchHit`, `char_width`, `BG_*`, `FG_*`, `UNDERLINE_SINGLE`, `PH_FLAG`, `CLUSTER_FLAG`, `is_wide_cp`) and the `Grid` fields `scroll_fraction`, `dirty`, `all_dirty`, `viewport_dirty`, `cols`, `rows`, `cursor_shape`, `progress`. If Phase 2 lands while this branch is open, rebase; conflicts are limited to those `use` lines and field accesses.
 - Line numbers below are from commit `d1d0c92` (`main` at the time of writing). Phase 1 does not edit `renderer.rs` / `atlas.rs`, but every move **must re-locate items with grep** (see "How to Move an Item"); numbers shift after every cut.
 
@@ -1892,7 +1892,7 @@ with
 Next to the Phase 1 note (code-health section) add:
 
 ```markdown
-- Phase 3 done: `renderer.rs` → `renderer/` (gpu, frame phases, pane_row, ui widgets) and `atlas.rs` → `atlas/` (raster, sprites, shaper, fonts, coretext / linux) (plan: `docs/plans/2026-11-01-split-renderer-atlas.md`). Next: phase 4 layered directories.
+- Phase 3 done: `renderer.rs` → `renderer/` (gpu, frame phases, pane_row, ui widgets) and `atlas.rs` → `atlas/` (raster, sprites, shaper, fonts, coretext / linux) (plan: `plans/2026-11-01-split-renderer-atlas.md`). Next: phase 4 layered directories.
 - [ ] Render loop: remove per-frame heap allocations found during phase 3 — tab bar `Vec<char>` per title (`ui/tab_bar.rs`), find box status `format!` / `to_string` and query `Vec<char>` (`ui/search_box.rs`), history popup `format!` badges, per-item `Vec<char>` and `preview_lines: Vec<String>` (`ui/history_popup.rs`), inspector title `format!` (`ui/inspector.rs`), hovered-URL `format!` / `clone` (`ui/link_preview.rs`), Arabic joined-cluster `String` (`pane_row.rs`).
 - [ ] Share the tab span math (`c0`, `c1`, close / badge reserve) between `Renderer::hit_test_tab_bar` and `ui::tab_bar::build`.
 - [ ] Phase 4: one CoreFoundation / CoreGraphics FFI module shared by `atlas/coretext.rs`, `macos.rs` (`NSRect` / `NSPoint` are layout-identical to `CGRect` / `CGPoint`) and the CoreText benchmark's own extern block in `app/latency_benchmarks.rs`.

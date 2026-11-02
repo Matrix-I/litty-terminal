@@ -4,13 +4,13 @@
 
 **Goal:** Break the 5499-line `src/grid/mod.rs` (one `Grid` struct with 88 fields, 128 inherent methods, ~25 free functions and a 1777-line test module) into cohesive submodules of `src/grid/`, and group four field families into owned sub-structs (`AiTrack`, `TerminalModes`, `ClusterTable`, `Ring`), with zero behavior change and no measurable performance change.
 
-**Architecture:** Phase 2 of the 4-phase structural refactor outlined in `docs/plans/2026-11-01-split-main-rs.md`. Rust allows any number of `impl Grid` blocks in any module of the crate, so almost every task is a *move*: methods leave `mod.rs` as an `impl Grid { ... }` block in a sibling file and keep operating on `Grid`'s fields, which stay visible to all of `grid`'s descendants. Only Tasks 12–15 change data layout, and they do it as pure field-path renames (`self.top` → `self.ring.top`); no logic is rewritten and no method moves *into* a sub-struct. Before any code moves, Task 0 adds a release-mode throughput probe so every task can be gated against a fixed baseline binary.
+**Architecture:** Phase 2 of the 4-phase structural refactor outlined in `plans/2026-11-01-split-main-rs.md`. Rust allows any number of `impl Grid` blocks in any module of the crate, so almost every task is a *move*: methods leave `mod.rs` as an `impl Grid { ... }` block in a sibling file and keep operating on `Grid`'s fields, which stay visible to all of `grid`'s descendants. Only Tasks 12–15 change data layout, and they do it as pure field-path renames (`self.top` → `self.ring.top`); no logic is rewritten and no method moves *into* a sub-struct. Before any code moves, Task 0 adds a release-mode throughput probe so every task can be gated against a fixed baseline binary.
 
 **Tech Stack:** Rust edition 2024 (`Cargo.toml`), vte, bytemuck, parking_lot; cargo targets `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`. Release profile is `lto = "fat"`, `codegen-units = 1` — the performance gate must use that profile (`--release`), never `fast-release`.
 
 ## Prerequisite
 
-- Phase 1 (`docs/plans/2026-11-01-split-main-rs.md`) is merged to `main`. The grid's external callers that this plan edits then live in `src/app/*.rs` instead of `src/main.rs`. Every location below that says `src/main.rs:<line>` is from commit `d1d0c92` and **must be re-located with the `grep` command given next to it** — the function name is given so you know where it went (e.g. `handle_key` → `src/app/keyboard.rs`).
+- Phase 1 (`plans/2026-11-01-split-main-rs.md`) is merged to `main`. The grid's external callers that this plan edits then live in `src/app/*.rs` instead of `src/main.rs`. Every location below that says `src/main.rs:<line>` is from commit `d1d0c92` and **must be re-located with the `grep` command given next to it** — the function name is given so you know where it went (e.g. `handle_key` → `src/app/keyboard.rs`).
 - All line numbers in `src/grid/mod.rs` are from commit `d1d0c92` and shift after every move. Re-locate before cutting (see "How to move an item").
 
 ## Global Constraints
@@ -395,7 +395,7 @@ git add src/grid/perf_probe.rs src/grid/mod.rs
 git commit -m "test(grid): add throughput probe and steady-state allocation test"
 ```
 
-Commit body: "Adds a release-mode feed_byte throughput probe (ignored by default) and a zero-allocation test for steady-state printing, as the performance gate for the grid module split (docs/plans/2026-11-01-split-grid.md)."
+Commit body: "Adds a release-mode feed_byte throughput probe (ignored by default) and a zero-allocation test for steady-state printing, as the performance gate for the grid module split (plans/2026-11-01-split-grid.md)."
 
 - [ ] **Step 8: Create the gate scripts**
 
@@ -1394,7 +1394,7 @@ In the same three files, extend the **Tests** bullet's "unit tests in the same f
 Under `### Code Health & Hardening — Audit 2026-10-31` add:
 
 ```markdown
-- [x] **Phase 2 structural refactor: split `src/grid/mod.rs`** (plan: `docs/plans/2026-11-01-split-grid.md`)
+- [x] **Phase 2 structural refactor: split `src/grid/mod.rs`** (plan: `plans/2026-11-01-split-grid.md`)
   - `mod.rs` 5499 → ~780 lines; `Grid` 88 → 57 fields (`AiTrack`, `TerminalModes`, `ClusterTable`, `Ring`). Probe and stress throughput within the ±3 % gate (Ring within ±1.5 %).
   - Follow-ups (not done, would reduce `Grid` further): group the OSC/DCS/APC collection state (`osc_*`, `dcs*`, `apc_*`, 9 fields), host requests (`title`, `title_changed`, `reported_cwd`, `clipboard_request`, `notification`, `bell`, `progress`, `pointer_shape`), cell extras (`extras*`) and search state (`selection`, `search_matches`, `search_current`); collapse `full_reset`'s per-field mode resets into one `TerminalModes` constructor.
 ```
