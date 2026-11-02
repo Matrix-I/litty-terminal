@@ -1,6 +1,6 @@
 # Litty Roadmap
 
-Release plans and historical records live in `plans/<version>.md`. Completed
+Release plans and historical records live in `docs/plans/<version>.md`. Completed
 items, original evidence, and validation limits are preserved in those files.
 New fix plans contain only issues reproduced by execution.
 
@@ -8,17 +8,17 @@ New fix plans contain only issues reproduced by execution.
 
 | Version | Record |
 | --- | --- |
-| [v0.8.0](./plans/0.8.0.md) | Planned follow-ups |
-| [v0.7.2](./plans/0.7.2.md) | Upcoming release — two runtime-confirmed fixes |
-| [v0.7.1](./plans/0.7.1.md) | Historical release record |
-| [v0.7.0](./plans/0.7.0.md) | Historical release record |
-| [v0.6.0](./plans/0.6.0.md) | Historical release record |
-| [v0.5.0](./plans/0.5.0.md) | Historical release record |
-| [v0.4.1](./plans/0.4.1.md) | Historical release record |
-| [v0.4.0](./plans/0.4.0.md) | Historical release record |
-| [v0.3.0](./plans/0.3.0.md) | Tag record; no roadmap at this release |
-| [v0.2.0](./plans/0.2.0.md) | Tag record; no roadmap at this release |
-| [v0.1.0](./plans/0.1.0.md) | Tag record; no roadmap at this release |
+| [v0.8.0](./docs/plans/0.8.0.md) | Planned follow-ups |
+| [v0.7.2](./docs/plans/0.7.2.md) | Upcoming release — two runtime-confirmed fixes |
+| [v0.7.1](./docs/plans/0.7.1.md) | Historical release record |
+| [v0.7.0](./docs/plans/0.7.0.md) | Historical release record |
+| [v0.6.0](./docs/plans/0.6.0.md) | Historical release record |
+| [v0.5.0](./docs/plans/0.5.0.md) | Historical release record |
+| [v0.4.1](./docs/plans/0.4.1.md) | Historical release record |
+| [v0.4.0](./docs/plans/0.4.0.md) | Historical release record |
+| [v0.3.0](./docs/plans/0.3.0.md) | Tag record; no roadmap at this release |
+| [v0.2.0](./docs/plans/0.2.0.md) | Tag record; no roadmap at this release |
+| [v0.1.0](./docs/plans/0.1.0.md) | Tag record; no roadmap at this release |
 
 The unversioned feature and manual-test catalog is filed under v0.4.0, where a
 roadmap first exists in the local release tags. The unversioned memory audit is
@@ -26,7 +26,7 @@ filed under v0.4.1, where that section first appears. These groupings do not
 assert exact introduction versions for every individual item.
 
 Detailed structural refactor plans and the Yosh implementation plan remain in
-`plans/` and are linked from their release records. Outstanding structural
+`docs/plans/` and are linked from their release records. Outstanding structural
 follow-ups are in v0.8.0; shipped refactor results are in v0.7.1.
 
 ## Verification debt
@@ -46,7 +46,7 @@ follow-ups are in v0.8.0; shipped refactor results are in v0.7.1.
   - Added `linux_xdg_open_dispatch_smoke` (ignored; invoked from `scripts/linux/run.sh`): drives production `open_target` through the real `xdg-open` with a stub `$BROWSER` and asserts spaces, a hyphen-leading name (`./-dash.txt`), an executable script (opens its containing directory) and a release URL. It compiles for macOS and x86_64 Linux and **passed in the Podman container** (2026-11-01, aarch64 Debian 13, `LITTY_TEST_CA_BUNDLE=~/warp-ca.crt` fixed the earlier `static.rust-lang.org` connection error; run directly with `cargo test --locked linux_xdg_open_dispatch_smoke -- --ignored`, 1 passed). The full `scripts/linux/test.sh` still stops at Clippy: `tests/yo_shells.rs:40` triggers `clippy::unnecessary_mut_passed` on Linux (`&mut size` passed to `libc::openpty`), so the rest of `run.sh` was not reached. The handler is stubbed, so a real browser/file-manager check stays manual.
 
 - [ ] **LLM assistant release validation on additional environments**
-  - Implementation is complete (see [implementation record](./plans/yosh_implementation_plan.md#implementation-record-2026-11-01)); mock provider/tool/continuation/cancellation/compaction tests and isolated zsh/Bash 3.2 smoke tests pass.
+  - Implementation is complete (see [implementation record](./docs/plans/yosh_implementation_plan.md#implementation-record-2026-11-01)); mock provider/tool/continuation/cancellation/compaction tests and isolated zsh/Bash 3.2 smoke tests pass.
   - fish PTY interception/repaint/editable-prefill checks passed in the Linux container. Still requires Nushell runtime checks, a live-provider smoke test with configured credentials, and hardware GPU-window visual/idle-memory profiling. These are release validation, not unimplemented assistant features.
   - Anthropic live-provider smoke test **passed** (2026-11-01, `LITTY_AI_LIVE_MODEL=claude-haiku-5-5`, `bash scripts/test-ai-live.sh`, 1 passed in 9.57s): docs + scrollback tool round trips + chat; pending suggestion + edited execution + continuation; context compaction + post-compaction request; transport cancellation in 221 ms. See [scope](./docs/ai-live-validation.md). Other providers (OpenAI, OpenRouter, etc.) were not live-tested.
   - Nushell 0.116.1 (aarch64 Linux container, official GitHub release binary, checksum not verified: no SHA file published at the tried URL) **passed** `python3 scripts/test-yo-shells.py` after a fix: `src/shell/litty.nu` used `char escape`, which no longer exists, so the script errored on load and never emitted `778;init;direct` (`yo` was dead on current Nushell). Now uses `char -i 27`. The harness also answers `ESC[6n` cursor queries and waits longer for Nushell's first start. Older Nushell versions (header claims 0.101+) were not tested.
