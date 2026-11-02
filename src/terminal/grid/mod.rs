@@ -303,6 +303,7 @@ impl Grid {
     /// when the cell after it is where the cursor is. False if it could not.
     fn append_to_cell(&mut self, row: usize, col: usize, c: char, widen: bool) -> bool {
         let cp = self.row_mut(row)[col].codepoint;
+        let was_cluster = cp & (CLUSTER_FLAG | PH_FLAG) == CLUSTER_FLAG;
         let mut text = std::mem::take(&mut self.clusters.buf);
         text.clear();
         match self.cluster(cp) {
@@ -319,6 +320,9 @@ impl Grid {
         let id = self.intern_cluster(text.as_str());
         self.clusters.buf = text;
         let Some(id) = id else { return false };
+        if was_cluster {
+            self.clusters.exhausted = false;
+        }
         let was_wide = is_wide_cp(cp);
         let widen = widen && !was_wide && !self.wrap_pending && self.cur.col == col + 1 && col + 1 < self.cols;
         let r = self.row_mut(row);
@@ -401,12 +405,19 @@ impl Grid {
         let blank = self.blank();
         let cols = self.cols;
         let insert = self.modes.insert_mode;
-        let prev_extra = {
+        let (prev_extra, cluster_overwritten) = {
             let r = self.row_mut(row);
+            let mut cluster_overwritten = false;
             if insert && col + w < cols {
+                if r[cols - w..cols].iter().any(|c| c.codepoint & (CLUSTER_FLAG | PH_FLAG) == CLUSTER_FLAG) {
+                    cluster_overwritten = true;
+                }
                 r.copy_within(col..cols - w, col + w);
             }
             let p_prev = if col > 0 && r[col].codepoint == 0 && is_wide_cp(r[col - 1].codepoint) {
+                if r[col - 1].codepoint & (CLUSTER_FLAG | PH_FLAG) == CLUSTER_FLAG {
+                    cluster_overwritten = true;
+                }
                 let e = r[col - 1].extra();
                 r[col - 1] = blank;
                 e
@@ -415,6 +426,9 @@ impl Grid {
             };
             let last = col + w - 1;
             let p_next = if last + 1 < cols && r[last + 1].codepoint == 0 && is_wide_cp(r[last].codepoint) {
+                if r[last].codepoint & (CLUSTER_FLAG | PH_FLAG) == CLUSTER_FLAG {
+                    cluster_overwritten = true;
+                }
                 let e = r[last + 1].extra();
                 r[last + 1] = blank;
                 e
@@ -422,16 +436,25 @@ impl Grid {
                 0
             };
             let p_curr = r[col].extra();
+            if r[col].codepoint & (CLUSTER_FLAG | PH_FLAG) == CLUSTER_FLAG {
+                cluster_overwritten = true;
+            }
             r[col] = Cell { codepoint, fg, bg };
             let p_w2 = if w == 2 {
+                if r[col + 1].codepoint & (CLUSTER_FLAG | PH_FLAG) == CLUSTER_FLAG {
+                    cluster_overwritten = true;
+                }
                 let e = r[col + 1].extra();
                 r[col + 1] = Cell { codepoint: 0, fg, bg };
                 e
             } else {
                 0
             };
-            p_prev != 0 || p_next != 0 || p_curr != 0 || p_w2 != 0
+            (p_prev != 0 || p_next != 0 || p_curr != 0 || p_w2 != 0, cluster_overwritten)
         };
+        if cluster_overwritten {
+            self.clusters.exhausted = false;
+        }
         if prev_extra {
             self.extras_dirty = true;
         }
@@ -805,6 +828,7 @@ impl Grid {
                 self.saved_main = self.cur;
             }
             self.alt_active = true;
+            self.clusters.exhausted = false;
             self.cur.row = 0;
             self.cur.col = 0;
             self.alt = bytemuck::zeroed_vec(self.cols * self.rows);
@@ -812,6 +836,7 @@ impl Grid {
             self.scroll_fraction = 0.0;
         } else {
             self.alt_active = false;
+            self.clusters.exhausted = false;
             if self.alt.iter().any(|cell| ((cell.fg & FG_EXTRA) | (cell.bg & BG_EXTRA)) != 0) {
                 self.extras_dirty = true;
             }
@@ -865,6 +890,7 @@ impl Grid {
         self.selection = None;
         self.clusters.texts.clear();
         self.clusters.ids.clear();
+        self.clusters.exhausted = false;
         self.clear_rows(0, self.rows);
         self.trim_extras();
         self.apc_state = 0;

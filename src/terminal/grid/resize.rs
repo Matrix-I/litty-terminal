@@ -200,5 +200,6 @@ impl Grid {
         if !self.graphics.virtuals.is_empty() {
             self.prune_dead_virtuals();
         }
+        self.clusters.exhausted = false;
     }
 }

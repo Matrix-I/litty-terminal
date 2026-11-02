@@ -17,6 +17,8 @@ pub(super) struct ClusterTable {
     pub(super) evictions: usize,
     pub(super) marks: Vec<bool>,
     pub(super) remap: Vec<u32>,
+    pub(super) exhausted: bool,
+    pub(super) gc_count: usize,
 }
 
 impl Grid {
@@ -55,7 +57,9 @@ impl Grid {
             return Some(id);
         }
         if self.clusters.texts.len() >= MAX_CLUSTERS {
-            self.gc_clusters();
+            if !self.clusters.exhausted {
+                self.gc_clusters();
+            }
             if let Some(&id) = self.clusters.ids.get(text) {
                 return Some(id);
             }
@@ -76,6 +80,11 @@ impl Grid {
     }
 
     #[cfg(test)]
+    pub(crate) fn cluster_gc_count(&self) -> usize {
+        self.clusters.gc_count
+    }
+
+    #[cfg(test)]
     pub(crate) fn seed_dead_clusters_for_bench(&mut self, count: usize) {
         self.clusters.texts.clear();
         self.clusters.ids.clear();
@@ -88,10 +97,27 @@ impl Grid {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn seed_live_clusters(&mut self, count: usize) {
+        self.clusters.texts.clear();
+        self.clusters.ids.clear();
+        self.clusters.texts.reserve(count);
+        self.clusters.ids.reserve(count);
+        for i in 0..count {
+            let s: Box<str> = format!("live_cluster_{i}").into_boxed_str();
+            self.clusters.texts.push(s.clone());
+            self.clusters.ids.insert(s, i as u32);
+        }
+        for (i, cell) in self.cells.iter_mut().take(count).enumerate() {
+            cell.codepoint = CLUSTER_FLAG | (i as u32);
+        }
+    }
+
     /// Garbage-collect unreferenced grapheme clusters in `self.clusters.texts` and
     /// `self.clusters.ids`, compacting the table and remapping `CLUSTER_ID` on all
     /// active cells (`0..history + rows` and `alt`).
     pub(crate) fn gc_clusters(&mut self) {
+        self.clusters.gc_count += 1;
         let total = self.clusters.texts.len();
         if total == 0 {
             return;
@@ -141,10 +167,12 @@ impl Grid {
             self.clusters.texts.clear();
             self.clusters.ids.clear();
             self.clusters.marks = used;
+            self.clusters.exhausted = false;
             return;
         }
         if used_count == total {
             self.clusters.marks = used;
+            self.clusters.exhausted = true;
             return;
         }
 
@@ -198,5 +226,6 @@ impl Grid {
         }
         self.clusters.marks = used;
         self.clusters.remap = remap;
+        self.clusters.exhausted = false;
     }
 }

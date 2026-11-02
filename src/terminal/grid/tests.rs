@@ -1835,3 +1835,93 @@ fn test_hyperlink_candidate_lock_free_resolution() {
     let resolved_url = cand_url.resolve(None).expect("URL should resolve without CWD");
     assert_eq!(&*resolved_url.url, "https://example.com/docs");
 }
+
+#[test]
+fn cluster_table_exhaustion_does_not_repeatedly_scan_grid() {
+    let mut g = Grid::new(80, 1000);
+    g.seed_live_clusters(super::MAX_CLUSTERS);
+    assert_eq!(g.cluster_count(), super::MAX_CLUSTERS);
+
+    let gc_before = g.cluster_gc_count();
+    // First miss will attempt GC
+    assert_eq!(g.intern_cluster("miss_0"), None);
+    assert_eq!(g.cluster_gc_count(), gc_before + 1);
+
+    // Repeated misses with table still full MUST NOT repeatedly trigger GC
+    for i in 1..50 {
+        let tag = format!("miss_{i}");
+        assert_eq!(g.intern_cluster(&tag), None);
+    }
+    assert_eq!(
+        g.cluster_gc_count(),
+        gc_before + 1,
+        "repeated misses on exhausted table must not repeatedly scan the grid"
+    );
+
+    // Overwrite an active cluster cell (cell 0 in row 0) with a non-cluster character
+    let mut parser = vte::Parser::new();
+    g.cur.row = 0;
+    g.cur.col = 0;
+    g.feed_byte(&mut parser, b'X');
+
+    // Overwriting a cluster unblocks GC: next intern attempt must trigger GC, reclaim the slot, and succeed!
+    let new_id = g.intern_cluster("reclaimed_cluster");
+    assert!(new_id.is_some(), "reclaimed capacity must become usable after reference overwrite");
+    assert_eq!(g.cluster_gc_count(), gc_before + 2, "GC should run once when references changed");
+    // Place it into the cell so all 65,536 slots are live again
+    g.cells[0].codepoint = super::CLUSTER_FLAG | new_id.unwrap();
+
+    // Existing live clusters must remain intact with correct text
+    let cell_1_cp = g.cells[1].codepoint;
+    assert_ne!(cell_1_cp & super::CLUSTER_FLAG, 0);
+    assert_eq!(g.cluster(cell_1_cp), Some("live_cluster_1"));
+
+    // Fill table back up so it exhausts again
+    let gc_mark = g.cluster_gc_count();
+    assert_eq!(g.intern_cluster("miss_again"), None);
+    assert_eq!(g.cluster_gc_count(), gc_mark + 1);
+    assert_eq!(g.intern_cluster("miss_again_2"), None);
+    assert_eq!(g.cluster_gc_count(), gc_mark + 1);
+
+    // Erase a cluster via clear_cols
+    g.clear_cols(0, 1, 2);
+    let new_id_2 = g.intern_cluster("reclaimed_after_erase");
+    assert!(new_id_2.is_some(), "reclaimed capacity must become usable after erase");
+    assert_eq!(g.cluster_gc_count(), gc_mark + 2);
+    g.cells[1].codepoint = super::CLUSTER_FLAG | new_id_2.unwrap();
+
+    // Test alternate-screen transition unblocking
+    assert_eq!(g.intern_cluster("miss_again_3"), None);
+    let gc_mark_alt = g.cluster_gc_count();
+    assert_eq!(g.intern_cluster("miss_again_4"), None);
+    assert_eq!(g.cluster_gc_count(), gc_mark_alt); // suppressed
+    g.set_alt(true, false);
+    g.set_alt(false, false);
+    // After alt screen transition, collection is re-enabled on demand
+    let _ = g.intern_cluster("attempt_after_alt");
+    assert_eq!(g.cluster_gc_count(), gc_mark_alt + 1);
+
+    // Test resize transition unblocking
+    assert_eq!(g.intern_cluster("miss_again_5"), None);
+    let gc_mark_resize = g.cluster_gc_count();
+    assert_eq!(g.intern_cluster("miss_again_6"), None);
+    assert_eq!(g.cluster_gc_count(), gc_mark_resize); // suppressed
+    g.resize(80, 500);
+    let _ = g.intern_cluster("attempt_after_resize");
+    assert_eq!(g.cluster_gc_count(), gc_mark_resize + 1);
+}
+
+#[test]
+fn benchmark_cluster_exhaustion_1000_misses() {
+    let mut g = Grid::new(80, 24);
+    g.seed_live_clusters(super::MAX_CLUSTERS);
+    let start = std::time::Instant::now();
+    for i in 0..1000 {
+        let tag = format!("bench_miss_{i}");
+        let _ = g.intern_cluster(&tag);
+    }
+    let elapsed = start.elapsed();
+    eprintln!("1000 misses on exhausted table took: {elapsed:?}");
+    // Should take under 5ms, unlike the ~156ms when repeatedly scanning
+    assert!(elapsed.as_millis() < 50, "1000 misses took too long: {elapsed:?}");
+}

@@ -120,11 +120,16 @@ impl Grid {
         let b = self.blank();
         let c1 = c1.min(self.cols);
         if c0 < c1 {
-            let had_extra = self.row_mut(r)[c0..c1]
+            let row = self.row_mut(r);
+            let had_cluster = row[c0..c1].iter().any(|c| c.codepoint & (CLUSTER_FLAG | PH_FLAG) == CLUSTER_FLAG);
+            let had_extra = row[c0..c1]
                 .iter()
                 .any(|c| ((c.fg & FG_EXTRA) | (c.bg & BG_EXTRA)) != 0);
             if had_extra {
                 self.extras_dirty = true;
+            }
+            if had_cluster {
+                self.clusters.exhausted = false;
             }
             self.row_mut(r)[c0..c1].fill(b);
         }
@@ -204,6 +209,7 @@ impl Grid {
                     }
                     if self.clusters.texts.len() >= 4096 && self.cells[start..end].iter().any(|c| c.codepoint & (CLUSTER_FLAG | PH_FLAG) == CLUSTER_FLAG) {
                         self.clusters.evictions = self.clusters.evictions.saturating_add(1);
+                        self.clusters.exhausted = false;
                     }
                     if self.cells[start..end].iter().any(|c| ((c.fg & FG_EXTRA) | (c.bg & BG_EXTRA)) != 0) {
                         self.extras_dirty = true;

@@ -70,6 +70,8 @@ impl Grid {
         self.trim_extras();
         if !self.clusters.texts.is_empty() {
             self.gc_clusters();
+        } else {
+            self.clusters.exhausted = false;
         }
         if !self.graphics.virtuals.is_empty() {
             self.prune_dead_virtuals();
