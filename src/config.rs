@@ -152,8 +152,8 @@ pub struct Config {
     /// Minimum WCAG contrast ratio between text and its background, `1..=21`.
     pub minimum_contrast: f32,
     /// `adjust-cell-width` / `adjust-cell-height` and `font-thicken`.
-    pub adjust_cell_width: crate::atlas::MetricAdjust,
-    pub adjust_cell_height: crate::atlas::MetricAdjust,
+    pub adjust_cell_width: crate::render::atlas::MetricAdjust,
+    pub adjust_cell_height: crate::render::atlas::MetricAdjust,
     pub font_thicken: bool,
     /// `font-feature` (`-calt`, `ss01`, ...); ligatures are on unless disabled.
     pub font_features: Vec<String>,
@@ -218,8 +218,8 @@ impl Default for Config {
             unfocused_split_opacity: 0.7,
             unfocused_split_fill: None,
             minimum_contrast: 1.0,
-            adjust_cell_width: crate::atlas::MetricAdjust::None,
-            adjust_cell_height: crate::atlas::MetricAdjust::None,
+            adjust_cell_width: crate::render::atlas::MetricAdjust::None,
+            adjust_cell_height: crate::render::atlas::MetricAdjust::None,
             font_thicken: false,
             font_features: Vec::new(),
             auto_update: AutoUpdateMode::Check,
@@ -479,17 +479,17 @@ impl Config {
             }
             "title" => self.title = (!empty).then(|| value.to_string()),
             "adjust-cell-width" => {
-                self.adjust_cell_width = if empty { d.adjust_cell_width } else { crate::atlas::MetricAdjust::parse(value)? }
+                self.adjust_cell_width = if empty { d.adjust_cell_width } else { crate::render::atlas::MetricAdjust::parse(value)? }
             }
             "adjust-cell-height" => {
-                self.adjust_cell_height = if empty { d.adjust_cell_height } else { crate::atlas::MetricAdjust::parse(value)? }
+                self.adjust_cell_height = if empty { d.adjust_cell_height } else { crate::render::atlas::MetricAdjust::parse(value)? }
             }
             "font-feature" => {
                 if empty {
                     self.font_features.clear();
                 }
                 for f in value.split(',').map(str::trim).filter(|f| !f.is_empty()) {
-                    crate::atlas::parse_font_feature(f)?;
+                    crate::render::atlas::parse_font_feature(f)?;
                     self.font_features.push(f.to_string());
                 }
             }
@@ -1078,8 +1078,8 @@ mod tests {
         assert_eq!(Config::parse("confirm-close-surface = false\n").0.confirm_close_surface, ConfirmClose::Never);
         let (cfg, errors) = Config::parse("adjust-cell-height = 20%\nadjust-cell-width = -1\nfont-thicken = true\n");
         assert!(errors.is_empty(), "{errors:?}");
-        assert_eq!(cfg.adjust_cell_height, crate::atlas::MetricAdjust::Percent(20.0));
-        assert_eq!(cfg.adjust_cell_width, crate::atlas::MetricAdjust::Px(-1));
+        assert_eq!(cfg.adjust_cell_height, crate::render::atlas::MetricAdjust::Percent(20.0));
+        assert_eq!(cfg.adjust_cell_width, crate::render::atlas::MetricAdjust::Px(-1));
         assert!(cfg.font_thicken);
         let (cfg, errors) = Config::parse("font-feature = -calt\nfont-feature = ss01, liga=0\n");
         assert!(errors.is_empty(), "{errors:?}");

@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use super::{Instance, Viewport};
-use crate::atlas::Atlas;
+use crate::render::atlas::Atlas;
 
 pub(super) fn make_viewport_buffer(device: &wgpu::Device, panes: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
@@ -48,7 +48,7 @@ pub(super) fn create_cells_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
 ) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
-    let shader = device.create_shader_module(wgpu::include_wgsl!("../shader.wgsl"));
+    let shader = device.create_shader_module(wgpu::include_wgsl!("../shaders/shader.wgsl"));
     let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("bgl"),
         entries: &[

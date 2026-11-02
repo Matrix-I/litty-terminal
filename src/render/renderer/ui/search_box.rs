@@ -2,17 +2,17 @@
 
 use super::super::Instance;
 use super::{Cells, DirtyRows};
-use crate::atlas::GlyphStyle;
+use crate::render::atlas::GlyphStyle;
 use crate::terminal::grid::char_width;
 use crate::terminal::search::SearchBar;
 
 /// Find box in the top-right corner, below the tab bar: `(x0, y0, width)`, 3 rows tall.
-pub(in crate::renderer) fn geometry(cols: usize, top_rows: usize, total_rows: usize) -> Option<(usize, usize, usize)> {
+pub(in crate::render::renderer) fn geometry(cols: usize, top_rows: usize, total_rows: usize) -> Option<(usize, usize, usize)> {
     let w = 46.min(cols.saturating_sub(2));
     (w >= 24 && total_rows >= top_rows + 4).then(|| (cols - w - 1, top_rows, w))
 }
 
-pub(in crate::renderer) fn build(
+pub(in crate::render::renderer) fn build(
     cells: &mut Cells,
     top_rows: usize,
     total_rows: usize,

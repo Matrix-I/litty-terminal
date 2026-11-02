@@ -1,6 +1,6 @@
 //! Non-macOS counterparts of `coretext.rs`. There is no system glyph fallback
 //! (no fontconfig / FreeType); color emoji come from bitmap strikes of
-//! Noto Color Emoji found through `crate::fontdb`.
+//! Noto Color Emoji found through `crate::render::fontdb`.
 
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ pub(super) fn rasterize_color(buf: &mut [u8], w: u32, h: u32, _px: f32, text: &s
 
     static FACE: OnceLock<Option<(Arc<memmap2::Mmap>, u32)>> = OnceLock::new();
     let pair = FACE.get_or_init(|| {
-        let face = crate::fontdb::find_family("Noto Color Emoji")?;
+        let face = crate::render::fontdb::find_family("Noto Color Emoji")?;
         shaper_mmap_for(&face.path, face.index)
     });
     let Some((mmap, index)) = pair.as_ref() else { return false };

@@ -8,7 +8,8 @@ use super::terminal_io::write_pty;
 use std::sync::Arc;
 
 use crate::terminal::grid;
-use crate::{atlas, config, scroll};
+use crate::render::atlas;
+use crate::{config, scroll};
 use crate::platform;
 use crate::{next_id, AppEvent, Pane, Tab, Waker};
 
@@ -21,7 +22,7 @@ use winit::window::{CursorIcon, Window};
 use crate::terminal::grid::Grid;
 use crate::terminal::history::HistorySearch;
 use crate::terminal::pty::Pty;
-use crate::renderer::Renderer;
+use crate::render::renderer::Renderer;
 use crate::terminal::search::SearchBar;
 
 /// Drop the Quick Terminal from the top of its screen: full width, 40% height,

@@ -3,20 +3,15 @@
 
 mod ai;
 mod app;
-mod atlas;
 pub mod bench;
 mod cli;
 mod config;
 mod event;
-mod fontdb;
-mod frame_metrics;
-mod image_layer;
 mod keymap;
 mod mouse;
 mod paste;
 mod platform;
-mod postfx;
-mod renderer;
+mod render;
 mod scroll;
 #[cfg(test)]
 mod security_poc;

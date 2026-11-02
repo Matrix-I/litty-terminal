@@ -319,7 +319,7 @@ impl Renderer {
                     None if draw.fit => [x, y, (draw.cols as u32 * cw) as f32, (draw.rows as u32 * ch) as f32],
                     None => [x, y, draw.src[2], draw.src[3]],
                 };
-                self.placed.push(crate::image_layer::Placed { draw, rect, clip });
+                self.placed.push(crate::render::image_layer::Placed { draw, rect, clip });
             }
 
             let row_ctx = PaneRowCtx {

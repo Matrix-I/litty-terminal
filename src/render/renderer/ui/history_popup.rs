@@ -6,7 +6,7 @@ use crate::terminal::history::HistorySearch;
 
 /// Position and size of the popup `(x0, y0, width, height, visible_rows)` in a
 /// `cols × total_rows` window.
-pub(in crate::renderer) fn geometry(cols: usize, total_rows: usize) -> Option<(usize, usize, usize, usize, usize)> {
+pub(in crate::render::renderer) fn geometry(cols: usize, total_rows: usize) -> Option<(usize, usize, usize, usize, usize)> {
     if cols < 30 || total_rows < 6 {
         return None;
     }
@@ -29,7 +29,7 @@ pub(in crate::renderer) fn geometry(cols: usize, total_rows: usize) -> Option<(u
     };
     Some((x0, y0, popup_w, popup_h, visible_rows))
 }
-pub(in crate::renderer) fn build(
+pub(in crate::render::renderer) fn build(
     cells: &mut Cells,
     geometry: (usize, usize, usize, usize, usize),
     total_rows: usize,

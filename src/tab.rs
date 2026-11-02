@@ -108,11 +108,11 @@ impl Tab {
         self.panes.iter_mut().find(|p| p.id == id)
     }
 
-    pub fn prepare_render_panes(&self, cols: usize, rows: usize, rects: &mut Vec<PaneRect>, out: &mut Vec<crate::renderer::RenderPane>) {
+    pub fn prepare_render_panes(&self, cols: usize, rows: usize, rects: &mut Vec<PaneRect>, out: &mut Vec<crate::render::renderer::RenderPane>) {
         self.compute_pane_rects_into(cols, rows, rects);
         out.clear();
         out.extend(rects.iter().filter_map(|&rect| {
-            self.pane(rect.id).map(|pane| crate::renderer::RenderPane {
+            self.pane(rect.id).map(|pane| crate::render::renderer::RenderPane {
                 id: pane.id,
                 grid: Arc::clone(&pane.grid),
                 rect,

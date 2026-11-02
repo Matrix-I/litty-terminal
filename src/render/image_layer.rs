@@ -60,7 +60,7 @@ pub struct ImageLayer {
 
 impl ImageLayer {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let shader = device.create_shader_module(wgpu::include_wgsl!("image.wgsl"));
+        let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/image.wgsl"));
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("images"),
             entries: &[

@@ -4,7 +4,7 @@
 use super::super::Instance;
 
 /// Dedicated scrollbar instance (preview + thumb bits); upper bits store height.
-pub(in crate::renderer) const SCROLLBAR_OVERLAY: u32 = 0x30;
+pub(in crate::render::renderer) const SCROLLBAR_OVERLAY: u32 = 0x30;
 pub const SCROLLBAR_WIDTH: f64 = 10.0;
 
 /// Thumb position within the track and height, shared by drawing and dragging.
@@ -20,7 +20,7 @@ pub fn scrollbar_thumb(track_height: f64, rows: usize, history: usize, offset: u
 /// The pane's scrollbar instance: x / y as f32 bits in `glyph` / `fg`, the
 /// thumb height above the 0x30 tag in `bg` (0 = hidden at the bottom).
 #[inline]
-pub(in crate::renderer) fn instance(right: f64, y: f64, height: f64, offset: usize) -> Instance {
+pub(in crate::render::renderer) fn instance(right: f64, y: f64, height: f64, offset: usize) -> Instance {
     Instance {
         glyph: ((right - SCROLLBAR_WIDTH) as f32).to_bits(),
         fg: (y as f32).to_bits(),

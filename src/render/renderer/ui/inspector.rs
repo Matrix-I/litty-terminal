@@ -2,12 +2,12 @@
 
 use super::super::Instance;
 use super::{Cells, DirtyRows};
-use crate::atlas::GlyphStyle;
+use crate::render::atlas::GlyphStyle;
 use crate::terminal::grid::char_width;
 
 /// Inspector panel in the bottom-right corner: a frame around `lines`,
 /// the first of which is the title.
-pub(in crate::renderer) fn build(
+pub(in crate::render::renderer) fn build(
     cells: &mut Cells,
     top_rows: usize,
     total_rows: usize,

@@ -25,7 +25,7 @@ pub fn load_font(families: &[String]) -> Arc<FontSet> {
 
     let mut configured_faces: Vec<(String, u32)> = Vec::new();
     for fam in families {
-        match crate::fontdb::find_family(fam) {
+        match crate::render::fontdb::find_family(fam) {
             Some(face) => {
                 configured_faces.push((face.path.clone(), face.index));
             }
