@@ -47,7 +47,7 @@ pub fn visual_order(chars: &[char], levels: &mut Vec<u8>, order: &mut Vec<u16>) 
     // W rules + I1: store classes in levels first as scratch space to avoid heap allocations.
     let mut last_strong = Class::L;
     levels.extend(chars.iter().enumerate().map(|(i, &c)| {
-        if c == '\0' && i > 0 && chars[i - 1] != '\0' && crate::grid::char_width(chars[i - 1]) == 2 {
+        if c == '\0' && i > 0 && chars[i - 1] != '\0' && crate::terminal::grid::char_width(chars[i - 1]) == 2 {
             return Class::N as u8;
         }
         let mut k = class(c);
@@ -90,7 +90,7 @@ pub fn visual_order(chars: &[char], levels: &mut Vec<u8>, order: &mut Vec<u16>) 
     }
     // Keep a wide character's two cells in order: same level as the first.
     for j in 1..n {
-        if chars[j] == '\0' && chars[j - 1] != '\0' && crate::grid::char_width(chars[j - 1]) == 2 {
+        if chars[j] == '\0' && chars[j - 1] != '\0' && crate::terminal::grid::char_width(chars[j - 1]) == 2 {
             levels[j] = levels[j - 1];
         }
     }

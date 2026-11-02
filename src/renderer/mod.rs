@@ -17,8 +17,8 @@ use gpu::{make_bind_group, make_instance_buf, make_viewport_buffer};
 pub use ui::scrollbar::{scrollbar_thumb, SCROLLBAR_WIDTH};
 
 use crate::atlas::{Atlas, FontSet};
-use crate::grid::{Grid, Hyperlink};
-use crate::history::HistorySearch;
+use crate::terminal::grid::{Grid, Hyperlink};
+use crate::terminal::history::HistorySearch;
 use crate::split::PaneRect;
 
 pub struct RenderPane {
@@ -163,7 +163,7 @@ pub struct Renderer {
     row_scratch: RowScratch,
     /// Inline images and this frame's placements (reused buffers).
     images: crate::image_layer::ImageLayer,
-    image_draws: Vec<crate::graphics::ImageDraw>,
+    image_draws: Vec<crate::terminal::graphics::ImageDraw>,
     placed: Vec<crate::image_layer::Placed>,
     /// `custom-shader` passes, if any.
     postfx: Option<crate::postfx::PostFx>,

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use crate::grid::Grid;
+use crate::terminal::grid::Grid;
 
 #[derive(Debug)]
 pub(crate) enum WritePayload {
@@ -104,7 +104,7 @@ impl Drop for ReapOnDrop {
 /// job local also bounds outstanding work to one operation per pane.
 fn feed_output(
     grid: &Mutex<Grid>, parser: &mut vte::Parser, bytes: &[u8], reply: &mut Vec<u8>,
-    mut decode: impl FnMut(crate::grid::ImageJob) -> crate::grid::ImageCompletion,
+    mut decode: impl FnMut(crate::terminal::grid::ImageJob) -> crate::terminal::grid::ImageCompletion,
 ) -> bool {
     let mut offset = 0;
     loop {
@@ -146,8 +146,8 @@ fn cstr(s: impl Into<Vec<u8>>) -> CString {
 fn shell_integration_for(
     shell_name: &str,
     kind: Option<crate::config::ShellIntegration>,
-) -> Option<crate::shell_integration::Injection> {
-    crate::shell_integration::prepare(shell_name, kind?, |k| std::env::var(k).ok())
+) -> Option<crate::terminal::shell_integration::Injection> {
+    crate::terminal::shell_integration::prepare(shell_name, kind?, |k| std::env::var(k).ok())
 }
 
 impl Pty {

@@ -9,7 +9,7 @@ mod provider;
 mod live_tests;
 
 use crate::event::AppEvent;
-use crate::grid::Grid;
+use crate::terminal::grid::Grid;
 use json::Json;
 use parking_lot::Mutex;
 use provider::Action;

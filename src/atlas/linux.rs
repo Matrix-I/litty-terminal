@@ -39,7 +39,7 @@ pub(super) fn rasterize_color(buf: &mut [u8], w: u32, h: u32, _px: f32, text: &s
     if img.format != RasterImageFormat::PNG {
         return false;
     }
-    let Ok((sw, sh, rgba)) = crate::graphics::decode_png(img.data) else { return false };
+    let Ok((sw, sh, rgba)) = crate::terminal::graphics::decode_png(img.data) else { return false };
     blit_fit(&rgba, sw, sh, buf, w, h);
     true
 }

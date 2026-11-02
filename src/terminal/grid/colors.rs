@@ -398,7 +398,7 @@ pub(super) fn parse_x11_color(spec: &[u8]) -> Option<u32> {
         };
         (channel(0)?, channel(1)?, channel(2)?)
     } else {
-        return crate::x11colors::lookup(spec).map(|rgb| rgb << 8);
+        return crate::terminal::x11colors::lookup(spec).map(|rgb| rgb << 8);
     };
     Some((r << 24) | (g << 16) | (b << 8))
 }

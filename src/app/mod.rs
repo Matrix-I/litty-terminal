@@ -32,7 +32,8 @@ use window::render_active;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use crate::{bench, frame_metrics, grid, macos, update};
+use crate::terminal::grid;
+use crate::{bench, frame_metrics, macos, update};
 #[cfg(target_os = "linux")]
 use crate::hotkey;
 use crate::{AppEvent, Waker};
@@ -370,7 +371,7 @@ impl ApplicationHandler<AppEvent> for App {
                 deadline = Some(deadline.map_or(frame, |d| d.min(frame)));
             }
             // Kitty animations on screen: wake for their next frame.
-            if crate::graphics::any_animation() {
+            if crate::terminal::graphics::any_animation() {
                 let panes = s.tabs.get(s.active).into_iter().flat_map(|t| &t.panes);
                 if let Some(next) = panes.filter_map(|p| p.grid.lock().next_image_frame(now)).min() {
                     deadline = Some(deadline.map_or(next, |d| d.min(next)));

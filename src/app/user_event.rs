@@ -7,7 +7,8 @@ use super::window::refresh_tab_titles;
 use super::window::sync_size;
 use super::App;
 
-use crate::{bench, grid, macos, update};
+use crate::terminal::grid;
+use crate::{bench, macos, update};
 
 use winit::event_loop::ActiveEventLoop;
 

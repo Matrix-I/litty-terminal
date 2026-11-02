@@ -3,8 +3,8 @@
 use super::super::Instance;
 use super::{Cells, DirtyRows};
 use crate::atlas::GlyphStyle;
-use crate::grid::char_width;
-use crate::search::SearchBar;
+use crate::terminal::grid::char_width;
+use crate::terminal::search::SearchBar;
 
 /// Find box in the top-right corner, below the tab bar: `(x0, y0, width)`, 3 rows tall.
 pub(in crate::renderer) fn geometry(cols: usize, top_rows: usize, total_rows: usize) -> Option<(usize, usize, usize)> {
@@ -79,7 +79,7 @@ pub(in crate::renderer) fn build(
         ("no matches".to_string(), ERROR_FG)
     } else {
         let cur = search.current.map_or(0, |c| c + 1);
-        let more = if search.total >= crate::search::MAX_MATCHES { "+" } else { "" };
+        let more = if search.total >= crate::terminal::search::MAX_MATCHES { "+" } else { "" };
         (format!("{cur}/{}{more}", search.total), COUNT_FG)
     };
     put(1, w - 4, '.', if search.regex { MODE_ON_FG } else { DIM_FG });

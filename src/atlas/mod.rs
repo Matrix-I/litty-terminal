@@ -672,7 +672,7 @@ impl Atlas {
     }
 
     /// See [`Shaper::shape_row`].
-    pub fn shape_row(&mut self, row: &[crate::grid::Cell], out: &mut Vec<u32>) -> bool {
+    pub fn shape_row(&mut self, row: &[crate::terminal::grid::Cell], out: &mut Vec<u32>) -> bool {
         let (changed, reset_pieces) = self.shaper.shape_row(&self.fonts, self.px, self.cell_w, row, out);
         if reset_pieces {
             self.map.retain(|&k, _| k & GLYPH_PIECE == 0);

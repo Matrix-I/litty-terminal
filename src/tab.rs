@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use parking_lot::Mutex;
 
-use crate::grid::{Grid, Hyperlink};
-use crate::pty::Pty;
+use crate::terminal::grid::{Grid, Hyperlink};
+use crate::terminal::pty::Pty;
 use crate::split::{PaneRect, Rect, SplitNode};
 
 /// Tab and pane ids are unique across windows, so `ChildExit` finds its pane.

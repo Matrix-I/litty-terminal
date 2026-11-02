@@ -2,7 +2,7 @@
 
 use super::super::Instance;
 use super::{Cells, DirtyRows};
-use crate::grid::Hyperlink;
+use crate::terminal::grid::Hyperlink;
 
 pub(in crate::renderer) fn build(cells: &mut Cells, total_rows: usize, link: &Hyperlink, dirty: &mut DirtyRows) {
     let cols = cells.cols;

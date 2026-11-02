@@ -38,7 +38,7 @@ impl Shaper {
     /// `out[col]` becomes a slot key for a substituted glyph, `SHAPED_BLANK`
     /// for an empty spacer, or 0 for "draw the codepoint as usual". Returns
     /// `(changed, reset_pieces)`. Allocation-free once the buffers are warm.
-    pub fn shape_row(&mut self, fonts: &FontSet, px: f32, cell_w: u32, row: &[crate::grid::Cell], out: &mut Vec<u32>) -> (bool, bool) {
+    pub fn shape_row(&mut self, fonts: &FontSet, px: f32, cell_w: u32, row: &[crate::terminal::grid::Cell], out: &mut Vec<u32>) -> (bool, bool) {
         let mut reset_pieces = false;
         if self.pieces.len() >= 4096 {
             self.pieces.clear();
@@ -54,8 +54,8 @@ impl Shaper {
         if self.cell_units <= 0 {
             return (false, reset_pieces);
         }
-        let style_of = |c: &crate::grid::Cell| (c.fg & crate::grid::FG_BOLD != 0, c.fg & crate::grid::FG_ITALIC != 0);
-        let shapeable = |c: &crate::grid::Cell| (0x21..0x7F).contains(&c.codepoint);
+        let style_of = |c: &crate::terminal::grid::Cell| (c.fg & crate::terminal::grid::FG_BOLD != 0, c.fg & crate::terminal::grid::FG_ITALIC != 0);
+        let shapeable = |c: &crate::terminal::grid::Cell| (0x21..0x7F).contains(&c.codepoint);
         let mut changed = false;
         let mut i = 0;
         while i < row.len() {

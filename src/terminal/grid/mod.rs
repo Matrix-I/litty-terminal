@@ -49,7 +49,7 @@ pub use cell::*;
 pub use prompt::*;
 pub use selection::*;
 
-use crate::search::SearchText;
+use crate::terminal::search::SearchText;
 
 
 
@@ -113,7 +113,7 @@ pub struct Grid {
     dcs_buf: Vec<u8>,
     dcs_start: Option<std::time::Instant>,
     /// Inline images (Kitty graphics protocol, Sixel).
-    pub graphics: crate::graphics::Store,
+    pub graphics: crate::terminal::graphics::Store,
     /// APC filter state in front of vte (which drops APC strings): 0 ground,
     /// 1 after ESC, 2 inside `ESC _`, 3 ESC inside it.
     apc_state: u8,
@@ -241,7 +241,7 @@ impl Grid {
             dcs: None,
             dcs_buf: Vec::new(),
             dcs_start: None,
-            graphics: crate::graphics::Store::default(),
+            graphics: crate::terminal::graphics::Store::default(),
             apc_state: 0,
             apc_buf: Vec::new(),
             apc_start: None,
@@ -500,7 +500,7 @@ impl Grid {
         if cp & PH_FLAG != 0 {
             // Placeholder diacritics: row, then column, then the image id's high byte.
             let n = (cp >> 27) & 3;
-            if let (true, Ok(i)) = (n < 3, crate::graphics::PLACEHOLDER_DIACRITICS.binary_search(&(mark as u32))) {
+            if let (true, Ok(i)) = (n < 3, crate::terminal::graphics::PLACEHOLDER_DIACRITICS.binary_search(&(mark as u32))) {
                 let shift = [9, 0, 18][n as usize];
                 r[col].codepoint = (cp & !(3 << 27)) | (i as u32) << shift | (n + 1) << 27;
                 self.mark(row);

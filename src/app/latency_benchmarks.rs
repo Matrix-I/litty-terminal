@@ -1,6 +1,6 @@
 //! Latency benchmarks and regression tests for the app core.
 
-use crate::{history, pty};
+use crate::terminal::{history, pty};
 use std::time::Instant;
 
 #[test]
@@ -206,7 +206,7 @@ fn benchmark_before_vs_after() {
     // -------------------------------------------------------------
     // BENCHMARK 6: OSC 104 Full Palette Reset (80x24 grid, 10,000 scrollback cap)
     // -------------------------------------------------------------
-    let mut g_new = crate::grid::Grid::new(80, 24);
+    let mut g_new = crate::terminal::grid::Grid::new(80, 24);
     let mut parser = vte::Parser::new();
     let setup_osc = b"\x1b]4;1;rgb:11/22/33\x1b\\\x1b]4;2;rgb:44/55/66\x1b\\\x1b]4;3;rgb:77/88/99\x1b\\\x1b]4;4;rgb:aa/bb/cc\x1b\\";
     let osc_iters = 20u32;
@@ -367,7 +367,7 @@ fn benchmark_before_vs_after() {
     // -------------------------------------------------------------
     // BENCHMARK 9: Mouse Hover Implicit Link Resolution & grid.lock() Hold Time
     // -------------------------------------------------------------
-    let hover_grid = std::sync::Arc::new(parking_lot::Mutex::new(crate::grid::Grid::new(120, 24)));
+    let hover_grid = std::sync::Arc::new(parking_lot::Mutex::new(crate::terminal::grid::Grid::new(120, 24)));
     {
         let mut g = hover_grid.lock();
         let mut p = vte::Parser::new();
@@ -401,7 +401,7 @@ fn benchmark_before_vs_after() {
     // After: extract candidate under a single short lock, release lock before stat(), and skip stat() when candidate matches cached span
     let mut new_lock_hold = std::time::Duration::ZERO;
     let t_hover_new = Instant::now();
-    let mut cached_hover: Option<crate::grid::Hyperlink> = None;
+    let mut cached_hover: Option<crate::terminal::grid::Hyperlink> = None;
     let mut new_resolved = 0usize;
     for i in 0..hover_events {
         let col = 9 + (i % 12);
@@ -442,11 +442,11 @@ fn benchmark_before_vs_after() {
     // -------------------------------------------------------------
     // BENCHMARK 10: Grapheme Cluster Pool GC (Grid::gc_clusters)
     // -------------------------------------------------------------
-    let mut g_gc = crate::grid::Grid::new(80, 24);
+    let mut g_gc = crate::terminal::grid::Grid::new(80, 24);
     let mut p_gc = vte::Parser::new();
-    g_gc.seed_dead_clusters_for_bench(crate::grid::MAX_CLUSTERS);
+    g_gc.seed_dead_clusters_for_bench(crate::terminal::grid::MAX_CLUSTERS);
     let before_gc_clusters = g_gc.cluster_count();
-    assert_eq!(before_gc_clusters, crate::grid::MAX_CLUSTERS);
+    assert_eq!(before_gc_clusters, crate::terminal::grid::MAX_CLUSTERS);
     // Feeding a new multi-codepoint cluster at MAX_CLUSTERS (65,536) triggers gc_clusters(),
     // reclaiming all 65,536 dead entries and interning the new active cluster.
     let t_gc = Instant::now();
