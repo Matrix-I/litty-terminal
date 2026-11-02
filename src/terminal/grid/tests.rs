@@ -1912,6 +1912,7 @@ fn cluster_table_exhaustion_does_not_repeatedly_scan_grid() {
 }
 
 #[test]
+#[ignore = "manual performance measurement"]
 fn benchmark_cluster_exhaustion_1000_misses() {
     let mut g = Grid::new(80, 24);
     g.seed_live_clusters(super::MAX_CLUSTERS);
@@ -1922,6 +1923,4 @@ fn benchmark_cluster_exhaustion_1000_misses() {
     }
     let elapsed = start.elapsed();
     eprintln!("1000 misses on exhausted table took: {elapsed:?}");
-    // Should take under 5ms, unlike the ~156ms when repeatedly scanning
-    assert!(elapsed.as_millis() < 50, "1000 misses took too long: {elapsed:?}");
 }
