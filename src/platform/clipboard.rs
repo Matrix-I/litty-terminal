@@ -2,7 +2,7 @@
 //! bounded in concurrency, time, and size.
 
 #[cfg(target_os = "macos")]
-use crate::macos;
+use crate::platform::macos;
 
 /// A clipboard helper command. pbcopy / pbpaste convert text with the locale's
 /// encoding, and an app started from Finder has no `LANG`: without a UTF-8
@@ -217,7 +217,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn direct_macos_clipboard_read_write() {
         let msg = "litty_test_clipboard_12345";
-        assert!(crate::macos::clipboard_write_string(msg));
-        assert_eq!(crate::macos::clipboard_string().as_deref(), Some(msg));
+        assert!(crate::platform::macos::clipboard_write_string(msg));
+        assert_eq!(crate::platform::macos::clipboard_string().as_deref(), Some(msg));
     }
 }

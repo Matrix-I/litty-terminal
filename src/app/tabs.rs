@@ -8,7 +8,7 @@ use super::window::sync_size;
 use super::window::tab_title;
 
 #[cfg(target_os = "macos")]
-use crate::macos;
+use crate::platform::macos;
 #[cfg(target_os = "linux")]
 use crate::platform::process::system_bin;
 use crate::{config, split};

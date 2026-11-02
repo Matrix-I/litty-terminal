@@ -8,7 +8,8 @@ use super::window::sync_size;
 use super::App;
 
 use crate::terminal::grid;
-use crate::{bench, macos, update};
+use crate::{bench, update};
+use crate::platform::macos;
 
 use winit::event_loop::ActiveEventLoop;
 

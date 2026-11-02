@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use crate::{ai, config, macos, mouse, renderer, scroll};
+use crate::{ai, config, mouse, renderer, scroll};
+use crate::platform::macos;
 use crate::{HoveredPaneLink, Tab};
 
 use winit::keyboard::{ModifiersState, PhysicalKey};

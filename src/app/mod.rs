@@ -33,9 +33,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use crate::terminal::grid;
-use crate::{bench, frame_metrics, macos, update};
+use crate::{bench, frame_metrics, update};
+use crate::platform::macos;
 #[cfg(target_os = "linux")]
-use crate::hotkey;
+use crate::platform::control_socket;
 use crate::{AppEvent, Waker};
 
 use winit::application::ApplicationHandler;
@@ -218,8 +219,8 @@ impl ApplicationHandler<AppEvent> for App {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            hotkey::listen(self.waker.proxy.clone());
-            hotkey::set_global_hotkey(self.windows[0].config.quick_terminal_hotkey.as_ref());
+            control_socket::listen(self.waker.proxy.clone());
+            control_socket::set_global_hotkey(self.windows[0].config.quick_terminal_hotkey.as_ref());
         }
 
         let cfg = &self.windows[0].config;
