@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::terminal::grid;
 use crate::{atlas, config, scroll};
-use crate::platform::{control_socket, macos};
+use crate::platform;
 use crate::{next_id, AppEvent, Pane, Tab, Waker};
 
 use parking_lot::Mutex;
@@ -34,8 +34,7 @@ pub(super) fn place_quick_terminal(s: &State) {
     }
     s.window.set_visible(true);
     s.window.focus_window();
-    #[cfg(target_os = "macos")]
-    macos::activate_app();
+    platform::activate_app();
 }
 
 /// `font-feature` values as shaper features (validated when the config was parsed).
@@ -86,7 +85,7 @@ pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Op
         attrs.with_tabbing_identifier("litty").with_visible(false)
     };
     let window = Arc::new(event_loop.create_window(attrs).map_err(std::io::Error::other)?);
-    macos::set_tabbing_allowed(&window, false);
+    platform::set_tabbing_allowed(&window, false);
     if !quick { window.set_visible(true); }
     // Composed input (Vietnamese Telex/VNI, CJK) arrives as `WindowEvent::Ime`.
     window.set_ime_allowed(true);
@@ -102,11 +101,8 @@ pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Op
         cfg
     };
 
-    #[cfg(target_os = "macos")]
-    {
-        macos::apply_macos_window_config(&window, &cfg);
-        macos::set_dock_icon();
-    }
+    platform::apply_window_config(&window, &cfg);
+    platform::set_dock_icon();
 
     let font_px = (font_pt * window.scale_factor() as f32).round();
 
@@ -308,7 +304,7 @@ pub(super) fn refresh_tab_titles(s: &mut State) {
             #[cfg(target_os = "macos")]
             if let Some(tab) = s.tabs.get_mut(s.active)
                 && let Some(cwd) = tab.active_pane_mut().and_then(|p| p.cwd()) {
-                    macos::set_window_represented_filename(&s.window, &cwd);
+                    platform::set_window_represented_filename(&s.window, &cwd);
                 }
         }
     }
@@ -355,8 +351,7 @@ pub(super) fn reload_config(s: &mut State) {
     grid::set_default_colors(new.foreground, new.background);
     grid::set_palette(&new.palette);
 
-    #[cfg(target_os = "macos")]
-    macos::apply_macos_window_config(&s.window, &new);
+    platform::apply_window_config(&s.window, &new);
 
     s.renderer.set_bg_opacity(new.background_opacity);
     s.renderer.set_cursor_style(new.cursor_style.shader_id());
@@ -380,8 +375,7 @@ pub(super) fn reload_config(s: &mut State) {
     atlas::set_font_tweaks(new.adjust_cell_width, new.adjust_cell_height, new.font_thicken);
     atlas::set_font_features(&font_features(&new));
     if new.quick_terminal_hotkey != old.quick_terminal_hotkey {
-        macos::set_global_hotkey(new.quick_terminal_hotkey.as_ref());
-        control_socket::set_global_hotkey(new.quick_terminal_hotkey.as_ref());
+        platform::set_global_hotkey(new.quick_terminal_hotkey.as_ref());
     }
     let tweaks_changed = (new.adjust_cell_width, new.adjust_cell_height, new.font_thicken, &new.font_features)
         != (old.adjust_cell_width, old.adjust_cell_height, old.font_thicken, &old.font_features);
@@ -479,7 +473,7 @@ pub(super) fn render_active(s: &mut State) {
     s.render_panes.clear();
     if s.first_frame {
         s.first_frame = false;
-        macos::release_free_memory();
+        platform::release_free_memory();
     }
 }
 

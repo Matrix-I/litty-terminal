@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::{ai, config, mouse, renderer, scroll};
-use crate::platform::macos;
+use crate::platform;
 use crate::{HoveredPaneLink, Tab};
 
 use winit::keyboard::{ModifiersState, PhysicalKey};
@@ -91,10 +91,9 @@ impl State {
 
 impl Drop for State {
     fn drop(&mut self) {
-        macos::cleanup_window(&self.window);
+        platform::cleanup_window(&self.window);
         if self.secure_input && self.focused {
-            #[cfg(target_os = "macos")]
-            macos::set_secure_input(false);
+            platform::set_secure_input(false);
         }
     }
 }

@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use crate::{ai, keymap};
-use crate::platform::macos;
+use crate::platform;
 use crate::{next_id, Waker};
 
 use winit::event::{ElementState, KeyEvent};
@@ -388,7 +388,7 @@ pub(super) fn kitty_key<'a>(ev: &'a KeyEvent, unshifted: &'a Key, kind: keymap::
         // winit has no lock state: macOS reads Caps Lock from AppKit (and has no
         // Num Lock), elsewhere it is inferred from the keys typed.
         locks: if cfg!(target_os = "macos") {
-            if macos::caps_lock() { keymap::KITTY_CAPS_LOCK } else { 0 }
+            if platform::caps_lock() { keymap::KITTY_CAPS_LOCK } else { 0 }
         } else {
             inferred
         },

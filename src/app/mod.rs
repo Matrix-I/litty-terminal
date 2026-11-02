@@ -34,9 +34,7 @@ use std::sync::Arc;
 
 use crate::terminal::grid;
 use crate::{bench, frame_metrics, update};
-use crate::platform::macos;
-#[cfg(target_os = "linux")]
-use crate::platform::control_socket;
+use crate::platform;
 use crate::{AppEvent, Waker};
 
 use winit::application::ApplicationHandler;
@@ -68,8 +66,7 @@ impl App {
         }
         self.windows.retain(|w| !w.tabs.is_empty());
         if had_tabless {
-            #[cfg(target_os = "macos")]
-            macos::release_free_memory();
+            platform::release_free_memory();
         }
     }
 
@@ -86,7 +83,7 @@ impl App {
                 s.window.set_visible(false);
                 let others_visible = self.windows.iter().any(|w| !w.quick && !w.tabs.is_empty() && w.window.is_visible() != Some(false));
                 if !others_visible {
-                    macos::hide_app();
+                    platform::hide_app();
                 }
                 return;
             }
@@ -140,7 +137,7 @@ impl App {
                 // The hidden, tab-less window kept for the Dock is no longer needed.
                 Ok(s) => {
                     if let Some(p) = parent.and_then(|id| self.windows.iter().find(|w| w.window.id() == id)) {
-                        macos::add_tabbed_window(&p.window, &s.window);
+                        platform::add_tabbed_window(&p.window, &s.window);
                     }
                     // winit centers every new window: cascade it down-right from the
                     // one it was opened from so it does not hide exactly behind it.
@@ -159,8 +156,7 @@ impl App {
             if self.windows.len() > 1 {
                 // Dropping the state closes the window and hangs up its shells.
                 self.windows.remove(pos).renderer.shrink_drawables();
-                #[cfg(target_os = "macos")]
-                macos::release_free_memory();
+                platform::release_free_memory();
                 continue;
             }
             let s = &mut self.windows[pos];
@@ -190,8 +186,7 @@ impl ApplicationHandler<AppEvent> for App {
             let s = &mut self.windows[0];
             s.window.set_title("Litty — scroll FPS benchmark");
             s.window.focus_window();
-            #[cfg(target_os = "macos")]
-            macos::activate_app();
+            platform::activate_app();
             let pane = s.tabs[s.active].active_pane().unwrap();
             let mut g = pane.grid.lock();
             let mut parser = vte::Parser::new();
@@ -211,22 +206,15 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
 
-        #[cfg(target_os = "macos")]
-        {
-            macos::register_reopen_handler(self.waker.proxy.clone());
-            macos::install_menu();
-            macos::set_global_hotkey(self.windows[0].config.quick_terminal_hotkey.as_ref());
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            control_socket::listen(self.waker.proxy.clone());
-            control_socket::set_global_hotkey(self.windows[0].config.quick_terminal_hotkey.as_ref());
-        }
+        platform::register_reopen_handler(self.waker.proxy.clone());
+        platform::install_menu();
+        platform::listen_for_toggle(self.waker.proxy.clone());
+        platform::set_global_hotkey(self.windows[0].config.quick_terminal_hotkey.as_ref());
 
         let cfg = &self.windows[0].config;
         update::check_on_startup(cfg.auto_update, cfg.auto_update_channel);
 
-        macos::release_free_memory();
+        platform::release_free_memory();
 
         if self.bench_ram_mode {
             bench::run_ram_benchmark_thread(self.waker.proxy.clone());
@@ -289,10 +277,10 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::Reopen => self.on_reopen(),
             AppEvent::UpdateCheckResult(result) => self.on_update_check_result(result),
             AppEvent::UpdateInstallResult(result) => {
-                macos::close_progress_dialog();
+                platform::close_progress_dialog();
                 match result {
                     Ok(new_ver) => {
-                        macos::alert(
+                        platform::alert(
                             "Update Complete",
                             &format!(
                                 "Litty has been successfully updated to v{new_ver}!\n\nPlease restart Litty to apply changes."
@@ -300,7 +288,7 @@ impl ApplicationHandler<AppEvent> for App {
                         );
                     }
                     Err(err) => {
-                        macos::alert("Update Failed", &format!("Failed to install update:\n{err}"));
+                        platform::alert("Update Failed", &format!("Failed to install update:\n{err}"));
                     }
                 }
             }

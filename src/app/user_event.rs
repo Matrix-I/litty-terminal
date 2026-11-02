@@ -9,7 +9,7 @@ use super::App;
 
 use crate::terminal::grid;
 use crate::{bench, update};
-use crate::platform::macos;
+use crate::platform;
 
 use winit::event_loop::ActiveEventLoop;
 
@@ -60,8 +60,7 @@ impl App {
                 refresh_tab_titles(s);
                 s.renderer.invalidate();
                 s.window.request_redraw();
-                #[cfg(target_os = "macos")]
-                macos::release_free_memory();
+                platform::release_free_memory();
                 return;
             }
 
@@ -81,15 +80,14 @@ impl App {
             refresh_tab_titles(s);
             s.renderer.invalidate();
             s.window.request_redraw();
-            #[cfg(target_os = "macos")]
-            macos::release_free_memory();
+            platform::release_free_memory();
         }
     }
 
     pub(super) fn on_reopen(&mut self) {
         // A Light/Dark switch made while another app was in front.
         if cfg!(target_os = "macos") {
-            let dark = macos::system_dark();
+            let dark = platform::system_dark();
             if dark != grid::color_scheme_is_dark() {
                 grid::set_color_scheme_dark(dark);
                 self.windows.iter_mut().for_each(apply_system_appearance);
@@ -105,8 +103,7 @@ impl App {
                 s.renderer.resize(sz.width, sz.height);
                 s.window.set_visible(true);
                 s.window.focus_window();
-                #[cfg(target_os = "macos")]
-                macos::activate_app();
+                platform::activate_app();
                 s.renderer.invalidate();
                 s.window.request_redraw();
             }
@@ -114,16 +111,16 @@ impl App {
     }
 
     pub(super) fn on_update_check_result(&mut self, result: Result<update::ReleaseInfo, String>) {
-        macos::close_progress_dialog();
+        platform::close_progress_dialog();
         update::mark_checked();
         match result {
             Err(err) => {
-                macos::alert("Update Check Failed", &format!("Unable to check for updates:\n{err}"));
+                platform::alert("Update Check Failed", &format!("Unable to check for updates:\n{err}"));
             }
             Ok(release) => {
                 let current = update::Version::current();
                 if release.version <= current {
-                    macos::alert(
+                    platform::alert(
                         "Litty",
                         &format!("You're up to date!\n\nLitty v{current} is currently the newest version available."),
                     );
@@ -133,15 +130,15 @@ impl App {
                         "Litty v{} is available (you have v{}).\n\nWould you like to download and install this update now?",
                         release.version, current
                     );
-                    let choice = macos::alert_choice(title, &message, &["Update Now", "View Release", "Cancel"]);
+                    let choice = platform::alert_choice(title, &message, &["Update Now", "View Release", "Cancel"]);
                     match choice {
                         0 => {
                             let text = format!("Downloading and installing Litty v{}…", release.version);
                             // The result event is handled after this one, so the dialog opens before it closes.
                             if update::start_install_update(release, self.waker.proxy.clone()) {
-                                macos::show_progress_dialog("Updating Litty…", &text);
+                                platform::show_progress_dialog("Updating Litty…", &text);
                             } else {
-                                macos::alert("Update In Progress", "Litty is already installing an update.");
+                                platform::alert("Update In Progress", "Litty is already installing an update.");
                             }
                         }
                         1 => {
@@ -179,8 +176,7 @@ impl App {
                 if self.windows.len() > 1 {
                     let mut s = self.windows.remove(self.windows.len() - 1);
                     s.renderer.shrink_drawables();
-                    #[cfg(target_os = "macos")]
-                    macos::release_free_memory();
+                    platform::release_free_memory();
                 }
             }
             bench::BenchCommand::CloseExtraTabs => {
@@ -195,8 +191,7 @@ impl App {
                     sync_size(s);
                     refresh_tab_titles(s);
                 }
-                #[cfg(target_os = "macos")]
-                macos::release_free_memory();
+                platform::release_free_memory();
             }
             bench::BenchCommand::Exit => {
                 event_loop.exit();

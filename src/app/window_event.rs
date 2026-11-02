@@ -23,7 +23,7 @@ use super::keyboard::handle_key;
 
 use crate::terminal::grid;
 use crate::{config, mouse, scroll};
-use crate::platform::macos;
+use crate::platform;
 
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
@@ -76,8 +76,7 @@ impl App {
                 let sz = s.window.inner_size();
                 s.renderer.resize(sz.width, sz.height);
                 sync_size(s);
-                #[cfg(target_os = "macos")]
-                macos::apply_macos_window_config(&s.window, &s.config);
+                platform::apply_window_config(&s.window, &s.config);
                 s.window.request_redraw();
             }
 
@@ -115,8 +114,7 @@ impl App {
                 s.occluded = occluded;
                 if occluded {
                     s.renderer.shrink_drawables();
-                    #[cfg(target_os = "macos")]
-                    macos::release_free_memory();
+                    platform::release_free_memory();
                 } else {
                     let sz = s.window.inner_size();
                     if sz.width > 0 && sz.height > 0 {
@@ -508,11 +506,11 @@ impl App {
         }
         // Secure input is system-wide; release it while another app is in front.
         if s.secure_input {
-            macos::set_secure_input(focused);
+            platform::set_secure_input(focused);
         }
         if focused {
             s.quick_autohide_at = None;
-            macos::set_secure_input_menu_state(s.secure_input);
+            platform::set_secure_input_menu_state(s.secure_input);
         } else if was_focused && s.quick && s.config.quick_terminal_autohide {
             // A passive X11 keyboard grab emits FocusOut/FocusIn even
             // while the panel remains the active application window.

@@ -50,7 +50,7 @@ fn main() {
                 eprintln!("litty: on macOS, use `keybind = global:<trigger>=toggle_quick_terminal`");
                 std::process::exit(1);
             }
-            if let Err(e) = platform::control_socket::send_toggle() {
+            if let Err(e) = platform::send_toggle() {
                 eprintln!("litty: no running Litty to toggle ({e})");
                 std::process::exit(1);
             }

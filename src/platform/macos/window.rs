@@ -35,7 +35,7 @@ pub fn configure_layer_drawables(window: &Window) {
     }
 }
 
-pub fn apply_macos_window_config(window: &Window, cfg: &Config) {
+pub fn apply_window_config(window: &Window, cfg: &Config) {
     let Some((ns_view, ns_window)) = ns_window_of(window) else { return };
     // SAFETY: every message below is sent to live AppKit objects with the
     // signature documented by Apple for that selector.
