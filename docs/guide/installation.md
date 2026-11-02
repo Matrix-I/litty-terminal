@@ -24,4 +24,4 @@ sudo mv litty-linux /usr/local/bin/litty
 
 ---
 
-Back to the [README](../README.md).
+Back to the [README](../../README.md).

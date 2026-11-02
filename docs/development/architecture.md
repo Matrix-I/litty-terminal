@@ -28,4 +28,4 @@ Litty decouples I/O throughput from rendering to guarantee smooth UI interaction
 
 ---
 
-Back to the [README](../README.md).
+Back to the [README](../../README.md).

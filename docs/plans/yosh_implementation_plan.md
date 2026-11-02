@@ -217,7 +217,7 @@ To satisfy both **Litty's Ghostty-style config** (`~/.litty/config`) and **Yosh'
 ### Live-provider validation
 
 The Anthropic runner is `bash scripts/test-ai-live.sh`; see
-[live validation instructions](../ai-live-validation.md) for the credential prompt,
+[live validation instructions](../validation/ai-live-validation.md) for the credential prompt,
 synthetic fixtures, test scope and limitations.
 
 **Result (2026-11-01, model `claude-haiku-5-5`): PASS.** Docs + scrollback tool round

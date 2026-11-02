@@ -19,4 +19,4 @@ Multi-step suggestions still require Enter for every command. Editing a pending 
 
 ---
 
-Back to the [README](../README.md).
+Back to the [README](../../README.md).

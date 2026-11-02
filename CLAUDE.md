@@ -63,4 +63,4 @@ Layers (enforced by `src/layering_tests.rs`): `terminal` â†’ nothing; `render` â
 - **Permission**: Commit only when asked. Never push, force-push, rewrite published history, tag, or create releases without explicit approval.
 
 ### Release
-Releases are published via GitHub Releases. Follow `docs/release.md` (read it only when preparing a release). A release must also refresh the README badges (version, idle CPU, idle RAM, binary size) and the `docs/performance.md` table.
+Releases are published via GitHub Releases. Follow `docs/development/release.md` (read it only when preparing a release). A release must also refresh the README badges (version, idle CPU, idle RAM, binary size) and the `docs/development/performance.md` table.

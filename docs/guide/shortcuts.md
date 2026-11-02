@@ -46,4 +46,4 @@ Litty provides complete shortcut parity across macOS and Linux, adhering strictl
 
 ---
 
-Back to the [README](../README.md).
+Back to the [README](../../README.md).

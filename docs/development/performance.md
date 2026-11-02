@@ -30,4 +30,4 @@ Tested on macOS Sequoia / Sonoma (Apple Silicon M-series, empty idle shell):
 
 ---
 
-Back to the [README](../README.md).
+Back to the [README](../../README.md).

@@ -13,4 +13,4 @@ Litty includes a built-in, zero-dependency self-updater that checks for releases
 
 ---
 
-Back to the [README](../README.md).
+Back to the [README](../../README.md).

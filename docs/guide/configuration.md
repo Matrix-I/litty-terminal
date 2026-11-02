@@ -138,4 +138,4 @@ keybind = global:cmd+grave_accent=toggle_quick_terminal
 
 ---
 
-Back to the [README](../README.md).
+Back to the [README](../../README.md).

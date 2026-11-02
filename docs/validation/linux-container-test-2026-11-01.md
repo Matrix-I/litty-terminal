@@ -40,7 +40,7 @@ To repeat with an active Docker/Podman runtime (4 GiB VM RAM recommended):
 bash scripts/linux/test.sh
 ```
 
-See [the test runner instructions](../scripts/linux/README.md) for optional
+See [the test runner instructions](../../scripts/linux/README.md) for optional
 public CA-bundle configuration on networks using a TLS proxy. TLS verification
 remains enabled, and host credentials/user configuration are not mounted.
 

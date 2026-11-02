@@ -24,13 +24,13 @@
 - **Automatic shell integration** (zsh, bash, fish, nushell, elvish) and the **Kitty keyboard / graphics protocols**, Sixel and full Unicode support.
 - **`yo` AI shell assistant** with multiple providers, including local Ollama.
 
-See [Features](docs/features.md) for the full list.
+See [Features](docs/guide/features.md) for the full list.
 
 ---
 
 ## 🚀 Quick Start
 
-Download the [latest release](https://github.com/Matrix-I/litty-terminal/releases/latest), then follow the [installation guide](docs/installation.md). To build from source:
+Download the [latest release](https://github.com/Matrix-I/litty-terminal/releases/latest), then follow the [installation guide](docs/guide/installation.md). To build from source:
 
 ```bash
 git clone https://github.com/Matrix-I/litty-terminal.git
@@ -46,17 +46,19 @@ Press <kbd>Cmd</kbd> + <kbd>,</kbd> (macOS) or <kbd>Ctrl</kbd> + <kbd>,</kbd> (L
 
 | Topic | Description |
 | :--- | :--- |
-| [Features](docs/features.md) | Everything Litty can do: rendering, input protocols, Unicode, images, themes |
-| [Performance & Memory Footprint](docs/performance.md) | Comparison with other terminals and engine microbenchmarks |
-| [Architecture](docs/architecture.md) | PTY reader / render thread design |
-| [Default Shortcuts](docs/shortcuts.md) | macOS and Linux shortcut matrix |
-| [Configuration](docs/configuration.md) | Config file location, option reference, example config |
-| [Keybinding Actions](docs/keybinding-actions.md) | Actions available to `keybind = trigger=action` |
-| [AI Shell Assistance (`yo`)](docs/ai-assistant.md) | Providers, keys and workflow |
-| [Auto-Update & CLI Commands](docs/updates-and-cli.md) | `litty +update`, channels, background checks |
-| [Installation](docs/installation.md) | Pre-built macOS and Linux binaries |
-| [Building & Packaging](docs/building.md) | Build from source, app bundle and DMG |
-| [Release process](docs/release.md) | Maintainer release checklist |
+| [Features](docs/guide/features.md) | Everything Litty can do: rendering, input protocols, Unicode, images, themes |
+| [Performance & Memory Footprint](docs/development/performance.md) | Comparison with other terminals and engine microbenchmarks |
+| [Architecture](docs/development/architecture.md) | PTY reader / render thread design |
+| [Default Shortcuts](docs/guide/shortcuts.md) | macOS and Linux shortcut matrix |
+| [Configuration](docs/guide/configuration.md) | Config file location, option reference, example config |
+| [Keybinding Actions](docs/guide/keybinding-actions.md) | Actions available to `keybind = trigger=action` |
+| [AI Shell Assistance (`yo`)](docs/guide/ai-assistant.md) | Providers, keys and workflow |
+| [Auto-Update & CLI Commands](docs/guide/updates-and-cli.md) | `litty +update`, channels, background checks |
+| [Installation](docs/guide/installation.md) | Pre-built macOS and Linux binaries |
+| [Building & Packaging](docs/development/building.md) | Build from source, app bundle and DMG |
+| [Release process](docs/development/release.md) | Maintainer release checklist |
+| [Validation reports](docs/validation/) | Test and benchmark reports (AI live validation, Linux container run, scroll fix) |
+| [Plans](docs/plans/) | Per-release plans and historical records (see also `ROADMAP.md`) |
 
 ---
 

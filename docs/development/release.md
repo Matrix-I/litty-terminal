@@ -33,7 +33,7 @@ checksum manifest are part of the contract — do not rename them casually.
 5. Commit: `chore(release): prepare vX.Y.Z`.
 
 > The measured README badges (**idle CPU**, **idle RAM**, **binary size**) and
-> the table in `docs/performance.md` must match the numbers of the release
+> the table in `docs/development/performance.md` must match the numbers of the release
 > being shipped. Refresh them in §3 once `scripts/pre-release-check.sh` has
 > produced fresh figures; never ship a release with stale badges.
 
@@ -52,7 +52,7 @@ scripts/pre-release-check.sh
 - `scripts/pre-release-check.sh` must exit 0. It writes
   `scripts/release-test-report.md`; copy it to `dist/vX.Y.Z/VERIFICATION.md`.
 - Update the README badges **idle CPU**, **idle RAM** and **binary size**, and
-  the Litty row of `docs/performance.md`, from the report's numbers and the
+  the Litty row of `docs/development/performance.md`, from the report's numbers and the
   size of the release binary. If a figure could not be measured, leave the old
   value only after noting it under **Known limitations**. Fold the change into
   the release commit (amend before tagging, or a `docs(readme)` commit).
