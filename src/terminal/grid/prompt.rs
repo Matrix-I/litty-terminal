@@ -237,65 +237,85 @@ impl Grid {
         pl_end.or(sign_end).unwrap_or(0).min(cur_col)
     }
 
-    /// Calculate the arrow-key escape sequences needed to move the shell cursor to `(pane_row, pane_col)`.
-    /// Returns `None` if the click is outside the active command prompt line or no movement is needed.
+    /// Move within the active command, including wrapped rows and explicit newlines.
     pub fn calculate_cursor_movement_to(&self, pane_row: usize, pane_col: usize) -> Option<Vec<u8>> {
-        if self.alt_active || self.display_offset != 0 {
+        if self.alt_active || self.display_offset != 0
+            || self.cur.row >= self.rows || pane_row >= self.rows || self.cols == 0
+        {
             return None;
         }
-        if pane_row != self.cur.row || self.cur.row >= self.rows || self.cols == 0 {
+        // OSC 133;B identifies editable input even across hard line breaks.
+        // Without integration, only soft wraps reliably belong to the same input.
+        let input_start = self.prompt_input_mark.and_then(|(line, col)| {
+            line.checked_sub(self.lines_pushed)
+                .filter(|&row| row <= self.cur.row && row < self.rows)
+                .map(|row| (row, col))
+        });
+        let mut first = input_start.map_or(self.cur.row, |(row, _)| row);
+        while input_start.is_none() && first > 0 && self.line_wrapped(self.abs_line(first - 1)) {
+            first -= 1;
+        }
+        let mut last = self.cur.row;
+        if input_start.is_some() {
+            // Shell editors can leave the cursor above the end of the buffer.
+            last = (self.cur.row..self.rows).rfind(|&row| {
+                self.display_row(row).iter().any(|c| !Self::is_blank(c.codepoint))
+            }).unwrap_or(self.cur.row);
+        }
+        while last + 1 < self.rows && self.line_wrapped(self.abs_line(last)) {
+            last += 1;
+        }
+        if pane_row < first || pane_row > last {
             return None;
         }
-
-        let r = self.display_row(self.cur.row);
-        let cur_col = self.cur.col.min(self.cols);
-        let (cmd_start, cmd_end) = self.prompt_command_range();
-
-        let mut target_col = pane_col.clamp(cmd_start, cmd_end);
-
-        // If target_col lands on a wide-character dummy cell (codepoint == 0 following a width-2 character), snap to character start
-        if target_col > cmd_start
-            && target_col < self.cols
-            && r[target_col].codepoint == 0
-            && is_wide_cp(r[target_col - 1].codepoint)
+        let start = match self.prompt_input_mark {
+            Some((line, col)) if line == self.abs_line(first) => col.min(self.cols),
+            _ => self.guess_command_start(self.display_row(first),
+                if first == self.cur.row { self.cur.col.min(self.cols) } else { self.cols }),
+        };
+        let end = self.display_row(last).iter()
+            .rposition(|c| !Self::is_blank(c.codepoint))
+            .map_or(0, |col| col + 1)
+            .max(if last == self.cur.row { self.cur.col.min(self.cols) } else { 0 });
+        let lower = if pane_row == first { start } else { 0 };
+        let row_end = |r: usize| {
+            if self.line_wrapped(self.abs_line(r)) {
+                self.cols
+            } else {
+                self.display_row(r).iter()
+                    .rposition(|c| !Self::is_blank(c.codepoint)).map_or(0, |col| col + 1)
+                    .max(if r == self.cur.row { self.cur.col.min(self.cols) } else { 0 })
+            }
+        };
+        let upper = if pane_row == last { end.max(lower) } else { row_end(pane_row).max(lower) };
+        let mut target_col = pane_col.clamp(lower, upper);
+        let row = self.display_row(pane_row);
+        if target_col > lower && target_col < self.cols
+            && row[target_col].codepoint == 0 && is_wide_cp(row[target_col - 1].codepoint)
         {
             target_col -= 1;
         }
-
-        if target_col == cur_col {
+        let current = (self.cur.row, self.cur.col.min(self.cols));
+        let target = (pane_row, target_col);
+        if current == target {
             return None;
         }
-
-        let seq_left = if self.modes.app_cursor { b"\x1bOD" } else { b"\x1b[D" };
-        let seq_right = if self.modes.app_cursor { b"\x1bOC" } else { b"\x1b[C" };
-
-        if target_col < cur_col {
-            let mut count = 0;
-            for c in &r[target_col..cur_col] {
-                if c.codepoint != 0 {
-                    count += 1;
-                }
-            }
-            let count = count.max(1);
-            let mut bytes = Vec::with_capacity(count * seq_left.len());
-            for _ in 0..count {
-                bytes.extend_from_slice(seq_left);
-            }
-            Some(bytes)
+        let (from, to, seq) = if target < current {
+            (target, current, if self.modes.app_cursor { b"\x1bOD" } else { b"\x1b[D" })
         } else {
-            let mut count = 0;
-            for c in &r[cur_col..target_col] {
-                if c.codepoint != 0 {
-                    count += 1;
-                }
+            (current, target, if self.modes.app_cursor { b"\x1bOC" } else { b"\x1b[C" })
+        };
+        let mut count = 0;
+        for r in from.0..=to.0 {
+            let begin = if r == from.0 { from.1 } else { 0 };
+            let end = if r == to.0 { to.1 } else { row_end(r) };
+            if r < to.0 && !self.line_wrapped(self.abs_line(r)) {
+                count += 1; // One horizontal shell movement crosses a literal newline.
             }
-            let count = count.max(1);
-            let mut bytes = Vec::with_capacity(count * seq_right.len());
-            for _ in 0..count {
-                bytes.extend_from_slice(seq_right);
-            }
-            Some(bytes)
+            count += self.display_row(r)[begin..end].iter()
+                .filter(|c| c.codepoint != 0).count();
         }
+        Some(seq.repeat(count.max(1)))
     }
 
     /// Calculate bytes to delete all text on the command line before the cursor.

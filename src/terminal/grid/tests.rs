@@ -1236,6 +1236,47 @@ fn cursor_movement_on_click() {
 }
 
 #[test]
+fn cursor_click_crosses_soft_wrapped_rows() {
+    let mut g = Grid::new(10, 5);
+    feed(&mut g, "$ abcdefghijkl");
+    assert_eq!((g.cur.row, g.cur.col), (1, 4));
+    assert_eq!(g.calculate_cursor_movement_to(0, 4), Some(b"\x1b[D".repeat(10)));
+    assert_eq!(g.calculate_cursor_movement_to(0, 0), Some(b"\x1b[D".repeat(12)));
+    g.cur.row = 0;
+    g.cur.col = 4;
+    assert_eq!(g.calculate_cursor_movement_to(1, 2), Some(b"\x1b[C".repeat(8)));
+    assert_eq!(g.calculate_cursor_movement_to(1, 9), Some(b"\x1b[C".repeat(10)));
+    assert!(g.calculate_cursor_movement_to(2, 0).is_none());
+}
+
+#[test]
+fn cursor_click_wrapped_unicode_and_prompt_mark() {
+    let mut g = Grid::new(10, 5);
+    feed(&mut g, "output\r\ncustom \x1b]133;B\x07🦀abcdef");
+    assert_eq!((g.cur.row, g.cur.col), (2, 5));
+    assert_eq!(g.calculate_cursor_movement_to(1, 8), Some(b"\x1b[D".repeat(7)));
+    assert_eq!(g.calculate_cursor_movement_to(1, 0), Some(b"\x1b[D".repeat(7)));
+    assert!(g.calculate_cursor_movement_to(0, 0).is_none());
+    g.cur.row = 1;
+    g.cur.col = 7;
+    g.modes.app_cursor = true;
+    assert_eq!(g.calculate_cursor_movement_to(2, 2), Some(b"\x1bOC".repeat(4)));
+}
+
+#[test]
+fn cursor_click_crosses_explicit_newlines_and_blank_input_rows() {
+    let mut g = Grid::new(40, 8);
+    feed(&mut g, "old output\r\n$ \x1b]133;B\x07first\r\n\r\nlast");
+    assert_eq!(g.calculate_cursor_movement_to(1, 3), Some(b"\x1b[D".repeat(10)));
+    assert_eq!(g.calculate_cursor_movement_to(2, 20), Some(b"\x1b[D".repeat(5)));
+    assert!(g.calculate_cursor_movement_to(0, 0).is_none());
+    g.cur.row = 1;
+    g.cur.col = 3;
+    assert_eq!(g.calculate_cursor_movement_to(3, 2), Some(b"\x1b[C".repeat(8)));
+    assert!(g.calculate_cursor_movement_to(4, 0).is_none());
+}
+
+#[test]
 fn delete_before_and_after_cursor() {
     let mut g = Grid::new(80, 5);
     feed(&mut g, "$ cargo build");
