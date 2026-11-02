@@ -1,10 +1,6 @@
 //! Render a small, safe Markdown subset. Never pass model escape sequences through.
 pub const BASE: &str = "\x1b[3;36m";
-pub fn clean(text: &str) -> String {
-    text.chars()
-        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
-        .collect()
-}
+pub use crate::terminal::text::strip_controls as clean;
 pub fn render(text: &str) -> String {
     let text = clean(text);
     let mut out = String::from(BASE);

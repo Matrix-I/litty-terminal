@@ -145,7 +145,7 @@ fn cstr(s: impl Into<Vec<u8>>) -> CString {
 /// Shell integration for `shell_name`, unless disabled (`None`).
 fn shell_integration_for(
     shell_name: &str,
-    kind: Option<crate::config::ShellIntegration>,
+    kind: Option<crate::terminal::shell_integration::ShellIntegration>,
 ) -> Option<crate::terminal::shell_integration::Injection> {
     crate::terminal::shell_integration::prepare(shell_name, kind?, |k| std::env::var(k).ok())
 }
@@ -157,7 +157,7 @@ impl Pty {
         cell_w: u32,
         cell_h: u32,
         cwd: Option<&str>,
-        integration: Option<(crate::config::ShellIntegration, crate::config::ShellFeatures)>,
+        integration: Option<(crate::terminal::shell_integration::ShellIntegration, crate::terminal::shell_integration::ShellFeatures)>,
     ) -> io::Result<Pty> {
         let shell = std::env::var("SHELL")
             .ok()

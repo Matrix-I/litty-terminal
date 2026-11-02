@@ -22,6 +22,8 @@ mod renderer;
 mod scroll;
 #[cfg(test)]
 mod security_poc;
+#[cfg(test)]
+mod layering_tests;
 mod split;
 mod tab;
 mod terminal;
