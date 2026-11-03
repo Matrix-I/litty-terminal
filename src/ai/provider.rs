@@ -1,6 +1,6 @@
 //! Provider wire formats, preserving complete reasoning and tool-call messages.
 use super::config::{Config, Provider};
-use super::json::{Json as J, obj};
+use crate::json::{Json as J, obj};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Command {

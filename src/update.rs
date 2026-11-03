@@ -189,9 +189,9 @@ fn run_curl_with_stdin(cmd: &mut Command, what: &str, input: Option<&[u8]>) -> R
     }
 }
 
-use crate::ai::json::Json;
+use crate::json::Json;
 #[cfg(test)]
-use crate::ai::json::MAX_JSON_DEPTH;
+use crate::json::MAX_JSON_DEPTH;
 
 /// A tag is used as a cache directory name, so allow only plain version-like characters.
 fn is_safe_tag(tag: &str) -> bool {

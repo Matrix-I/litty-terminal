@@ -8,6 +8,7 @@ mod bench_dsr;
 mod cli;
 mod config;
 mod event;
+mod json;
 mod keymap;
 mod mouse;
 mod paste;

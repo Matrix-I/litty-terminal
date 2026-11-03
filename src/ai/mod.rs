@@ -1,7 +1,6 @@
 //! Per-pane AI workers; all network and model work stays off the UI/PTY threads.
 pub mod config;
 mod http;
-pub(crate) mod json;
 pub mod markdown;
 pub mod prompt;
 mod provider;
@@ -10,7 +9,7 @@ mod live_tests;
 
 use crate::event::AppEvent;
 use crate::terminal::grid::Grid;
-use json::Json;
+use crate::json::{self, Json};
 use parking_lot::Mutex;
 use provider::Action;
 use std::sync::{
