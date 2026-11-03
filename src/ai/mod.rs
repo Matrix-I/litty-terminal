@@ -387,7 +387,7 @@ fn compact(
     cancel: &Arc<AtomicBool>,
     status: &impl Fn(String),
 ) -> Result<(), String> {
-    let bytes = s.history.iter().map(|m| m.encode().len()).sum::<usize>();
+    let bytes = s.history.iter().map(|m| m.encoded_len()).sum::<usize>();
     if bytes / 3 < c.context_window / 2 || s.boundaries.len() < 2 {
         return Ok(());
     }
@@ -397,7 +397,7 @@ fn compact(
     for boundary in &s.boundaries {
         seen += s.history[split..*boundary]
             .iter()
-            .map(|m| m.encode().len())
+            .map(|m| m.encoded_len())
             .sum::<usize>();
         split = *boundary;
         if seen >= target {
