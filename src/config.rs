@@ -638,18 +638,40 @@ pub fn bundled_theme_names() -> impl Iterator<Item = &'static str> {
     BUNDLED_THEMES.lines().filter_map(|l| l.strip_prefix('[')?.strip_suffix(']'))
 }
 
-/// Body of the bundled theme `name` (case-insensitive).
-fn bundled_theme(name: &str) -> Option<&'static str> {
-    let mut rest = BUNDLED_THEMES;
-    while let Some(start) = rest.find("\n[") {
+/// Bundled themes as `(name, body)`, sorted by ASCII-lowercase name. Built once,
+/// on the first lookup: 861 entries of two `&'static str`, no copied text.
+static THEME_INDEX: std::sync::OnceLock<Vec<(&'static str, &'static str)>> = std::sync::OnceLock::new();
+
+fn cmp_ignore_ascii_case(a: &str, b: &str) -> std::cmp::Ordering {
+    a.bytes().map(|c| c.to_ascii_lowercase()).cmp(b.bytes().map(|c| c.to_ascii_lowercase()))
+}
+
+/// Every `[Name]` section of `text` in file order, with its body.
+fn theme_sections(text: &'static str) -> impl Iterator<Item = (&'static str, &'static str)> {
+    let mut rest = text;
+    std::iter::from_fn(move || {
+        let start = rest.find("\n[")?;
         rest = &rest[start + 2..];
         let (header, body) = rest.split_once('\n')?;
         let title = header.strip_suffix(']')?;
-        if title.eq_ignore_ascii_case(name) {
-            return Some(body.split("\n[").next().unwrap_or(body));
-        }
-    }
-    None
+        Some((title, body.split("\n[").next().unwrap_or(body)))
+    })
+}
+
+fn index_themes(text: &'static str) -> Vec<(&'static str, &'static str)> {
+    let mut v: Vec<_> = theme_sections(text).collect();
+    v.sort_by(|a, b| cmp_ignore_ascii_case(a.0, b.0)); // stable: keeps file order among equals
+    v
+}
+
+fn find_theme(index: &[(&'static str, &'static str)], name: &str) -> Option<&'static str> {
+    let i = index.partition_point(|(title, _)| cmp_ignore_ascii_case(title, name).is_lt());
+    index.get(i).filter(|(title, _)| title.eq_ignore_ascii_case(name)).map(|(_, body)| *body)
+}
+
+/// Body of the bundled theme `name` (case-insensitive; the first of equal names wins).
+fn bundled_theme(name: &str) -> Option<&'static str> {
+    find_theme(THEME_INDEX.get_or_init(|| index_themes(BUNDLED_THEMES)), name)
 }
 
 impl Config {
@@ -1150,6 +1172,53 @@ mod tests {
         assert_eq!(Config::parse("theme = ../../etc/passwd\n").1.len(), 1);
         assert!(bundled_theme_names().count() > 800);
         assert_eq!(bundled_theme_names().next(), Some("0x96f"));
+    }
+
+    /// The pre-index implementation: linear scan, first match wins.
+    fn bundled_theme_linear(name: &str) -> Option<&'static str> {
+        theme_sections(BUNDLED_THEMES).find(|(title, _)| title.eq_ignore_ascii_case(name)).map(|(_, body)| body)
+    }
+
+    #[test]
+    fn indexed_theme_lookup_matches_the_linear_scan() {
+        for name in bundled_theme_names() {
+            assert!(bundled_theme_linear(name).is_some(), "{name}");
+            assert_eq!(bundled_theme(name), bundled_theme_linear(name), "{name}");
+            assert_eq!(bundled_theme(&name.to_ascii_uppercase()), bundled_theme_linear(name), "{name} upper");
+            assert_eq!(bundled_theme(&name.to_ascii_lowercase()), bundled_theme_linear(name), "{name} lower");
+        }
+        for missing in ["", "No Such Theme", "0x96", "0x96f ", "zzzz", "../../etc/passwd"] {
+            assert_eq!(bundled_theme(missing), None, "{missing:?}");
+            assert_eq!(bundled_theme_linear(missing), None, "{missing:?}");
+        }
+    }
+
+    #[test]
+    fn indexed_theme_lookup_keeps_the_first_of_duplicate_names() {
+        let sample = "x\n[B]\nbackground = 1\n\n[b]\nbackground = 2\n\n[A]\nbackground = 3\n";
+        let index = index_themes(sample);
+        assert_eq!(find_theme(&index, "b").and_then(|b| b.lines().next()), Some("background = 1"));
+        assert_eq!(find_theme(&index, "A").and_then(|b| b.lines().next()), Some("background = 3"));
+    }
+
+    /// `cargo test --release -- --ignored --nocapture theme_lookup_timing`
+    #[test]
+    #[ignore = "timing probe"]
+    fn theme_lookup_timing() {
+        for name in ["0x96f", "Lumina Oxblood Light", "Zenwritten Light"] {
+            let t0 = std::time::Instant::now();
+            for _ in 0..2000 {
+                std::hint::black_box(bundled_theme(std::hint::black_box(name)));
+            }
+            let indexed = t0.elapsed().as_secs_f64() * 1e6 / 2000.0;
+            let t1 = std::time::Instant::now();
+            for _ in 0..2000 {
+                std::hint::black_box(bundled_theme_linear(std::hint::black_box(name)));
+            }
+            let linear = t1.elapsed().as_secs_f64() * 1e6 / 2000.0;
+            println!("{name:<22} linear {linear:>8.2} us   indexed {indexed:>8.2} us");
+        }
+        println!("index entries: {}", THEME_INDEX.get().map_or(0, Vec::len));
     }
 
     #[test]
