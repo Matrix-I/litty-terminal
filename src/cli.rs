@@ -9,6 +9,9 @@ pub(crate) enum Command {
     BenchPerf,
     BenchStress { lines: usize },
     BenchFeatures,
+    BenchDsr { iterations: usize },
+    /// Internal: the child process of `BenchDsr`, which runs on a PTY.
+    BenchDsrChild { out: String, warmup: usize, iterations: usize },
     Run { bench_ram: bool, bench_all: bool, scroll_fps: bool },
 }
 
@@ -29,6 +32,13 @@ pub(crate) fn parse(args: &[String]) -> Command {
         Command::BenchStress { lines: args.get(2).and_then(|s| s.parse().ok()).unwrap_or(20_000) }
     } else if is(&["+bench-features", "--bench-features"]) {
         Command::BenchFeatures
+    } else if is(&["+bench-dsr", "--bench-dsr"]) {
+        Command::BenchDsr {
+            iterations: args.get(2).and_then(|s| s.parse().ok()).unwrap_or(crate::bench_dsr::ITERATIONS),
+        }
+    } else if is(&[crate::bench_dsr::CHILD_FLAG]) {
+        let num = |i: usize| args.get(i).and_then(|s| s.parse().ok()).unwrap_or(0);
+        Command::BenchDsrChild { out: args.get(2).cloned().unwrap_or_default(), warmup: num(3), iterations: num(4) }
     } else {
         let bench_all = is(&["+bench-all", "--bench-all"]);
         Command::Run {
@@ -83,6 +93,16 @@ mod tests {
         assert_eq!(parse(&argv(&["+bench-stress"])), Command::BenchStress { lines: 20_000 });
         assert_eq!(parse(&argv(&["--bench-stress", "500"])), Command::BenchStress { lines: 500 });
         assert_eq!(parse(&argv(&["--bench-stress", "abc"])), Command::BenchStress { lines: 20_000 });
+    }
+
+    #[test]
+    fn bench_dsr_parses_iterations_and_child_arguments() {
+        assert_eq!(parse(&argv(&["+bench-dsr"])), Command::BenchDsr { iterations: 1000 });
+        assert_eq!(parse(&argv(&["--bench-dsr", "50"])), Command::BenchDsr { iterations: 50 });
+        assert_eq!(
+            parse(&argv(&["+bench-dsr-child", "/tmp/x", "10", "20"])),
+            Command::BenchDsrChild { out: "/tmp/x".into(), warmup: 10, iterations: 20 }
+        );
     }
 
     #[test]

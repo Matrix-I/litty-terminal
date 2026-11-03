@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use winit::event_loop::EventLoopProxy;
 
+use crate::bench_dsr as bd;
 use crate::event::AppEvent;
 use crate::terminal::grid::Grid;
 use crate::terminal::history;
@@ -35,11 +36,17 @@ pub struct RamMetrics {
 
 #[derive(Debug, Clone, Default)]
 pub struct LatencyMetrics {
-    pub pty_roundtrip_min_ms: f64,
-    pub pty_roundtrip_avg_ms: f64,
-    pub pty_roundtrip_max_ms: f64,
-    pub pty_roundtrip_p95_ms: f64,
-    pub pty_roundtrip_p99_ms: f64,
+    /// Same-process pipe write/read baseline; involves no PTY.
+    pub ipc_pipe_min_ms: f64,
+    pub ipc_pipe_avg_ms: f64,
+    pub ipc_pipe_max_ms: f64,
+    pub ipc_pipe_p95_ms: f64,
+    pub ipc_pipe_p99_ms: f64,
+    /// DSR (`ESC[5n` -> `ESC[0n`) roundtrip on a real PTY, see `bench_dsr`.
+    pub dsr_mean_ms: f64,
+    pub dsr_median_ms: f64,
+    pub dsr_p95_ms: f64,
+    pub dsr_p99_ms: f64,
     pub file_read_4kb_ms: f64,
     pub file_read_64kb_ms: f64,
     pub file_read_1mb_ms: f64,
@@ -259,8 +266,45 @@ pub(crate) fn write_bench_report(path: &std::path::Path, json: &str) -> std::io:
     file.write_all(json.as_bytes())
 }
 
+fn print_stats(s: &bd::Stats) {
+    println!("      • Min    : {:>6.3} ms", s.min);
+    println!("      • Mean   : {:>6.3} ms", s.mean);
+    println!("      • Median : {:>6.3} ms", s.median);
+    println!("      • P95    : {:>6.3} ms", s.p95);
+    println!("      • P99    : {:>6.3} ms", s.p99);
+    println!("      • Max    : {:>6.3} ms", s.max);
+}
+
+fn measure_dsr(iterations: usize) -> Result<bd::Stats, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe failed: {e}"))?;
+    let samples = bd::measure(&exe, iterations)?;
+    bd::summarize(&samples).ok_or_else(|| "no samples".into())
+}
+
+pub struct DsrResult {
+    pub passed: bool,
+}
+
+/// `+bench-dsr`: only the PTY DSR protocol roundtrip (not shell command completion or rendering).
+pub fn run_dsr_benchmark(iterations: usize) -> DsrResult {
+    println!("PTY DSR protocol roundtrip, {iterations} iterations (+{} warmup discarded)", bd::WARMUP);
+    match measure_dsr(iterations) {
+        Ok(stats) => {
+            println!("samples: {}", stats.samples);
+            print_stats(&stats);
+            let passed = stats.mean <= 1.0 && stats.p99 <= 3.0;
+            println!("mean <= 1 ms and P99 <= 3 ms: {}", if passed { "PASS" } else { "FAIL" });
+            DsrResult { passed }
+        }
+        Err(e) => {
+            eprintln!("litty: DSR benchmark failed: {e}");
+            DsrResult { passed: false }
+        }
+    }
+}
+
 /// Run interactive latency benchmarks:
-/// - PTY Roundtrip Latency (Echo PING/PONG)
+/// - Same-process pipe IPC baseline and PTY DSR protocol roundtrip
 /// - File Read Latency (4KB, 64KB, 1MB)
 pub fn run_latency_benchmark() -> LatencyMetrics {
     let bold = "\x1b[1m";
@@ -273,18 +317,17 @@ pub fn run_latency_benchmark() -> LatencyMetrics {
     println!("{bold}       LITTY INTERACTIVE LATENCY & FILE I/O BENCHMARK             {reset}");
     println!("{bold}{cyan}=================================================================={reset}\n");
 
-    // 1. PTY Command Execution Latency (Ping-Pong Roundtrip)
-    println!("  [1] Measuring PTY Command Roundtrip Latency (50 iterations)...");
-    let mut roundtrips = Vec::new();
-    
-    // Spawn a temporary lightweight PTY for measurements
+    // 1a. Same-process anonymous pipe write -> read. This is an IPC baseline: it
+    // involves no PTY driver, shell or production reader/writer, so it is reported
+    // for reference and is not compared with the PTY targets.
+    println!("  [1a] Measuring same-process pipe IPC roundtrip ({} iterations, no PTY)...", bd::ITERATIONS);
+    let mut pipe_samples = Vec::with_capacity(bd::ITERATIONS);
     let (pipe_r, pipe_w) = unsafe {
         let mut fds = [0; 2];
         libc::pipe(fds.as_mut_ptr());
         (fds[0], fds[1])
     };
-    
-    for i in 0..50 {
+    for i in 0..bd::ITERATIONS {
         let t0 = Instant::now();
         let ping_msg = format!("__LITTY_PING_{}__\n", i);
         unsafe {
@@ -292,29 +335,25 @@ pub fn run_latency_benchmark() -> LatencyMetrics {
             let mut buf = [0u8; 128];
             let _ = libc::read(pipe_r, buf.as_mut_ptr() as _, buf.len());
         }
-        let dur = t0.elapsed();
-        roundtrips.push(dur.as_secs_f64() * 1000.0);
+        pipe_samples.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
     unsafe {
         libc::close(pipe_r);
         libc::close(pipe_w);
     }
+    let pipe = bd::summarize(&pipe_samples).unwrap_or_default();
+    print_stats(&pipe);
 
-    roundtrips.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let min_ms = roundtrips.first().copied().unwrap_or(0.0);
-    let max_ms = roundtrips.last().copied().unwrap_or(0.0);
-    let sum_ms: f64 = roundtrips.iter().sum();
-    let avg_ms = sum_ms / roundtrips.len() as f64;
-    let p95_idx = ((roundtrips.len() as f64 * 0.95) as usize).min(roundtrips.len() - 1);
-    let p99_idx = ((roundtrips.len() as f64 * 0.99) as usize).min(roundtrips.len() - 1);
-    let p95_ms = roundtrips[p95_idx];
-    let p99_ms = roundtrips[p99_idx];
-
-    println!("      • Min : {:>6.3} ms", min_ms);
-    println!("      • Avg : {:>6.3} ms", avg_ms);
-    println!("      • P95 : {:>6.3} ms", p95_ms);
-    println!("      • P99 : {:>6.3} ms", p99_ms);
-    println!("      • Max : {:>6.3} ms", max_ms);
+    // 1b. DSR protocol roundtrip on a real PTY with the production reader.
+    println!("\n  [1b] Measuring PTY DSR protocol roundtrip ({} iterations, real PTY)...", bd::ITERATIONS);
+    println!("       ESC[5n written by a raw-mode child -> production reader/parser/reply queue -> ESC[0n read by the child");
+    let dsr = measure_dsr(bd::ITERATIONS);
+    match &dsr {
+        Ok(stats) => print_stats(stats),
+        Err(e) => println!("      • FAILED: {e}"),
+    }
+    let dsr_stats = dsr.as_ref().copied().unwrap_or_default();
+    let (min_ms, avg_ms, max_ms, p95_ms, p99_ms) = (pipe.min, pipe.mean, pipe.max, pipe.p95, pipe.p99);
 
     // 2. File Reading & Terminal Ingestion Latency
     println!("\n  [2] Measuring File Read & Stream Ingestion Latency...");
@@ -424,8 +463,8 @@ pub fn run_latency_benchmark() -> LatencyMetrics {
     println!("      • 500 BiDi Cluster rows   : {:>6.3} ms", dur_bidi_ms);
 
     // SLAs
-    let pass_pty_avg = avg_ms <= 1.0;
-    let pass_pty_p99 = p99_ms <= 3.0;
+    let pass_pty_avg = dsr.is_ok() && dsr_stats.mean <= 1.0;
+    let pass_pty_p99 = dsr.is_ok() && dsr_stats.p99 <= 3.0;
     let pass_file_64kb = dur_64kb_ms <= 15.0;
     let pass_file_1mb = dur_1mb_ms <= 150.0;
     let pass_apc = dur_apc_ms <= 30.0;
@@ -444,8 +483,8 @@ pub fn run_latency_benchmark() -> LatencyMetrics {
         && pass_bidi;
 
     println!("\n{bold}Latency SLA Evaluation:{reset}");
-    println!("  • PTY Avg Latency   <= 1.0 ms : {}", if pass_pty_avg { format!("{green}PASS{reset}") } else { format!("{red}FAIL ({:.3} ms > 1.0 ms){reset}", avg_ms) });
-    println!("  • PTY P99 Latency   <= 3.0 ms : {}", if pass_pty_p99 { format!("{green}PASS{reset}") } else { format!("{red}FAIL ({:.3} ms > 3.0 ms){reset}", p99_ms) });
+    println!("  • DSR PTY Mean      <= 1.0 ms : {}", if pass_pty_avg { format!("{green}PASS ({:.3} ms){reset}", dsr_stats.mean) } else { format!("{red}FAIL ({:.3} ms > 1.0 ms){reset}", dsr_stats.mean) });
+    println!("  • DSR PTY P99       <= 3.0 ms : {}", if pass_pty_p99 { format!("{green}PASS ({:.3} ms){reset}", dsr_stats.p99) } else { format!("{red}FAIL ({:.3} ms > 3.0 ms){reset}", dsr_stats.p99) });
     println!("  • 64 KB File Read   <= 15 ms  : {}", if pass_file_64kb { format!("{green}PASS{reset}") } else { format!("{red}FAIL ({:.2} ms > 15 ms){reset}", dur_64kb_ms) });
     println!("  • 1 MB File Read    <= 150 ms : {}", if pass_file_1mb { format!("{green}PASS{reset}") } else { format!("{red}FAIL ({:.2} ms > 150 ms){reset}", dur_1mb_ms) });
     println!("  • 256 KB Kitty APC  <= 30 ms  : {}", if pass_apc { format!("{green}PASS ({:.2} ms){reset}", dur_apc_ms) } else { format!("{red}FAIL ({:.2} ms > 30 ms){reset}", dur_apc_ms) });
@@ -462,11 +501,15 @@ pub fn run_latency_benchmark() -> LatencyMetrics {
     println!("{bold}{cyan}=================================================================={reset}\n");
 
     LatencyMetrics {
-        pty_roundtrip_min_ms: min_ms,
-        pty_roundtrip_avg_ms: avg_ms,
-        pty_roundtrip_max_ms: max_ms,
-        pty_roundtrip_p95_ms: p95_ms,
-        pty_roundtrip_p99_ms: p99_ms,
+        ipc_pipe_min_ms: min_ms,
+        ipc_pipe_avg_ms: avg_ms,
+        ipc_pipe_max_ms: max_ms,
+        ipc_pipe_p95_ms: p95_ms,
+        ipc_pipe_p99_ms: p99_ms,
+        dsr_mean_ms: dsr_stats.mean,
+        dsr_median_ms: dsr_stats.median,
+        dsr_p95_ms: dsr_stats.p95,
+        dsr_p99_ms: dsr_stats.p99,
         file_read_4kb_ms: dur_4kb_ms,
         file_read_64kb_ms: dur_64kb_ms,
         file_read_1mb_ms: dur_1mb_ms,

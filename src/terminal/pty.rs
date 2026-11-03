@@ -163,16 +163,44 @@ impl Pty {
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| if cfg!(target_os = "macos") { "/bin/zsh".into() } else { "/bin/bash".into() });
+        Self::spawn_command(&shell, None, &[], cols, rows, cell_w, cell_h, cwd, integration)
+    }
+
+    /// Run `program` with `args` (argv[0] included) on a fresh PTY through the same
+    /// fork path as a shell, without shell integration. Used by the PTY benchmark.
+    pub(crate) fn spawn_program(
+        program: &str,
+        args: &[&str],
+        env: &[(&str, &str)],
+        cols: u16,
+        rows: u16,
+    ) -> io::Result<Pty> {
+        Self::spawn_command(program, Some(args), env, cols, rows, 8, 16, None, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_command(
+        shell: &str,
+        argv_override: Option<&[&str]>,
+        extra_env: &[(&str, &str)],
+        cols: u16,
+        rows: u16,
+        cell_w: u32,
+        cell_h: u32,
+        cwd: Option<&str>,
+        integration: Option<(crate::terminal::shell_integration::ShellIntegration, crate::terminal::shell_integration::ShellFeatures)>,
+    ) -> io::Result<Pty> {
         let shell_name = shell.rsplit('/').next().unwrap_or("sh").to_string();
 
         // Everything the child needs is prepared before fork(): after fork only
         // async-signal-safe calls are allowed.
-        let path = cstr(shell.as_str());
+        let path = cstr(shell);
         let injection = shell_integration_for(&shell_name, integration.map(|(kind, _)| kind));
         // A leading '-' in argv[0] makes a login shell; injected bash emulates one.
-        let args: Vec<CString> = match injection.as_ref().and_then(|i| i.argv.as_ref()) {
-            Some(a) => a.iter().map(|s| cstr(s.as_str())).collect(),
-            None => vec![cstr(format!("-{shell_name}"))],
+        let args: Vec<CString> = match (argv_override, injection.as_ref().and_then(|i| i.argv.as_ref())) {
+            (Some(a), _) => a.iter().map(|s| cstr(*s)).collect(),
+            (None, Some(a)) => a.iter().map(|s| cstr(s.as_str())).collect(),
+            (None, None) => vec![cstr(format!("-{shell_name}"))],
         };
         let mut argv: Vec<*const libc::c_char> = args.iter().map(|a| a.as_ptr()).collect();
         argv.push(std::ptr::null());
@@ -213,6 +241,9 @@ impl Pty {
                 let joined = list.join(",");
                 env.push(cstr(format!("LITTY_SHELL_INTEGRATION_FEATURES={joined}")));
             }
+        }
+        for (k, v) in extra_env {
+            env.push(cstr(format!("{k}={v}")));
         }
         env.push(cstr(format!("PWD={target_dir}")));
         if std::env::var_os("LANG").is_none() && std::env::var_os("LC_ALL").is_none() {

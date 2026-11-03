@@ -4,6 +4,7 @@
 mod ai;
 mod app;
 pub mod bench;
+mod bench_dsr;
 mod cli;
 mod config;
 mod event;
@@ -64,6 +65,14 @@ fn main() {
             if !bench::run_render_stress_benchmark(lines).passed {
                 std::process::exit(1);
             }
+        }
+        cli::Command::BenchDsr { iterations } => {
+            if !bench::run_dsr_benchmark(iterations).passed {
+                std::process::exit(1);
+            }
+        }
+        cli::Command::BenchDsrChild { out, warmup, iterations } => {
+            std::process::exit(bench_dsr::run_child(std::path::Path::new(&out), warmup, iterations));
         }
         cli::Command::BenchFeatures => {
             if !bench::run_critical_features_benchmark().passed {
