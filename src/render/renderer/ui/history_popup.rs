@@ -3,7 +3,7 @@
 use super::super::Instance;
 use super::{Cells, DirtyRows, Label, prefix, preview_lines};
 use std::fmt::Write;
-use crate::terminal::history::HistorySearch;
+use crate::render::HistoryView;
 
 /// Position and size of the popup `(x0, y0, width, height, visible_rows)` in a
 /// `cols × total_rows` window.
@@ -34,7 +34,7 @@ pub(in crate::render::renderer) fn build(
     cells: &mut Cells,
     geometry: (usize, usize, usize, usize, usize),
     total_rows: usize,
-    search: &HistorySearch,
+    search: &HistoryView<'_>,
     dirty: &mut DirtyRows,
 ) {
     let cols = cells.cols;
@@ -148,7 +148,7 @@ pub(in crate::render::renderer) fn build(
     } else {
 
         let max_q = popup_w.saturating_sub(6);
-        let query = prefix(&search.query, max_q);
+        let query = prefix(search.query, max_q);
         let display_q = query.chars().count();
         for (i, ch) in query.chars().enumerate() {
             let slot = cells.atlas.slot(queue, ch as u32) as u32;

@@ -10,7 +10,7 @@ use crate::{HoveredPaneLink, Tab};
 use winit::keyboard::{ModifiersState, PhysicalKey};
 use winit::window::{CursorIcon, Window};
 
-use crate::terminal::history::HistorySearch;
+use super::history_ui::HistorySearch;
 use crate::render::renderer::Renderer;
 use crate::terminal::search::SearchBar;
 use crate::split::PaneRect;

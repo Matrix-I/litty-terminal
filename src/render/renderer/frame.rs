@@ -6,7 +6,7 @@ use super::pane_row::{build_pane_row, PaneRowCtx};
 use super::ui::{self, DirtyRows};
 use super::{scrollbar_thumb, Instance, RenderPane, Renderer, Uniforms, Viewport};
 use crate::terminal::grid::Hyperlink;
-use crate::terminal::history::HistorySearch;
+use crate::render::HistoryView;
 use crate::terminal::search::SearchBar;
 use crate::render::PaneRect;
 
@@ -52,7 +52,7 @@ struct FrameCtx<'a> {
 struct OverlayInputs<'a> {
     preedit: &'a str,
     search: &'a SearchBar,
-    history_search: Option<&'a HistorySearch>,
+    history_search: Option<HistoryView<'a>>,
     inspector: Option<&'a [String]>,
 }
 
@@ -72,7 +72,7 @@ impl Renderer {
         tab_bar: Option<(&[String], usize)>,
         hovered_link: Option<(u64, &Hyperlink)>,
         cursor_blink_on: bool,
-        history_search: Option<&HistorySearch>,
+        history_search: Option<HistoryView<'_>>,
         search: &SearchBar,
         preedit: &str,
         inspector: Option<&[String]>,
@@ -437,8 +437,8 @@ impl Renderer {
         }
 
         if let Some(search) = history_search
-            && let Some(popup) = self.history_popup_geometry(search) {
-                ui::history_popup::build(&mut self.cells(cols), popup, total_rows, search, dirty);
+            && let Some(popup) = self.history_popup_geometry(&search) {
+                ui::history_popup::build(&mut self.cells(cols), popup, total_rows, &search, dirty);
             }
 
         if let Some(lines) = inspector {
