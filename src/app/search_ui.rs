@@ -118,12 +118,19 @@ pub(super) fn refresh_search(s: &mut State) {
         && let Some(p) = s.tabs.iter().flat_map(|t| &t.panes).find(|p| p.id == old) {
             p.grid.lock().clear_search();
         }
+    if s.search.pane_id != Some(pane.id) { s.search.snapshot = None; }
     s.search.pane_id = Some(pane.id);
     // Copy the text under the lock, match outside it.
     let matches = match s.search.compile() {
         Some(re) => {
-            let text = pane.grid.lock().search_text();
-            text.find(&re)
+            let snapshot = s.search.snapshot.take();
+            let text = {
+                let grid = pane.grid.lock();
+                match snapshot { Some(snapshot) => grid.search_text_reusing(snapshot), None => grid.search_text() }
+            };
+            let matches = text.find(&re);
+            if text.reusable() { s.search.snapshot = Some(text); }
+            matches
         }
         None => Vec::new(),
     };

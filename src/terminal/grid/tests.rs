@@ -1985,3 +1985,49 @@ fn benchmark_full_cluster_parser() {
     for b in input.bytes() { fresh.feed_byte(&mut parser, b); }
     eprintln!("Fresh table parser, 1000 clusters: {:?}", start.elapsed());
 }
+
+#[cfg(test)]
+#[test]
+fn sparse_snapshot_matches_dense_cell_oracle() {
+    let mut grid = Grid::new(8, 4);
+    let mut parser = vte::Parser::new();
+    for input in ["", "ab ❤️e\u{301}日本x\r\n", "abcdefghijk\r\n", "\r\n\r\n", "\x1b[?1049h界❤️\r\n", "\x1b[?1049l", "بَ  x\r\n"] {
+        for byte in input.bytes() { parser.advance(&mut grid, byte); }
+        for resize in [None, Some((1, 2)), Some((8, 4))] {
+            if let Some((cols, rows)) = resize { grid.resize(cols, rows); }
+            let sparse = grid.search_text();
+            let dense = grid.dense_search_text();
+            assert_eq!(sparse.text, dense.text);
+            assert_eq!(sparse.rows, dense.rows);
+            for pattern in [".", "[\\s\\S]", "\n", "❤️", "\u{fe0f}", "x", "b?", "e\u{301}", "jk", "界", "absent"] {
+                let re = regex::Regex::new(pattern).unwrap();
+                // Dense entries never carry the run bit, so both use the same matcher.
+                assert_eq!(sparse.find(&re), dense.find(&re), "pattern={pattern:?} input={input:?}");
+            }
+        }
+    }
+    let mut a = Grid::new(4, 1);
+    let mut b = Grid::new(1, 1);
+    for byte in "\x1b[?2027h❤️".bytes() { parser.advance(&mut a, byte); }
+    let mut parser = vte::Parser::new();
+    for byte in "\x1b[?2027h❤️".bytes() { parser.advance(&mut b, byte); }
+    b.resize(4, 1);
+    let re = regex::Regex::new("❤️").unwrap();
+    assert_eq!(a.search_text().text, b.search_text().text);
+    assert_ne!(a.search_text().find(&re), b.search_text().find(&re));
+}
+
+#[test]
+#[ignore = "measurement: run with --ignored --nocapture"]
+fn benchmark_search_snapshot_dense_vs_sparse() {
+    for (name, line) in [("dense", "x".repeat(160)), ("sparse", "x".repeat(20))] {
+        let mut grid = Grid::new(160, 24);
+        let mut parser = vte::Parser::new();
+        for _ in 0..5024 { for b in line.bytes().chain(b"\r\n".iter().copied()) { parser.advance(&mut grid, b); } }
+        let bytes = |t: &crate::terminal::search::SearchText| t.text.capacity() + t.rows.capacity() * 16 + t.columns.capacity() * 24;
+        let time = |f: &dyn Fn() -> crate::terminal::search::SearchText| { let t = std::time::Instant::now(); let r = f(); (t.elapsed(), bytes(&r)) };
+        let (dense_t, dense_b) = time(&|| grid.dense_search_text());
+        let (sparse_t, sparse_b) = time(&|| grid.search_text());
+        eprintln!("{name}: dense {dense_t:?} {dense_b} B | sparse {sparse_t:?} {sparse_b} B");
+    }
+}
