@@ -14,6 +14,7 @@ use std::{
     },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
 
@@ -172,19 +173,24 @@ fn base64_decode(input: &[u8]) -> Vec<u8> {
     out
 }
 
-fn run(shell: &str) {
+/// Starts `shell` with the Litty integration loaded and `env` added to its
+/// environment; `None` when the shell is not installed. Also returns what the
+/// shell printed during startup.
+fn launch(shell: &str, env: &[(&str, &Path)]) -> Option<(Session, Vec<u8>)> {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let Some(binary) = which(shell) else {
         eprintln!("{shell}: skipped (not installed)");
-        return;
+        return None;
     };
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let home = std::env::temp_dir().join(format!("litty-yo-{shell}-{}", std::process::id()));
+    let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let home = std::env::temp_dir().join(format!("litty-yo-{shell}-{}-{unique}", std::process::id()));
     let _ = fs::remove_dir_all(&home);
     fs::create_dir_all(&home).expect("create home");
 
     let data_dirs = home.join("data");
     let config_home = home.join(".config");
-    let mut extra_env: Vec<(&str, &Path)> = Vec::new();
+    let mut extra_env: Vec<(&str, &Path)> = env.to_vec();
     let args: Vec<String> = match shell {
         "zsh" => {
             let script = shell_quote(&root.join("src/shell/litty-integration.zsh"));
@@ -218,6 +224,11 @@ fn run(shell: &str) {
     let mut session = Session::spawn(&binary, &args, &home, &extra_env);
     let initial = session.read_for(if shell == "nu" { NU_STARTUP_WINDOW } else { READ_WINDOW });
     assert!(has(&initial, b"778;init"), "{shell}: {}", text(&initial));
+    Some((session, initial))
+}
+
+fn run(shell: &str) {
+    let Some((mut session, initial)) = launch(shell, &[]) else { return };
 
     let query = "find files > 100MB; echo SHOULD_NOT_EXECUTE";
     let direct = has(&initial, b"778;init;direct");
@@ -292,4 +303,101 @@ fn yo_fish() {
 #[test]
 fn yo_nu() {
     run("nu");
+}
+
+/// A directory with an executable `yo` that reports its arguments, like a real
+/// Yeoman install; removed on drop.
+struct StubYo(PathBuf);
+
+impl StubYo {
+    fn new(shell: &str) -> Self {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("litty-yo-stub-{shell}-{}-{unique}", std::process::id()));
+        fs::create_dir_all(&dir).expect("create stub dir");
+        let stub = dir.join("yo");
+        fs::write(&stub, "#!/bin/sh\necho \"STUB_YO_RECEIVED $*\"\n").expect("write stub");
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).expect("chmod stub");
+        Self(dir)
+    }
+
+    fn path_with_stub_first(&self) -> PathBuf {
+        let mut dirs = vec![self.0.clone()];
+        dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+        std::env::join_paths(dirs).expect("join PATH").into()
+    }
+}
+
+impl Drop for StubYo {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// With another trigger or none, `yo` is an ordinary command again: a stub
+/// `yo` on PATH receives `yo generator`, and nothing is sent to the AI bridge.
+fn run_without_yo_trigger(shell: &str, trigger: &str) {
+    let stub = StubYo::new(shell);
+    let path = stub.path_with_stub_first();
+    let env = [("LITTY_AI_TRIGGER", Path::new(trigger)), ("PATH", path.as_path())];
+    let Some((mut session, initial)) = launch(shell, &env) else { return };
+
+    session.write(b"yo generator\r");
+    let output = session.read();
+    assert!(has(&output, b"STUB_YO_RECEIVED generator"), "{shell}/{trigger:?}: {}", text(&output));
+    assert!(!has(&output, b"778;yo;"), "{shell}/{trigger:?}: {}", text(&output));
+
+    // Shells that edit the line themselves also honour the renamed word.
+    if !trigger.is_empty() && !has(&initial, b"778;init;direct") {
+        session.write(format!("{trigger} list files\r").as_bytes());
+        let output = session.read();
+        let marker: &[u8] = b"\x1b]778;yo;";
+        let start = output
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .unwrap_or_else(|| panic!("{shell}/{trigger:?}: {}", text(&output)));
+        let rest = &output[start + marker.len()..];
+        let payload = rest.split(|&byte| byte == 0x07).next().unwrap_or(rest);
+        assert_eq!(text(&base64_decode(payload)).trim(), "list files", "{shell}: {}", text(&output));
+    }
+}
+
+#[test]
+fn renamed_trigger_zsh() {
+    run_without_yo_trigger("zsh", "ask");
+}
+
+#[test]
+fn renamed_trigger_bash() {
+    run_without_yo_trigger("bash", "ask");
+}
+
+#[test]
+fn renamed_trigger_fish() {
+    run_without_yo_trigger("fish", "ask");
+}
+
+#[test]
+fn renamed_trigger_nu() {
+    run_without_yo_trigger("nu", "ask");
+}
+
+#[test]
+fn disabled_trigger_zsh() {
+    run_without_yo_trigger("zsh", "");
+}
+
+#[test]
+fn disabled_trigger_bash() {
+    run_without_yo_trigger("bash", "");
+}
+
+#[test]
+fn disabled_trigger_fish() {
+    run_without_yo_trigger("fish", "");
+}
+
+#[test]
+fn disabled_trigger_nu() {
+    run_without_yo_trigger("nu", "");
 }

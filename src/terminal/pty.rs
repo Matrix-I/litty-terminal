@@ -157,7 +157,7 @@ impl Pty {
         cell_w: u32,
         cell_h: u32,
         cwd: Option<&str>,
-        integration: Option<(crate::terminal::shell_integration::ShellIntegration, crate::terminal::shell_integration::ShellFeatures)>,
+        integration: Option<crate::terminal::shell_integration::ShellSetup>,
     ) -> io::Result<Pty> {
         let shell = std::env::var("SHELL")
             .ok()
@@ -188,14 +188,14 @@ impl Pty {
         cell_w: u32,
         cell_h: u32,
         cwd: Option<&str>,
-        integration: Option<(crate::terminal::shell_integration::ShellIntegration, crate::terminal::shell_integration::ShellFeatures)>,
+        integration: Option<crate::terminal::shell_integration::ShellSetup>,
     ) -> io::Result<Pty> {
         let shell_name = shell.rsplit('/').next().unwrap_or("sh").to_string();
 
         // Everything the child needs is prepared before fork(): after fork only
         // async-signal-safe calls are allowed.
         let path = cstr(shell);
-        let injection = shell_integration_for(&shell_name, integration.map(|(kind, _)| kind));
+        let injection = shell_integration_for(&shell_name, integration.as_ref().map(|(kind, _, _)| *kind));
         // A leading '-' in argv[0] makes a login shell; injected bash emulates one.
         let args: Vec<CString> = match (argv_override, injection.as_ref().and_then(|i| i.argv.as_ref())) {
             (Some(a), _) => a.iter().map(|s| cstr(*s)).collect(),
@@ -231,8 +231,9 @@ impl Pty {
         for (k, v) in &injected_env {
             env.push(cstr(format!("{k}={v}")));
         }
-        if let Some((_, feats)) = integration {
+        if let Some((_, feats, ai_trigger)) = &integration {
             env.push(cstr("LITTY_SHELL_INTEGRATION=1"));
+            env.push(cstr(format!("LITTY_AI_TRIGGER={ai_trigger}")));
             let mut list = Vec::new();
             if feats.cursor { list.push("cursor"); }
             if feats.sudo { list.push("sudo"); }

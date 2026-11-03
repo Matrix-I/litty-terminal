@@ -17,6 +17,14 @@ Keys resolve from `ai-api-key`, the selected provider's environment variable (`A
 
 Multi-step suggestions still require Enter for every command. Editing a pending suggestion continues the workflow with the command actually executed and its output. Empty Enter, Ctrl+C, or a new `yo` query cancels the previous chain. Model-requested scrollback and continuation output are sent to the configured provider; sessions and the last response stay in memory per pane. Local commands are `yo reset`, `yo show last response`, and `yo show documentation`.
 
+## Trigger word
+
+`ai-trigger` sets the word that starts a query (default `yo`). It must be one shell word of letters, digits, `_` and `-` (at most 32 characters, not starting with a digit or `-`); `ai-trigger = off` turns AI invocation off, and an empty value restores the default. The Rust side matches it live; the shell scripts read it once when a shell starts, so open a new tab or split after changing it. With another trigger or none, `yo` is an ordinary command again (for example Yeoman's `yo generator` runs the real executable). Nushell cannot define a command under a chosen name, so a renamed trigger there works only by Litty's own Enter interception, and its `yo` function forwards to the real `yo`.
+
+## Redaction before sending
+
+Everything sent to the provider (queries, continuation output, scrollback the model requests, recorded executed commands and compaction requests) is first filtered. Matches are replaced with `[REDACTED:kind]` and the status line says how many were removed. Covered: PEM private key blocks (a truncated block is cut to the end), AWS access key ids, GitHub tokens, `Bearer` tokens, and `name=value` / `name: value` assignments whose name contains password, passwd, secret, token, api key or access key and whose value has at least four characters. This is a bounded safety net: other secret shapes, values passed as `--flag value`, and short values are not detected, so do not rely on it for sensitive output.
+
 ---
 
 Back to the [README](../../README.md).

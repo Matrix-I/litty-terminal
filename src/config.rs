@@ -256,6 +256,11 @@ pub fn config_mtime() -> Option<SystemTime> {
 }
 
 impl Config {
+    /// Shell integration settings for a new pane, including the AI trigger word.
+    pub fn shell_setup(&self) -> crate::terminal::shell_integration::ShellSetup {
+        (self.shell_integration, self.shell_integration_features, self.ai.trigger().to_owned())
+    }
+
     /// Load the config file. A missing file yields defaults; malformed lines
     /// are reported on stderr and skipped (like Ghostty, a bad line never
     /// prevents the terminal from starting).
@@ -1044,6 +1049,19 @@ const TEMPLATE: &str = r#"# This is the configuration file for Litty.
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ai_trigger_reaches_new_shells() {
+        assert_eq!(Config::default().shell_setup().2, "yo");
+        let (cfg, errors) = Config::parse("ai-trigger = ask");
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(cfg.shell_setup().2, "ask");
+        let (cfg, _) = Config::parse("ai-trigger = off");
+        assert_eq!(cfg.shell_setup().2, "", "off is passed to the shell scripts as empty");
+        let (cfg, errors) = Config::parse("ai-trigger = rm -rf");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(cfg.shell_setup().2, "yo", "an invalid word keeps the default");
+    }
 
     #[test]
     fn ai_settings_validate_and_redact_credentials() {

@@ -53,10 +53,15 @@ _litty_yo_emit() {
   payload=$(builtin printf '%s' "$1" | command base64 | command tr -d '\r\n')
   builtin printf '\e]778;yo;%s\a' "$payload"
 }
-yo() { _litty_yo_emit "$*"; }
+# The trigger word comes from the `ai-trigger` config key; empty means off.
+_litty_trigger=${LITTY_AI_TRIGGER-yo}
+[[ $_litty_trigger =~ '^[A-Za-z_][A-Za-z0-9_-]*$' ]] || _litty_trigger=
+if [[ -n $_litty_trigger ]]; then
+  eval "$_litty_trigger() { _litty_yo_emit \"\$*\"; }"
+fi
 _litty_accept_line() {
-  if [[ $BUFFER == yo || $BUFFER == yo[[:space:]]* ]]; then
-    local query=${BUFFER#yo}
+  if [[ -n $_litty_trigger && ( $BUFFER == $_litty_trigger || $BUFFER == ${_litty_trigger}[[:space:]]* ) ]]; then
+    local query=${BUFFER#$_litty_trigger}
     query=${query##[[:space:]]#}
     builtin print -s -- "$BUFFER"
     # `zle -I` keeps the typed line on screen but makes accept-line redraw one

@@ -33,7 +33,7 @@ pub(super) fn open_fresh_tab(
         rows,
         (cw, ch),
         None,
-        Some((s.config.shell_integration, s.config.shell_integration_features)),
+        Some(s.config.shell_setup()),
         waker,
     ) {
         Ok(pane) => {
@@ -79,7 +79,7 @@ pub(super) fn duplicate_active_tab(
         rows,
         (cw, ch),
         cwd.as_deref(),
-        Some((s.config.shell_integration, s.config.shell_integration_features)),
+        Some(s.config.shell_setup()),
         waker,
     ) {
         Ok(pane) => {
@@ -248,7 +248,7 @@ pub(super) fn split_active_pane(
         new_rect.rows,
         (cw, ch),
         cwd.as_deref(),
-        Some((s.config.shell_integration, s.config.shell_integration_features)),
+        Some(s.config.shell_setup()),
         waker,
     ) {
         Ok(new_pane) => {

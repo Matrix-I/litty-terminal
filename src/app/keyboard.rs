@@ -148,11 +148,13 @@ pub(super) fn handle_key(
     let is_enter =
         ev.logical_key == Key::Named(NamedKey::Enter) && !m.alt && !m.ctrl && !m.shift && !m.sup;
     if is_enter {
-        let decision = inspect_enter(&mut pane.grid.lock(), s.ai.contains_key(&pane_id));
+        let trigger = s.config.ai.trigger().to_owned();
+        let trigger = trigger.as_str();
+        let decision = inspect_enter(&mut pane.grid.lock(), s.ai.contains_key(&pane_id), trigger);
         let EnterDecision { input, epoch, intercept } = decision;
         if let Some(Intercept { query, direct }) = intercept {
             let ai = s.ai.entry(pane_id).or_default();
-            ai.submitted(&input);
+            ai.submitted(&input, trigger);
             ai.awaiting = false;
             ai.authorized = Some(query);
             ai.generation = next_id();
@@ -170,7 +172,7 @@ pub(super) fn handle_key(
             }
         } else if let Some(ai) = s.ai.get_mut(&pane_id) {
             if input.trim().is_empty() {
-                ai.submitted("");
+                ai.submitted("", trigger);
             }
             ai.prompt_epoch = epoch;
         }
@@ -262,11 +264,11 @@ const MAX_SHELL_MEDIATED_QUERY: usize = 4096;
 /// the request, the epoch and the input always describe the same prompt. Taking
 /// `&mut Grid` makes that the only way to call it; the caller drops the lock
 /// before touching UI state, history or the PTY.
-fn inspect_enter(g: &mut Grid, has_ai_state: bool) -> EnterDecision {
+fn inspect_enter(g: &mut Grid, has_ai_state: bool, trigger: &str) -> EnterDecision {
     let input = g.full_prompt_input();
     let epoch = g.prompt_epoch;
     let query = (g.prompt_ready() && g.ai.available)
-        .then(|| ai::query(&input))
+        .then(|| ai::query(&input, trigger))
         .flatten();
     let intercept = query.map(|query| {
         let direct = g.ai.direct
@@ -443,10 +445,29 @@ mod tests {
     }
 
     #[test]
+    fn a_renamed_trigger_replaces_yo() {
+        let mut g = prompt_with("ask list files");
+        let d = inspect_enter(&mut g, true, "ask");
+        assert_eq!(d.intercept.map(|i| i.query), Some("list files".into()));
+        let mut g = prompt_with("yo generator");
+        assert_eq!(inspect_enter(&mut g, true, "ask").intercept, None);
+        assert!(!g.ai.armed && g.ai.request.is_none());
+    }
+
+    #[test]
+    fn a_disabled_trigger_never_intercepts() {
+        for line in ["yo list files", "ask list files"] {
+            let mut g = prompt_with(line);
+            assert_eq!(inspect_enter(&mut g, true, "").intercept, None, "{line}");
+            assert!(!g.ai.armed && g.ai.request.is_none());
+        }
+    }
+
+    #[test]
     fn enter_shell_mediated_arms_bridge_and_stops_tracking() {
         let mut g = prompt_with("yo list files");
         let epoch = g.prompt_epoch;
-        let d = inspect_enter(&mut g, true);
+        let d = inspect_enter(&mut g, true, "yo");
         assert_eq!(d.epoch, epoch);
         assert_eq!(d.input, "yo list files");
         assert_eq!(d.intercept, Some(Intercept { query: "list files".into(), direct: false }));
@@ -457,7 +478,7 @@ mod tests {
     fn enter_direct_mode_queues_request_for_the_inspected_query() {
         let mut g = prompt_with("yo old query");
         g.ai.direct = true;
-        let d = inspect_enter(&mut g, true);
+        let d = inspect_enter(&mut g, true, "yo");
         assert_eq!(d.intercept, Some(Intercept { query: "old query".into(), direct: true }));
         assert_eq!(g.ai.request.as_deref(), Some("old query"));
         assert!(!g.ai.armed && !g.ai.track);
@@ -466,7 +487,7 @@ mod tests {
     #[test]
     fn enter_leading_whitespace_forces_direct() {
         let mut g = prompt_with(" yo hi");
-        let d = inspect_enter(&mut g, true);
+        let d = inspect_enter(&mut g, true, "yo");
         assert!(d.intercept.is_some_and(|i| i.direct));
         assert_eq!(g.ai.request.as_deref(), Some("hi"));
     }
@@ -477,7 +498,7 @@ mod tests {
         // cannot be parsed between inspection and mutation.
         let mut g = prompt_with("yo old query");
         g.ai.direct = true;
-        let d = inspect_enter(&mut g, true);
+        let d = inspect_enter(&mut g, true, "yo");
         feed(&mut g, "\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07different command");
         assert_ne!(d.epoch, g.prompt_epoch);
         assert_eq!(g.ai.request.as_deref(), Some("old query"));
@@ -487,7 +508,7 @@ mod tests {
     #[test]
     fn enter_ordinary_command_is_not_intercepted() {
         let mut g = prompt_with("ls -la");
-        let d = inspect_enter(&mut g, true);
+        let d = inspect_enter(&mut g, true, "yo");
         assert_eq!(d.intercept, None);
         assert_eq!(d.input, "ls -la");
         assert!(g.ai.track && !g.ai.armed && g.ai.request.is_none());
@@ -496,9 +517,9 @@ mod tests {
     #[test]
     fn enter_empty_stops_tracking_only_with_ai_state() {
         let mut g = prompt_with("");
-        inspect_enter(&mut g, false);
+        inspect_enter(&mut g, false, "yo");
         assert!(g.ai.track);
-        inspect_enter(&mut g, true);
+        inspect_enter(&mut g, true, "yo");
         assert!(!g.ai.track);
     }
 
@@ -506,10 +527,10 @@ mod tests {
     fn enter_unavailable_or_alt_screen_is_not_intercepted() {
         let mut g = prompt_with("yo hi");
         g.ai.available = false;
-        assert_eq!(inspect_enter(&mut g, true).intercept, None);
+        assert_eq!(inspect_enter(&mut g, true, "yo").intercept, None);
         let mut g = prompt_with("yo hi");
         feed(&mut g, "\x1b[?1049h");
-        assert_eq!(inspect_enter(&mut g, true).intercept, None);
+        assert_eq!(inspect_enter(&mut g, true, "yo").intercept, None);
         assert!(!g.ai.armed && g.ai.request.is_none());
     }
 }

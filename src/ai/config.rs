@@ -1,6 +1,16 @@
 //! AI configuration is resolved only on `yo`, never on terminal startup.
 use std::path::Path;
 
+pub const DEFAULT_TRIGGER: &str = "yo";
+
+/// A trigger is one shell word: it becomes a function name in the shell scripts.
+fn valid_trigger(t: &str) -> bool {
+    let mut chars = t.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && t.len() <= 32
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 #[derive(Clone, Default, PartialEq)]
 pub struct Settings(pub Vec<(String, String)>);
 // Config debug output must never reveal credentials.
@@ -31,8 +41,11 @@ impl Settings {
                     .filter(|n| *n >= 4096)
                     .ok_or("ai-context-window must be at least 4096")?;
             }
+            "trigger" if !["", "off"].contains(&value) && !valid_trigger(value) => {
+                return Err("ai-trigger must be off or a word of letters, digits, _ and - (max 32)".into());
+            }
             "provider" | "model" | "api-key" | "base-url" | "thinking" | "web-search"
-            | "context-window" => {}
+            | "context-window" | "trigger" => {}
             _ => return Err(format!("unknown AI setting: ai-{key}")),
         }
         self.0.retain(|(k, _)| k != key);
@@ -40,6 +53,14 @@ impl Settings {
             self.0.push((key.into(), value.into()));
         }
         Ok(())
+    }
+    /// Word that starts an AI query at a prompt; empty when AI invocation is off.
+    pub fn trigger(&self) -> &str {
+        match self.get("trigger") {
+            None => DEFAULT_TRIGGER,
+            Some("off") => "",
+            Some(t) => t,
+        }
     }
     fn get(&self, key: &str) -> Option<&str> {
         self.0
@@ -316,5 +337,27 @@ mod tests {
         let mut s = Settings::default();
         s.set("api-key", "secret").unwrap();
         assert!(!format!("{s:?}").contains("secret"));
+    }
+    #[test]
+    fn trigger_defaults_to_yo_and_can_be_renamed_or_turned_off() {
+        let mut s = Settings::default();
+        assert_eq!(s.trigger(), "yo");
+        s.set("trigger", "ask").unwrap();
+        assert_eq!(s.trigger(), "ask");
+        s.set("trigger", "off").unwrap();
+        assert_eq!(s.trigger(), "");
+        s.set("trigger", "").unwrap();
+        assert_eq!(s.trigger(), "yo", "an empty value resets to the default");
+    }
+    #[test]
+    fn trigger_must_be_a_single_shell_word() {
+        let mut s = Settings::default();
+        for bad in ["a b", "1abc", "-x", "yo;rm", "$(x)", "é", &"a".repeat(33), "a/b"] {
+            assert!(s.set("trigger", bad).is_err(), "{bad}");
+        }
+        assert_eq!(s.trigger(), "yo");
+        for good in ["yo", "_x", "ask-ai", "Ai2", &"a".repeat(32)] {
+            s.set("trigger", good).unwrap();
+        }
     }
 }

@@ -82,11 +82,17 @@ _litty_yo_emit() {
   payload=$(builtin printf '%s' "$1" | command base64 | command tr -d '\r\n')
   builtin printf '\e]778;yo;%s\a' "$payload"
 }
-yo() { _litty_yo_emit "$*"; }
+# The trigger word comes from the `ai-trigger` config key; empty means off.
+_litty_trigger=${LITTY_AI_TRIGGER-yo}
+[[ $_litty_trigger =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || _litty_trigger=
+if [[ -n $_litty_trigger ]]; then
+  eval "$_litty_trigger() { _litty_yo_emit \"\$*\"; }"
+fi
 _litty_yo_accept() {
+  [[ -n $_litty_trigger ]] || return 0
   case $READLINE_LINE in
-    yo|yo[[:space:]]*)
-      local original="$READLINE_LINE" query="${READLINE_LINE#yo}"
+    "$_litty_trigger"|"$_litty_trigger"[[:space:]]*)
+      local original="$READLINE_LINE" query="${READLINE_LINE#"$_litty_trigger"}"
       history -s -- "$original"
       builtin printf '\r\n%s\r\n' "$original"
       READLINE_LINE=''
