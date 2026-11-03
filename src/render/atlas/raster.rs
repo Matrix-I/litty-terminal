@@ -386,11 +386,22 @@ fn rasterize_with_font(
 
 /// Slight gamma/stem darkening for fontdue grayscale coverage so Retina stems
 /// match Ghostty/CoreText weight while keeping 0 -> 0 and 255 -> 255 exact.
+#[path = "stem_tables.rs"]
+mod stem_tables;
+
 #[inline]
 fn stem_boost(v: u8) -> u8 {
-    let gamma = if THICKEN.load(Ordering::Relaxed) { 0.55 } else { 0.78 };
-    match v {
-        0 | 255 => v,
-        _ => ((v as f32 / 255.0).powf(gamma) * 255.0 + 0.5) as u8,
+    let table = if THICKEN.load(Ordering::Relaxed) { &stem_tables::THICK } else { &stem_tables::NORMAL };
+    table[v as usize]
+}
+
+#[cfg(test)]
+#[test]
+fn stem_tables_equal_original_f32_formula() {
+    for (table, gamma) in [(&stem_tables::NORMAL, 0.78f32), (&stem_tables::THICK, 0.55f32)] {
+        for (v, &actual) in table.iter().enumerate() {
+            let expected = ((v as f32 / 255.0).powf(gamma) * 255.0 + 0.5) as u8;
+            assert_eq!(actual, expected, "gamma={gamma} input={v}");
+        }
     }
 }
