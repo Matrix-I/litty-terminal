@@ -3,5 +3,6 @@
 .idea/
 .DS_Store
 
+.claude/
 # Release test reports (auto-generated)
 scripts/release-test-report.md
