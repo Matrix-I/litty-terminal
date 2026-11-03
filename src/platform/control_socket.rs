@@ -5,21 +5,16 @@ use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 
-use winit::event_loop::EventLoopProxy;
-
-use crate::keymap::Action;
-use crate::AppEvent;
+use super::{EventSink, PlatformEvent, SinkSlot};
 
 /// What `litty +toggle-quick-terminal` sends.
 const TOGGLE: &[u8] = b"toggle-quick-terminal\n";
 
 /// Where hotkey presses go, set by [`listen`].
-static PROXY: parking_lot::Mutex<Option<EventLoopProxy<AppEvent>>> = parking_lot::const_mutex(None);
+static EVENTS: SinkSlot = SinkSlot::new();
 
 pub(super) fn toggle() {
-    if let Some(proxy) = PROXY.lock().as_ref() {
-        let _ = proxy.send_event(AppEvent::Menu(Action::ToggleQuickTerminal));
-    }
+    EVENTS.emit(PlatformEvent::ToggleQuickTerminal);
 }
 
 /// The control socket: in `$XDG_RUNTIME_DIR` (private to the user), else user-private temp/cache directory.
@@ -62,12 +57,12 @@ fn bind_private(path: &std::path::Path) -> std::io::Result<UnixListener> {
     Ok(listener)
 }
 
-/// Remember the event proxy for hotkey presses and serve the control socket
+/// Remember the event sink for hotkey presses and serve the control socket
 /// for the rest of the process. Another running instance keeps the socket; a
 /// stale file left by a crash is replaced.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
-pub fn listen(proxy: EventLoopProxy<AppEvent>) {
-    *PROXY.lock() = Some(proxy);
+pub fn listen(sink: EventSink) {
+    EVENTS.set(sink);
     let path = socket_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -112,6 +107,15 @@ mod tests {
         drop(listener);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn toggle_request_reaches_the_event_sink() {
+        let seen = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        EVENTS.set(std::sync::Arc::new(move |e| log.lock().push(e)));
+        toggle();
+        assert_eq!(*seen.lock(), [PlatformEvent::ToggleQuickTerminal]);
     }
 
     #[test]

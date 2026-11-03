@@ -207,10 +207,11 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
 
-        platform::register_reopen_handler(self.waker.proxy.clone());
+        let sink = crate::event::platform_sink(self.waker.proxy.clone());
+        platform::register_reopen_handler(sink.clone());
         platform::install_menu();
-        platform::listen_for_toggle(self.waker.proxy.clone());
-        platform::set_global_hotkey(self.windows[0].config.quick_terminal_hotkey.as_ref());
+        platform::listen_for_toggle(sink);
+        window::set_quick_terminal_hotkey(self.windows[0].config.quick_terminal_hotkey.as_ref());
 
         let cfg = &self.windows[0].config;
         update::check_on_startup(cfg.auto_update, cfg.auto_update_channel);

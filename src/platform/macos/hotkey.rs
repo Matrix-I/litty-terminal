@@ -3,7 +3,7 @@
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
-use super::app::REOPEN_PROXY;
+use super::app::EVENTS;
 
 #[repr(C)]
 struct EventTypeSpec {
@@ -47,12 +47,10 @@ static HOTKEY: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static HOTKEY_HANDLER: AtomicBool = AtomicBool::new(false);
 
 /// Register (or, with `None`, remove) the system-wide Quick Terminal hotkey.
-/// Needs [`register_reopen_handler`] first, which provides the event proxy.
-pub fn set_global_hotkey(trigger: Option<&crate::keymap::Trigger>) {
+/// Needs [`register_reopen_handler`] first, which provides the event sink.
+pub fn set_global_hotkey(hotkey: Option<crate::platform::Hotkey>) {
     extern "C" fn on_hotkey(_call: *mut c_void, _event: *mut c_void, _data: *mut c_void) -> i32 {
-        if let Some(proxy) = REOPEN_PROXY.lock().as_ref() {
-            let _ = proxy.send_event(crate::AppEvent::Menu(crate::keymap::Action::ToggleQuickTerminal));
-        }
+        EVENTS.emit(crate::platform::PlatformEvent::ToggleQuickTerminal);
         0
     }
     // SAFETY: Carbon event APIs on the main thread; the handler and the
@@ -62,11 +60,8 @@ pub fn set_global_hotkey(trigger: Option<&crate::keymap::Trigger>) {
         if !old.is_null() {
             UnregisterEventHotKey(old);
         }
-        let Some(t) = trigger else { return };
-        let Some(code) = crate::keymap::mac_virtual_keycode(&t.key) else {
-            eprintln!("litty: key not supported for a global hotkey");
-            return;
-        };
+        let Some(t) = hotkey else { return };
+        let code = t.code;
         if !HOTKEY_HANDLER.swap(true, Ordering::Relaxed) {
             // kEventClassKeyboard / kEventHotKeyPressed
             let spec = EventTypeSpec { event_class: u32::from_be_bytes(*b"keyb"), event_kind: 5 };
@@ -88,4 +83,4 @@ pub fn set_global_hotkey(trigger: Option<&crate::keymap::Trigger>) {
 
 /// The control socket is Linux-only: on macOS the Carbon hotkey and the Dock
 /// cover the Quick Terminal, and `litty +toggle-quick-terminal` exits early.
-pub fn listen_for_toggle(_proxy: winit::event_loop::EventLoopProxy<crate::AppEvent>) {}
+pub fn listen_for_toggle(_sink: crate::platform::EventSink) {}

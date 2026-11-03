@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use winit::window::Window;
 
-use crate::config::{ColorSpace, Config};
+use crate::platform::{ColorSpace, WindowLook};
 
 use super::objc::*;
 
@@ -35,12 +35,12 @@ pub fn configure_layer_drawables(window: &Window) {
     }
 }
 
-pub fn apply_window_config(window: &Window, cfg: &Config) {
+pub fn apply_window_config(window: &Window, look: &WindowLook) {
     let Some((ns_view, ns_window)) = ns_window_of(window) else { return };
     // SAFETY: every message below is sent to live AppKit objects with the
     // signature documented by Apple for that selector.
     unsafe {
-        apply_color_space(ns_view, ns_window, cfg.window_colorspace);
+        apply_color_space(ns_view, ns_window, look.colorspace);
 
         // Seamless titlebar (Ghostty-style): transparent, no separator line.
         msg_send!(ns_window, c"setTitlebarAppearsTransparent:", true => bool);
@@ -49,9 +49,9 @@ pub fn apply_window_config(window: &Window, cfg: &Config) {
             msg_send!(ns_window, c"setTitlebarSeparatorStyle:", 1 => i64);
         }
 
-        let channel = |shift: u32| ((cfg.background >> shift) & 0xFF) as f64 / 255.0;
+        let channel = |shift: u32| ((look.background >> shift) & 0xFF) as f64 / 255.0;
         let (r, g, b) = (channel(24), channel(16), channel(8));
-        let a = cfg.background_opacity as f64;
+        let a = look.background_opacity as f64;
 
         // Dark/light appearance so title text and window controls contrast cleanly.
         let luminance = 0.299 * r + 0.587 * g + 0.114 * b;
@@ -73,9 +73,9 @@ pub fn apply_window_config(window: &Window, cfg: &Config) {
             }
         }
 
-        msg_send!(ns_window, c"setOpaque:", cfg.background_opacity >= 1.0 => bool);
+        msg_send!(ns_window, c"setOpaque:", look.background_opacity >= 1.0 => bool);
 
-        if cfg.background_blur > 0 && cfg.background_opacity < 1.0 {
+        if look.background_blur > 0 && look.background_opacity < 1.0 {
             setup_visual_effect_view(ns_window);
         } else {
             remove_visual_effect_view(ns_window);

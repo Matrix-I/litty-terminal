@@ -20,18 +20,16 @@ pub fn release_free_memory() {
     }
 }
 
-pub(super) static REOPEN_PROXY: parking_lot::Mutex<Option<winit::event_loop::EventLoopProxy<crate::AppEvent>>> =
-    parking_lot::Mutex::new(None);
+/// Where Dock, menu, hotkey and appearance callbacks deliver their events.
+pub(super) static EVENTS: crate::platform::SinkSlot = crate::platform::SinkSlot::new();
 
 fn send_reopen() {
-    if let Some(proxy) = REOPEN_PROXY.lock().as_ref() {
-        let _ = proxy.send_event(crate::AppEvent::Reopen);
-    }
+    EVENTS.emit(crate::platform::PlatformEvent::Reopen);
 }
 
 /// Reopen a window when the Dock icon is clicked or the app is activated.
-pub fn register_reopen_handler(proxy: winit::event_loop::EventLoopProxy<crate::AppEvent>) {
-    *REOPEN_PROXY.lock() = Some(proxy);
+pub fn register_reopen_handler(sink: crate::platform::EventSink) {
+    EVENTS.set(sink);
 
     extern "C" fn on_reopen(_this: Id, _cmd: Id, _app: Id, _has_visible_windows: bool) -> bool {
         send_reopen();
@@ -73,9 +71,7 @@ fn observe_system_appearance() {
     }
 
     extern "C" fn on_change(_this: Id, _cmd: Id, _path: Id, _object: Id, _change: Id, _context: *mut c_void) {
-        if let Some(proxy) = REOPEN_PROXY.lock().as_ref() {
-            let _ = proxy.send_event(crate::AppEvent::SystemAppearance { dark: system_dark() });
-        }
+        EVENTS.emit(crate::platform::PlatformEvent::SystemAppearance { dark: system_dark() });
     }
     // SAFETY: the observer class is created once with a method matching its
     // type encoding; the observer instance lives for the whole process.

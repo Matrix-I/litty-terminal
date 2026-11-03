@@ -6,21 +6,18 @@
 //!   (`platform::control_socket`) lets a desktop-environment shortcut run
 //!   `litty +toggle-quick-terminal`. The socket works under X11 too.
 
-use winit::event_loop::EventLoopProxy;
+use crate::platform::{EventSink, Hotkey};
 
-use crate::keymap::Trigger;
-use crate::AppEvent;
-
-/// Serve the control socket; it also provides the event proxy that X11
+/// Serve the control socket; it also provides the event sink that X11
 /// hotkey presses use, so call it before [`set_global_hotkey`].
-pub fn listen_for_toggle(proxy: EventLoopProxy<AppEvent>) {
-    crate::platform::control_socket::listen(proxy);
+pub fn listen_for_toggle(sink: EventSink) {
+    crate::platform::control_socket::listen(sink);
 }
 
 /// Grab (or, with `None`, release) the Quick Terminal hotkey on X11. Needs
-/// [`listen_for_toggle`] first, which provides the event proxy.
-pub fn set_global_hotkey(trigger: Option<&Trigger>) {
-    x11::set(trigger);
+/// [`listen_for_toggle`] first, which provides the event sink.
+pub fn set_global_hotkey(hotkey: Option<Hotkey>) {
+    x11::set(hotkey);
 }
 
 mod x11 {
@@ -32,7 +29,7 @@ mod x11 {
     use x11rb::protocol::Event;
     use x11rb::rust_connection::RustConnection;
 
-    use crate::keymap::Trigger;
+    use crate::platform::Hotkey;
 
     struct Grabber {
         conn: Arc<RustConnection>,
@@ -43,10 +40,10 @@ mod x11 {
 
     static GRABBER: Mutex<Option<Grabber>> = parking_lot::const_mutex(None);
 
-    pub fn set(trigger: Option<&Trigger>) {
+    pub fn set(hotkey: Option<Hotkey>) {
         let mut slot = GRABBER.lock();
         if slot.is_none() {
-            if trigger.is_none() {
+            if hotkey.is_none() {
                 return;
             }
             // No X server (pure Wayland): the control socket is the way in.
@@ -77,8 +74,8 @@ mod x11 {
                 let _ = g.conn.ungrab_key(code, g.root, mods | extra);
             }
         }
-        if let Some(t) = trigger {
-            match grab(g, t) {
+        if let Some(h) = hotkey {
+            match grab(g, h) {
                 Ok(grabbed) => g.grabbed = Some(grabbed),
                 Err(e) => eprintln!("litty: Quick Terminal hotkey: {e}"),
             }
@@ -91,8 +88,8 @@ mod x11 {
         [ModMask::default(), ModMask::LOCK, ModMask::M2, ModMask::LOCK | ModMask::M2]
     }
 
-    fn grab(g: &Grabber, t: &Trigger) -> Result<(u8, ModMask), String> {
-        let sym = crate::keymap::x11_keysym(&t.key).ok_or("key not supported for a global hotkey")?;
+    fn grab(g: &Grabber, t: Hotkey) -> Result<(u8, ModMask), String> {
+        let sym = t.code;
         let setup = g.conn.setup();
         let (min, max) = (setup.min_keycode, setup.max_keycode);
         let map = g

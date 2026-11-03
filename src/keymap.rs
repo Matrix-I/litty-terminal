@@ -295,6 +295,18 @@ pub fn mac_virtual_keycode(key: &TriggerKey) -> Option<u32> {
     })
 }
 
+/// `trigger` as the platform's global-hotkey API takes it: the native key code
+/// (macOS virtual key code, X11 keysym) and the modifiers. `None` for a key
+/// without a code on this platform.
+pub fn global_hotkey(trigger: &Trigger) -> Option<crate::platform::Hotkey> {
+    let code = if cfg!(target_os = "macos") { mac_virtual_keycode(&trigger.key) } else { x11_keysym(&trigger.key) }?;
+    let m = trigger.mods;
+    Some(crate::platform::Hotkey {
+        code,
+        mods: crate::platform::HotkeyMods { ctrl: m.ctrl, alt: m.alt, shift: m.shift, sup: m.sup },
+    })
+}
+
 /// X11 keysym of a trigger key, for global hotkeys on Linux.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn x11_keysym(key: &TriggerKey) -> Option<u32> {
@@ -1216,6 +1228,18 @@ mod tests {
         assert_eq!(code("ctrl+comma"), Some(0x2B));
         assert_eq!(code("f12"), Some(0x6F));
         assert_eq!(code("space"), Some(0x31));
+    }
+
+    #[test]
+    fn global_hotkey_carries_the_native_code_and_modifiers() {
+        let hotkey = |s: &str| global_hotkey(&parse_trigger(s).unwrap());
+        let h = hotkey("ctrl+alt+space").unwrap();
+        assert_eq!(h.code, if cfg!(target_os = "macos") { 0x31 } else { 0x20 });
+        assert_eq!(h.mods, crate::platform::HotkeyMods { ctrl: true, alt: true, shift: false, sup: false });
+        let h = hotkey("super+shift+f12").unwrap();
+        assert_eq!(h.code, if cfg!(target_os = "macos") { 0x6F } else { 0xFFC9 });
+        assert_eq!(h.mods, crate::platform::HotkeyMods { ctrl: false, alt: false, shift: true, sup: true });
+        assert_eq!(hotkey("ctrl+backspace").map(|h| h.mods.ctrl), Some(true));
     }
 
     #[test]

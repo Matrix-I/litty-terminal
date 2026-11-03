@@ -2,7 +2,7 @@
 
 pub fn release_free_memory() {}
 
-pub fn register_reopen_handler(_proxy: winit::event_loop::EventLoopProxy<crate::AppEvent>) {}
+pub fn register_reopen_handler(_sink: crate::platform::EventSink) {}
 
 pub fn hide_app() {}
 

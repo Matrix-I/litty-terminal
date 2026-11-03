@@ -2,7 +2,7 @@
 
 pub fn configure_layer_drawables(_window: &winit::window::Window) {}
 
-pub fn apply_window_config(_window: &winit::window::Window, _cfg: &crate::config::Config) {}
+pub fn apply_window_config(_window: &winit::window::Window, _look: &crate::platform::WindowLook) {}
 
 pub fn cleanup_window(_window: &winit::window::Window) {}
 
