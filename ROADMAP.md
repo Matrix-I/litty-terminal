@@ -11,7 +11,7 @@ optimization candidates are identified separately from reproduced failures.
 | --- | --- |
 | [v0.8.0](./docs/plans/0.8.0.md) | Planned follow-ups |
 | [v0.7.4](./docs/plans/0.7.4.md) | Validated findings and maintenance proposals — implementation pending |
-| [v0.7.3](./docs/plans/0.7.3.md) | Baseline audit complete — 0/6 implementation items complete |
+| [v0.7.3](./docs/plans/0.7.3.md) | Implemented on `feat/0.7.3-performance` (6/6, uncommitted) — cross-platform UI verification pending |
 | [v0.7.2](./docs/plans/0.7.2.md) | Release record — runtime-confirmed bug, security and platform fixes |
 | [v0.7.1](./docs/plans/0.7.1.md) | Historical release record |
 | [v0.7.0](./docs/plans/0.7.0.md) | Historical release record |
