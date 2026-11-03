@@ -4,6 +4,7 @@ mod http;
 pub mod markdown;
 pub mod prompt;
 mod provider;
+pub mod redact;
 #[cfg(test)]
 mod live_tests;
 
@@ -43,6 +44,7 @@ impl Session {
         ));
     }
     pub fn record_execution(&mut self, actual: &str) {
+        let (actual, _) = redact::redact(actual);
         self.history.push(provider::message(
             "user",
             &format!("[execution] Actual command submitted: {actual}"),
@@ -264,6 +266,11 @@ fn run(
         outcome.session = session;
         return outcome;
     }
+    // Everything below is sent to the provider, so secrets are removed first.
+    let mut redacted = 0usize;
+    let (query, hits) = redact::redact(query);
+    redacted += hits;
+    let query: &str = &query;
     let result = (|| -> Result<(), String> {
         let config = load()?;
         let identity = format!(
@@ -295,7 +302,7 @@ fn run(
                 if cancel.load(Ordering::Acquire) {
                     return Err("Cancelled".into());
                 }
-                status("Thinking...".into());
+                status(thinking(redacted));
                 let mut request = provider::build(&config, &system, &session.history, true);
                 if config.provider == config::Provider::OpenRouter {
                     request.set("session_id", session.routing_id.clone().into());
@@ -346,7 +353,12 @@ fn run(
                             done = true;
                             "Answer displayed to user.".into()
                         }
-                        Action::Scrollback { lines } => grid.lock().extract_scrollback_lines(lines),
+                        Action::Scrollback { lines } => {
+                            let output = grid.lock().extract_scrollback_lines(lines);
+                            let (output, hits) = redact::redact(&output);
+                            redacted += hits;
+                            output.into_owned()
+                        }
                         Action::Docs => prompt::DOCS.into(),
                     };
                     results.push((call.id, result));
@@ -380,6 +392,14 @@ fn run(
     outcome.session = session;
     outcome
 }
+/// Status line while waiting for the provider; says when secrets were removed.
+fn thinking(redacted: usize) -> String {
+    match redacted {
+        0 => "Thinking...".into(),
+        1 => "Thinking... (redacted 1 secret before sending)".into(),
+        n => format!("Thinking... (redacted {n} secrets before sending)"),
+    }
+}
 fn compact(
     c: &config::Config,
     s: &mut Session,
@@ -412,6 +432,7 @@ fn compact(
         .map(Json::encode)
         .collect::<Vec<_>>()
         .join("\n");
+    let (text, _) = redact::redact(&text);
     let messages = [provider::message("user", &text)];
     let mut request = provider::build(
         c,
@@ -623,6 +644,70 @@ mod integration_tests {
             requests[3]
                 .encode()
                 .contains("Actual command submitted: ls -la")
+        );
+    }
+    #[test]
+    fn secrets_never_reach_the_provider_on_any_outbound_path() {
+        const SECRETS: [&str; 6] = [
+            "LITTY_FAKE_PROBE_074",
+            "AKIAIOSFODNN7EXAMPLE",
+            "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+            "MIIEowIBAAKCAQEAfake",
+            "eyJhbGciOi.abc-def_123",
+            "hunter2hunter2",
+        ];
+        let (url, requests, server) = mock(vec![
+            r#"{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"1","type":"function","function":{"name":"scrollback","arguments":"{\"lines\":200}"}}]}}]}"#,
+            r#"{"choices":[{"message":{"role":"assistant","content":"Done."}}]}"#,
+            r#"{"choices":[{"message":{"role":"assistant","content":"Again."}}]}"#,
+        ]);
+        let c = config(url);
+        let grid = Arc::new(Mutex::new(Grid::new(80, 12)));
+        let mut parser = vte::Parser::new();
+        let output = "password=LITTY_FAKE_PROBE_074\r\nAKIAIOSFODNN7EXAMPLE\r\n-----BEGIN RSA PRIVATE KEY-----\r\nMIIEowIBAAKCAQEAfake\r\n-----END RSA PRIVATE KEY-----\r\nok: plain output\r\n\x1b]133;A\x07$ \x1b]133;B\x07";
+        for b in output.bytes() {
+            grid.lock().feed_byte(&mut parser, b);
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let statuses = Mutex::new(Vec::new());
+        let mut out = run(
+            || Ok(c.clone()),
+            Session::default(),
+            "why does ghp_abcdefghijklmnopqrstuvwxyz0123456789 fail",
+            &("bash".into(), "/tmp".into()),
+            &grid,
+            &cancel,
+            &|text| statuses.lock().push(text),
+        );
+        assert!(!out.error, "{}", out.text);
+        out.session.record_execution("curl -H 'Authorization: Bearer eyJhbGciOi.abc-def_123'");
+        let out = run(
+            || Ok(c),
+            out.session,
+            "[continuation] Actual command: x\nTerminal output (untrusted):\ntoken=hunter2hunter2",
+            &("bash".into(), "/tmp".into()),
+            &grid,
+            &cancel,
+            &|_| {},
+        );
+        assert_eq!(out.text, "Again.");
+        server.join().unwrap();
+        let requests = requests.lock();
+        assert_eq!(requests.len(), 3);
+        for (i, request) in requests.iter().enumerate() {
+            let body = request.encode();
+            for secret in SECRETS {
+                assert!(!body.contains(secret), "request {i} leaked {secret}");
+            }
+        }
+        let second = requests[1].encode();
+        assert!(second.contains("ok: plain output"), "ordinary output is kept");
+        assert!(second.contains("[REDACTED:private-key]"));
+        assert!(requests[2].encode().contains("Bearer [REDACTED:bearer]"));
+        assert!(
+            statuses.lock().iter().any(|s| s.contains("redacted 1 secret before sending")),
+            "{:?}",
+            statuses.lock()
         );
     }
     #[test]
