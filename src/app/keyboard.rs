@@ -11,6 +11,7 @@ use super::terminal_io::write_pty;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use crate::terminal::grid::Grid;
 use crate::{ai, keymap};
 use crate::platform;
 use crate::{next_id, Waker};
@@ -147,48 +148,29 @@ pub(super) fn handle_key(
     let is_enter =
         ev.logical_key == Key::Named(NamedKey::Enter) && !m.alt && !m.ctrl && !m.shift && !m.sup;
     if is_enter {
-        let (input, ready, epoch) = {
-            let g = pane.grid.lock();
-            (g.full_prompt_input(), g.prompt_ready(), g.prompt_epoch)
-        };
-        if ready
-            && pane.grid.lock().ai.available
-            && let Some(query) = ai::query(&input)
-        {
+        let decision = inspect_enter(&mut pane.grid.lock(), s.ai.contains_key(&pane_id));
+        let EnterDecision { input, epoch, intercept } = decision;
+        if let Some(Intercept { query, direct }) = intercept {
             let ai = s.ai.entry(pane_id).or_default();
             ai.submitted(&input);
             ai.awaiting = false;
-            ai.authorized = Some(query.into());
+            ai.authorized = Some(query);
             ai.generation = next_id();
             ai.cancel = Arc::new(AtomicBool::new(false));
             ai.busy = true;
             ai.prompt_epoch = epoch;
-            let direct = pane.grid.lock().ai.direct
-                || input.starts_with(char::is_whitespace)
-                || query.len() > 4096;
             if direct {
                 // Clear Readline/Reedline's buffer and submit an empty line. The
                 // natural language is never parsed or executed by the shell.
-                {
-                    let mut g = pane.grid.lock();
-                    g.ai.track = false;
-                    g.ai.request = Some(query.into());
-                }
                 ai.display_query = Some(input.clone());
                 s.history_search.add_session_command(&input);
                 write_pty(pane, b"\x05\x15\r");
                 consume_key(s, ev);
                 return;
             }
-            {
-                let mut g = pane.grid.lock();
-                g.ai.track = false;
-                g.ai.armed = true;
-            }
         } else if let Some(ai) = s.ai.get_mut(&pane_id) {
             if input.trim().is_empty() {
                 ai.submitted("");
-                pane.grid.lock().ai.track = false;
             }
             ai.prompt_epoch = epoch;
         }
@@ -257,6 +239,51 @@ pub(super) fn handle_key(
         s.inspector.last_key = describe_key(&ev.logical_key, m, bytes.as_deref());
         s.window.request_redraw();
     }
+}
+
+/// An Enter at a prompt that the AI bridge takes over.
+#[derive(Debug, PartialEq, Eq)]
+struct Intercept {
+    query: String,
+    /// The shell never sees the text: the buffer is cleared and an empty line submitted.
+    direct: bool,
+}
+
+struct EnterDecision {
+    input: String,
+    epoch: u64,
+    intercept: Option<Intercept>,
+}
+
+/// Longest query that may still travel through the shell's own line editor.
+const MAX_SHELL_MEDIATED_QUERY: usize = 4096;
+
+/// Inspect the prompt and update the grid's AI state in one critical section, so
+/// the request, the epoch and the input always describe the same prompt. Taking
+/// `&mut Grid` makes that the only way to call it; the caller drops the lock
+/// before touching UI state, history or the PTY.
+fn inspect_enter(g: &mut Grid, has_ai_state: bool) -> EnterDecision {
+    let input = g.full_prompt_input();
+    let epoch = g.prompt_epoch;
+    let query = (g.prompt_ready() && g.ai.available)
+        .then(|| ai::query(&input))
+        .flatten();
+    let intercept = query.map(|query| {
+        let direct = g.ai.direct
+            || input.starts_with(char::is_whitespace)
+            || query.len() > MAX_SHELL_MEDIATED_QUERY;
+        g.ai.track = false;
+        if direct {
+            g.ai.request = Some(query.into());
+        } else {
+            g.ai.armed = true;
+        }
+        Intercept { query: query.into(), direct }
+    });
+    if intercept.is_none() && has_ai_state && input.trim().is_empty() {
+        g.ai.track = false;
+    }
+    EnterDecision { input, epoch, intercept }
 }
 
 /// Encode queued input with the same protocol and modifiers as immediate input.
@@ -392,5 +419,97 @@ pub(super) fn kitty_key<'a>(ev: &'a KeyEvent, unshifted: &'a Key, kind: keymap::
         } else {
             inferred
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::terminal::grid::Grid;
+
+    fn feed(g: &mut Grid, s: &str) {
+        let mut p = vte::Parser::new();
+        for b in s.bytes() {
+            g.feed_byte(&mut p, b);
+        }
+    }
+
+    fn prompt_with(input: &str) -> Grid {
+        let mut g = Grid::new(80, 8);
+        feed(&mut g, &format!("\x1b]133;A\x07$ \x1b]133;B\x07{input}"));
+        g.ai.available = true;
+        g.ai.track = true;
+        g
+    }
+
+    #[test]
+    fn enter_shell_mediated_arms_bridge_and_stops_tracking() {
+        let mut g = prompt_with("yo list files");
+        let epoch = g.prompt_epoch;
+        let d = inspect_enter(&mut g, true);
+        assert_eq!(d.epoch, epoch);
+        assert_eq!(d.input, "yo list files");
+        assert_eq!(d.intercept, Some(Intercept { query: "list files".into(), direct: false }));
+        assert!(g.ai.armed && !g.ai.track && g.ai.request.is_none());
+    }
+
+    #[test]
+    fn enter_direct_mode_queues_request_for_the_inspected_query() {
+        let mut g = prompt_with("yo old query");
+        g.ai.direct = true;
+        let d = inspect_enter(&mut g, true);
+        assert_eq!(d.intercept, Some(Intercept { query: "old query".into(), direct: true }));
+        assert_eq!(g.ai.request.as_deref(), Some("old query"));
+        assert!(!g.ai.armed && !g.ai.track);
+    }
+
+    #[test]
+    fn enter_leading_whitespace_forces_direct() {
+        let mut g = prompt_with(" yo hi");
+        let d = inspect_enter(&mut g, true);
+        assert!(d.intercept.is_some_and(|i| i.direct));
+        assert_eq!(g.ai.request.as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn enter_request_and_epoch_come_from_the_same_prompt() {
+        // The grid is only reachable through `&mut Grid`, so a second prompt
+        // cannot be parsed between inspection and mutation.
+        let mut g = prompt_with("yo old query");
+        g.ai.direct = true;
+        let d = inspect_enter(&mut g, true);
+        feed(&mut g, "\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07different command");
+        assert_ne!(d.epoch, g.prompt_epoch);
+        assert_eq!(g.ai.request.as_deref(), Some("old query"));
+        assert_eq!(d.intercept.map(|i| i.query), Some("old query".into()));
+    }
+
+    #[test]
+    fn enter_ordinary_command_is_not_intercepted() {
+        let mut g = prompt_with("ls -la");
+        let d = inspect_enter(&mut g, true);
+        assert_eq!(d.intercept, None);
+        assert_eq!(d.input, "ls -la");
+        assert!(g.ai.track && !g.ai.armed && g.ai.request.is_none());
+    }
+
+    #[test]
+    fn enter_empty_stops_tracking_only_with_ai_state() {
+        let mut g = prompt_with("");
+        inspect_enter(&mut g, false);
+        assert!(g.ai.track);
+        inspect_enter(&mut g, true);
+        assert!(!g.ai.track);
+    }
+
+    #[test]
+    fn enter_unavailable_or_alt_screen_is_not_intercepted() {
+        let mut g = prompt_with("yo hi");
+        g.ai.available = false;
+        assert_eq!(inspect_enter(&mut g, true).intercept, None);
+        let mut g = prompt_with("yo hi");
+        feed(&mut g, "\x1b[?1049h");
+        assert_eq!(inspect_enter(&mut g, true).intercept, None);
+        assert!(!g.ai.armed && g.ai.request.is_none());
     }
 }
