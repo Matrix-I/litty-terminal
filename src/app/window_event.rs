@@ -228,7 +228,7 @@ impl App {
         if s.history_search.is_open {
             if btn_state == ElementState::Pressed
                 && let Some((x0, y0, popup_w, popup_h, visible_rows)) =
-                    s.renderer.history_popup_geometry(&s.history_search)
+                    s.renderer.history_popup_geometry(&s.history_search.view())
                 {
                     let show_tabs = s.tabs.len() > 1;
                     let (cols, rows) = s.renderer.grid_size_for_tabs(show_tabs);
@@ -452,7 +452,7 @@ impl App {
             }
         let lines = s.pointer.wheel_scroll.push(amount, unit, target, precise);
         if s.history_search.is_open {
-            let visible_rows = s.renderer.history_popup_geometry(&s.history_search).map_or(10, |g| g.4);
+            let visible_rows = s.renderer.history_popup_geometry(&s.history_search.view()).map_or(10, |g| g.4);
             if lines > 0 {
                 for _ in 0..lines.abs() {
                     s.history_search.select_prev();

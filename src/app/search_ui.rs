@@ -12,7 +12,7 @@ use crate::paste::history_insert_payload;
 /// Keys while the history search popup is open. Returns `false` for keys the popup
 /// does not consume (e.g. `Cmd+V`), which then go through normal shortcut handling.
 pub(super) fn handle_history_search_key(s: &mut State, key: &Key, m: keymap::Mods) -> bool {
-    let visible_rows = s.renderer.history_popup_geometry(&s.history_search).map_or(10, |g| g.4);
+    let visible_rows = s.renderer.history_popup_geometry(&s.history_search.view()).map_or(10, |g| g.4);
     let hs = &mut s.history_search;
     match key {
         Key::Named(NamedKey::Escape) => hs.close(),

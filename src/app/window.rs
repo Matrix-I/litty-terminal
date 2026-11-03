@@ -20,7 +20,7 @@ use winit::keyboard::ModifiersState;
 use winit::window::{CursorIcon, Window};
 
 use crate::terminal::grid::Grid;
-use crate::terminal::history::HistorySearch;
+use super::history_ui::HistorySearch;
 use crate::terminal::pty::Pty;
 use crate::render::renderer::Renderer;
 use crate::terminal::search::SearchBar;
@@ -464,7 +464,7 @@ pub(super) fn render_active(s: &mut State) {
         tab_bar,
         hovered_link,
         blink_on,
-        Some(&s.history_search),
+        Some(s.history_search.view()),
         &s.search,
         &s.ime.preedit,
         inspector.as_deref(),

@@ -68,7 +68,7 @@ mod tests {
 #[ignore = "requires a GPU adapter; run explicitly on macOS and Linux"]
 fn warm_overlay_builders_do_not_allocate() {
     use crate::render::atlas::{Atlas,load_font};
-    use crate::terminal::{search::SearchBar,history::{HistorySearch,MatchResult}};
+    use crate::terminal::{search::SearchBar,history::{SortMode,MatchResult}};
     let gpu=wgpu::Instance::default();
     let adapter=pollster::block_on(gpu.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("GPU adapter");
     let (device,queue)=pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(),None)).unwrap();
@@ -82,8 +82,9 @@ fn warm_overlay_builders_do_not_allocate() {
     let mut search=SearchBar::new();search.query="needle".into();search.total=123;search.current=Some(0);
     for _ in 0..3 {search_box::build(&mut cells,2,40,&search,&mut dirty);}
     assert_eq!(crate::test_alloc::allocations(||search_box::build(&mut cells,2,40,&search,&mut dirty)), 0);
-    let mut history=HistorySearch::new();history.query="echo".into();
-    for i in 0..9 {history.items.push_back(format!("echo {}", "x".repeat(200)));history.filtered.push(MatchResult{item_index:i,score:0,match_indices:vec![0,1,2,3]});}
+    let items:std::collections::VecDeque<String>=(0..9).map(|_|format!("echo {}", "x".repeat(200))).collect();
+    let filtered:Vec<MatchResult>=(0..9).map(|i|MatchResult{item_index:i,score:0,match_indices:vec![0,1,2,3]}).collect();
+    let mut history=crate::render::HistoryView{is_open:true,query:"echo",selected:0,scroll_offset:0,sort_mode:SortMode::Relevance,items:&items,filtered:&filtered};
     let geometry=history_popup::geometry(160,40).unwrap();
     for _ in 0..3 {history_popup::build(&mut cells,geometry,40,&history,&mut dirty);}
     assert_eq!(crate::test_alloc::allocations(||history_popup::build(&mut cells,geometry,40,&history,&mut dirty)), 0);
@@ -92,7 +93,7 @@ fn warm_overlay_builders_do_not_allocate() {
         search.invalid = query == "(";
         search.total = crate::terminal::search::MAX_MATCHES;
         search.current = Some(search.total - 1);
-        history.query = query.into();
+        history.query = query;
         for _ in 0..3 {
             search_box::build(&mut cells,2,40,&search,&mut dirty);
             history_popup::build(&mut cells,geometry,40,&history,&mut dirty);

@@ -57,7 +57,7 @@ pub enum FzfTerm {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchResult {
-    /// Index into `HistorySearch::items`.
+    /// Index into `HistoryStore::items`.
     pub item_index: usize,
     /// Sorting score (higher = better match).
     pub score: i32,
@@ -65,77 +65,19 @@ pub struct MatchResult {
     pub match_indices: Vec<usize>,
 }
 
-#[derive(Debug)]
-pub struct HistorySearch {
-    pub is_open: bool,
-    pub query: String,
-    pub selected: usize,
-    pub scroll_offset: usize,
-    pub sort_mode: SortMode,
+/// Commands loaded from the shell history files plus those run in this session.
+/// Headless: it holds no popup state, so it can be filtered and edited without a UI.
+#[derive(Debug, Default)]
+pub struct HistoryStore {
+    /// Unique commands, newest first.
     pub items: VecDeque<String>,
     pub session_commands: VecDeque<String>,
-    pub filtered: Vec<MatchResult>,
     file_mtimes: Vec<(PathBuf, Option<SystemTime>)>,
 }
 
-impl Default for HistorySearch {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl HistorySearch {
+impl HistoryStore {
     pub fn new() -> Self {
-        Self {
-            is_open: false,
-            query: String::new(),
-            selected: 0,
-            scroll_offset: 0,
-            sort_mode: SortMode::Relevance,
-            items: VecDeque::new(),
-            session_commands: VecDeque::new(),
-            filtered: Vec::new(),
-            file_mtimes: Vec::new(),
-        }
-    }
-
-    /// Open or reopen the history search popup.
-    ///
-    /// If `initial_query` is provided (e.g. from the current shell prompt buffer),
-    /// the search query is pre-populated and filtered immediately, matching fzf's `--query`.
-    pub fn open(&mut self, initial_query: Option<&str>) {
-        self.reload_if_changed();
-        self.is_open = true;
-        self.query = initial_query.unwrap_or("").trim().to_string();
-        self.selected = 0;
-        self.scroll_offset = 0;
-        self.refilter();
-    }
-
-    /// Close the history search popup.
-    pub fn close(&mut self) {
-        self.is_open = false;
-        self.query.clear();
-        self.filtered = Vec::new();
-    }
-
-    /// Toggle visibility of the history search popup.
-    #[allow(dead_code)]
-    pub fn toggle(&mut self) {
-        if self.is_open {
-            self.close();
-        } else {
-            self.open(None);
-        }
-    }
-
-    /// Toggle sorting between Relevance (score) and Recency (chronological).
-    pub fn toggle_sort(&mut self) {
-        self.sort_mode = match self.sort_mode {
-            SortMode::Relevance => SortMode::Recency,
-            SortMode::Recency => SortMode::Relevance,
-        };
-        self.refilter();
+        Self::default()
     }
 
     /// Record a newly executed command from the active shell session.
@@ -165,125 +107,14 @@ impl HistorySearch {
         }
     }
 
-    /// Delete the currently selected command from memory and disk history.
-    pub fn delete_selected(&mut self) -> Option<String> {
-        let item = self.filtered.get(self.selected)?;
-        let item_idx = item.item_index;
-        let removed_cmd = self.items.remove(item_idx)?;
+    /// Delete `items[item_index]` from memory and disk history.
+    pub fn remove(&mut self, item_index: usize) -> Option<String> {
+        let removed_cmd = self.items.remove(item_index)?;
         self.session_commands.retain(|c| c != &removed_cmd);
 
         // Remove from primary disk history file off the main UI thread
         remove_from_disk_history(&removed_cmd);
-
-        self.refilter();
-        if self.selected >= self.filtered.len() {
-            self.selected = self.filtered.len().saturating_sub(1);
-        }
         Some(removed_cmd)
-    }
-
-    /// Append a character to the search query and update results.
-    pub fn append_char(&mut self, c: char) {
-        self.query.push(c);
-        self.selected = 0;
-        self.scroll_offset = 0;
-        self.refilter();
-    }
-
-    /// Remove the last character of the search query.
-    pub fn backspace(&mut self) {
-        if self.query.pop().is_some() {
-            self.selected = 0;
-            self.scroll_offset = 0;
-            self.refilter();
-        }
-    }
-
-    /// Clear the entire search query.
-    pub fn clear_query(&mut self) {
-        if !self.query.is_empty() {
-            self.query.clear();
-            self.selected = 0;
-            self.scroll_offset = 0;
-            self.refilter();
-        }
-    }
-
-    /// Select the next matching result item.
-    pub fn select_next(&mut self, visible_rows: usize) {
-        if self.filtered.is_empty() {
-            return;
-        }
-        if self.selected + 1 < self.filtered.len() {
-            self.selected += 1;
-            if visible_rows > 0 && self.selected >= self.scroll_offset + visible_rows {
-                self.scroll_offset = self.selected + 1 - visible_rows;
-            }
-        }
-    }
-
-    /// Select the previous matching result item.
-    pub fn select_prev(&mut self) {
-        if self.selected > 0 {
-            self.selected -= 1;
-            if self.selected < self.scroll_offset {
-                self.scroll_offset = self.selected;
-            }
-        }
-    }
-
-    /// Jump forward by a page of visible results.
-    pub fn page_down(&mut self, visible_rows: usize) {
-        if self.filtered.is_empty() {
-            return;
-        }
-        let step = visible_rows.max(1);
-        self.selected = (self.selected + step).min(self.filtered.len() - 1);
-        if visible_rows > 0 && self.selected >= self.scroll_offset + visible_rows {
-            self.scroll_offset = self.selected + 1 - visible_rows;
-        }
-    }
-
-    /// Jump backward by a page of visible results.
-    pub fn page_up(&mut self, visible_rows: usize) {
-        let step = visible_rows.max(1);
-        self.selected = self.selected.saturating_sub(step);
-        if self.selected < self.scroll_offset {
-            self.scroll_offset = self.selected;
-        }
-    }
-
-    /// Jump to the first (top) result item.
-    pub fn select_first(&mut self) {
-        self.selected = 0;
-        self.scroll_offset = 0;
-    }
-
-    /// Jump to the last result item.
-    pub fn select_last(&mut self, visible_rows: usize) {
-        if self.filtered.is_empty() {
-            return;
-        }
-        self.selected = self.filtered.len() - 1;
-        if visible_rows > 0 && self.selected >= self.scroll_offset + visible_rows {
-            self.scroll_offset = self.selected + 1 - visible_rows;
-        }
-    }
-
-    /// Return the currently selected command string, if any.
-    pub fn selected_command(&self) -> Option<&str> {
-        let item = self.filtered.get(self.selected)?;
-        self.items.get(item.item_index).map(|s| s.as_str())
-    }
-
-    /// Total number of filtered matches for the current query.
-    pub fn match_count(&self) -> usize {
-        self.filtered.len()
-    }
-
-    /// Total number of history items loaded.
-    pub fn total_items(&self) -> usize {
-        self.items.len()
     }
 
     /// Reload history files if modification times on disk changed.
@@ -328,21 +159,20 @@ impl HistorySearch {
 
         self.file_mtimes = new_mtimes;
         self.items = unique_items;
-        self.refilter();
     }
 
-    /// Recompute matching results against the current search query using FZF rules.
-    pub fn refilter(&mut self) {
-        let q = self.query.trim();
+    /// Items matching `query` under the FZF rules, ordered by `sort`. An empty
+    /// query matches everything in history order.
+    pub fn filter(&self, query: &str, sort: SortMode) -> Vec<MatchResult> {
+        let q = query.trim();
         if q.is_empty() {
-            self.filtered = (0..self.items.len())
+            return (0..self.items.len())
                 .map(|i| MatchResult {
                     item_index: i,
                     score: 0,
                     match_indices: Vec::new(),
                 })
                 .collect();
-            return;
         }
 
         let terms = parse_fzf_query(q);
@@ -355,18 +185,13 @@ impl HistorySearch {
             }
         }
 
-        if self.sort_mode == SortMode::Relevance {
+        if sort == SortMode::Relevance {
             matches.sort_by_key(|m| -m.score);
         } else {
             // Recency: original history order (newest first)
             matches.sort_by_key(|m| m.item_index);
         }
-
-        self.filtered = matches;
-
-        if self.selected >= self.filtered.len() {
-            self.selected = self.filtered.len().saturating_sub(1);
-        }
+        matches
     }
 }
 
@@ -1271,73 +1096,27 @@ mod tests {
 
     #[test]
     fn session_command_recording() {
-        let mut search = HistorySearch {
-            is_open: true,
-            query: String::new(),
-            selected: 0,
-            scroll_offset: 0,
-            sort_mode: SortMode::Relevance,
+        let mut store = HistoryStore {
             items: VecDeque::from(["older 1".into(), "older 2".into()]),
-            session_commands: VecDeque::new(),
-            filtered: Vec::new(),
-            file_mtimes: Vec::new(),
+            ..HistoryStore::default()
         };
-        search.add_session_command("just_now_command");
-        assert_eq!(search.items[0], "just_now_command");
-        assert_eq!(search.session_commands[0], "just_now_command");
+        store.add_session_command("just_now_command");
+        assert_eq!(store.items[0], "just_now_command");
+        assert_eq!(store.session_commands[0], "just_now_command");
     }
 
     #[test]
-    fn delete_selected_entry() {
-        let mut search = HistorySearch {
-            is_open: true,
-            query: String::new(),
-            selected: 0,
-            scroll_offset: 0,
-            sort_mode: SortMode::Relevance,
-            items: VecDeque::from(["secret_token".into(), "ls -la".into()]),
-            session_commands: VecDeque::new(),
-            filtered: Vec::new(),
-            file_mtimes: Vec::new(),
+    fn filter_orders_by_relevance_or_recency_and_matches_everything_when_empty() {
+        let store = HistoryStore {
+            items: VecDeque::from(["git status".into(), "ls -la".into(), "git stash".into()]),
+            ..HistoryStore::default()
         };
-        search.refilter();
-        assert_eq!(search.selected_command(), Some("secret_token"));
-        let deleted = search.delete_selected();
-        assert_eq!(deleted, Some("secret_token".into()));
-        assert_eq!(search.match_count(), 1);
-        assert_eq!(search.selected_command(), Some("ls -la"));
-    }
-
-    #[test]
-    fn history_search_navigation() {
-        let mut search = HistorySearch {
-            is_open: true,
-            query: String::new(),
-            selected: 0,
-            scroll_offset: 0,
-            sort_mode: SortMode::Relevance,
-            items: VecDeque::from(["cmd 1".into(), "cmd 2".into(), "cmd 3".into(), "cmd 4".into()]),
-            session_commands: VecDeque::new(),
-            filtered: Vec::new(),
-            file_mtimes: Vec::new(),
-        };
-        search.refilter();
-        assert_eq!(search.match_count(), 4);
-        assert_eq!(search.selected, 0);
-
-        search.select_next(2);
-        assert_eq!(search.selected, 1);
-        search.select_next(2);
-        assert_eq!(search.selected, 2);
-        assert_eq!(search.scroll_offset, 1);
-
-        search.select_prev();
-        assert_eq!(search.selected, 1);
-        assert_eq!(search.scroll_offset, 1);
-
-        search.select_prev();
-        assert_eq!(search.selected, 0);
-        assert_eq!(search.scroll_offset, 0);
+        let all = store.filter("  ", SortMode::Relevance);
+        assert_eq!(all.iter().map(|m| m.item_index).collect::<Vec<_>>(), [0, 1, 2]);
+        assert!(all.iter().all(|m| m.match_indices.is_empty()));
+        let recent = store.filter("gt", SortMode::Recency);
+        assert_eq!(recent.iter().map(|m| m.item_index).collect::<Vec<_>>(), [0, 2]);
+        assert!(store.filter("zzz", SortMode::Relevance).is_empty());
     }
 
     #[test]
@@ -1433,26 +1212,26 @@ mod tests {
 
     #[test]
     fn reload_if_changed_with_session_command() {
-        let mut search = HistorySearch::new();
-        search.add_session_command("prompt_command_before_open");
-        assert_eq!(search.items.len(), 1);
-        assert!(search.file_mtimes.is_empty());
+        let mut store = HistoryStore::new();
+        store.add_session_command("prompt_command_before_open");
+        assert_eq!(store.items.len(), 1);
+        assert!(store.file_mtimes.is_empty());
 
-        search.reload_if_changed();
+        store.reload_if_changed();
         // file_mtimes is now populated
-        assert!(!search.file_mtimes.is_empty());
+        assert!(!store.file_mtimes.is_empty());
         // prompt command is still preserved at the top
-        assert_eq!(search.items[0], "prompt_command_before_open");
+        assert_eq!(store.items[0], "prompt_command_before_open");
     }
 
     #[test]
     fn add_session_command_caps_items() {
-        let mut search = HistorySearch::new();
+        let mut store = HistoryStore::new();
         for i in 0..(MAX_HISTORY_ITEMS + 50) {
-            search.add_session_command(&format!("cmd_{i}"));
+            store.add_session_command(&format!("cmd_{i}"));
         }
-        assert_eq!(search.items.len(), MAX_HISTORY_ITEMS);
-        assert_eq!(search.items[0], format!("cmd_{}", MAX_HISTORY_ITEMS + 49));
+        assert_eq!(store.items.len(), MAX_HISTORY_ITEMS);
+        assert_eq!(store.items[0], format!("cmd_{}", MAX_HISTORY_ITEMS + 49));
     }
 
     #[test]

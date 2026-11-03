@@ -18,7 +18,7 @@ pub use ui::scrollbar::{scrollbar_thumb, SCROLLBAR_WIDTH};
 
 use crate::render::atlas::{Atlas, FontSet};
 use crate::terminal::grid::{Grid, Hyperlink};
-use crate::terminal::history::HistorySearch;
+use crate::render::HistoryView;
 use crate::render::PaneRect;
 
 pub struct RenderPane {
@@ -528,7 +528,7 @@ impl Renderer {
     }
 
     /// Position and size of the history search popup `(x0, y0, width, height, visible_rows)`.
-    pub fn history_popup_geometry(&self, search: &HistorySearch) -> Option<(usize, usize, usize, usize, usize)> {
+    pub fn history_popup_geometry(&self, search: &HistoryView<'_>) -> Option<(usize, usize, usize, usize, usize)> {
         if !search.is_open {
             return None;
         }
