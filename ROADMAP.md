@@ -2,15 +2,16 @@
 
 Release plans and historical records live in `docs/plans/<version>.md`. Completed
 items, original evidence, and validation limits are preserved in those files.
-New fix plans contain only issues reproduced by execution.
+Fix items record execution evidence and its limits. Maintenance proposals and
+optimization candidates are identified separately from reproduced failures.
 
 ## Release index
 
 | Version | Record |
 | --- | --- |
 | [v0.8.0](./docs/plans/0.8.0.md) | Planned follow-ups |
-| [v0.7.4](./docs/plans/0.7.4.md) | Architecture refactoring, concurrency safety, and code quality plan |
-| [v0.7.3](./docs/plans/0.7.3.md) | Verified performance optimization plan |
+| [v0.7.4](./docs/plans/0.7.4.md) | Validated findings and maintenance proposals — implementation pending |
+| [v0.7.3](./docs/plans/0.7.3.md) | Baseline audit complete — 0/6 implementation items complete |
 | [v0.7.2](./docs/plans/0.7.2.md) | Release record — runtime-confirmed bug, security and platform fixes |
 | [v0.7.1](./docs/plans/0.7.1.md) | Historical release record |
 | [v0.7.0](./docs/plans/0.7.0.md) | Historical release record |
