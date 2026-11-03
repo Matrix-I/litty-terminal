@@ -13,6 +13,9 @@ use crate::terminal::grid::Selection;
 /// Upper bound on highlighted matches (keeps memory bounded for `.` and friends).
 pub const MAX_MATCHES: usize = 10_000;
 
+/// A one-byte, one-cell run maps byte offsets directly to columns.
+pub(crate) const ASCII_RUN: usize = 1usize << (usize::BITS - 1);
+
 /// State of the search box overlay.
 pub struct SearchBar {
     pub is_open: bool,
@@ -26,11 +29,12 @@ pub struct SearchBar {
     /// Index of the focused match (top-to-bottom order) and the match count.
     pub current: Option<usize>,
     pub total: usize,
+    pub(crate) snapshot: Option<SearchText>,
 }
 
 impl SearchBar {
     pub fn new() -> Self {
-        SearchBar { is_open: false, query: String::new(), regex: true, invalid: false, pane_id: None, current: None, total: 0 }
+        SearchBar { is_open: false, query: String::new(), regex: true, invalid: false, pane_id: None, current: None, total: 0, snapshot: None }
     }
 
     /// Open the box, keeping the previous query (like most terminals and browsers).
@@ -40,6 +44,7 @@ impl SearchBar {
 
     pub fn close(&mut self) {
         self.is_open = false;
+        self.snapshot = None;
         self.pane_id = None;
         self.current = None;
         self.total = 0;
@@ -87,15 +92,24 @@ impl SearchBar {
 
 /// Full grapheme text with byte-to-cell mappings from the actual grid.
 /// Wide placeholders are skipped; soft wraps join and hard lines use `\n`.
+#[derive(Default)]
 pub struct SearchText {
     pub text: String,
     /// `(byte offset, absolute line)` where each physical line starts in `text`.
     pub rows: Vec<(usize, usize)>,
-    /// `(byte offset, column, stored cell width)` for each grapheme/newline.
+    /// Sparse `(byte offset, column, width)` mapping. The high width bit marks
+    /// an ASCII run; other entries preserve one stored grapheme's width.
     pub columns: Vec<(usize, usize, usize)>,
 }
 
 impl SearchText {
+    /// Retain at most 4 MiB between keystrokes; closing or changing panes drops it.
+    pub(crate) fn reusable(&self) -> bool {
+        const MAX_RETAINED_BYTES: usize = 4 * 1024 * 1024;
+        self.text.capacity() + self.rows.capacity() * std::mem::size_of::<(usize, usize)>()
+            + self.columns.capacity() * std::mem::size_of::<(usize, usize, usize)>() <= MAX_RETAINED_BYTES
+    }
+
     /// All non-empty matches of `re`, as inclusive `(line, col)` ranges in
     /// top-to-bottom order.
     pub fn find(&self, re: &Regex) -> Vec<Selection> {
@@ -119,7 +133,9 @@ impl SearchText {
         let row = self.rows.partition_point(|&(start, _)| start <= offset).saturating_sub(1);
         let cell = self.columns.partition_point(|&(start, _, _)| start <= offset).saturating_sub(1);
         let (_, col, width) = self.columns[cell];
-        (self.rows[row].1, col, width)
+        let linear = width & ASCII_RUN != 0;
+        let col = if linear { col + offset - self.columns[cell].0 } else { col };
+        (self.rows[row].1, col, width & !ASCII_RUN)
     }
 
 }
@@ -238,4 +254,38 @@ mod tests {
         assert_eq!(m.len(), 1);
         assert_eq!((m[0].start, m[0].end), ((0, 1), (0, 6)));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn ascii_snapshot_mapping_is_sparse() {
+    let mut grid = crate::terminal::grid::Grid::new(160, 24);
+    let mut parser = vte::Parser::new();
+    for _ in 0..5024 {
+        for byte in "x".repeat(160).bytes().chain(b"\r\n".iter().copied()) { parser.advance(&mut grid, byte); }
+    }
+    let snapshot = grid.search_text();
+    assert!(snapshot.columns.len() <= snapshot.rows.len() * 2);
+    let re = Regex::new("x").unwrap();
+    assert_eq!(snapshot.find(&re).len(), MAX_MATCHES);
+}
+
+#[cfg(test)]
+#[test]
+fn search_snapshot_reuse_is_bounded_and_close_releases_buffers() {
+    let mut grid = crate::terminal::grid::Grid::new(80, 24);
+    let mut parser = vte::Parser::new();
+    for byte in b"hello \xe7\x95\x8c" { parser.advance(&mut grid, *byte); }
+    let snapshot = grid.search_text();
+    let expected = snapshot.text.clone();
+    assert!(snapshot.reusable());
+    let mut reused = None;
+    assert_eq!(crate::test_alloc::allocations(|| { reused = Some(grid.search_text_reusing(snapshot)); }), 0);
+    assert_eq!(reused.as_ref().unwrap().text, expected);
+    let mut bar = SearchBar::new();
+    bar.snapshot = reused;
+    bar.close();
+    assert!(bar.snapshot.is_none());
+    let oversized = SearchText { text: String::with_capacity(4 * 1024 * 1024 + 1), ..SearchText::default() };
+    assert!(!oversized.reusable());
 }

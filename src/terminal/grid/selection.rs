@@ -396,27 +396,45 @@ impl Grid {
     /// Snapshot of the scrollback and screen for `SearchText::find`, so matching
     /// runs without holding the grid lock.
     pub fn search_text(&self) -> SearchText {
+        self.search_text_reusing(SearchText::default())
+    }
+
+    pub(crate) fn search_text_reusing(&self, snapshot: SearchText) -> SearchText {
         let first = if self.alt_active { self.lines_pushed } else { self.lines_pushed - self.history };
         let last = self.lines_pushed + self.rows;
-        let mut text = String::new();
-        let mut rows = Vec::with_capacity(last - first);
-        let mut columns = Vec::new();
+        let SearchText { mut text, mut rows, mut columns } = snapshot;
+        text.clear();
+        rows.clear();
+        columns.clear();
+        rows.reserve(last - first);
         for l in first..last {
             let Some(cells) = self.line_cells(l) else { continue };
             let row_start = text.len();
             rows.push((row_start, l));
             let mut skip_next = false;
-            for (col, cell) in cells.iter().enumerate() {
+            let mut ascii_run = false;
+            let wrapped = self.line_wrapped(l);
+            let end = if wrapped { cells.len() } else {
+                cells.iter().rposition(|cell| !Self::is_blank(cell.codepoint)).map_or(0, |col| col + 1)
+            };
+            for (col, cell) in cells[..end].iter().enumerate() {
                 if std::mem::take(&mut skip_next) { continue; }
                 skip_next = is_wide_cp(cell.codepoint);
                 let width = if skip_next { 2 } else { 1 };
-                columns.push((text.len(), col, width));
+                let ascii = cell.codepoint < 128 && width == 1;
+                if !ascii || !ascii_run {
+                    columns.push((text.len(), col, width | if ascii { crate::terminal::search::ASCII_RUN } else { 0 }));
+                }
+                ascii_run = ascii;
                 self.push_cell_text(cell, &mut text);
             }
             if !self.line_wrapped(l) {
                 text.truncate(text.trim_end_matches(' ').len().max(row_start));
                 while columns.last().is_some_and(|&(offset, _, _)| offset >= text.len()) { columns.pop(); }
-                let col = columns.last().filter(|&&(offset, _, _)| offset >= row_start).map_or(0, |&(_, col, width)| col + width);
+                let col = columns.last().filter(|&&(offset, _, _)| offset >= row_start).map_or(0, |&(offset, col, width)| {
+                    if width & crate::terminal::search::ASCII_RUN != 0 { col + text.len() - offset }
+                    else { col + width }
+                });
                 columns.push((text.len(), col, 1));
                 text.push('\n');
             }
@@ -489,4 +507,37 @@ impl Grid {
             hits: &self.search_matches[lo..hi],
         }
     }
+}
+
+#[cfg(test)]
+impl Grid {
+    pub(super) fn dense_search_text(&self) -> SearchText {
+        let first = if self.alt_active { self.lines_pushed } else { self.lines_pushed - self.history };
+        let last = self.lines_pushed + self.rows;
+        let mut text = String::new();
+        let mut rows = Vec::with_capacity(last - first);
+        let mut columns = Vec::new();
+        for l in first..last {
+            let Some(cells) = self.line_cells(l) else { continue };
+            let row_start = text.len();
+            rows.push((row_start, l));
+            let mut skip_next = false;
+            for (col, cell) in cells.iter().enumerate() {
+                if std::mem::take(&mut skip_next) { continue; }
+                skip_next = is_wide_cp(cell.codepoint);
+                let width = if skip_next { 2 } else { 1 };
+                columns.push((text.len(), col, width));
+                self.push_cell_text(cell, &mut text);
+            }
+            if !self.line_wrapped(l) {
+                text.truncate(text.trim_end_matches(' ').len().max(row_start));
+                while columns.last().is_some_and(|&(offset, _, _)| offset >= text.len()) { columns.pop(); }
+                let col = columns.last().filter(|&&(offset, _, _)| offset >= row_start).map_or(0, |&(_, col, width)| col + width);
+                columns.push((text.len(), col, 1));
+                text.push('\n');
+            }
+        }
+        SearchText { text, rows, columns }
+    }
+
 }
