@@ -5,7 +5,7 @@ use super::ui::Cells;
 use super::{Instance, Renderer, COLOR_GLYPH, UNFOCUSED};
 use crate::render::atlas::GlyphStyle;
 use crate::terminal::grid::{char_width, Grid, Hyperlink, SearchHit, BG_EXTRA, BG_SET, BG_STRIKE, BG_UNDERLINE_MASK, FG_BOLD, FG_EXTRA, FG_ITALIC, FG_SET, UNDERLINE_SINGLE};
-use crate::split::PaneRect;
+use crate::render::PaneRect;
 
 /// Inputs shared by every row of one pane in one frame.
 #[derive(Clone, Copy)]
@@ -107,11 +107,10 @@ pub(super) fn build_pane_row(
                 let style = GlyphStyle { bold: cell.fg & FG_BOLD != 0, italic: cell.fg & FG_ITALIC != 0 };
                 let text = g.cluster(cp).unwrap_or("");
                 // A joined Arabic letter keeps its marks.
-                let joined: String;
+                let mut joined = [0u8; crate::terminal::grid::MAX_CLUSTER_BYTES + 3];
                 let text = match form {
                     Some(f) => {
-                        joined = std::iter::once(f).chain(text.chars().skip(1)).collect();
-                        joined.as_str()
+                        joined_cluster(text, f, &mut joined)
                     }
                     None => text,
                 };
@@ -186,4 +185,28 @@ pub(super) fn build_pane_row(
             dst.bg |= UNFOCUSED;
         }
     }
+}
+
+/// Replacing one UTF-8 scalar can grow a bounded cluster by at most three bytes.
+fn joined_cluster<'a>(text: &str, form: char, out: &'a mut [u8; crate::terminal::grid::MAX_CLUSTER_BYTES + 3]) -> &'a str {
+    let first_len = text.chars().next().map_or(0, char::len_utf8);
+    let head_len = form.encode_utf8(out).len();
+    let tail = &text.as_bytes()[first_len..];
+    out[head_len..head_len + tail.len()].copy_from_slice(tail);
+    std::str::from_utf8(&out[..head_len + tail.len()]).expect("joined UTF-8 cluster")
+}
+
+#[cfg(test)]
+#[test]
+fn joined_maximum_cluster_keeps_every_mark_without_allocating() {
+    let text = format!("ب{}", "\u{064e}".repeat(31));
+    let mut buffer = [0; crate::terminal::grid::MAX_CLUSTER_BYTES + 3];
+    let form = crate::terminal::bidi::arabic_form(None, 'ب', None);
+    assert_eq!(text.len(), crate::terminal::grid::MAX_CLUSTER_BYTES);
+    assert_eq!(crate::test_alloc::allocations(|| {
+        let joined = joined_cluster(&text, form, &mut buffer);
+        assert_eq!(joined.len(), 65);
+        assert_eq!(joined.chars().skip(1).count(), 31);
+        assert!(joined.chars().skip(1).all(|c| c == '\u{064e}'));
+    }), 0);
 }

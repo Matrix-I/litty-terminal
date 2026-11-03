@@ -61,3 +61,123 @@ mod tests {
         assert_eq!(d, DirtyRows { lo: 2, hi: 7 });
     }
 }
+
+#[cfg(test)]
+
+#[test]
+#[ignore = "requires a GPU adapter; run explicitly on macOS and Linux"]
+fn warm_overlay_builders_do_not_allocate() {
+    use crate::render::atlas::{Atlas,load_font};
+    use crate::terminal::{search::SearchBar,history::{HistorySearch,MatchResult}};
+    let gpu=wgpu::Instance::default();
+    let adapter=pollster::block_on(gpu.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("GPU adapter");
+    let (device,queue)=pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(),None)).unwrap();
+    let mut atlas=Atlas::new(&device,&queue,load_font(&[]),16.0);
+    let mut instances=vec![Instance::default();160*40];
+    let mut dirty=DirtyRows::NONE;
+    let mut cells=Cells{atlas:&mut atlas,queue:&queue,instances:&mut instances,cols:160};
+    let titles=vec!["shell".into(),"a very long title that must be truncated inside the allocated tab span ".repeat(3)];
+    for _ in 0..3 {tab_bar::build(&mut cells,&titles,0);}
+    assert_eq!(crate::test_alloc::allocations(||tab_bar::build(&mut cells,&titles,0)), 0);
+    let mut search=SearchBar::new();search.query="needle".into();search.total=123;search.current=Some(0);
+    for _ in 0..3 {search_box::build(&mut cells,2,40,&search,&mut dirty);}
+    assert_eq!(crate::test_alloc::allocations(||search_box::build(&mut cells,2,40,&search,&mut dirty)), 0);
+    let mut history=HistorySearch::new();history.query="echo".into();
+    for i in 0..9 {history.items.push_back(format!("echo {}", "x".repeat(200)));history.filtered.push(MatchResult{item_index:i,score:0,match_indices:vec![0,1,2,3]});}
+    let geometry=history_popup::geometry(160,40).unwrap();
+    for _ in 0..3 {history_popup::build(&mut cells,geometry,40,&history,&mut dirty);}
+    assert_eq!(crate::test_alloc::allocations(||history_popup::build(&mut cells,geometry,40,&history,&mut dirty)), 0);
+    for query in ["", "é日本😀".repeat(40).as_str(), "("] {
+        search.query = query.into();
+        search.invalid = query == "(";
+        search.total = crate::terminal::search::MAX_MATCHES;
+        search.current = Some(search.total - 1);
+        history.query = query.into();
+        for _ in 0..3 {
+            search_box::build(&mut cells,2,40,&search,&mut dirty);
+            history_popup::build(&mut cells,geometry,40,&history,&mut dirty);
+        }
+        assert_eq!(crate::test_alloc::allocations(||search_box::build(&mut cells,2,40,&search,&mut dirty)), 0);
+        assert_eq!(crate::test_alloc::allocations(||history_popup::build(&mut cells,geometry,40,&history,&mut dirty)), 0);
+    }
+}
+
+/// Bounded decimal counters and static labels used by overlay builders.
+struct Label {
+    bytes: [u8; 64],
+    len: usize,
+}
+impl Label {
+    fn new() -> Self { Self { bytes: [0; 64], len: 0 } }
+    fn as_str(&self) -> &str { std::str::from_utf8(&self.bytes[..self.len]).expect("formatted UTF-8") }
+}
+impl std::fmt::Write for Label {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let end = self.len + s.len();
+        let dst = self.bytes.get_mut(self.len..end).ok_or(std::fmt::Error)?;
+        dst.copy_from_slice(s.as_bytes()); self.len = end; Ok(())
+    }
+}
+
+/// Borrow at most `count` Unicode scalar values, without collecting them.
+fn prefix(text: &str, count: usize) -> &str {
+    &text[..text.char_indices().nth(count).map_or(text.len(), |(i,_)| i)]
+}
+
+/// Lazy preview wrapping preserves `str::lines` semantics and empty lines.
+fn preview_lines(text: &str, width: usize) -> impl Iterator<Item = &str> {
+    let mut remaining = text;
+    std::iter::from_fn(move || {
+        if remaining.is_empty() { return None; }
+        let current = remaining;
+        for (count, (offset, ch)) in current.char_indices().enumerate() {
+            if ch == '\n' || (ch == '\r' && current[offset..].starts_with("\r\n")) {
+                let consumed = if ch == '\r' { 2 } else { 1 };
+                remaining = &current[offset + consumed..];
+                return Some(&current[..offset]);
+            }
+            if width > 0 && count == width {
+                remaining = &current[offset..];
+                return Some(&current[..offset]);
+            }
+        }
+        remaining = "";
+        Some(current)
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn borrowed_preview_and_prefix_preserve_character_boundaries() {
+    assert_eq!(prefix("é😀x", 2), "é😀");
+    assert_eq!(prefix("é", 0), "");
+    assert_eq!(preview_lines("é😀x\n\nabc\r\n", 2).collect::<Vec<_>>(), ["é😀", "x", "", "ab", "c"]);
+    assert_eq!(preview_lines("", 2).count(), 0);
+    assert_eq!(preview_lines("abc", 0).collect::<Vec<_>>(), ["abc"]);
+    assert_eq!(crate::test_alloc::allocations(|| {
+        assert_eq!(preview_lines("é😀x\n\nabc", 2).take(3).count(), 3);
+    }), 0);
+}
+
+#[cfg(test)]
+#[test]
+fn preview_wrapping_matches_original_for_all_short_line_shapes() {
+    for width in 1..8 {
+        for first in ["", "a", "é😀", "abc", "a\r", "abcde"] {
+            for ending in ["", "\n", "\r\n", "\n\n", "\nxy\r\n"] {
+                let text = format!("{first}{ending}");
+                let mut expected = Vec::new();
+                for raw in text.lines() {
+                    let mut line = raw;
+                    while line.chars().count() > width {
+                        let part = prefix(line, width);
+                        expected.push(part);
+                        line = &line[part.len()..];
+                    }
+                    expected.push(line);
+                }
+                assert_eq!(preview_lines(&text, width).collect::<Vec<_>>(), expected, "width={width} text={text:?}");
+            }
+        }
+    }
+}

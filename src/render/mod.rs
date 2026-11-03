@@ -11,3 +11,14 @@ pub(crate) mod frame_metrics;
 pub(crate) mod image_layer;
 pub(crate) mod postfx;
 pub(crate) mod renderer;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneRect {
+    pub id: u64,
+    pub col: usize,
+    pub row: usize,
+    pub cols: usize,
+    pub rows: usize,
+    pub has_border_right: bool,
+    pub has_border_bottom: bool,
+}

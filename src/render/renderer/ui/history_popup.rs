@@ -1,7 +1,8 @@
 //! History search popup (`Ctrl+R`): query, fzf-style matches, preview, key hints.
 
 use super::super::Instance;
-use super::{Cells, DirtyRows};
+use super::{Cells, DirtyRows, Label, prefix, preview_lines};
+use std::fmt::Write;
 use crate::terminal::history::HistorySearch;
 
 /// Position and size of the popup `(x0, y0, width, height, visible_rows)` in a
@@ -103,7 +104,9 @@ pub(in crate::render::renderer) fn build(
     }
 
     // Sort mode badge: [Relevance] or [Recent]
-    let sort_label = format!(" [{}] ", search.sort_mode.label());
+    let mut sort_label = Label::new();
+    write!(sort_label, " [{}] ", search.sort_mode.label()).expect("bounded sort label");
+    let sort_label = sort_label.as_str();
     let sort_start = x0 + 2 + title.chars().count();
     if sort_start + sort_label.chars().count() + 16 < x0 + popup_w {
         for (i, ch) in sort_label.chars().enumerate() {
@@ -112,7 +115,9 @@ pub(in crate::render::renderer) fn build(
         }
     }
 
-    let counter = format!(" [ {}/{} ] ", search.match_count(), search.total_items());
+    let mut counter = Label::new();
+    write!(counter, " [ {}/{} ] ", search.match_count(), search.total_items()).expect("bounded history counter");
+    let counter = counter.as_str();
     let counter_len = counter.chars().count();
     if x0 + 2 + title.chars().count() + counter_len + 16 < x0 + popup_w {
         let start_c = x0 + popup_w - 1 - counter_len;
@@ -141,10 +146,11 @@ pub(in crate::render::renderer) fn build(
         }
         cells.instances[r1 + x0 + 4] = Instance { glyph: s_cursor, fg: CURSOR_FG, bg: POPUP_BG };
     } else {
-        let q_chars: Vec<char> = search.query.chars().collect();
+
         let max_q = popup_w.saturating_sub(6);
-        let display_q = q_chars.len().min(max_q);
-        for (i, &ch) in q_chars.iter().take(display_q).enumerate() {
+        let query = prefix(&search.query, max_q);
+        let display_q = query.chars().count();
+        for (i, ch) in query.chars().enumerate() {
             let slot = cells.atlas.slot(queue, ch as u32) as u32;
             cells.instances[r1 + x0 + 4 + i] = Instance { glyph: slot, fg: QUERY_FG, bg: POPUP_BG };
         }
@@ -193,11 +199,11 @@ pub(in crate::render::renderer) fn build(
 
             if let Some(cmd) = search.items.get(m.item_index) {
                 let avail_w = popup_w.saturating_sub(6);
-                let cmd_chars: Vec<char> = cmd.chars().collect();
-                let display_len = cmd_chars.len().min(avail_w);
-                let is_truncated = cmd_chars.len() > avail_w;
+                let display = prefix(cmd, avail_w);
+                let display_len = display.chars().count();
+                let is_truncated = display.len() < cmd.len();
 
-                for (ci, &ch) in cmd_chars.iter().take(display_len).enumerate() {
+                for (ci, ch) in display.chars().enumerate() {
                     let is_match = m.match_indices.contains(&ci);
                     let fg = if is_match {
                         MATCH_FG
@@ -250,17 +256,7 @@ pub(in crate::render::renderer) fn build(
         let selected_cmd = search.selected_command().unwrap_or("");
         let avail_w = popup_w.saturating_sub(6);
 
-        // Split into lines or wrap
-        let mut preview_lines: Vec<String> = Vec::new();
-        for raw_line in selected_cmd.lines() {
-            let mut line = raw_line.to_string();
-            while line.chars().count() > avail_w && avail_w > 0 {
-                let part: String = line.chars().take(avail_w).collect();
-                line = line.chars().skip(avail_w).collect();
-                preview_lines.push(part);
-            }
-            preview_lines.push(line);
-        }
+        let mut lines = preview_lines(selected_cmd, avail_w);
 
         for p_i in 0..preview_rows {
             let cur_r = prev_sep_r + 1 + p_i;
@@ -270,7 +266,7 @@ pub(in crate::render::renderer) fn build(
             let r_start = cur_r * cols;
             cells.instances[r_start + x0] = Instance { glyph: s_v, fg: BORDER_FG, bg: POPUP_BG };
             cells.instances[r_start + x0 + popup_w - 1] = Instance { glyph: s_v, fg: BORDER_FG, bg: POPUP_BG };
-            if let Some(pline) = preview_lines.get(p_i) {
+            if let Some(pline) = lines.next() {
                 for (ci, ch) in pline.chars().take(avail_w).enumerate() {
                     let slot = cells.atlas.slot(queue, ch as u32) as u32;
                     cells.instances[r_start + x0 + 3 + ci] = Instance { glyph: slot, fg: PREVIEW_TEXT_FG, bg: POPUP_BG };
