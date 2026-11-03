@@ -4,6 +4,7 @@
 pub(crate) mod clipboard;
 pub(crate) mod control_socket;
 pub(crate) mod process;
+mod types;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -30,3 +31,4 @@ pub(crate) use imp::{
 #[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
 pub(crate) use imp::set_window_represented_filename;
 pub(crate) use control_socket::send_toggle;
+pub(crate) use types::{ColorSpace, EventSink, Hotkey, HotkeyMods, MenuCommand, PlatformEvent, SinkSlot, WindowLook};

@@ -36,10 +36,17 @@ impl CursorStyle {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ColorSpace {
-    Srgb,
-    DisplayP3,
+pub(crate) use crate::platform::ColorSpace;
+
+impl From<&Config> for crate::platform::WindowLook {
+    fn from(cfg: &Config) -> Self {
+        Self {
+            colorspace: cfg.window_colorspace,
+            background: cfg.background,
+            background_opacity: cfg.background_opacity,
+            background_blur: cfg.background_blur,
+        }
+    }
 }
 
 pub use crate::terminal::shell_integration::{ShellFeatures, ShellIntegration};
@@ -1348,5 +1355,19 @@ copy-on-select = clipboard
         assert_eq!(c.window_colorspace, ColorSpace::DisplayP3);
         assert_eq!(c.font_family, vec!["SFMono Nerd Font"]);
         assert_eq!(c.font_size, 15.0);
+    }
+
+    #[test]
+    fn window_look_mirrors_the_window_settings() {
+        let (c, errs) = Config::parse(
+            "background = #102030\nbackground-opacity = 0.5\nbackground-blur = 20\nwindow-colorspace = display-p3\n",
+        );
+        assert!(errs.is_empty(), "{errs:?}");
+        let look = crate::platform::WindowLook::from(&c);
+        assert_eq!(look.colorspace, ColorSpace::DisplayP3);
+        assert_eq!(look.background, c.background);
+        assert_eq!(look.background, 0x1020_3000);
+        assert_eq!(look.background_opacity, 0.5);
+        assert_eq!(look.background_blur, 20);
     }
 }

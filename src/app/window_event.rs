@@ -76,7 +76,7 @@ impl App {
                 let sz = s.window.inner_size();
                 s.renderer.resize(sz.width, sz.height);
                 sync_size(s);
-                platform::apply_window_config(&s.window, &s.config);
+                platform::apply_window_config(&s.window, &(&s.config).into());
                 s.window.request_redraw();
             }
 

@@ -3,9 +3,9 @@
 use std::ffi::{c_void, CStr};
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-use crate::keymap::Action;
+use crate::platform::{MenuCommand, PlatformEvent};
 
-use super::app::REOPEN_PROXY;
+use super::app::EVENTS;
 use super::objc::*;
 
 /// A menu entry: one of Litty's own actions (sent to the event loop), an
@@ -13,7 +13,7 @@ use super::objc::*;
 /// equivalents are only given where AppKit must not see the key first;
 /// every other shortcut stays in the (rebindable) keymap.
 enum Item {
-    Litty(&'static str, Action),
+    Litty(&'static str, MenuCommand),
     Native(&'static str, &'static CStr, &'static str, u64),
     Separator,
 }
@@ -25,30 +25,12 @@ const OPT: u64 = 1 << 19;
 const CTRL: u64 = 1 << 18;
 
 /// Actions reachable from the menu; a menu item's tag indexes this list.
-const MENU_ACTIONS: [Action; 17] = [
-    Action::Quit,
-    Action::ToggleSecureInput,
-    Action::NewWindow,
-    Action::NewTab,
-    Action::SplitRight,
-    Action::SplitDown,
-    Action::CloseTab,
-    Action::Copy,
-    Action::Paste,
-    Action::SelectAll,
-    Action::Find,
-    Action::ClearScreen,
-    Action::ZoomIn,
-    Action::ZoomOut,
-    Action::ZoomReset,
-    Action::OpenConfig,
-    Action::CheckUpdate,
-];
+const MENU_ACTIONS: [MenuCommand; 17] = MenuCommand::ALL;
 
 /// The "Secure Keyboard Entry" item, to show its check mark.
 static SECURE_ITEM: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
-fn menu_tag(action: Action) -> isize {
+fn menu_tag(action: MenuCommand) -> isize {
     MENU_ACTIONS.iter().position(|&a| a == action).map_or(-1, |i| i as isize)
 }
 
@@ -59,9 +41,8 @@ pub fn install_menu() {
     extern "C" fn on_menu(_this: Id, _cmd: Id, sender: Id) {
         // SAFETY: `sender` is the NSMenuItem that was chosen.
         let tag = unsafe { msg_send!(sender, c"tag"; -> isize) };
-        let action = usize::try_from(tag).ok().and_then(|i| MENU_ACTIONS.get(i));
-        if let (Some(&action), Some(proxy)) = (action, REOPEN_PROXY.lock().as_ref()) {
-            let _ = proxy.send_event(crate::AppEvent::Menu(action));
+        if let Some(&action) = usize::try_from(tag).ok().and_then(|i| MENU_ACTIONS.get(i)) {
+            EVENTS.emit(PlatformEvent::Menu(action));
         }
     }
 
@@ -72,46 +53,46 @@ pub fn install_menu() {
             vec![
                 Native("About Litty", c"orderFrontStandardAboutPanel:", "", 0),
                 Separator,
-                Litty("Settings…", Action::OpenConfig),
-                Litty("Check for Updates…", Action::CheckUpdate),
-                Litty("Secure Keyboard Entry", Action::ToggleSecureInput),
+                Litty("Settings…", MenuCommand::OpenConfig),
+                Litty("Check for Updates…", MenuCommand::CheckUpdate),
+                Litty("Secure Keyboard Entry", MenuCommand::ToggleSecureInput),
                 Separator,
                 Native("Hide Litty", c"hide:", "h", CMD),
                 Native("Hide Others", c"hideOtherApplications:", "h", CMD | OPT),
                 Native("Show All", c"unhideAllApplications:", "", 0),
                 Separator,
-                Litty("Quit Litty", Action::Quit),
+                Litty("Quit Litty", MenuCommand::Quit),
             ],
         ),
         (
             "Shell",
             vec![
-                Litty("New Window", Action::NewWindow),
-                Litty("New Tab", Action::NewTab),
+                Litty("New Window", MenuCommand::NewWindow),
+                Litty("New Tab", MenuCommand::NewTab),
                 Separator,
-                Litty("Split Right", Action::SplitRight),
-                Litty("Split Down", Action::SplitDown),
+                Litty("Split Right", MenuCommand::SplitRight),
+                Litty("Split Down", MenuCommand::SplitDown),
                 Separator,
-                Litty("Close", Action::CloseTab),
+                Litty("Close", MenuCommand::CloseTab),
             ],
         ),
         (
             "Edit",
             vec![
-                Litty("Copy", Action::Copy),
-                Litty("Paste", Action::Paste),
-                Litty("Select All", Action::SelectAll),
+                Litty("Copy", MenuCommand::Copy),
+                Litty("Paste", MenuCommand::Paste),
+                Litty("Select All", MenuCommand::SelectAll),
                 Separator,
-                Litty("Find…", Action::Find),
-                Litty("Clear Screen", Action::ClearScreen),
+                Litty("Find…", MenuCommand::Find),
+                Litty("Clear Screen", MenuCommand::ClearScreen),
             ],
         ),
         (
             "View",
             vec![
-                Litty("Bigger", Action::ZoomIn),
-                Litty("Smaller", Action::ZoomOut),
-                Litty("Actual Size", Action::ZoomReset),
+                Litty("Bigger", MenuCommand::ZoomIn),
+                Litty("Smaller", MenuCommand::ZoomOut),
+                Litty("Actual Size", MenuCommand::ZoomReset),
                 Separator,
                 Native("Enter Full Screen", c"toggleFullScreen:", "f", CMD | CTRL),
             ],
@@ -169,14 +150,14 @@ pub fn install_menu() {
                     Litty(label, action) => {
                         // Standard macOS shortcuts: Cmd+Q for Quit, Cmd+, for Settings.
                         let key = match action {
-                            Action::Quit => "q",
-                            Action::OpenConfig => ",",
+                            MenuCommand::Quit => "q",
+                            MenuCommand::OpenConfig => ",",
                             _ => "",
                         };
                         new_item(label, sel(c"littyMenu:"), key).inspect(|&it| {
                             msg_send!(it, c"setTarget:", target => Id);
                             msg_send!(it, c"setTag:", menu_tag(action) => isize);
-                            if action == Action::ToggleSecureInput {
+                            if action == MenuCommand::ToggleSecureInput {
                                 SECURE_ITEM.store(it, Ordering::Relaxed);
                             }
                         })

@@ -14,9 +14,6 @@ const TEST_INFRA: &[&str] = &["test_alloc"];
 
 /// `(layer, used crate module, why it is still allowed)`.
 const TOLERATED: &[(&str, &str, &str)] = &[
-    ("platform", "config", "apply_window_config reads Config / ColorSpace; follow-up: a platform-owned WindowLook"),
-    ("platform", "keymap", "hotkeys take keymap::Trigger, the menu dispatches keymap::Action; follow-up: pass key code + mods"),
-    ("platform", "AppEvent", "reopen, menu, hotkey and socket handlers post AppEvent; follow-up: take a Send callback"),
     ("render", "platform", "Renderer::new configures Metal drawables between surface setup and atlas creation"),
 ];
 

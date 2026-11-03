@@ -102,7 +102,7 @@ pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Op
         cfg
     };
 
-    platform::apply_window_config(&window, &cfg);
+    platform::apply_window_config(&window, &(&cfg).into());
     platform::set_dock_icon();
 
     let font_px = (font_pt * window.scale_factor() as f32).round();
@@ -341,6 +341,19 @@ pub(super) fn cursor_is_visible_now(s: &State) -> bool {
     (elapsed % 1000) < 500
 }
 
+/// Grab (or, with `None`, release) the Quick Terminal global hotkey. A key the
+/// platform has no code for releases it and says so.
+pub(super) fn set_quick_terminal_hotkey(trigger: Option<&crate::keymap::Trigger>) {
+    let hotkey = trigger.and_then(|t| {
+        let hotkey = crate::keymap::global_hotkey(t);
+        if hotkey.is_none() {
+            eprintln!("litty: Quick Terminal hotkey: key not supported for a global hotkey");
+        }
+        hotkey
+    });
+    platform::set_global_hotkey(hotkey);
+}
+
 pub(super) fn reload_config(s: &mut State) {
     let old = s.config.clone();
     let new = config::Config::load();
@@ -352,7 +365,7 @@ pub(super) fn reload_config(s: &mut State) {
     grid::set_default_colors(new.foreground, new.background);
     grid::set_palette(&new.palette);
 
-    platform::apply_window_config(&s.window, &new);
+    platform::apply_window_config(&s.window, &(&new).into());
 
     s.renderer.set_bg_opacity(new.background_opacity);
     s.renderer.set_cursor_style(new.cursor_style.shader_id());
@@ -376,7 +389,7 @@ pub(super) fn reload_config(s: &mut State) {
     atlas::set_font_tweaks(new.adjust_cell_width, new.adjust_cell_height, new.font_thicken);
     atlas::set_font_features(&font_features(&new));
     if new.quick_terminal_hotkey != old.quick_terminal_hotkey {
-        platform::set_global_hotkey(new.quick_terminal_hotkey.as_ref());
+        set_quick_terminal_hotkey(new.quick_terminal_hotkey.as_ref());
     }
     let tweaks_changed = (new.adjust_cell_width, new.adjust_cell_height, new.font_thicken, &new.font_features)
         != (old.adjust_cell_width, old.adjust_cell_height, old.font_thicken, &old.font_features);
