@@ -298,6 +298,21 @@ impl Json {
             }
         }
     }
+    pub(super) fn encoded_len(&self) -> usize {
+        fn string_len(s: &str) -> usize {
+            2 + s.bytes().map(|b| match b { 0..=31 => 6, b'"' | b'\\' => 2, _ => 1 }).sum::<usize>()
+        }
+        match self {
+            Self::Null => 4,
+            Self::Bool(true) => 4,
+            Self::Bool(false) => 5,
+            Self::Num(n) => n.len(),
+            Self::Str(s) => string_len(s),
+            Self::Arr(items) => 2 + items.len().saturating_sub(1) + items.iter().map(Self::encoded_len).sum::<usize>(),
+            Self::Obj(items) => 2 + items.len().saturating_sub(1) + items.iter().map(|(k,v)| string_len(k) + 1 + v.encoded_len()).sum::<usize>(),
+        }
+    }
+
     pub fn encode(&self) -> String {
         match self {
             Self::Null => "null".into(),
@@ -347,5 +362,18 @@ mod tests {
         for s in ["-", "01", "1.", "1e", "--1", "[1,]", r#""\uD800""#] {
             assert!(Json::parse(s).is_err(), "{s}");
         }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn budget_length_is_exact_without_allocations() {
+    let controls: String = (0..32).map(char::from).collect();
+    let values = [Json::Null, Json::Bool(true), Json::Bool(false), Json::Num("-2.5e+30".into()),
+        Json::Str(format!("{controls}é😀\\\"")), Json::Arr(vec![]), Json::Obj(vec![]),
+        obj([("\\\"\n鍵", Json::Arr(vec![Json::Null, "❤️".into(), false.into()]))])];
+    for value in values {
+        let expected = value.encode().len();
+        assert_eq!(crate::test_alloc::allocations(|| assert_eq!(value.encoded_len(), expected)), 0);
     }
 }
