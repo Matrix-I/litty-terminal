@@ -50,15 +50,21 @@ function __litty_yo_emit
     set -l payload (printf '%s' "$argv[1]" | command base64 | string join '')
     printf '\e]778;yo;%s\a' "$payload"
 end
-function yo
-    __litty_yo_emit (string join ' ' -- $argv)
+# The trigger word comes from the `ai-trigger` config key; empty means off.
+set -g __litty_trigger yo
+set -q LITTY_AI_TRIGGER; and set __litty_trigger "$LITTY_AI_TRIGGER"
+string match -rq '^[A-Za-z_][A-Za-z0-9_-]*$' -- "$__litty_trigger"; or set __litty_trigger ''
+if test -n "$__litty_trigger"
+    function $__litty_trigger
+        __litty_yo_emit (string join ' ' -- $argv)
+    end
 end
 function __litty_yo_accept
     set -l line (commandline --current-buffer | string collect)
-    if string match -rq '^yo(\s|$)' -- "$line"
+    if test -n "$__litty_trigger"; and string match -rq "^$__litty_trigger(\\s|\$)" -- "$line"
         printf '\r\n%s\r\n' "$line"
         commandline --replace ''
-        __litty_yo_emit (string replace -r '^yo\s*' '' -- "$line")
+        __litty_yo_emit (string replace -r "^$__litty_trigger\\s*" '' -- "$line")
     end
     commandline -f execute
 end

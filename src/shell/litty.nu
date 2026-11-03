@@ -26,9 +26,15 @@ if "cursor" in $litty_features {
 }
 
 
-# Litty intercepts unquoted yo input before Nushell parses punctuation.
-# This function also supports a normally parsed, explicitly quoted invocation.
+# Litty intercepts unquoted trigger input before Nushell parses punctuation.
+# This function also supports a normally parsed, explicitly quoted `yo`. A
+# command name cannot be chosen at runtime, so it exists under its default name
+# only: with another or no trigger configured it hands `yo` to the real command.
 def --env --wrapped yo [...rest: string] {
+    if ($env.LITTY_AI_TRIGGER? | default "yo") != "yo" {
+        ^yo ...$rest
+        return
+    }
     let payload = ($rest | str join ' ' | encode base64)
     print -n $"(char -i 27)]778;yo;($payload)(char bel)"
 }

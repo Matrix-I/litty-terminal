@@ -122,9 +122,9 @@ impl PaneState {
             self.queue.extend_from_slice(bytes);
         }
     }
-    pub fn submitted(&mut self, actual: &str) {
+    pub fn submitted(&mut self, actual: &str, trigger: &str) {
         let suggested = self.suggestion.take();
-        let executed = !actual.trim().is_empty() && query(actual).is_none();
+        let executed = !actual.trim().is_empty() && query(actual, trigger).is_none();
         self.awaiting = suggested.as_ref().is_some_and(|(_, pending)| *pending) && executed;
         self.executed = if self.awaiting {
             Some(actual.into())
@@ -167,9 +167,14 @@ impl PaneState {
         true
     }
 }
-pub fn query(line: &str) -> Option<&str> {
+/// The query of a line that starts with `trigger` followed by whitespace or
+/// nothing; `None` for other lines, and always when `trigger` is empty (off).
+pub fn query<'a>(line: &'a str, trigger: &str) -> Option<&'a str> {
+    if trigger.is_empty() {
+        return None;
+    }
     let line = line.trim();
-    let rest = line.strip_prefix("yo")?;
+    let rest = line.strip_prefix(trigger)?;
     if rest.is_empty() {
         Some("")
     } else if rest.starts_with(char::is_whitespace) {
@@ -481,18 +486,26 @@ mod tests {
     use super::*;
     #[test]
     fn query_boundary() {
-        assert_eq!(query("yo  find x > 2"), Some("find x > 2"));
-        assert_eq!(query("yoyo"), None);
+        assert_eq!(query("yo  find x > 2", "yo"), Some("find x > 2"));
+        assert_eq!(query("yoyo", "yo"), None);
+    }
+    #[test]
+    fn query_follows_the_configured_trigger() {
+        assert_eq!(query("ask list files", "ask"), Some("list files"));
+        assert_eq!(query("yo generator", "ask"), None, "the old word is an ordinary command");
+        assert_eq!(query("yo generator", ""), None, "off never matches");
+        assert_eq!(query("", ""), None);
+        assert_eq!(query("ask", "ask"), Some(""));
     }
     #[test]
     fn edited_pending_command_continues() {
         let mut p = PaneState::default();
         p.suggestion = Some(("ls".into(), true));
-        p.submitted("ls -la");
+        p.submitted("ls -la", "yo");
         assert!(p.awaiting);
         assert_eq!(p.executed.as_deref(), Some("ls -la"));
         p.suggestion = Some(("next".into(), true));
-        p.submitted("");
+        p.submitted("", "yo");
         assert!(!p.awaiting);
     }
     #[test]

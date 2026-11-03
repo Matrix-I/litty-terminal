@@ -32,6 +32,10 @@ pub struct ShellFeatures {
     pub title: bool,
 }
 
+/// What a new shell is started with: how to integrate, which features, and the
+/// AI trigger word its scripts define (empty = AI invocation off).
+pub type ShellSetup = (ShellIntegration, ShellFeatures, String);
+
 const ZSHENV: &str = include_str!("../shell/zshenv");
 const ZSH: &str = include_str!("../shell/litty-integration.zsh");
 const BASH: &str = include_str!("../shell/litty.bash");

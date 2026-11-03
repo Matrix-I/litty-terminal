@@ -133,7 +133,7 @@ pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Op
         rows,
         (cw, ch),
         cwd,
-        Some((cfg.shell_integration, cfg.shell_integration_features)),
+        Some(cfg.shell_setup()),
         waker,
     )?;
     let mut tab = Tab::new(next_id(), pane);
@@ -204,7 +204,7 @@ pub(super) fn spawn_pane(
     rows: usize,
     (cw, ch): (u32, u32),
     cwd: Option<&str>,
-    shell: Option<(crate::config::ShellIntegration, crate::config::ShellFeatures)>,
+    shell: Option<crate::terminal::shell_integration::ShellSetup>,
     waker: &Waker,
 ) -> std::io::Result<Pane> {
     let grid = Arc::new(Mutex::new(Grid::new(cols, rows)));
