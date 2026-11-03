@@ -19,7 +19,7 @@ pub use ui::scrollbar::{scrollbar_thumb, SCROLLBAR_WIDTH};
 use crate::render::atlas::{Atlas, FontSet};
 use crate::terminal::grid::{Grid, Hyperlink};
 use crate::terminal::history::HistorySearch;
-use crate::split::PaneRect;
+use crate::render::PaneRect;
 
 pub struct RenderPane {
     #[allow(dead_code)]
@@ -545,24 +545,23 @@ impl Renderer {
             return None;
         }
         let (cols, _) = self.grid_size();
-        let tab_cols_total = cols.saturating_sub(2).max(1);
+        let tab_cols_total = ui::tab_bar::available_columns(cols);
         let col = ((x_px - self.origin().0 as f64).max(0.0) as u32 / self.atlas.cell_w.max(1)) as usize;
         if col >= tab_cols_total {
             return Some(TabBarAction::NewTab);
         }
         let n = titles.len();
         let mut tab_i = (col * n) / tab_cols_total;
-        let next_start = ((tab_i + 1) * tab_cols_total) / n;
+        let (_, next_start) = ui::tab_bar::span(tab_cols_total, n, tab_i);
         if col >= next_start && tab_i + 1 < n {
             tab_i += 1;
         }
         let tab_i = tab_i.min(n - 1);
-        let c0 = (tab_i * tab_cols_total) / n;
-        let c1 = ((tab_i + 1) * tab_cols_total) / n;
+        let (c0, c1) = ui::tab_bar::span(tab_cols_total, n, tab_i);
         let span = c1.saturating_sub(c0);
 
         // Click close button ('✕') at left corner of tab (c0..=c0+2)
-        if span >= 6 && col <= c0 + 2 {
+        if ui::tab_bar::shows_close(span) && col <= c0 + 2 {
             return Some(TabBarAction::CloseTab(tab_i));
         }
 

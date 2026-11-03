@@ -15,11 +15,10 @@ pub(in crate::render::renderer) fn build(cells: &mut Cells, titles: &[String], a
         *dst = Instance { glyph: 0, fg: INACTIVE_FG, bg: BAR_BG };
     }
 
-    let tab_cols_total = cols.saturating_sub(2).max(1);
+    let tab_cols_total = available_columns(cols);
     let n = titles.len().max(1);
     for (i, title) in titles.iter().enumerate() {
-        let c0 = (i * tab_cols_total) / n;
-        let c1 = ((i + 1) * tab_cols_total) / n;
+        let (c0, c1) = span(tab_cols_total, n, i);
         let span = c1.saturating_sub(c0);
         if span < 4 {
             continue;
@@ -31,7 +30,7 @@ pub(in crate::render::renderer) fn build(cells: &mut Cells, titles: &[String], a
         };
 
         // Left-aligned close button ('✕' at c0 + 1)
-        let left_reserve = if span >= 6 {
+        let left_reserve = if shows_close(span) {
             let close_slot = cells.atlas.slot(cells.queue, '✕' as u32);
             cells.instances[c0 + 1] = Instance { glyph: close_slot as u32, fg: badge_fg, bg: BAR_BG };
             3
@@ -60,19 +59,13 @@ pub(in crate::render::renderer) fn build(cells: &mut Cells, titles: &[String], a
         if avail == 0 {
             continue;
         }
-        let chars: Vec<char> = tab_label(title).chars().collect();
-        let display: Vec<char> = if chars.len() <= avail {
-            chars
-        } else if avail > 1 {
-            let mut v: Vec<char> = chars.into_iter().take(avail - 1).collect();
-            v.push('…');
-            v
-        } else {
-            vec!['…']
-        };
-
-        let start_col = c0 + left_reserve + (avail.saturating_sub(display.len())) / 2;
-        for (k, ch) in display.into_iter().enumerate() {
+        let label = tab_label(title);
+        let count = label.chars().count();
+        let truncated = count > avail;
+        let shown = count.min(avail);
+        let start_col = c0 + left_reserve + (avail.saturating_sub(shown)) / 2;
+        for (k, ch) in label.chars().take(shown).enumerate() {
+            let ch = if truncated && k + 1 == shown { '…' } else { ch };
             let x = start_col + k;
             if x < c1.saturating_sub(badge_reserve) && x < cols {
                 let slot = cells.atlas.slot(cells.queue, ch as u32);
@@ -110,4 +103,26 @@ mod tests {
         assert_eq!(tab_label("shell"), "shell");
         assert_eq!(tab_label("http://x"), "http://x");
     }
+}
+
+/// The two final columns are reserved for New Tab, even in narrow windows.
+pub(in crate::render::renderer) fn available_columns(cols: usize) -> usize { cols.saturating_sub(2).max(1) }
+
+pub(in crate::render::renderer) fn span(available: usize, count: usize, index: usize) -> (usize, usize) {
+    let count = count.max(1);
+    (index * available / count, (index + 1) * available / count)
+}
+
+pub(in crate::render::renderer) fn shows_close(width: usize) -> bool { width >= 6 }
+
+#[cfg(test)]
+#[test]
+fn shared_geometry_preserves_thresholds_and_uneven_spans() {
+    assert_eq!(available_columns(0), 1);
+    assert_eq!(available_columns(82), 80);
+    assert_eq!(span(11, 3, 0), (0, 3));
+    assert_eq!(span(11, 3, 1), (3, 7));
+    assert_eq!(span(11, 3, 2), (7, 11));
+    assert_eq!(span(10, 0, 0), (0, 10));
+    for width in [0, 4, 5, 6, 9, 10] { assert_eq!(shows_close(width), width >= 6); }
 }

@@ -1,7 +1,8 @@
 //! Find box (`Cmd+F` / `Ctrl+Shift+F`) in the top-right corner, below the tab bar.
 
 use super::super::Instance;
-use super::{Cells, DirtyRows};
+use super::{Cells, DirtyRows, Label};
+use std::fmt::Write;
 use crate::render::atlas::GlyphStyle;
 use crate::terminal::grid::char_width;
 use crate::terminal::search::SearchBar;
@@ -71,16 +72,18 @@ pub(in crate::render::renderer) fn build(
     }
 
     // Right side of the input row: match counter and the `.*` regex badge.
+    let mut counter = Label::new();
     let (status, status_fg) = if search.invalid {
-        ("invalid regex".to_string(), ERROR_FG)
+        ("invalid regex", ERROR_FG)
     } else if search.query.is_empty() {
-        (String::new(), COUNT_FG)
+        ("", COUNT_FG)
     } else if search.total == 0 {
-        ("no matches".to_string(), ERROR_FG)
+        ("no matches", ERROR_FG)
     } else {
         let cur = search.current.map_or(0, |c| c + 1);
         let more = if search.total >= crate::terminal::search::MAX_MATCHES { "+" } else { "" };
-        (format!("{cur}/{}{more}", search.total), COUNT_FG)
+        write!(counter, "{cur}/{}{more}", search.total).expect("bounded match counter");
+        (counter.as_str(), COUNT_FG)
     };
     put(1, w - 4, '.', if search.regex { MODE_ON_FG } else { DIM_FG });
     put(1, w - 3, '*', if search.regex { MODE_ON_FG } else { DIM_FG });
@@ -93,27 +96,29 @@ pub(in crate::render::renderer) fn build(
     // Query, showing its tail when it does not fit, followed by the cursor.
     put(1, 2, '❯', PROMPT_FG);
     let room = status_x.saturating_sub(6);
-    let chars: Vec<char> = search.query.chars().collect();
+    let query = search.query.as_str();
     let mut col = 4;
-    if chars.is_empty() {
+    if query.is_empty() {
         let placeholder = if search.regex { "Search (regex)" } else { "Search (literal)" };
         for (i, ch) in placeholder.chars().take(room).enumerate() {
             put(1, 5 + i, ch, DIM_FG);
         }
     } else {
-        let total: usize = chars.iter().map(|&c| char_width(c).max(1)).sum();
+        let total: usize = query.chars().map(|c| char_width(c).max(1)).sum();
         // Keep the tail visible; reserve a cell for the leading ellipsis.
         let budget = if total > room { room.saturating_sub(1) } else { room };
-        let (mut start, mut shown) = (chars.len(), 0);
-        while start > 0 && shown + char_width(chars[start - 1]).max(1) <= budget {
-            start -= 1;
-            shown += char_width(chars[start]).max(1);
+        let (mut start, mut shown) = (query.len(), 0);
+        for (offset, ch) in query.char_indices().rev() {
+            let width = char_width(ch).max(1);
+            if shown + width > budget { break; }
+            start = offset;
+            shown += width;
         }
         if start > 0 {
             put(1, col, '…', DIM_FG);
             col += 1;
         }
-        for &ch in &chars[start..] {
+        for ch in query[start..].chars() {
             put(1, col, ch, QUERY_FG);
             col += char_width(ch).max(1);
         }

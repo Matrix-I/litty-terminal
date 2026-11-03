@@ -8,7 +8,7 @@ use super::{scrollbar_thumb, Instance, RenderPane, Renderer, Uniforms, Viewport}
 use crate::terminal::grid::Hyperlink;
 use crate::terminal::history::HistorySearch;
 use crate::terminal::search::SearchBar;
-use crate::split::PaneRect;
+use crate::render::PaneRect;
 
 /// Instance-buffer layout of one frame.
 #[derive(Clone, Copy)]
