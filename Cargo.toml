@@ -36,6 +36,9 @@ wgpu = { version = "24", default-features = false, features = ["wgsl", "glsl"] }
 # Already built for winit's X11 backend; used for the Quick Terminal key grab.
 x11rb = "0.13"
 
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.release]
 opt-level = 3
 lto = "fat"
