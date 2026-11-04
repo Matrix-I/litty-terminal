@@ -9,9 +9,9 @@ optimization candidates are identified separately from reproduced failures.
 
 | Version | Record |
 | --- | --- |
-| [v0.8.0](./docs/plans/0.8.0.md) | Planned follow-ups |
-| [v0.7.4](./docs/plans/0.7.4.md) | Items 2.1–2.8 implemented on `worktree-fix-enter-ai-atomic-pty-bench` — real-app checks, Linux DSR run and fish script check pending |
-| [v0.7.3](./docs/plans/0.7.3.md) | Implemented on `feat/0.7.3-performance` (6/6, uncommitted) — cross-platform UI verification pending |
+| [v0.8.0](./docs/plans/0.8.0.md) | Release candidate — ships the v0.7.3 and v0.7.4 items below; follow-ups planned |
+| [v0.7.4](./docs/plans/0.7.4.md) | Items 2.1–2.8 implemented, shipped in v0.8.0 (never tagged) — real-app checks, Linux DSR run and fish script check pending |
+| [v0.7.3](./docs/plans/0.7.3.md) | Implemented (6/6), shipped in v0.8.0 (never tagged) — cross-platform UI verification pending |
 | [v0.7.2](./docs/plans/0.7.2.md) | Release record — runtime-confirmed bug, security and platform fixes |
 | [v0.7.1](./docs/plans/0.7.1.md) | Historical release record |
 | [v0.7.0](./docs/plans/0.7.0.md) | Historical release record |
