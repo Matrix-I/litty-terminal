@@ -39,6 +39,35 @@ This will:
    a secret key (`~/.minisign/minisign.key`, or `MINISIGN_SECRET_KEY`) are
    available, sign it as `dist/SHA256SUMS.txt.minisig`.
 
+## Linux Debian Package
+
+On Debian, package an existing Linux x86_64 release executable (requires
+`dpkg-deb` from `dpkg`; tests also use `binutils` and `desktop-file-utils`):
+
+```bash
+bash scripts/linux/package-deb.sh dist/v0.8.0/litty-linux-x86_64 0.8.0 dist/v0.8.0
+bash scripts/linux/test-package-deb.sh dist/v0.8.0/litty-linux-x86_64
+```
+
+The resulting `litty_0.8.0_amd64.deb` includes `/usr/bin/litty`, a desktop launcher,
+and the existing Litty icon. The executable is copied unchanged; build it with
+the release key and glibc 2.34 baseline as described in the [release process](release.md).
+
+## Linux RPM Package
+
+On Fedora, install the packaging tools and wrap the existing x86_64 release
+executable without recompiling it:
+
+```bash
+sudo dnf install rpm-build binutils cpio desktop-file-utils
+bash scripts/linux/package-rpm.sh dist/v0.8.0/litty-linux-x86_64 0.8.0 dist/v0.8.0
+bash scripts/linux/test-package-rpm.sh dist/v0.8.0/litty-linux-x86_64
+```
+
+The output is `litty-0.8.0-1.x86_64.rpm`. The spec preserves executable bytes,
+keeps automatic ELF dependency detection, and declares libraries loaded at runtime.
+It installs the shared Linux desktop entry and icon without custom scriptlets.
+
 ---
 
 Back to the [README](../../README.md).
