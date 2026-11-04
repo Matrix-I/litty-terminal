@@ -1,5 +1,12 @@
 # Yosh (`yoshell.ai`) Analysis & Litty Integration Plan (v0.7.0)
 
+Current Linux status (2026-11-04): the user confirms all features have been tested
+on Linux and run stably. Earlier pending Linux feature checks and Linux-specific
+maintenance proposals below are historical, superseded by the
+[closed Linux validation status](../validation/linux-status-2026-11-04.md).
+Original command results and measurement limits are preserved; this update does
+not supply new benchmark numbers or command logs.
+
 > **Target Release:** v0.7.0 (prepared; see ROADMAP.md)
 
 ## Approved Interaction Decisions (2026-10-31)

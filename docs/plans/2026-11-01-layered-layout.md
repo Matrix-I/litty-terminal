@@ -1,5 +1,12 @@
 # Layered Directory Layout and Platform Symmetry (Phase 4) — Implementation Plan
 
+Current Linux status (2026-11-04): the user confirms all features have been tested
+on Linux and run stably. Earlier pending Linux feature checks and Linux-specific
+maintenance proposals below are historical, superseded by the
+[closed Linux validation status](../validation/linux-status-2026-11-04.md).
+Original command results and measurement limits are preserved; this update does
+not supply new benchmark numbers or command logs.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Regroup the flat `src/` tree into three layers — `src/terminal/` (emulation core), `src/render/` (GPU, glyphs, fonts) and `src/platform/{macos,linux}/` (OS integration with one symmetric API) — using `git mv` plus path fixes, with zero behavior change, so that the dependency rules *terminal → nothing, render → terminal, platform → nothing, app → everything* hold and are enforced by a test.

@@ -1,5 +1,12 @@
 # Linux container verification — 2026-11-01
 
+Current Linux status (2026-11-04): the user confirms all features have been tested
+on Linux and run stably. Earlier pending Linux feature checks and Linux-specific
+maintenance proposals below are historical, superseded by the
+[closed Linux validation status](linux-status-2026-11-04.md).
+Original command results and measurement limits are preserved; this update does
+not supply new benchmark numbers or command logs.
+
 Source baseline: `52fce2f`, plus the working-tree Linux Clippy/Quick Terminal fixes and test
 harness. This was a native **aarch64 Linux** run in Podman on Apple Silicon,
 using Debian 13, Rust 1.99.1, Xvfb/D-Bus, and Mesa software Vulkan. It was not a
