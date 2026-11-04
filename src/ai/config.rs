@@ -265,10 +265,7 @@ impl Config {
             .trim()
             .to_owned();
         if key.is_empty() && provider != Provider::Ollama {
-            return Err(format!(
-                "Set ai-provider and {} (or ai-api-key) before using yo.",
-                provider.env()
-            ));
+            return Err("Set ai-provider and ai-api-key before using yo.".into());
         }
         let url = get("base-url")
             .map(|base| endpoint_url(base, provider))
@@ -310,6 +307,19 @@ fn endpoint_url(base: &str, p: Provider) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn missing_credentials_prompt_uses_config_keys() {
+        for provider in [None, Some("anthropic"), Some("openai")] {
+            let mut settings = Settings::default();
+            if let Some(provider) = provider {
+                settings.set("provider", provider).unwrap();
+            }
+            let error = Config::resolve(&settings, Path::new("/fake"), |_| None, |_| None)
+                .err()
+                .expect("missing credentials must fail");
+            assert_eq!(error, "Set ai-provider and ai-api-key before using yo.");
+        }
+    }
     #[test]
     fn yosh_fallback_and_override() {
         let read = |p: &Path| match p.file_name().unwrap().to_str().unwrap() {
