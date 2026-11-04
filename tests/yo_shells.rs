@@ -18,9 +18,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-const READ_WINDOW: Duration = Duration::from_millis(400);
-/// Nushell writes a default config on first start, so its first read waits longer.
-const NU_STARTUP_WINDOW: Duration = Duration::from_secs(4);
+// A deadline bounds a stalled shell; protocol markers determine completion.
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
 /// Reply to a cursor-position query (`ESC [ 6 n`) as a real terminal would.
 const CURSOR_QUERY: &[u8] = b"\x1b[6n";
 const CURSOR_REPLY: &[u8] = b"\x1b[1;1R";
@@ -28,7 +28,7 @@ const CURSOR_REPLY: &[u8] = b"\x1b[1;1R";
 /// An interactive shell attached to a fresh PTY, killed and cleaned up on drop.
 struct Session {
     child: Child,
-    master: File,
+    master: Option<File>,
     home: PathBuf,
 }
 
@@ -72,55 +72,95 @@ impl Session {
         let child = command.spawn().expect("spawn shell");
         // Close the parent's copies of the slave so the master sees hangup.
         drop(command);
-        Self { child, master: File::from(master), home: home.to_path_buf() }
+        Self { child, master: Some(File::from(master)), home: home.to_path_buf() }
     }
 
     fn write(&mut self, data: &[u8]) {
-        self.master.write_all(data).expect("write to pty");
+        self.master.as_mut().expect("open PTY master").write_all(data).expect("write to pty");
     }
 
-    fn read(&mut self) -> Vec<u8> {
-        self.read_for(READ_WINDOW)
-    }
-
-    /// Collects output until the window elapses, mirroring a timed `select` loop.
-    /// Cursor-position queries are answered so line editors that wait on them proceed.
-    fn read_for(&mut self, window: Duration) -> Vec<u8> {
-        let end = Instant::now() + window;
+    /// Wait for an observable boundary rather than assuming a shell finishes
+    /// within a fixed scheduling window. Cursor queries can span PTY reads.
+    fn read_until(&mut self, description: &str, complete: impl Fn(&[u8]) -> bool) -> Vec<u8> {
+        let end = Instant::now() + READ_TIMEOUT;
         let mut data = Vec::new();
+        let mut scanned = 0;
         let mut buf = [0u8; 65536];
         loop {
-            let left = end.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                break;
+            if complete(&data) {
+                return data;
             }
-            let mut pfd = libc::pollfd { fd: self.master.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-            let timeout = i32::try_from(left.as_millis()).unwrap_or(i32::MAX);
+            let left = end.saturating_duration_since(Instant::now());
+            assert!(!left.is_zero(), "timeout waiting for {description}: {}", text(&data));
+            let mut pfd = libc::pollfd {
+                fd: self.master.as_ref().expect("open PTY master").as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let timeout = i32::try_from(left.as_millis().max(1)).unwrap_or(i32::MAX);
             // SAFETY: `pfd` is a valid pollfd and nfds is 1.
             let ready = unsafe { libc::poll(&mut pfd, 1, timeout) };
-            if ready < 0 && Error::last_os_error().kind() == ErrorKind::Interrupted {
+            if ready < 0 {
+                let error = Error::last_os_error();
+                if error.kind() == ErrorKind::Interrupted {
+                    continue;
+                }
+                panic!("poll while waiting for {description}: {error}");
+            }
+            if ready == 0 {
                 continue;
             }
-            if ready <= 0 {
-                break;
-            }
-            match self.master.read(&mut buf) {
-                Ok(0) | Err(_) => break,
+            match self.master.as_mut().expect("open PTY master").read(&mut buf) {
+                Ok(0) => panic!("PTY closed while waiting for {description}: {}", text(&data)),
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) => panic!("PTY read while waiting for {description}: {error}: {}", text(&data)),
                 Ok(n) => {
+                    assert!(
+                        data.len() + n <= MAX_CAPTURE_BYTES,
+                        "excess output waiting for {description}"
+                    );
                     data.extend_from_slice(&buf[..n]);
-                    for _ in buf[..n].windows(CURSOR_QUERY.len()).filter(|w| *w == CURSOR_QUERY) {
-                        self.write(CURSOR_REPLY);
+                    while scanned + CURSOR_QUERY.len() <= data.len() {
+                        if data[scanned..].starts_with(CURSOR_QUERY) {
+                            self.write(CURSOR_REPLY);
+                        }
+                        scanned += 1;
                     }
                 }
             }
         }
-        data
+    }
+
+    /// A following shell command is an ordered barrier: any prompt redraws
+    /// from the AI action must precede its execution marker.
+    fn read_ai_query(&mut self) -> Vec<u8> {
+        let mut output = self.read_until("complete AI payload", ai_query_ready);
+        self.write(b":\r");
+        let barrier = self.read_command();
+        let execution = barrier.windows(5).position(|w| w == b"133;C").expect("barrier execution");
+        output.extend_from_slice(&barrier[..execution]);
+        output
+    }
+
+    fn read_command(&mut self) -> Vec<u8> {
+        self.read_until("command completion and next prompt", |data| {
+            let Some(start) = data.windows(5).position(|w| w == b"133;C") else {
+                return false;
+            };
+            let rest = &data[start..];
+            let Some(done) = rest.windows(5).position(|w| w == b"133;D") else {
+                return false;
+            };
+            has(&rest[done..], b"133;B")
+        })
     }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.child.kill();
+        // Release the terminal before waiting for child-side tty teardown.
+        drop(self.master.take());
         let _ = self.child.wait();
         let _ = fs::remove_dir_all(&self.home);
     }
@@ -136,6 +176,15 @@ fn has(data: &[u8], needle: &[u8]) -> bool {
 
 fn text(data: &[u8]) -> String {
     String::from_utf8_lossy(data).into_owned()
+}
+
+fn ai_query_ready(data: &[u8]) -> bool {
+    let marker = b"\x1b]778;yo;";
+    let Some(start) = data.windows(marker.len()).position(|w| w == marker) else {
+        return false;
+    };
+    let rest = &data[start + marker.len()..];
+    rest.contains(&0x07)
 }
 
 fn which(name: &str) -> Option<PathBuf> {
@@ -222,7 +271,9 @@ fn launch(shell: &str, env: &[(&str, &Path)]) -> Option<(Session, Vec<u8>)> {
     };
 
     let mut session = Session::spawn(&binary, &args, &home, &extra_env);
-    let initial = session.read_for(if shell == "nu" { NU_STARTUP_WINDOW } else { READ_WINDOW });
+    let initial = session.read_until("integration startup and prompt", |data| {
+        (has(data, b"778;init\x07") || has(data, b"778;init;direct\x07")) && has(data, b"133;B")
+    });
     assert!(has(&initial, b"778;init"), "{shell}: {}", text(&initial));
     Some((session, initial))
 }
@@ -234,15 +285,20 @@ fn run(shell: &str) {
     let direct = has(&initial, b"778;init;direct");
     let output = if direct {
         session.write(format!("yo {query}").as_bytes());
-        session.read();
+        session.read_until("typed query", |data| has(data, query.as_bytes()));
         // Simulate Litty's direct interception before it forwards Enter.
         session.write(b"\x05\x15\r");
-        let output = session.read();
+        // Nushell redraws prompt marks while handling individual editing keys.
+        // Execute a portable barrier after Enter so repaint cannot consume a
+        // prompt left over from clearing the original line.
+        session.write(b"echo LITTY_CLEAR_DONE\r");
+        let output = session.read_command();
+        assert!(has(&output, b"LITTY_CLEAR_DONE"), "{shell}: {}", text(&output));
         assert!(!has(&output, b"SHOULD_NOT_EXECUTE\r\n"), "{shell}: {}", text(&output));
         output
     } else {
         session.write(format!("yo {query}\r").as_bytes());
-        let output = session.read();
+        let output = session.read_ai_query();
         let marker: &[u8] = b"\x1b]778;yo;";
         let start = output
             .windows(marker.len())
@@ -266,7 +322,7 @@ fn run(shell: &str) {
 
     // The private repaint chord must emit prompt-ready, not insert literal escape text.
     session.write(b"\x1b[24;8~");
-    let repaint = session.read();
+    let repaint = session.read_until("repainted prompt", |data| has(data, b"133;B"));
     assert!(has(&repaint, b"133;B"), "{shell}: {}", text(&repaint));
 
     // Prefill alone cannot execute. An explicit Enter executes after edits.
@@ -275,13 +331,13 @@ fn run(shell: &str) {
     } else {
         session.write(b"printf AI_TEST");
     }
-    let prefill = session.read();
+    let prefill = session.read_until("editable prefill", |data| has(data, b"AI_TEST"));
     assert!(!has(&prefill, b"133;C"), "{shell}: {}", text(&prefill));
     session.write(b"_EDITED\r");
-    let executed = session.read();
+    let executed = session.read_command();
     assert!(has(&executed, b"AI_TEST_EDITED") && has(&executed, b"133;C"), "{shell}: {}", text(&executed));
     session.write(b"printf NORMAL_TEST\r");
-    let normal = session.read();
+    let normal = session.read_command();
     assert!(has(&normal, b"NORMAL_TEST") && has(&normal, b"133;C"), "{shell}: {}", text(&normal));
 }
 
@@ -343,14 +399,14 @@ fn run_without_yo_trigger(shell: &str, trigger: &str) {
     let Some((mut session, initial)) = launch(shell, &env) else { return };
 
     session.write(b"yo generator\r");
-    let output = session.read();
+    let output = session.read_command();
     assert!(has(&output, b"STUB_YO_RECEIVED generator"), "{shell}/{trigger:?}: {}", text(&output));
     assert!(!has(&output, b"778;yo;"), "{shell}/{trigger:?}: {}", text(&output));
 
     // Shells that edit the line themselves also honour the renamed word.
     if !trigger.is_empty() && !has(&initial, b"778;init;direct") {
         session.write(format!("{trigger} list files\r").as_bytes());
-        let output = session.read();
+        let output = session.read_ai_query();
         let marker: &[u8] = b"\x1b]778;yo;";
         let start = output
             .windows(marker.len())
@@ -400,4 +456,15 @@ fn disabled_trigger_fish() {
 #[test]
 fn disabled_trigger_nu() {
     run_without_yo_trigger("nu", "");
+}
+
+#[test]
+fn ai_capture_includes_a_late_duplicate_prompt() {
+    let home = StubYo::new("capture");
+    // The second prompt is withheld until the harness sends its barrier.
+    // This forces it into a later read without sleeps or scheduler assumptions.
+    let script = "stty -echo; printf '\\033]778;yo;eA==\\007\\033]133;B\\007'; read -r barrier; printf '\\033]133;B\\007\\033]133;C\\007\\033]133;D;0\\007\\033]133;B\\007'";
+    let mut session = Session::spawn(Path::new("/bin/sh"), &["-c".into(), script.into()], &home.0, &[]);
+    let output = session.read_ai_query();
+    assert_eq!(count(&output, b"133;B"), 2, "{}", text(&output));
 }
