@@ -173,7 +173,7 @@ say so under **Known limitations** (users must update manually).
 
    ```bash
    gh release create "$VERSION" \
-     --title "Litty $VERSION" \
+     --title "Litty $VERSION ⚡" \
      --notes-file "$OUT/RELEASE_NOTES.md" \
      "$OUT"/Litty.dmg "$OUT"/Litty-macos-aarch64.zip "$OUT"/litty-macos-aarch64 \
      "$OUT"/litty-linux-x86_64 "$OUT"/litty-linux-x86_64.tar.gz \
@@ -211,8 +211,11 @@ the branch back into `main` afterwards.
 
 ## Release notes template
 
+Put ⚡ after the version in the GitHub release title and before `Litty` in
+the first heading of the release notes.
+
 ````markdown
-# Litty vX.Y.Z
+# ⚡ Litty vX.Y.Z
 
 <one-paragraph summary of the release theme>
 
