@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Litty Terminal
+Comment=GPU terminal emulator
+Exec=/usr/bin/litty
+TryExec=/usr/bin/litty
+Icon=litty
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupNotify=false

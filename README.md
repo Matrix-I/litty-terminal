@@ -31,7 +31,7 @@ on Linux and run stably, as [confirmed by the user on 2026-11-04](docs/validatio
 
 ## 🚀 Quick Start
 
-Download the [latest release](https://github.com/Matrix-I/litty-terminal/releases/latest), then follow the [installation guide](docs/guide/installation.md). To build from source:
+Download the [latest release](https://github.com/Matrix-I/litty-terminal/releases/latest), then follow the [installation guide](docs/guide/installation.md). On Debian/Ubuntu, install the `.deb` with `sudo apt install ./litty_0.8.0_amd64.deb` to add Litty to your applications menu with its icon. Fedora users can install `litty-0.8.0-1.x86_64.rpm` with `sudo dnf install ./litty-0.8.0-1.x86_64.rpm`. To build from source:
 
 ```bash
 git clone https://github.com/Matrix-I/litty-terminal.git

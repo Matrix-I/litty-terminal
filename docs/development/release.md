@@ -56,7 +56,10 @@ scripts/pre-release-check.sh
 ```
 
 - `scripts/pre-release-check.sh` must exit 0. It writes
-  `scripts/release-test-report.md`; copy it to `dist/vX.Y.Z/VERIFICATION.md`.
+  `scripts/release-test-report.md`; archive it in
+  `docs/validation/release-X.Y.Z.md` and link that committed file in the release
+  notes. Keep packaging reports in `docs/validation/` too; do not upload reports
+  as release assets.
 - Update the README badges **idle CPU**, **idle RAM** and **binary size**, and
   the Litty row of `docs/development/performance.md`. The suite checks budgets
   only and does not report idle CPU or idle RAM, so measure those yourself
@@ -65,7 +68,7 @@ scripts/pre-release-check.sh
   1,000,000, one decimal). If a figure could not be measured, leave the old
   value only after noting it under **Known limitations**. Fold the change into
   the release commit (amend before tagging, or a `docs(readme)` commit).
-- Fill the release commit SHA in `RELEASE_NOTES.md` and `VERIFICATION.md`
+- Fill the release commit SHA in `RELEASE_NOTES.md` and the archived validation report
   only after the last amend, since amending changes the SHA. If code changed
   after the checks ran, rerun them on the final commit.
 - Linux runtime smoke test (when Docker/Podman is available):
@@ -98,8 +101,37 @@ Cross-compiled with `cargo-zigbuild` (`brew install zig cargo-zigbuild`):
 LITTY_MINISIGN_PUBKEY="$(tail -n 1 resources/minisign.pub)" \
   cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.34
 cp target/x86_64-unknown-linux-gnu/release/litty "$OUT/litty-linux-x86_64"
-tar -C "$OUT" -czf "$OUT/litty-linux-x86_64.tar.gz" litty-linux-x86_64
 ```
+
+### Debian package (amd64)
+
+On Debian (or in an isolated Debian container with `dpkg`, `binutils`, and
+`desktop-file-utils`), package the same executable without rebuilding it:
+
+```bash
+bash scripts/linux/package-deb.sh "$OUT/litty-linux-x86_64" "${VERSION#v}" "$OUT"
+bash scripts/linux/test-package-deb.sh "$OUT/litty-linux-x86_64"
+```
+
+Install the resulting `.deb` in a clean amd64 Debian test environment with
+`apt install ./litty_<version>_amd64.deb`. Launch the installed desktop entry and
+verify a terminal window opens; remove it with `apt remove litty` and verify the
+launcher/icon are removed. Record any missing GUI validation explicitly.
+
+### RPM package (x86_64)
+
+On Fedora with `rpm-build`, `binutils`, `cpio`, and `desktop-file-utils`:
+
+```bash
+bash scripts/linux/package-rpm.sh "$OUT/litty-linux-x86_64" "${VERSION#v}" "$OUT"
+bash scripts/linux/test-package-rpm.sh "$OUT/litty-linux-x86_64"
+```
+
+Test installation/removal through DNF in a clean Fedora amd64 environment and
+exercise the installed desktop launcher. Preserve and report any GUI validation
+gap. This RPM wraps the existing executable; do not disable automatic dependency
+detection or modify/strip the binary during packaging. The RPM is not RPM-signed;
+its integrity is covered by the signed release checksum manifest.
 
 ### Verify the artifacts
 
@@ -121,7 +153,9 @@ result blocks the release.
 
 ### Required asset names
 
-The updater (`asset_candidates` in `src/update.rs`) looks for exactly these:
+The release uses these asset names. The updater selects the standalone Linux
+executable or macOS app/standalone build; `.deb` and `.rpm` are manual
+package-manager installs:
 
 | Asset | Purpose |
 |---|---|
@@ -129,16 +163,23 @@ The updater (`asset_candidates` in `src/update.rs`) looks for exactly these:
 | `litty-macos-aarch64` | macOS standalone binary (updater, CLI install) |
 | `Litty.dmg` | macOS drag-and-drop installer (manual download) |
 | `litty-linux-x86_64` | Linux binary (updater) |
-| `litty-linux-x86_64.tar.gz` | Linux archive (manual download) |
+| `litty_<version>_amd64.deb` | Debian/Ubuntu package with desktop launcher and icon |
+| `litty-<version>-1.x86_64.rpm` | Fedora RPM with desktop launcher and icon |
 | `SHA256SUMS.txt` | Checksums of every asset above |
 | `SHA256SUMS.txt.minisig` / `.asc` | Signature over the checksums (see §5) |
-| `VERIFICATION.md` | Pre-release suite report |
+
+Keep this list to eight uploaded assets: three installers (`.dmg`, `.deb`,
+`.rpm`), three updater builds (macOS app ZIP, macOS standalone, Linux standalone),
+and the checksum manifest plus signature. The app ZIP and standalone builds are
+required by existing updater clients, even though installers are the primary
+manual downloads. Do not also publish a Linux archive containing the same binary.
+GitHub adds two source archives automatically; those are not uploaded assets.
 
 ## 5. Checksums and signing
 
 ```bash
 (cd "$OUT" && shasum -a 256 Litty.dmg Litty-macos-aarch64.zip litty-macos-aarch64 \
-  litty-linux-x86_64 litty-linux-x86_64.tar.gz > SHA256SUMS.txt)
+  litty-linux-x86_64 "litty_${VERSION#v}_amd64.deb" "litty-${VERSION#v}-1.x86_64.rpm" > SHA256SUMS.txt)
 (cd "$OUT" && shasum -a 256 -c SHA256SUMS.txt)
 ```
 
@@ -176,8 +217,8 @@ say so under **Known limitations** (users must update manually).
      --title "Litty $VERSION ⚡" \
      --notes-file "$OUT/RELEASE_NOTES.md" \
      "$OUT"/Litty.dmg "$OUT"/Litty-macos-aarch64.zip "$OUT"/litty-macos-aarch64 \
-     "$OUT"/litty-linux-x86_64 "$OUT"/litty-linux-x86_64.tar.gz \
-     "$OUT"/SHA256SUMS.txt "$OUT"/VERIFICATION.md
+     "$OUT"/litty-linux-x86_64 "$OUT"/litty_${VERSION#v}_amd64.deb "$OUT"/litty-${VERSION#v}-1.x86_64.rpm \
+     "$OUT"/SHA256SUMS.txt
    ```
 
    Add `"$OUT"/SHA256SUMS.txt.minisig` when signed; add `--prerelease` for
@@ -250,7 +291,7 @@ Checked on <platform>; release commit <short sha>:
 
 - **macOS Apple Silicon:** `Litty.dmg` or `Litty-macos-aarch64.zip`.
 - **macOS standalone executable:** `litty-macos-aarch64`.
-- **Linux x86_64:** `litty-linux-x86_64` or its `.tar.gz`; requires glibc 2.34+.
+- **Linux x86_64:** `litty-linux-x86_64`; requires glibc 2.34+.
 - Verify integrity with `SHA256SUMS.txt`.
 
 ## Known limitations
