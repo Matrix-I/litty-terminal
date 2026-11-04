@@ -24,7 +24,8 @@
 - **Automatic shell integration** (zsh, bash, fish, nushell, elvish) and the **Kitty keyboard / graphics protocols**, Sixel and full Unicode support.
 - **`yo` AI shell assistant** with multiple providers, including local Ollama.
 
-See [Features](docs/guide/features.md) for the full list.
+See [Features](docs/guide/features.md) for the full list. All features have been tested
+on Linux and run stably, as [confirmed by the user on 2026-11-04](docs/validation/linux-status-2026-11-04.md).
 
 ---
 
