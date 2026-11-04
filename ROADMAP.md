@@ -9,9 +9,9 @@ optimization candidates are identified separately from reproduced failures.
 
 | Version | Record |
 | --- | --- |
-| [v0.8.0](./docs/plans/0.8.0.md) | Release candidate — ships the v0.7.3 and v0.7.4 items below; follow-ups planned |
-| [v0.7.4](./docs/plans/0.7.4.md) | Items 2.1–2.8 implemented, shipped in v0.8.0 (never tagged) — real-app checks, Linux DSR run and fish script check pending |
-| [v0.7.3](./docs/plans/0.7.3.md) | Implemented (6/6), shipped in v0.8.0 (never tagged) — cross-platform UI verification pending |
+| [v0.8.0](./docs/plans/0.8.0.md) | Release record (2026-11-04) — ships the v0.7.3 and v0.7.4 items; open follow-ups are listed in the record |
+| [v0.7.4](./docs/plans/0.7.4.md) | Historical record — items 2.1–2.8 shipped in v0.8.0 (never tagged); real-app checks, Linux DSR run and fish script check still pending |
+| [v0.7.3](./docs/plans/0.7.3.md) | Historical record — 6/6 shipped in v0.8.0 (never tagged); cross-platform UI verification still pending |
 | [v0.7.2](./docs/plans/0.7.2.md) | Release record — runtime-confirmed bug, security and platform fixes |
 | [v0.7.1](./docs/plans/0.7.1.md) | Historical release record |
 | [v0.7.0](./docs/plans/0.7.0.md) | Historical release record |
