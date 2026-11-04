@@ -570,6 +570,9 @@ mod integration_tests {
                         Err(e) => panic!("{e}"),
                     }
                 };
+                // The listener is non-blocking and accepted streams inherit that
+                // flag on macOS, so a read racing the client's write would fail.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(30)))
                     .unwrap();

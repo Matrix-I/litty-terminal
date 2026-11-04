@@ -174,6 +174,40 @@ fn has(data: &[u8], needle: &[u8]) -> bool {
     data.windows(needle.len()).any(|window| window == needle)
 }
 
+/// Removes CSI, OSC and two-byte escape sequences. Nushell colours each token
+/// of the line it echoes, so typed text never appears contiguously in raw output.
+fn strip_ansi(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] != 0x1b {
+            out.push(data[i]);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        match data.get(i) {
+            Some(b'[') => {
+                i += 1;
+                while i < data.len() && !(0x40..=0x7e).contains(&data[i]) {
+                    i += 1;
+                }
+                i += 1;
+            }
+            Some(b']') => {
+                i += 1;
+                while i < data.len() && data[i] != 0x07 && !(data[i] == 0x1b && data.get(i + 1) == Some(&b'\\')) {
+                    i += 1;
+                }
+                i += if data.get(i) == Some(&0x07) { 1 } else { 2 };
+            }
+            Some(_) => i += 1,
+            None => {}
+        }
+    }
+    out
+}
+
 fn text(data: &[u8]) -> String {
     String::from_utf8_lossy(data).into_owned()
 }
@@ -285,7 +319,7 @@ fn run(shell: &str) {
     let direct = has(&initial, b"778;init;direct");
     let output = if direct {
         session.write(format!("yo {query}").as_bytes());
-        session.read_until("typed query", |data| has(data, query.as_bytes()));
+        session.read_until("typed query", |data| has(&strip_ansi(data), query.as_bytes()));
         // Simulate Litty's direct interception before it forwards Enter.
         session.write(b"\x05\x15\r");
         // Nushell redraws prompt marks while handling individual editing keys.
@@ -467,4 +501,11 @@ fn ai_capture_includes_a_late_duplicate_prompt() {
     let mut session = Session::spawn(Path::new("/bin/sh"), &["-c".into(), script.into()], &home.0, &[]);
     let output = session.read_ai_query();
     assert_eq!(count(&output, b"133;B"), 2, "{}", text(&output));
+}
+
+#[test]
+fn strip_ansi_joins_highlighted_tokens() {
+    let raw = b"\x1b7\x1b[1;36myo\x1b[0m \x1b[32mfind\x1b[0m\x1b]133;P;k=r\x1b\\\x1b]778;x\x07 a\x1b[1;98H\x1b8";
+    assert_eq!(strip_ansi(raw), b"yo find a");
+    assert_eq!(strip_ansi(b"ab\x1b"), b"ab");
 }
