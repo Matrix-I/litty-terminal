@@ -20,7 +20,7 @@ use linux as imp;
 // on one platform fails that platform's build instead of silently vanishing.
 pub(crate) use imp::{
     activate_app, add_tabbed_window, alert, alert_choice, apply_window_config, beep, caps_lock,
-    cleanup_window, clipboard_string, clipboard_write_string, close_progress_dialog,
+    cleanup_window, clipboard_string, clipboard_write_string, init_clipboard, primary_string, primary_write_string, close_progress_dialog,
     configure_layer_drawables, confirm, hide_app, install_menu, listen_for_toggle,
     register_reopen_handler, release_free_memory, select_native_tab, set_dock_icon,
     set_global_hotkey, set_secure_input, set_secure_input_menu_state, set_tabbing_allowed,

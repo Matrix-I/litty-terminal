@@ -32,3 +32,14 @@ pub fn clipboard_write_string(s: &str) -> bool {
         msg_send!(pb, c"setString:forType:", str_val => Id, str_type => Id; -> bool)
     }
 }
+
+/// Wayland-only; macOS has no PRIMARY selection or clipboard connection to set up.
+pub fn init_clipboard(_window: &winit::window::Window) {}
+
+pub fn primary_string() -> Option<String> {
+    None
+}
+
+pub fn primary_write_string(_s: &str) -> bool {
+    false
+}

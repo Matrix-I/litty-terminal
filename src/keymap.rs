@@ -211,7 +211,10 @@ fn resolve_named(platform: Platform, key: NamedKey, m: Mods) -> Option<Action> {
             let zoom = m.only(false, false, true, true) || (!mac && m.only(true, false, true, false));
             zoom.then_some(Action::ToggleSplitZoom)
         }
-        NamedKey::Tab if m.ctrl && !m.alt && !m.sup => Some(if m.shift { Action::PrevTab } else { Action::NextTab }),
+        // GNOME Terminal / xterm compatibility on Linux.
+        NamedKey::Insert if !mac && m.only(true, false, false, false) => Some(Action::Copy),
+        NamedKey::Insert if !mac && m.only(false, false, true, false) => Some(Action::Paste),
+        NamedKey::Tab if m.ctrl && !m.alt && !m.sup =>Some(if m.shift { Action::PrevTab } else { Action::NextTab }),
         NamedKey::PageUp if m.ctrl && !m.shift && !m.alt => Some(Action::PrevTab),
         NamedKey::PageDown if m.ctrl && !m.shift && !m.alt => Some(Action::NextTab),
         NamedKey::PageUp if m.shift && !m.sup => Some(Action::ScrollPageUp),
@@ -1086,6 +1089,18 @@ mod tests {
 
     fn linux(key: &Key, m: Mods) -> Option<Action> {
         resolve(Platform::Linux, key, m, false)
+    }
+
+    #[test]
+    fn linux_insert_copy_paste_matches_gnome_terminal() {
+        let key = Key::Named(NamedKey::Insert);
+        let ctrl = Mods { ctrl: true, ..Mods::default() };
+        let shift = Mods { shift: true, ..Mods::default() };
+        assert_eq!(resolve(Platform::Linux, &key, ctrl, false), Some(Action::Copy));
+        assert_eq!(resolve(Platform::Linux, &key, shift, false), Some(Action::Paste));
+        assert_eq!(resolve(Platform::MacOs, &key, ctrl, false), None);
+        assert_eq!(resolve(Platform::MacOs, &key, shift, false), None);
+        assert_eq!(resolve(Platform::Linux, &key, Mods::default(), false), None);
     }
 
     #[test]

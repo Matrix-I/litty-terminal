@@ -36,6 +36,8 @@ wgpu = { version = "24", default-features = false, features = ["wgsl", "glsl", "
 wgpu = { version = "24", default-features = false, features = ["wgsl", "glsl"] }
 # Already built for winit's X11 backend; used for the Quick Terminal key grab.
 x11rb = "0.13"
+# Wayland clipboard on the app's own connection (no wl-copy window flash on GNOME).
+smithay-clipboard = "0.7"
 
 [profile.dev]
 debug = "line-tables-only"
