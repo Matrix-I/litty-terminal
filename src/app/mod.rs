@@ -27,7 +27,8 @@ use tabs::hide_or_exit_last_window;
 use tabs::open_fresh_tab;
 use terminal_io::handle_terminal_requests;
 use window::apply_system_appearance;
-use tab_tearoff::restore_tab;
+use tab_tearoff::{adopt_dropped_tab, follow_torn_window, restore_tab, set_pointer_from_screen, tab_bar_hit_x};
+use tabs::drag_tab;
 use window::create_window;
 use window::create_window_for_tab;
 use window::cursor_blinks;
@@ -146,6 +147,87 @@ impl App {
         }
     }
 
+    /// Carry on each tab drag whose pointer is delivered to a window that does not hold
+    /// the tab: move the holder's drag, and merge a torn-off tab into a tab bar the
+    /// pointer has entered.
+    fn drive_dragged_tabs(&mut self) {
+        let pings: Vec<_> = self.windows.iter_mut().filter_map(|s| s.requests.drag_ping.take().map(|at| (s.window.id(), at))).collect();
+        for (owner, at) in pings {
+            self.drive_dragged_tab(owner, at);
+        }
+    }
+
+    fn drive_dragged_tab(&mut self, owner: WindowId, at: winit::dpi::LogicalPosition<f64>) {
+        let holder = self.window_mut(owner).and_then(|o| o.pointer.drag_holder).unwrap_or(owner);
+        let Some(h) = self.window_mut(holder) else {
+            // The holder was closed under the drag.
+            if let Some(o) = self.window_mut(owner) {
+                o.pointer.drag_holder = None;
+            }
+            return;
+        };
+        let Some(drag) = h.pointer.tab_drag.as_ref() else {
+            if let Some(o) = self.window_mut(owner) {
+                o.pointer.drag_holder = None;
+            }
+            return;
+        };
+        let (torn, detached) = (drag.follower(), drag.is_detached());
+        if holder != owner {
+            set_pointer_from_screen(h, at);
+            if detached {
+                follow_torn_window(h);
+            } else {
+                drag_tab(h);
+            }
+        }
+        if let Some(torn) = torn {
+            self.merge_into_tab_bar(owner, holder, torn, at);
+        }
+    }
+
+    /// The tab of the torn-off window `torn`, held by the drag of `holder`, entered the tab
+    /// bar of a window under the pointer `at`: move it there, close `torn`, and carry the
+    /// drag on in that window, as in Chrome.
+    fn merge_into_tab_bar(&mut self, owner: WindowId, holder: WindowId, torn: WindowId, at: winit::dpi::LogicalPosition<f64>) {
+        let target = self.windows.iter().find_map(|w| {
+            (w.window.id() != torn).then(|| tab_bar_hit_x(w, at).map(|x| (w.window.id(), x))).flatten()
+        });
+        let (Some((target, x)), Some(torn_at)) = (target, self.windows.iter().position(|w| w.window.id() == torn)) else {
+            return;
+        };
+        let mut emptied = self.windows.remove(torn_at);
+        let Some(drag) = self.window_mut(holder).and_then(|h| h.pointer.tab_drag.take()) else {
+            self.windows.insert(torn_at, emptied);
+            return;
+        };
+        let held = drag.id();
+        let Some(dest) = self.window_mut(target) else { return };
+        let adopted = adopt_dropped_tab(dest, &mut emptied, x, held);
+        if let Some((_, grab_col)) = adopted {
+            dest.pointer.tab_drag = Some(drag.resume(grab_col));
+            set_pointer_from_screen(dest, at);
+            drag_tab(dest);
+        }
+        if let Some(o) = self.window_mut(owner) {
+            o.pointer.drag_holder = (target != owner && adopted.is_some()).then_some(target);
+        }
+        // Dropping the emptied state closes its window; its shells live on in the target.
+        emptied.renderer.shrink_drawables();
+        drop(emptied);
+        platform::release_free_memory();
+    }
+
+    /// The button of a drag held by another window was released: the tab slides into its slot.
+    fn end_forwarded_drags(&mut self) {
+        let holders: Vec<_> = self.windows.iter_mut().filter_map(|s| s.requests.drag_release.take()).collect();
+        for holder in holders {
+            if let Some(h) = self.window_mut(holder) {
+                end_tab_drag(h);
+            }
+        }
+    }
+
     /// Apply what event handlers asked for: quit, open new windows, close emptied ones.
     fn process_window_requests(&mut self, event_loop: &ActiveEventLoop) {
         if self.windows.iter_mut().any(|s| std::mem::take(&mut s.requests.reload_config)) {
@@ -197,8 +279,10 @@ impl App {
             }
         }
 
+        self.drive_dragged_tabs();
         self.open_torn_off_tabs(event_loop);
         self.move_torn_windows();
+        self.end_forwarded_drags();
 
         while let Some(pos) = self.windows.iter().position(|s| s.requests.close) {
             if self.windows.len() > 1 {

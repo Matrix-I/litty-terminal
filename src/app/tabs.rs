@@ -513,6 +513,16 @@ impl TabDrag {
         Self { id, start_x: Some(x), grab_col, detach: Detach::No, swap: None }
     }
 
+    /// The drag continues in a window whose tab bar the tab entered, held `grab_col` columns
+    /// from the tab's left edge. The press threshold was passed long ago.
+    pub(super) fn resume(mut self, grab_col: f64) -> Self {
+        self.start_x = None;
+        self.grab_col = grab_col;
+        self.detach = Detach::No;
+        self.swap = None;
+        self
+    }
+
     /// Session ID of the held tab.
     pub(super) fn id(&self) -> u64 {
         self.id
@@ -703,6 +713,17 @@ mod reorder_tests {
             assert_eq!(swaps, 3, "dir={dir}");
             assert_eq!(at, if dir == 1 { 3 } else { 0 });
         }
+    }
+
+    #[test]
+    fn a_resumed_drag_is_attached_and_active_at_once() {
+        let mut drag = TabDrag::new(7, 100.0, 3.0);
+        drag.mark_detached();
+        assert!(drag.is_detached());
+        let mut drag = drag.resume(9.0);
+        assert!(!drag.is_detached(), "the tab sits in a tab bar again");
+        assert_eq!((drag.id(), drag.grab_col), (7, 9.0));
+        assert!(drag.update(100.0, 1.0), "no press threshold is applied again");
     }
 
     #[test]
