@@ -11,6 +11,10 @@ use crate::event::AppEvent;
 use crate::terminal::grid::Grid;
 use crate::terminal::history;
 
+/// Repetitions of a micro-measurement; the fastest pass is reported so that
+/// tight budgets are not tripped by one-off scheduler noise.
+const BEST_OF_PASSES: usize = 10;
+
 #[derive(Debug, Clone)]
 pub enum BenchCommand {
     OpenTabInLastWindow,
@@ -455,23 +459,27 @@ pub fn run_latency_benchmark() -> LatencyMetrics {
     let mut chars = Vec::new();
     let mut levels = Vec::new();
     let mut order = Vec::new();
-    let t_bidi = Instant::now();
-    for r in 0..500 {
-        bidi_grid.bidi_order(r, &mut chars, &mut levels, &mut order);
+    // Best of several passes: the budget guards the code's cost, not scheduler noise.
+    let mut dur_bidi_ms = f64::MAX;
+    for _ in 0..BEST_OF_PASSES {
+        let t_bidi = Instant::now();
+        for r in 0..500 {
+            bidi_grid.bidi_order(r, &mut chars, &mut levels, &mut order);
+        }
+        dur_bidi_ms = dur_bidi_ms.min(t_bidi.elapsed().as_secs_f64() * 1000.0);
     }
-    let dur_bidi_ms = t_bidi.elapsed().as_secs_f64() * 1000.0;
     println!("      • 500 BiDi Cluster rows   : {:>6.3} ms", dur_bidi_ms);
 
     // SLAs
-    let pass_pty_avg = dsr.is_ok() && dsr_stats.mean <= 1.0;
-    let pass_pty_p99 = dsr.is_ok() && dsr_stats.p99 <= 3.0;
-    let pass_file_64kb = dur_64kb_ms <= 15.0;
-    let pass_file_1mb = dur_1mb_ms <= 150.0;
-    let pass_apc = dur_apc_ms <= 30.0;
-    let pass_sixel = dur_sixel_ms <= 30.0;
-    let pass_extras = dur_extras_ms <= 30.0;
-    let pass_spawn = pty_spawn_avg_ms <= 25.0;
-    let pass_bidi = dur_bidi_ms <= 10.0;
+    let pass_pty_avg = dsr.is_ok() && dsr_stats.mean <= 0.05;
+    let pass_pty_p99 = dsr.is_ok() && dsr_stats.p99 <= 0.4;
+    let pass_file_64kb = dur_64kb_ms <= 3.0;
+    let pass_file_1mb = dur_1mb_ms <= 40.0;
+    let pass_apc = dur_apc_ms <= 3.0;
+    let pass_sixel = dur_sixel_ms <= 5.0;
+    let pass_extras = dur_extras_ms <= 4.0;
+    let pass_spawn = pty_spawn_avg_ms <= 6.0;
+    let pass_bidi = dur_bidi_ms <= 0.2;
     let passed = pass_pty_avg
         && pass_pty_p99
         && pass_file_64kb
@@ -483,15 +491,15 @@ pub fn run_latency_benchmark() -> LatencyMetrics {
         && pass_bidi;
 
     println!("\n{bold}Latency SLA Evaluation:{reset}");
-    println!("  • DSR PTY Mean      <= 1.0 ms : {}", if pass_pty_avg { format!("{green}PASS ({:.3} ms){reset}", dsr_stats.mean) } else { format!("{red}FAIL ({:.3} ms > 1.0 ms){reset}", dsr_stats.mean) });
-    println!("  • DSR PTY P99       <= 3.0 ms : {}", if pass_pty_p99 { format!("{green}PASS ({:.3} ms){reset}", dsr_stats.p99) } else { format!("{red}FAIL ({:.3} ms > 3.0 ms){reset}", dsr_stats.p99) });
-    println!("  • 64 KB File Read   <= 15 ms  : {}", if pass_file_64kb { format!("{green}PASS{reset}") } else { format!("{red}FAIL ({:.2} ms > 15 ms){reset}", dur_64kb_ms) });
-    println!("  • 1 MB File Read    <= 150 ms : {}", if pass_file_1mb { format!("{green}PASS{reset}") } else { format!("{red}FAIL ({:.2} ms > 150 ms){reset}", dur_1mb_ms) });
-    println!("  • 256 KB Kitty APC  <= 30 ms  : {}", if pass_apc { format!("{green}PASS ({:.2} ms){reset}", dur_apc_ms) } else { format!("{red}FAIL ({:.2} ms > 30 ms){reset}", dur_apc_ms) });
-    println!("  • 256 KB Sixel DCS  <= 30 ms  : {}", if pass_sixel { format!("{green}PASS ({:.2} ms){reset}", dur_sixel_ms) } else { format!("{red}FAIL ({:.2} ms > 30 ms){reset}", dur_sixel_ms) });
-    println!("  • 500 Saturated URL <= 30 ms  : {}", if pass_extras { format!("{green}PASS ({:.2} ms){reset}", dur_extras_ms) } else { format!("{red}FAIL ({:.2} ms > 30 ms){reset}", dur_extras_ms) });
-    println!("  • PTY Spawn Latency <= 25 ms  : {}", if pass_spawn { format!("{green}PASS ({:.2} ms){reset}", pty_spawn_avg_ms) } else { format!("{red}FAIL ({:.2} ms > 25 ms){reset}", pty_spawn_avg_ms) });
-    println!("  • 500 BiDi Clusters <= 10 ms  : {}", if pass_bidi { format!("{green}PASS ({:.2} ms){reset}", dur_bidi_ms) } else { format!("{red}FAIL ({:.2} ms > 10 ms){reset}", dur_bidi_ms) });
+    println!("  • DSR PTY Mean      <= 0.05 ms : {}", if pass_pty_avg { format!("{green}PASS ({:.3} ms){reset}", dsr_stats.mean) } else { format!("{red}FAIL ({:.3} ms > 0.05 ms){reset}", dsr_stats.mean) });
+    println!("  • DSR PTY P99       <= 0.4 ms : {}", if pass_pty_p99 { format!("{green}PASS ({:.3} ms){reset}", dsr_stats.p99) } else { format!("{red}FAIL ({:.3} ms > 0.4 ms){reset}", dsr_stats.p99) });
+    println!("  • 64 KB File Read   <= 3 ms  : {}", if pass_file_64kb { format!("{green}PASS{reset}") } else { format!("{red}FAIL ({:.2} ms > 3 ms){reset}", dur_64kb_ms) });
+    println!("  • 1 MB File Read    <= 40 ms : {}", if pass_file_1mb { format!("{green}PASS{reset}") } else { format!("{red}FAIL ({:.2} ms > 40 ms){reset}", dur_1mb_ms) });
+    println!("  • 256 KB Kitty APC  <= 3 ms  : {}", if pass_apc { format!("{green}PASS ({:.2} ms){reset}", dur_apc_ms) } else { format!("{red}FAIL ({:.2} ms > 3 ms){reset}", dur_apc_ms) });
+    println!("  • 256 KB Sixel DCS  <= 5 ms  : {}", if pass_sixel { format!("{green}PASS ({:.2} ms){reset}", dur_sixel_ms) } else { format!("{red}FAIL ({:.2} ms > 5 ms){reset}", dur_sixel_ms) });
+    println!("  • 500 Saturated URL <= 4 ms  : {}", if pass_extras { format!("{green}PASS ({:.2} ms){reset}", dur_extras_ms) } else { format!("{red}FAIL ({:.2} ms > 4 ms){reset}", dur_extras_ms) });
+    println!("  • PTY Spawn Latency <= 6 ms  : {}", if pass_spawn { format!("{green}PASS ({:.2} ms){reset}", pty_spawn_avg_ms) } else { format!("{red}FAIL ({:.2} ms > 6 ms){reset}", pty_spawn_avg_ms) });
+    println!("  • 500 BiDi Clusters <= 0.2 ms  : {}", if pass_bidi { format!("{green}PASS ({:.2} ms){reset}", dur_bidi_ms) } else { format!("{red}FAIL ({:.2} ms > 0.2 ms){reset}", dur_bidi_ms) });
 
     println!("\n{bold}Latency Verdict:{reset} {}", if passed {
         format!("{green}✔ ALL LATENCY CHECKS PASSED{reset}")
@@ -611,17 +619,17 @@ pub fn run_render_stress_benchmark(line_count: usize) -> RenderStressMetrics {
     // - Worst stall <= 25.0 ms
     // - Probe <= 1.0 ms
     // - Scrollback lines >= 10,000
-    let pass_throughput = throughput_lines_s >= 20_000.0;
-    let pass_stall = worst_stall_ms <= 25.0;
-    let pass_probe = probe_ms <= 1.0;
+    let pass_throughput = throughput_lines_s >= 350_000.0;
+    let pass_stall = worst_stall_ms <= 3.0;
+    let pass_probe = probe_ms <= 0.05;
     let scrollback_count = grid.scroll_position().0;
     let pass_scrollback = scrollback_count >= 1000;
     let passed = pass_throughput && pass_stall && pass_probe && pass_scrollback;
 
     println!("\n{bold}Render Stress SLA Evaluation:{reset}");
-    println!("  • Throughput        >= 20,000 lines/s : {}", if pass_throughput { format!("{green}PASS ({:.0} lines/s){reset}", throughput_lines_s) } else { format!("{red}FAIL ({:.0} < 20,000){reset}", throughput_lines_s) });
-    println!("  • Worst Frame Stall <= 25.0 ms       : {}", if pass_stall { format!("{green}PASS ({:.2} ms){reset}", worst_stall_ms) } else { format!("{red}FAIL ({:.2} ms > 25.0 ms){reset}", worst_stall_ms) });
-    println!("  • Post-stress Probe <= 1.0 ms        : {}", if pass_probe { format!("{green}PASS ({:.3} ms){reset}", probe_ms) } else { format!("{red}FAIL ({:.3} ms > 1.0 ms){reset}", probe_ms) });
+    println!("  • Throughput        >= 350,000 lines/s : {}", if pass_throughput { format!("{green}PASS ({:.0} lines/s){reset}", throughput_lines_s) } else { format!("{red}FAIL ({:.0} < 350,000){reset}", throughput_lines_s) });
+    println!("  • Worst Frame Stall <= 3.0 ms       : {}", if pass_stall { format!("{green}PASS ({:.2} ms){reset}", worst_stall_ms) } else { format!("{red}FAIL ({:.2} ms > 3.0 ms){reset}", worst_stall_ms) });
+    println!("  • Post-stress Probe <= 0.05 ms        : {}", if pass_probe { format!("{green}PASS ({:.3} ms){reset}", probe_ms) } else { format!("{red}FAIL ({:.3} ms > 0.05 ms){reset}", probe_ms) });
     println!("  • Ringbuffer Retained                : {green}PASS ({} lines buffered){reset}", scrollback_count);
 
     println!("\n{bold}Render Stress Verdict:{reset} {}", if passed {
@@ -678,11 +686,12 @@ pub fn run_critical_features_benchmark() -> FeatureMetrics {
         .collect();
 
     let queries = ["git commit", "'renderer", "^cargo", "docker", "!prod", "litty"];
-    let iters = 5;
-    let t_fzf = Instant::now();
+    let iters = BEST_OF_PASSES;
     let mut match_count = 0usize;
+    let mut best_pass_ms = f64::MAX;
 
     for _ in 0..iters {
+        let t_pass = Instant::now();
         for q in &queries {
             let q_terms = history::parse_fzf_query(q);
             let prepared: Vec<history::PreparedTerm> = q_terms.iter().map(history::FzfTerm::prepare).collect();
@@ -692,9 +701,9 @@ pub fn run_critical_features_benchmark() -> FeatureMetrics {
                 }
             }
         }
+        best_pass_ms = best_pass_ms.min(t_pass.elapsed().as_secs_f64() * 1000.0);
     }
-    let fzf_total_dur = t_fzf.elapsed();
-    let fzf_per_search_ms = (fzf_total_dur.as_secs_f64() * 1000.0) / (iters * queries.len()) as f64;
+    let fzf_per_search_ms = best_pass_ms / queries.len() as f64;
     println!("      • Queries evaluated : {} ({:>5} matches)", iters * queries.len(), match_count);
     println!("      • Time per search   : {bold}{:>6.3} ms{reset} per 10,000 items", fzf_per_search_ms);
 
@@ -710,9 +719,13 @@ pub fn run_critical_features_benchmark() -> FeatureMetrics {
     }
     let search_data = grid.search_text();
     let regex_pat = regex::Regex::new(r"ERR_\d{4}").expect("regex");
-    let t_regex = Instant::now();
-    let regex_matches = regex_pat.find_iter(&search_data.text).count();
-    let regex_dur_ms = t_regex.elapsed().as_secs_f64() * 1000.0;
+    let mut regex_matches = 0usize;
+    let mut regex_dur_ms = f64::MAX;
+    for _ in 0..BEST_OF_PASSES {
+        let t_regex = Instant::now();
+        regex_matches = regex_pat.find_iter(&search_data.text).count();
+        regex_dur_ms = regex_dur_ms.min(t_regex.elapsed().as_secs_f64() * 1000.0);
+    }
     println!("      • Regex scan time   : {bold}{:>6.3} ms{reset} across 5,000 lines ({} matches)", regex_dur_ms, regex_matches);
 
     // 3. Split Pane Layout Stress
@@ -746,13 +759,13 @@ pub fn run_critical_features_benchmark() -> FeatureMetrics {
     println!("      • Injected terminator neutralized: {}", if paste_secure { format!("{green}PASS{reset}") } else { format!("{red}FAIL{reset}") });
 
     // SLAs
-    let pass_fzf = fzf_per_search_ms <= 2.5;
-    let pass_regex = regex_dur_ms <= 1.0;
+    let pass_fzf = fzf_per_search_ms <= 2.0;
+    let pass_regex = regex_dur_ms <= 0.5;
     let passed = pass_fzf && pass_regex && splits_ok && paste_secure;
 
     println!("\n{bold}Features SLA Evaluation:{reset}");
-    println!("  • FZF 10k Search    <= 2.5 ms : {}", if pass_fzf { format!("{green}PASS ({:.3} ms){reset}", fzf_per_search_ms) } else { format!("{red}FAIL ({:.3} ms > 2.5 ms){reset}", fzf_per_search_ms) });
-    println!("  • Regex 5k Scan     <= 1 ms   : {}", if pass_regex { format!("{green}PASS ({:.3} ms){reset}", regex_dur_ms) } else { format!("{red}FAIL ({:.3} ms > 1 ms){reset}", regex_dur_ms) });
+    println!("  • FZF 10k Search    <= 2.0 ms : {}", if pass_fzf { format!("{green}PASS ({:.3} ms){reset}", fzf_per_search_ms) } else { format!("{red}FAIL ({:.3} ms > 2.0 ms){reset}", fzf_per_search_ms) });
+    println!("  • Regex 5k Scan     <= 0.5 ms   : {}", if pass_regex { format!("{green}PASS ({:.3} ms){reset}", regex_dur_ms) } else { format!("{red}FAIL ({:.3} ms > 0.5 ms){reset}", regex_dur_ms) });
     println!("  • Split Panes Tree            : {}", if splits_ok { format!("{green}PASS{reset}") } else { format!("{red}FAIL{reset}") });
     println!("  • Bracketed Paste Sanitization: {}", if paste_secure { format!("{green}PASS{reset}") } else { format!("{red}FAIL{reset}") });
 

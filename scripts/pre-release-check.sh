@@ -225,31 +225,31 @@ CPU usage, or replace the outstanding Linux manual checks in ROADMAP.md.
 
 ## 2. Interactive Latency & I/O
 - **Command Execution Roundtrip (PTY Latency)**:
-  - Average: $\le$ 1.0 ms
-  - P99: $\le$ 3.0 ms
+  - Average: $\le$ 0.05 ms
+  - P99: $\le$ 0.4 ms
 - **File Reading Ingestion**:
   - 4 KB Config: $\le$ 1.0 ms
-  - 64 KB Source code: $\le$ 15.0 ms
-  - 1 MB Data stream: $\le$ 150 ms
+  - 64 KB Source code: $\le$ 3.0 ms
+  - 1 MB Data stream: $\le$ 40 ms
 - **Image & Extras Stream Ingestion**:
-  - 256 KB Kitty Graphics APC: $\le$ 30.0 ms
-  - 256 KB Sixel Graphics DCS: $\le$ 30.0 ms
-  - Saturated Extras GC (500 distinct URLs): $\le$ 30.0 ms
+  - 256 KB Kitty Graphics APC: $\le$ 3.0 ms
+  - 256 KB Sixel Graphics DCS: $\le$ 5.0 ms
+  - Saturated Extras GC (500 distinct URLs): $\le$ 4.0 ms
 - **Process Lifecycle & Unicode Layout**:
-  - PTY Shell Spawn (macOS/Linux): $\le$ 25.0 ms
-  - BiDi Grapheme Cluster Fast-Reject (500 rows): $\le$ 10.0 ms
+  - PTY Shell Spawn (macOS/Linux): $\le$ 6.0 ms
+  - BiDi Grapheme Cluster Fast-Reject (500 rows): $\le$ 0.2 ms
 - **Status**: **$PERF_PASSED**
 
 ## 3. Large Log Stress Test & Frame Stalls
 - **Test Workload**: 20,000 lines of standard ANSI server logs (ISO timestamps, colors, log levels, JSON payloads).
-- **Throughput**: $\ge$ 20,000 lines/sec.
-- **Frame Stalls (> 16.6 ms)**: Zero severe stalls, Worst stall $\le$ 25 ms.
-- **Post-Stress Responsiveness (Unblock Probe)**: $\le$ 1.0 ms (terminal immediately responsive, no lockups/hangs).
+- **Throughput**: $\ge$ 350,000 lines/sec.
+- **Frame Stalls (> 16.6 ms)**: Zero severe stalls, Worst stall $\le$ 3 ms.
+- **Post-Stress Responsiveness (Unblock Probe)**: $\le$ 0.05 ms (terminal immediately responsive, no lockups/hangs).
 - **Status**: **$PERF_PASSED**
 
 ## 4. Critical Features Regression
-- **FZF Fuzzy History Search**: Query over 10,000 commands ($\le$ 2.5 ms / query).
-- **Find in Terminal (Regex Search)**: Regex scan across 5,000 scrollback lines ($\le$ 1 ms).
+- **FZF Fuzzy History Search**: Query over 10,000 commands ($\le$ 2.0 ms / query).
+- **Find in Terminal (Regex Search)**: Regex scan across 5,000 scrollback lines ($\le$ 0.5 ms).
 - **Split Panes Engine**: 1,000 vertical/horizontal splits, resize, zoom, and close operations without panicking.
 - **Bracketed Paste Security**: Escape injection mitigation (\`\x1b[201~\`) and safe shell quotation.
 - **Status**: **$FEAT_PASSED**
