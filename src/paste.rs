@@ -33,6 +33,24 @@ pub(crate) fn paste_payload(text: &str, bracketed: bool) -> Vec<u8> {
     payload
 }
 
+/// Most characters kept per preview line in the multi-line paste confirmation.
+const PREVIEW_LINE_CHARS: usize = 60;
+/// Most lines shown in the multi-line paste confirmation.
+const PREVIEW_LINES: usize = 3;
+
+/// First lines of `text` for the multi-line paste confirmation, each cut to
+/// [`PREVIEW_LINE_CHARS`] characters (never inside a multibyte character).
+pub(crate) fn paste_preview(text: &str) -> String {
+    text.lines()
+        .take(PREVIEW_LINES)
+        .map(|l| match l.char_indices().nth(PREVIEW_LINE_CHARS) {
+            Some((cut, _)) => format!("{}…", &l[..cut]),
+            None => l.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Bytes that put a history entry on the shell's command line. Ctrl+E Ctrl+U
 /// clears the current line first; `run` appends Enter.
 ///
@@ -68,7 +86,29 @@ pub(crate) fn history_insert_payload(cmd: &str, run: bool, bracketed: bool) -> V
 
 #[cfg(test)]
 mod tests {
-    use super::{paste_payload, shell_quote};
+    use super::{paste_payload, paste_preview, shell_quote};
+
+    #[test]
+    fn preview_cuts_on_a_char_boundary_not_a_byte_offset() {
+        // 'ệ' is 3 bytes and straddles byte 60 (bytes 59..62).
+        let text = format!("{}ệ and more text after it\nline2", "A".repeat(59));
+        let preview = paste_preview(&text);
+        assert_eq!(preview, format!("{}ệ…\nline2", "A".repeat(59)));
+    }
+
+    #[test]
+    fn preview_truncates_long_lines_by_characters() {
+        let text = format!("{}\nshort", "ệ".repeat(80));
+        let preview = paste_preview(&text);
+        assert_eq!(preview, format!("{}…\nshort", "ệ".repeat(60)));
+    }
+
+    #[test]
+    fn preview_keeps_only_three_lines_and_short_lines_verbatim() {
+        assert_eq!(paste_preview("a\nb\nc\nd\ne"), "a\nb\nc");
+        assert_eq!(paste_preview(&"x".repeat(60)), "x".repeat(60));
+        assert_eq!(paste_preview(&"x".repeat(61)), format!("{}…", "x".repeat(60)));
+    }
 
     #[test]
     fn dropped_paths_are_shell_quoted() {
