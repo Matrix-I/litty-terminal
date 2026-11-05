@@ -6,6 +6,7 @@ use std::process::Command;
 use super::install::platform_asset_candidates;
 use super::verify::SIG_NAMES;
 use super::{resolve_system_bin, AutoUpdateChannel, ReleaseAsset, ReleaseInfo, Version, SUMS_NAME};
+use crate::curl_config::quote;
 use crate::json::Json;
 
 pub(super) const API_LATEST_URL: &str = "https://api.github.com/repos/Matrix-I/litty-terminal/releases/latest";
@@ -142,6 +143,11 @@ pub fn fetch_latest_release(channel: AutoUpdateChannel) -> Result<ReleaseInfo, S
     }
 }
 
+/// curl config (`-K -`) carrying the GitHub token as a single `header` line.
+fn auth_header_config(token: &str) -> String {
+    format!("header = {}\n", quote(&format!("Authorization: Bearer {token}")))
+}
+
 pub(super) fn fetch_release_from_api(channel: AutoUpdateChannel) -> Result<ReleaseInfo, String> {
     let url = match channel {
         AutoUpdateChannel::Stable => API_LATEST_URL,
@@ -161,7 +167,7 @@ pub(super) fn fetch_release_from_api(channel: AutoUpdateChannel) -> Result<Relea
     if let Ok(token) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN"))
         && !token.is_empty() {
             cmd.arg("-K").arg("-");
-            stdin_config = Some(format!("header = \"Authorization: Bearer {token}\"\n").into_bytes());
+            stdin_config = Some(auth_header_config(&token).into_bytes());
         }
     cmd.arg(url);
 
@@ -214,6 +220,18 @@ pub(super) fn download_file(url: &str, dest: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::json::MAX_JSON_DEPTH;
+
+    #[test]
+    fn token_cannot_break_out_of_the_curl_header_line() {
+        let config = auth_header_config("abc\"\noutput = \"/tmp/pwned\"\r\\");
+        assert_eq!(config.lines().count(), 1, "{config:?}");
+        assert_eq!(config, "header = \"Authorization: Bearer abc\\\"\\noutput = \\\"/tmp/pwned\\\"\\r\\\\\"\n");
+    }
+
+    #[test]
+    fn plain_token_is_sent_unchanged() {
+        assert_eq!(auth_header_config("ghp_AbC123"), "header = \"Authorization: Bearer ghp_AbC123\"\n");
+    }
 
     /// Shape of a real `/releases/latest` response: each asset nests an `uploader` object
     /// between `name` and `browser_download_url`, which defeated the old regex.

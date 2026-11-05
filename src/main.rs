@@ -7,6 +7,7 @@ pub mod bench;
 mod bench_dsr;
 mod cli;
 mod config;
+mod curl_config;
 mod event;
 mod json;
 mod keymap;
