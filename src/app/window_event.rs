@@ -11,7 +11,7 @@ use super::tabs::close_tab_at;
 use super::tabs::confirm_close;
 use super::tabs::duplicate_active_tab;
 use super::tabs::select_tab;
-use super::tab_tearoff::tear_off_if_dragged_out;
+use super::tab_tearoff::{ping_drag, tear_off_if_dragged_out};
 use super::tabs::begin_tab_drag;
 use super::tabs::drag_tab;
 use super::tabs::end_tab_drag;
@@ -147,8 +147,15 @@ impl App {
             s.window.request_redraw();
         }
         s.renderer.set_mouse(position.x, position.y);
+        if s.pointer.drag_holder.is_some() {
+            ping_drag(s);
+            return;
+        }
         if s.pointer.tab_drag.is_some() {
             drag_tab(s);
+            if s.pointer.tab_drag.as_ref().is_some_and(|drag| drag.follower().is_some()) {
+                ping_drag(s);
+            }
             return;
         }
         if let Some(pane_id) = s.pointer.scrollbar_drag {
@@ -212,10 +219,18 @@ impl App {
         if button == MouseButton::Left {
             // A release that never arrived (the new window grabbed the pointer) must not
             // leave the torn-off window following the pointer: a new press ends that drag.
-            if btn_state == ElementState::Pressed && s.pointer.tab_drag.as_ref().is_some_and(|drag| drag.is_detached()) {
-                end_tab_drag(s);
+            if btn_state == ElementState::Pressed {
+                if let Some(holder) = s.pointer.drag_holder.take() {
+                    s.requests.drag_release = Some(holder);
+                } else if s.pointer.tab_drag.as_ref().is_some_and(|drag| drag.is_detached()) {
+                    end_tab_drag(s);
+                }
             }
             if btn_state == ElementState::Released {
+                if let Some(holder) = s.pointer.drag_holder.take() {
+                    s.requests.drag_release = Some(holder);
+                    return;
+                }
                 // The tab must still be marked as dragged to be torn off.
                 let torn_off = tear_off_if_dragged_out(s);
                 if end_tab_drag(s) || torn_off {
@@ -529,11 +544,13 @@ impl App {
     }
 
     pub(super) fn on_focused(&mut self, id: WindowId, focused: bool) {
+        // Another window forwards its pointer to this one: its drag outlives a focus change.
+        let holds_forwarded_drag = self.windows.iter().any(|w| w.pointer.drag_holder == Some(id));
         let Some(s) = self.window_mut(id) else { return };
         if !focused {
             // The new window of a torn-off tab takes focus, but the button is still
             // down here and this window keeps receiving the drag.
-            if !s.pointer.tab_drag.as_ref().is_some_and(|drag| drag.is_detached()) {
+            if !holds_forwarded_drag && !s.pointer.tab_drag.as_ref().is_some_and(|drag| drag.is_detached()) {
                 end_tab_drag(s);
             }
             s.pointer.wheel_scroll.reset();

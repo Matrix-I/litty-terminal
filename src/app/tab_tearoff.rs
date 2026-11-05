@@ -5,6 +5,7 @@ use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::window::WindowId;
 
 use super::state::State;
+use crate::render::renderer::{tab_slot_at, tab_span};
 use super::window::{refresh_tab_titles, sync_size};
 use crate::{ai, Tab};
 
@@ -58,6 +59,84 @@ fn pointer_on_screen(s: &State) -> Option<(i32, i32)> {
     let origin = s.window.inner_position().ok()?;
     let pointer = s.pointer.mouse_pos;
     Some((origin.x + pointer.0.round() as i32, origin.y + pointer.1.round() as i32))
+}
+
+/// Pointer position on the screen in logical pixels, so windows on displays with
+/// different scales can be compared; `None` where the platform gives no window positions.
+fn pointer_logical(s: &State) -> Option<LogicalPosition<f64>> {
+    let scale = s.window.scale_factor();
+    let origin = s.window.inner_position().ok()?.to_logical::<f64>(scale);
+    Some(LogicalPosition::new(origin.x + s.pointer.mouse_pos.0 / scale, origin.y + s.pointer.mouse_pos.1 / scale))
+}
+
+/// The pointer moved while the dragged tab is outside this window: tell `App`, which
+/// merges it into a tab bar under the pointer.
+pub(super) fn ping_drag(s: &mut State) {
+    s.requests.drag_ping = pointer_logical(s);
+}
+
+/// Move `s`'s idea of the pointer to the screen position `at`, so a drag held by this
+/// window follows a pointer that is delivered to another window.
+pub(super) fn set_pointer_from_screen(s: &mut State, at: LogicalPosition<f64>) {
+    let scale = s.window.scale_factor();
+    if let Ok(origin) = s.window.inner_position() {
+        let origin = origin.to_logical::<f64>(scale);
+        s.pointer.mouse_pos = ((at.x - origin.x) * scale, (at.y - origin.y) * scale);
+    }
+}
+
+/// Whether `local` (logical pixels from a window's top-left) lies in the tab bar of
+/// `bar_height` at the top of a window `width` wide.
+fn in_tab_bar(local: (f64, f64), width: f64, bar_height: f64) -> bool {
+    (0.0..width).contains(&local.0) && (0.0..bar_height).contains(&local.1)
+}
+
+/// If the screen position `at` is over this window's tab bar (or, with a single tab and no
+/// bar yet, the band where it would be), the pointer's x in physical window pixels.
+pub(super) fn tab_bar_hit_x(s: &State, at: LogicalPosition<f64>) -> Option<f64> {
+    if s.quick || s.tabs.is_empty() || s.window.is_visible() == Some(false) || s.window.is_minimized() == Some(true) {
+        return None;
+    }
+    let scale = s.window.scale_factor();
+    let origin = s.window.inner_position().ok()?.to_logical::<f64>(scale);
+    let local = (at.x - origin.x, at.y - origin.y);
+    let width = f64::from(s.window.inner_size().width) / scale;
+    in_tab_bar(local, width, s.renderer.tab_bar_height() / scale).then_some(local.0 * scale)
+}
+
+/// Slot a tab dropped at fractional strip column `col` takes among `tabs_after` tabs.
+fn drop_index(col: f64, strip_cols: usize, tabs_after: usize) -> usize {
+    let col = col.floor().clamp(0.0, strip_cols.saturating_sub(1) as f64) as usize;
+    tab_slot_at(strip_cols, tabs_after, col)
+}
+
+/// Move the tabs of the torn-off window `from` (normally just the dragged one, but a
+/// tab may have been opened there while the button was down) into `s`, starting at the
+/// slot under pixel `x`; the first one becomes the active tab. Returns the index of the
+/// tab with id `held`, and the columns between its left edge and its middle. The caller
+/// closes the emptied window.
+pub(super) fn adopt_dropped_tab(s: &mut State, from: &mut State, x: f64, held: u64) -> Option<(usize, f64)> {
+    if from.tabs.is_empty() {
+        return None;
+    }
+    let moved = std::mem::take(&mut from.tabs);
+    for pane in moved.iter().flat_map(|tab| &tab.panes) {
+        if let Some(state) = from.ai.remove(&pane.id) {
+            s.ai.insert(pane.id, state);
+        }
+    }
+    let at = drop_index(s.renderer.column_at(x), s.renderer.tab_cols_total(), s.tabs.len() + moved.len()).min(s.tabs.len());
+    s.tabs.splice(at..at, moved);
+    let index = s.tabs.iter().position(|tab| tab.id == held)?;
+    s.active = index;
+    s.tabs[index].bell = false;
+    sync_size(s);
+    refresh_tab_titles(s);
+    s.renderer.invalidate();
+    s.window.focus_window();
+    s.window.request_redraw();
+    let (c0, c1) = tab_span(s.renderer.tab_cols_total(), s.tabs.len(), index);
+    Some((index, (c1 - c0) as f64 / 2.0))
 }
 
 /// The pointer moved while a tab is held. Once it is far from the tab bar the tab
@@ -151,7 +230,7 @@ pub(super) fn restore_tab(s: &mut State, torn: TornTab) {
 
 #[cfg(test)]
 mod tests {
-    use super::{held_tab_index, is_torn_off, new_window_origin};
+    use super::{drop_index, held_tab_index, in_tab_bar, is_torn_off, new_window_origin};
 
     #[test]
     fn the_held_tab_is_found_by_id_and_must_match_the_animation() {
@@ -188,5 +267,26 @@ mod tests {
         assert_eq!((at.x, at.y), (20.0, 236.0), "logical pixels: physical input divided by the scale");
         let at = new_window_origin((100, 5), 960, 1.0);
         assert_eq!((at.x, at.y), (-380.0, -9.0), "positions may be off-screen; the window manager adjusts them");
+    }
+
+    #[test]
+    fn only_the_top_band_of_a_window_is_its_tab_bar() {
+        let (width, bar) = (480.0, 24.0);
+        for local in [(0.0, 0.0), (479.0, 23.0), (240.0, 12.0)] {
+            assert!(in_tab_bar(local, width, bar), "{local:?}");
+        }
+        for local in [(-1.0, 10.0), (480.0, 10.0), (100.0, -1.0), (100.0, 24.0), (100.0, 300.0)] {
+            assert!(!in_tab_bar(local, width, bar), "{local:?}");
+        }
+    }
+
+    #[test]
+    fn a_dropped_tab_takes_the_slot_under_the_pointer() {
+        // Three tabs after the drop in an 80-column strip: slots of 27, 27 and 26 columns.
+        assert_eq!(drop_index(0.0, 80, 3), 0);
+        assert_eq!(drop_index(30.0, 80, 3), 1);
+        assert_eq!(drop_index(79.9, 80, 3), 2);
+        assert_eq!(drop_index(-5.0, 80, 3), 0, "left of the strip goes first");
+        assert_eq!(drop_index(500.0, 80, 3), 2, "right of the strip goes last");
     }
 }

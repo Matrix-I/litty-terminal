@@ -127,6 +127,12 @@ pub(super) struct WindowRequests {
     pub(super) tear_off: Option<super::tab_tearoff::TornTab>,
     /// A torn-off tab's window should follow the pointer: (that window, its new top-left).
     pub(super) move_torn: Option<(winit::window::WindowId, winit::dpi::LogicalPosition<f64>)>,
+    /// The pointer of a tab drag moved (screen position, logical pixels) while the tab is
+    /// outside this window: `App` merges it into the tab bar under the pointer and drives
+    /// the drag in the window that holds the tab.
+    pub(super) drag_ping: Option<winit::dpi::LogicalPosition<f64>>,
+    /// The button of a drag held by another window was released: that window.
+    pub(super) drag_release: Option<winit::window::WindowId>,
 }
 
 /// Mouse pointer, click sequence and hover tracking.
@@ -147,6 +153,9 @@ pub(super) struct PointerState {
     pub(super) scrollbar_drag: Option<u64>,
     /// Tab title currently being dragged.
     pub(super) tab_drag: Option<super::tabs::TabDrag>,
+    /// Another window holds the tab dragged from here: this window only forwards the
+    /// pointer (it keeps receiving it while the button is down).
+    pub(super) drag_holder: Option<winit::window::WindowId>,
     pub(super) wheel_scroll: scroll::Accumulator,
     /// Mouse pointer outside links: the active pane's OSC 22 shape.
     pub(super) pointer_icon: CursorIcon,

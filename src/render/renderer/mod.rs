@@ -15,7 +15,7 @@ use pane_row::RowScratch;
 mod ui;
 use gpu::{make_bind_group, make_instance_buf, make_viewport_buffer};
 pub use ui::scrollbar::{scrollbar_thumb, SCROLLBAR_WIDTH};
-pub use ui::tab_bar::{span as tab_span, TabBarView, MAX_SHIFTED_TABS};
+pub use ui::tab_bar::{slot_at as tab_slot_at, span as tab_span, TabBarView, MAX_SHIFTED_TABS};
 
 use crate::render::atlas::{Atlas, FontSet};
 use crate::terminal::grid::{Grid, Hyperlink};
