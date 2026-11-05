@@ -123,6 +123,10 @@ pub(super) struct WindowRequests {
     pub(super) quit: bool,
     /// Config reload requested; `App` propagates it to all windows.
     pub(super) reload_config: bool,
+    /// A tab was dragged out of the tab bar; `App` opens it in a new window.
+    pub(super) tear_off: Option<super::tab_tearoff::TornTab>,
+    /// A torn-off tab's window should follow the pointer: (that window, its new top-left).
+    pub(super) move_torn: Option<(winit::window::WindowId, winit::dpi::LogicalPosition<f64>)>,
 }
 
 /// Mouse pointer, click sequence and hover tracking.

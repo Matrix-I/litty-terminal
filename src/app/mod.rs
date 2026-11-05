@@ -11,6 +11,7 @@ mod pointer;
 mod search_ui;
 mod state;
 mod tab_anim;
+mod tab_tearoff;
 mod tabs;
 mod terminal_io;
 mod user_event;
@@ -21,11 +22,14 @@ use actions::run_action;
 use ai_bridge::handle_ai_requests;
 use state::State;
 use tabs::confirm_close;
+use tabs::end_tab_drag;
 use tabs::hide_or_exit_last_window;
 use tabs::open_fresh_tab;
 use terminal_io::handle_terminal_requests;
 use window::apply_system_appearance;
+use tab_tearoff::restore_tab;
 use window::create_window;
+use window::create_window_for_tab;
 use window::cursor_blinks;
 use window::place_quick_terminal;
 use window::reload_config;
@@ -104,6 +108,44 @@ impl App {
         }
     }
 
+    /// Open each tab dragged out of a tab bar in a window of its own. If the window
+    /// cannot be created the tab goes back to the window it came from.
+    fn open_torn_off_tabs(&mut self, event_loop: &ActiveEventLoop) {
+        let torn: Vec<_> = self.windows.iter_mut().filter_map(|s| s.requests.tear_off.take()).collect();
+        for torn in torn {
+            let from = torn.from;
+            let mut pending = Some(torn);
+            match create_window_for_tab(event_loop, &self.waker, &mut pending) {
+                Ok(s) => {
+                    // A drag still in progress moves the new window with the pointer.
+                    let id = s.window.id();
+                    self.windows.push(s);
+                    if let Some(drag) = self.window_mut(from).and_then(|origin| origin.pointer.tab_drag.as_mut()) {
+                        drag.follow(id);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("litty: failed to open window for the dragged tab: {e}");
+                    if let (Some(torn), Some(origin)) = (pending, self.window_mut(from)) {
+                        restore_tab(origin, torn);
+                        // The tab is back in its bar: the press must not tear it off again on release.
+                        end_tab_drag(origin);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Move each window whose tab is being dragged out under the pointer.
+    fn move_torn_windows(&mut self) {
+        for i in 0..self.windows.len() {
+            let Some((target, position)) = self.windows[i].requests.move_torn.take() else { continue };
+            if let Some(torn) = self.window_mut(target) {
+                torn.window.set_outer_position(position);
+            }
+        }
+    }
+
     /// Apply what event handlers asked for: quit, open new windows, close emptied ones.
     fn process_window_requests(&mut self, event_loop: &ActiveEventLoop) {
         if self.windows.iter_mut().any(|s| std::mem::take(&mut s.requests.reload_config)) {
@@ -154,6 +196,9 @@ impl App {
                 Err(e) => eprintln!("litty: failed to open window: {e}"),
             }
         }
+
+        self.open_torn_off_tabs(event_loop);
+        self.move_torn_windows();
 
         while let Some(pos) = self.windows.iter().position(|s| s.requests.close) {
             if self.windows.len() > 1 {

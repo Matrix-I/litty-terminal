@@ -3,6 +3,7 @@
 use super::inspector::inspector_lines;
 use super::search_ui::refresh_search;
 use super::state::{ImeState, InspectorState, PointerState, State, WindowRequests};
+use super::tab_tearoff::TornTab;
 use super::terminal_io::write_pty;
 
 use std::sync::Arc;
@@ -45,6 +46,22 @@ pub(super) fn font_features(cfg: &config::Config) -> Vec<rustybuzz::Feature> {
 
 /// Create a window with one tab whose shell starts in `cwd`.
 pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Option<&str>, quick: bool) -> std::io::Result<State> {
+    build_window(event_loop, waker, cwd, quick, &mut None)
+}
+
+/// Open a window around a tab torn off another one. `torn` is emptied only once
+/// the window exists, so on failure the caller can still put the tab back.
+pub(super) fn create_window_for_tab(event_loop: &ActiveEventLoop, waker: &Waker, torn: &mut Option<TornTab>) -> std::io::Result<State> {
+    build_window(event_loop, waker, None, false, torn)
+}
+
+fn build_window(
+    event_loop: &ActiveEventLoop,
+    waker: &Waker,
+    cwd: Option<&str>,
+    quick: bool,
+    adopt: &mut Option<TornTab>,
+) -> std::io::Result<State> {
     let cfg = config::Config::load();
     grid::set_default_colors(cfg.foreground, cfg.background);
     grid::set_palette(&cfg.palette);
@@ -54,7 +71,8 @@ pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Op
     atlas::set_font_tweaks(cfg.adjust_cell_width, cfg.adjust_cell_height, cfg.font_thicken);
     atlas::set_font_features(&font_features(&cfg));
     let font = atlas::load_font(&cfg.font_family);
-    let font_pt = cfg.font_size.clamp(6.0, 72.0);
+    // A torn-off tab keeps the font size (zoom) of the window it came from.
+    let font_pt = adopt.as_ref().map_or_else(|| cfg.font_size.clamp(6.0, 72.0), |torn| torn.font_pt);
 
     let initial_inner_size = if let (Some(w_cols), Some(w_rows)) = (cfg.window_width, cfg.window_height) {
         let (cw_pt, ch_pt) = atlas::Atlas::cell_size_pt(&font, font_pt);
@@ -75,8 +93,18 @@ pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Op
         .with_decorations(!quick)
         .with_window_level(if quick { winit::window::WindowLevel::AlwaysOnTop } else { winit::window::WindowLevel::Normal })
         .with_visible(!quick)
-        .with_transparent(cfg.background_opacity < 1.0)
-        .with_inner_size(initial_inner_size);
+        .with_transparent(cfg.background_opacity < 1.0);
+    // A torn-off tab keeps the size of its old window, so its grids do not reflow.
+    let attrs = match adopt.as_ref() {
+        Some(torn) => {
+            let attrs = attrs.with_inner_size(torn.size);
+            match torn.position {
+                Some(position) => attrs.with_position(position),
+                None => attrs,
+            }
+        }
+        None => attrs.with_inner_size(initial_inner_size),
+    };
     // Wayland app_id / X11 WM_CLASS must match `litty.desktop` and the
     // hicolor icon name, or the shell shows a generic icon.
     #[cfg(target_os = "linux")]
@@ -132,24 +160,30 @@ pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Op
     let sz = window.inner_size();
     renderer.resize(sz.width, sz.height);
 
-    let (cols, rows) = renderer.grid_size_for_tabs(false);
-    let (cw, ch) = renderer.cell_size();
-
-    let pane = spawn_pane(
-        next_id(),
-        cols,
-        rows,
-        (cw, ch),
-        cwd,
-        Some(cfg.shell_setup()),
-        waker,
-    )?;
-    let mut tab = Tab::new(next_id(), pane);
+    let adopted = adopt.take();
+    let is_adopted = adopted.is_some();
+    let (mut tab, ai) = match adopted {
+        Some(torn) => (torn.tab, torn.ai.into_iter().collect()),
+        None => {
+            let (cols, rows) = renderer.grid_size_for_tabs(false);
+            let (cw, ch) = renderer.cell_size();
+            let pane = spawn_pane(
+                next_id(),
+                cols,
+                rows,
+                (cw, ch),
+                cwd,
+                Some(cfg.shell_setup()),
+                waker,
+            )?;
+            (Tab::new(next_id(), pane), std::collections::BTreeMap::new())
+        }
+    };
     let title = tab_title(&mut tab);
 
     let config_mtime = config::config_mtime();
-    Ok(State {
-        ai: std::collections::BTreeMap::new(),
+    let mut state = State {
+        ai,
         window,
         renderer,
         tabs: vec![tab],
@@ -201,11 +235,18 @@ pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Op
             quick_terminal: false,
             quit: false,
             reload_config: false,
+            tear_off: None,
+            move_torn: None,
         },
         occluded: false,
         quick,
         inspector: InspectorState { shown: false, last_key: String::new() },
-    })
+    };
+    if is_adopted {
+        // The adopted panes were sized for the old window.
+        sync_size(&mut state);
+    }
+    Ok(state)
 }
 
 pub(super) fn spawn_pane(
