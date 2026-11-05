@@ -6,6 +6,7 @@ use super::window::refresh_tab_titles;
 use super::window::spawn_pane;
 use super::window::sync_size;
 use super::window::tab_title;
+use crate::render::renderer::{tab_slot_at, tab_span};
 
 use crate::platform;
 #[cfg(target_os = "linux")]
@@ -446,5 +447,181 @@ mod tests {
         };
         assert!(tab.active_pane().is_none());
         assert!(tab.active_pane_mut().is_none());
+    }
+}
+
+/// Move the item at `from` to `to`, shifting those in between by one.
+fn rotate_range<T>(items: &mut [T], from: usize, to: usize) {
+    if from < to {
+        items[from..=to].rotate_left(1);
+    } else {
+        items[to..=from].rotate_right(1);
+    }
+}
+
+/// Move a tab without changing the identity of the active session.
+fn move_tab<T>(tabs: &mut [T], active: &mut usize, from: usize, to: usize) -> bool {
+    if from >= tabs.len() || to >= tabs.len() || from == to {
+        return false;
+    }
+    rotate_range(tabs, from, to);
+    *active = if *active == from {
+        to
+    } else if from < *active && *active <= to {
+        *active - 1
+    } else if to <= *active && *active < from {
+        *active + 1
+    } else {
+        *active
+    };
+    true
+}
+
+/// A drag follows the session ID even if tabs are inserted or closed meanwhile.
+pub(super) struct TabDrag {
+    id: u64,
+    /// Pointer x at the press; `None` once the drag threshold has been passed.
+    start_x: Option<f64>,
+    /// Columns between the tab's left edge and the pointer when it was grabbed.
+    grab_col: f64,
+}
+
+impl TabDrag {
+    fn new(id: u64, x: f64, grab_col: f64) -> Self {
+        Self { id, start_x: Some(x), grab_col }
+    }
+
+    fn update(&mut self, x: f64, scale: f64) -> bool {
+        const DRAG_THRESHOLD: f64 = 5.0;
+        if self.start_x.is_some_and(|start| (x - start).abs() < DRAG_THRESHOLD * scale) {
+            return false;
+        }
+        self.start_x = None;
+        true
+    }
+}
+
+/// Left column of a dragged tab `width` columns wide: it follows the pointer
+/// (which holds it `grab_col` columns from its left edge) but stays inside the strip.
+fn dragged_left_col(pointer_col: f64, grab_col: f64, width: usize, total: usize) -> i32 {
+    let max_left = total.saturating_sub(width) as f64;
+    (pointer_col - grab_col).round().clamp(0.0, max_left) as i32
+}
+
+/// Start tracking a press on tab `index`; it becomes a drag once the pointer moves.
+pub(super) fn begin_tab_drag(s: &mut State, index: usize) {
+    let total = s.renderer.tab_cols_total();
+    let (c0, _) = tab_span(total, s.tabs.len(), index);
+    let grab_col = s.renderer.column_at(s.pointer.mouse_pos.0) - c0 as f64;
+    s.pointer.tab_drag = Some(TabDrag::new(s.tabs[index].id, s.pointer.mouse_pos.0, grab_col));
+}
+
+/// Finish a drag: the tab slides from where it was dropped into its slot.
+/// Returns whether a press on a tab was being tracked.
+pub(super) fn end_tab_drag(s: &mut State) -> bool {
+    let tracked = s.pointer.tab_drag.take().is_some();
+    if s.tab_anim.dragged().is_some() {
+        s.tab_anim.end_drag();
+        s.window.request_redraw();
+    }
+    tracked
+}
+
+/// Pointer moved while a tab is held: follow it, and swap with a neighbour when
+/// the dragged tab's centre crosses into that neighbour's slot.
+pub(super) fn drag_tab(s: &mut State) {
+    let Some(drag) = s.pointer.tab_drag.as_mut() else { return };
+    let x = s.pointer.mouse_pos.0;
+    if !drag.update(x, s.window.scale_factor()) {
+        return;
+    }
+    let (id, grab_col) = (drag.id, drag.grab_col);
+    let Some(from) = s.tabs.iter().position(|tab| tab.id == id) else {
+        end_tab_drag(s);
+        return;
+    };
+    let (n, total) = (s.tabs.len(), s.renderer.tab_cols_total());
+    let pointer_col = s.renderer.column_at(x);
+    let (c0, c1) = tab_span(total, n, from);
+    let mut left = dragged_left_col(pointer_col, grab_col, c1 - c0, total);
+
+    s.tab_anim.begin_drag(from);
+    let centre = left as usize + (c1 - c0) / 2;
+    let to = tab_slot_at(total, n, centre.min(total - 1));
+    let mut slot = c0;
+    if to != from && move_tab(&mut s.tabs, &mut s.active, from, to) {
+        // Titles are cached in tab order; moving them avoids querying PTY state.
+        if from.max(to) < s.tab_titles.len() {
+            rotate_range(&mut s.tab_titles, from, to);
+        }
+        s.tab_anim.moved(from, to, total);
+        let (n0, n1) = tab_span(total, n, to);
+        slot = n0;
+        // The new slot can be a column wider, so the clamp must use its width.
+        left = dragged_left_col(pointer_col, grab_col, n1 - n0, total);
+    }
+    s.tab_anim.set_dragged_shift(left - slot as i32);
+    s.window.request_redraw();
+}
+
+#[cfg(test)]
+mod reorder_tests {
+    use super::{dragged_left_col, move_tab, TabDrag};
+
+    #[test]
+    fn dragged_tab_follows_the_pointer_and_stays_inside_the_strip() {
+        // Grabbed 3 columns from its left edge, 20 columns wide, 80-column strip.
+        assert_eq!(dragged_left_col(33.0, 3.0, 20, 80), 30);
+        assert_eq!(dragged_left_col(33.4, 3.0, 20, 80), 30, "rounds to a whole column");
+        assert_eq!(dragged_left_col(33.6, 3.0, 20, 80), 31);
+        assert_eq!(dragged_left_col(-40.0, 3.0, 20, 80), 0, "clamped at the left edge");
+        assert_eq!(dragged_left_col(500.0, 3.0, 20, 80), 60, "clamped so the tab ends at the strip");
+        assert_eq!(dragged_left_col(10.0, 0.0, 90, 80), 0, "a tab wider than the strip stays at 0");
+        // Slots of an 81-column strip with two tabs are 40 and 41 wide: the clamp
+        // must use the width of the slot the tab now occupies.
+        assert_eq!(dragged_left_col(200.0, 0.0, 40, 81), 41);
+        assert_eq!(dragged_left_col(200.0, 0.0, 41, 81), 40);
+    }
+
+    #[test]
+    fn drag_threshold_scales_and_stays_started_when_returning_to_origin() {
+        for scale in [1.0, 2.0] {
+            for direction in [-1.0, 1.0] {
+                let mut drag = TabDrag::new(42, 100.0, 0.0);
+                assert!(!drag.update(100.0 + direction * 4.0 * scale, scale));
+                assert!(drag.update(100.0 + direction * 5.0 * scale, scale));
+                assert!(drag.update(100.0, scale));
+                assert_eq!(drag.id, 42);
+            }
+        }
+    }
+
+    #[test]
+    fn reordering_preserves_order_and_active_identity_in_both_directions() {
+        for from in 0..4 {
+            for to in 0..4 {
+                for selected in 0..4 {
+                    let mut tabs = [0, 1, 2, 3];
+                    let mut active = selected;
+                    assert_eq!(move_tab(&mut tabs, &mut active, from, to), from != to);
+                    let mut expected = vec![0, 1, 2, 3];
+                    let moved = expected.remove(from);
+                    expected.insert(to, moved);
+                    assert_eq!(tabs.as_slice(), expected);
+                    assert_eq!(tabs[active], selected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_and_empty_moves_leave_state_unchanged() {
+        let mut tabs = [1, 2];
+        let mut active = 1;
+        assert!(!move_tab(&mut tabs, &mut active, 2, 0));
+        assert!(!move_tab(&mut tabs, &mut active, 0, 2));
+        assert_eq!(tabs, [1, 2]);
+        assert_eq!(active, 1);
+        assert!(!move_tab::<u8>(&mut [], &mut 0, 0, 0));
     }
 }

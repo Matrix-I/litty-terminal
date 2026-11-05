@@ -111,6 +111,16 @@ fn test_shader_wgsl_syntax() {
 }
 
 #[test]
+fn test_uniforms_layout_matches_wgsl() {
+    let module = wgpu::naga::front::wgsl::parse_str(include_str!("../shaders/shader.wgsl")).expect("parse WGSL");
+    let mut layouter = wgpu::naga::proc::Layouter::default();
+    layouter.update(module.to_ctx()).expect("layout WGSL types");
+    let (handle, _) = module.types.iter().find(|(_, ty)| ty.name.as_deref() == Some("Uniforms")).expect("Uniforms struct");
+    assert_eq!(layouter[handle].size as usize, std::mem::size_of::<super::Uniforms>());
+    assert_eq!(layouter[handle].alignment * 1u32, 16, "uniform arrays need 16-byte alignment");
+}
+
+#[test]
 fn test_tab_bar_action_variants() {
     use super::TabBarAction;
     assert_eq!(TabBarAction::Select(0), TabBarAction::Select(0));

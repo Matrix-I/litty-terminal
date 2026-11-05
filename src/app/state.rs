@@ -21,6 +21,8 @@ pub(super) struct State {
     pub(super) renderer: Renderer,
     pub(super) tabs: Vec<Tab>,
     pub(super) tab_titles: Vec<String>,
+    /// Column offsets of tab-bar tabs while one is dragged or settling.
+    pub(super) tab_anim: super::tab_anim::TabAnim,
     pub(super) pane_rects: Vec<PaneRect>,
     pub(super) render_panes: Vec<renderer::RenderPane>,
     pub(super) active: usize,
@@ -139,6 +141,8 @@ pub(super) struct PointerState {
     pub(super) extend_drag: bool,
     /// Pane whose scrollbar thumb is being dragged.
     pub(super) scrollbar_drag: Option<u64>,
+    /// Tab title currently being dragged.
+    pub(super) tab_drag: Option<super::tabs::TabDrag>,
     pub(super) wheel_scroll: scroll::Accumulator,
     /// Mouse pointer outside links: the active pane's OSC 22 shape.
     pub(super) pointer_icon: CursorIcon,

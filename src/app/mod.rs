@@ -10,6 +10,7 @@ mod keyboard;
 mod pointer;
 mod search_ui;
 mod state;
+mod tab_anim;
 mod tabs;
 mod terminal_io;
 mod user_event;
