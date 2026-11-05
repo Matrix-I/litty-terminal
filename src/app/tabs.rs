@@ -620,6 +620,11 @@ pub(super) fn end_tab_drag(s: &mut State) -> bool {
         s.tab_anim.end_drag();
         s.window.request_redraw();
     }
+    if tracked {
+        // The drag may have changed which tab is active; the title bar and window
+        // title would otherwise stay stale until the next click.
+        refresh_tab_titles(s);
+    }
     tracked
 }
 
@@ -658,6 +663,7 @@ pub(super) fn drag_tab(s: &mut State) {
             rotate_range(&mut s.tab_titles, from, to);
         }
         s.tab_anim.moved(from, to, total);
+        refresh_tab_titles(s);
         if let Some(drag) = s.pointer.tab_drag.as_mut() {
             drag.swap = Some(Swap { left, dir: (to as i32 - from as i32).signum() });
         }
