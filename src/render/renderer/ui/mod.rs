@@ -77,8 +77,10 @@ fn warm_overlay_builders_do_not_allocate() {
     let mut dirty=DirtyRows::NONE;
     let mut cells=Cells{atlas:&mut atlas,queue:&queue,instances:&mut instances,cols:160};
     let titles=vec!["shell".into(),"a very long title that must be truncated inside the allocated tab span ".repeat(3)];
-    for _ in 0..3 {tab_bar::build(&mut cells,&titles,0);}
-    assert_eq!(crate::test_alloc::allocations(||tab_bar::build(&mut cells,&titles,0)), 0);
+    let shifts=[0,3];
+    let view=tab_bar::TabBarView{shifts:&shifts,dragged:Some(1),..tab_bar::TabBarView::new(&titles,0)};
+    for _ in 0..3 {tab_bar::build(&mut cells,view);}
+    assert_eq!(crate::test_alloc::allocations(||tab_bar::build(&mut cells,view)), 0);
     let mut search=SearchBar::new();search.query="needle".into();search.total=123;search.current=Some(0);
     for _ in 0..3 {search_box::build(&mut cells,2,40,&search,&mut dirty);}
     assert_eq!(crate::test_alloc::allocations(||search_box::build(&mut cells,2,40,&search,&mut dirty)), 0);

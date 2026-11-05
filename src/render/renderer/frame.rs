@@ -4,7 +4,7 @@
 use super::gpu::{make_instance_buf, make_viewport_buffer};
 use super::pane_row::{build_pane_row, PaneRowCtx};
 use super::ui::{self, DirtyRows};
-use super::{scrollbar_thumb, Instance, RenderPane, Renderer, Uniforms, Viewport};
+use super::{scrollbar_thumb, Instance, RenderPane, Renderer, TabBarView, Uniforms, Viewport, MAX_SHIFTED_TABS};
 use crate::terminal::grid::Hyperlink;
 use crate::render::HistoryView;
 use crate::terminal::search::SearchBar;
@@ -40,7 +40,7 @@ struct ActivePane {
 struct FrameCtx<'a> {
     layout: FrameLayout,
     show_tabs: bool,
-    tab_bar: Option<(&'a [String], usize)>,
+    tab_bar: Option<TabBarView<'a>>,
     hovered_link: Option<(u64, &'a Hyperlink)>,
     /// Active pane's default fg / bg (OSC 10 / 11), sent to the shader.
     defaults: (u32, u32),
@@ -69,7 +69,7 @@ impl Renderer {
     pub fn render_panes(
         &mut self,
         panes: &[RenderPane],
-        tab_bar: Option<(&[String], usize)>,
+        tab_bar: Option<TabBarView<'_>>,
         hovered_link: Option<(u64, &Hyperlink)>,
         cursor_blink_on: bool,
         history_search: Option<HistoryView<'_>>,
@@ -98,13 +98,18 @@ impl Renderer {
         if !self.force_full
             && !is_search_open
             && !self.animate
+            && !tab_bar.is_some_and(|view| view.dirty)
             && self.nothing_changed(panes, active_pane.id, &active, &layout, effective_visible)
         {
             return;
         }
 
         let acquire_start = capture_start.map(|_| std::time::Instant::now());
-        let Some(frame) = self.acquire_frame() else { return };
+        let Some(frame) = self.acquire_frame() else {
+            // The tab bar's change flag was consumed by the caller; keep the rebuild pending.
+            self.force_full |= tab_bar.is_some_and(|view| view.dirty);
+            return;
+        };
         let acquire_ms = acquire_start.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
 
         self.ensure_buffers(layout.instance_count, panes.len());
@@ -121,11 +126,10 @@ impl Renderer {
             active_rect: panes.iter().find(|p| p.is_active).map(|p| p.rect),
         };
 
-        if let Some((titles, active_idx)) = tab_bar
-            && full {
-                ui::tab_bar::build(&mut self.cells(layout.cols), titles, active_idx);
-                dirty.lo = 0;
-                dirty.hi = 0;
+        if let Some(view) = tab_bar
+            && (full || view.dirty) {
+                ui::tab_bar::build(&mut self.cells(layout.cols), view);
+                dirty.mark(0, 0);
             }
         self.collect_pane_instances(panes, &ctx, full, &mut dirty);
         if self.atlas.take_evicted() {
@@ -367,8 +371,8 @@ impl Renderer {
                 if self.atlas.grow_if_needed(&self.device, &self.queue) {
                     self.rebind_atlas();
                 }
-                if let Some((titles, active_idx)) = tab_bar {
-                    ui::tab_bar::build(&mut self.cells(cols), titles, active_idx);
+                if let Some(view) = tab_bar {
+                    ui::tab_bar::build(&mut self.cells(cols), view);
                 }
                 for (pane_index, pane) in panes.iter().enumerate() {
                     let pane_link = hovered_link.filter(|(id, _)| *id == pane.id).map(|(_, l)| l);
@@ -485,9 +489,17 @@ impl Renderer {
         let effective_cursor_visible = cursor_visible;
         let (cx, cy) = cursor.unwrap_or((0, 0));
         let tab_info = match tab_bar {
-            Some((titles, active_idx)) => ((active_idx as u32) << 16) | (titles.len() as u32 & 0xFFFF),
+            Some(view) => ((view.active as u32) << 16) | (view.titles.len() as u32 & 0xFFFF),
             None => 0,
         };
+        let mut tab_shifts = [[0i32; 4]; MAX_SHIFTED_TABS / 4];
+        let mut tab_drag = 0;
+        if let Some(view) = tab_bar {
+            for i in 0..view.titles.len().min(MAX_SHIFTED_TABS) {
+                tab_shifts[i / 4][i % 4] = view.shift(i);
+            }
+            tab_drag = view.dragged.map_or(0, |d| d as u32 + 1);
+        }
         let (underline_y, strike_y) = self.atlas.decoration_offsets();
         Uniforms {
             screen: [self.config.width as f32, self.config.height as f32],
@@ -520,6 +532,9 @@ impl Renderer {
             flip_y: self.postfx.is_some() as u32,
             layer: 0,
             pane_count: ctx.layout.pane_count as u32,
+            tab_drag,
+            tab_pad: [0; 3],
+            tab_shifts,
         }
     }
 

@@ -30,6 +30,11 @@ struct Uniforms {
     flip_y: u32,            // 1 = draw upside down (into a custom-shader texture)
     layer: u32,             // 0 = everything, 1 = backgrounds only, 2 = text only (images under the text)
     pane_count: u32,
+    tab_drag: u32,          // dragged tab + 1 (drawn above the others), 0 = none
+    tab_pad0: u32,
+    tab_pad1: u32,
+    tab_pad2: u32,
+    tab_shifts: array<vec4<i32>, 4>, // column shift of each of the first 16 tabs from its equal-width slot
 };
 
 struct Viewport {
@@ -70,6 +75,10 @@ struct VsOut {
     @location(9) @interpolate(flat) uv0: vec2<f32>,
     @location(10) @interpolate(flat) clip_y: vec2<f32>,
 };
+
+fn tab_shift(i: u32) -> i32 {
+    return u.tab_shifts[i / 4u][i % 4u];
+}
 
 fn unpack(c: u32) -> vec3<f32> {
     return vec3<f32>(f32((c >> 24u) & 255u), f32((c >> 16u) & 255u), f32((c >> 8u) & 255u)) / 255.0;
@@ -362,15 +371,43 @@ fn fs_main(v: VsOut) -> @location(0) vec4<f32> {
         }
 
         // Equal-width rounded capsule pill tabs across columns 0..tab_cols_total.
-        if (v.col < tab_cols_total) {
-            // Find which tab owns `v.col`.
-            var tab_i = (v.col * tab_count) / tab_cols_total;
-            let next_start = ((tab_i + 1u) * tab_cols_total) / tab_count;
-            if (v.col >= next_start && tab_i + 1u < tab_count) {
-                tab_i = tab_i + 1u;
+        // While a tab is dragged or settling, each one is moved by its column shift.
+        var owner = 0u;
+        var owned = false;
+        var shift = 0;
+        if (tab_count > 16u) {
+            // Too many tabs to shift: plain equal slots.
+            owner = (v.col * tab_count) / tab_cols_total;
+            let next_start = ((owner + 1u) * tab_cols_total) / tab_count;
+            if (v.col >= next_start && owner + 1u < tab_count) {
+                owner = owner + 1u;
             }
-            let c0 = (tab_i * tab_cols_total) / tab_count;
-            let c1 = ((tab_i + 1u) * tab_cols_total) / tab_count;
+            owned = true;
+        } else {
+            // Later tabs paint over earlier ones, and the dragged tab paints last.
+            for (var i = 0u; i < tab_count + 1u; i = i + 1u) {
+                var t = i;
+                if (i == tab_count) {
+                    if (u.tab_drag == 0u) { break; }
+                    t = u.tab_drag - 1u;
+                } else if (i + 1u == u.tab_drag) {
+                    continue;
+                }
+                let s = tab_shift(t);
+                let a = i32((t * tab_cols_total) / tab_count) + s;
+                let b = i32(((t + 1u) * tab_cols_total) / tab_count) + s;
+                // A tab that would leave the strip is not drawn, as on the CPU side.
+                if (a >= 0 && b <= i32(tab_cols_total) && i32(v.col) >= a && i32(v.col) < b) {
+                    owner = t;
+                    owned = true;
+                    shift = s;
+                }
+            }
+        }
+        if (v.col < tab_cols_total && owned) {
+            let tab_i = owner;
+            let c0 = i32((tab_i * tab_cols_total) / tab_count) + shift;
+            let c1 = i32(((tab_i + 1u) * tab_cols_total) / tab_count) + shift;
 
             let x0 = u.offset.x + f32(c0) * u.cell.x + 3.0;
             let x1 = u.offset.x + f32(c1) * u.cell.x - 3.0;
@@ -381,16 +418,21 @@ fn fs_main(v: VsOut) -> @location(0) vec4<f32> {
             let d_pill = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - half_h;
 
             let is_active = tab_i == active_tab;
-            let pill_fill = select(
+            let is_dragged = u.tab_drag == tab_i + 1u;
+            var pill_fill = select(
                 vec3<f32>(0.141, 0.145, 0.161), // #242529 inactive pill fill
                 vec3<f32>(0.204, 0.208, 0.231), // #34353b active pill fill
                 is_active,
             );
-            let pill_border = select(
+            var pill_border = select(
                 vec3<f32>(0.208, 0.212, 0.235), // #35363c inactive subtle border
                 vec3<f32>(0.365, 0.373, 0.412), // #5d5f69 active pill border
                 is_active,
             );
+            if (is_dragged) {
+                pill_fill = vec3<f32>(0.255, 0.259, 0.290); // lifted above its neighbours
+                pill_border = vec3<f32>(0.482, 0.490, 0.541);
+            }
 
             let fill_a = clamp(0.5 - d_pill, 0.0, 1.0);
             let border_a = clamp(1.0 - abs(d_pill + 0.65), 0.0, 1.0);

@@ -11,6 +11,9 @@ use super::tabs::close_tab_at;
 use super::tabs::confirm_close;
 use super::tabs::duplicate_active_tab;
 use super::tabs::select_tab;
+use super::tabs::begin_tab_drag;
+use super::tabs::drag_tab;
+use super::tabs::end_tab_drag;
 use super::terminal_io::write_pane_input;
 use super::terminal_io::write_pty;
 use super::window::apply_system_appearance;
@@ -143,6 +146,10 @@ impl App {
             s.window.request_redraw();
         }
         s.renderer.set_mouse(position.x, position.y);
+        if s.pointer.tab_drag.is_some() {
+            drag_tab(s);
+            return;
+        }
         if let Some(pane_id) = s.pointer.scrollbar_drag {
             drag_scrollbar(s, pane_id);
             return;
@@ -202,6 +209,9 @@ impl App {
             _ => None,
         };
         if button == MouseButton::Left {
+            if btn_state == ElementState::Released && end_tab_drag(s) {
+                return;
+            }
             if btn_state == ElementState::Released && s.pointer.scrollbar_drag.take().is_some() {
                 return;
             }
@@ -306,7 +316,10 @@ impl App {
 
                 if let Some(action) = s.renderer.hit_test_tab_bar(s.pointer.mouse_pos.0, s.pointer.mouse_pos.1, &s.tab_titles) {
                     match action {
-                        TabBarAction::Select(idx) => select_tab(s, idx),
+                        TabBarAction::Select(idx) => {
+                            select_tab(s, idx);
+                            begin_tab_drag(s, idx);
+                        },
                         TabBarAction::CloseTab(idx) => close_tab_at(s, idx),
                         TabBarAction::NewTab => duplicate_active_tab(s, &waker),
                     }
@@ -508,6 +521,7 @@ impl App {
     pub(super) fn on_focused(&mut self, id: WindowId, focused: bool) {
         let Some(s) = self.window_mut(id) else { return };
         if !focused {
+            end_tab_drag(s);
             s.pointer.wheel_scroll.reset();
         }
         let was_focused = std::mem::replace(&mut s.focused, focused);

@@ -22,7 +22,7 @@ use winit::window::{CursorIcon, Window};
 use crate::terminal::grid::Grid;
 use super::history_ui::HistorySearch;
 use crate::terminal::pty::Pty;
-use crate::render::renderer::Renderer;
+use crate::render::renderer::{Renderer, TabBarView};
 use crate::terminal::search::SearchBar;
 
 /// Drop the Quick Terminal from the top of its screen: full width, 40% height,
@@ -154,6 +154,7 @@ pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Op
         renderer,
         tabs: vec![tab],
         tab_titles: vec![title],
+        tab_anim: Default::default(),
         pane_rects: Vec::new(),
         render_panes: Vec::new(),
         active: 0,
@@ -170,6 +171,7 @@ pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Op
             click_on_selected_block: false,
             extend_drag: false,
             scrollbar_drag: None,
+            tab_drag: None,
             wheel_scroll: scroll::Accumulator::default(),
             pointer_icon: CursorIcon::Default,
             hovered_link: None,
@@ -455,7 +457,14 @@ pub(super) fn render_active(s: &mut State) {
         refresh_tab_titles(s);
     }
     let inspector = s.inspector.shown.then(|| inspector_lines(s));
-    let tab_bar = (s.tabs.len() > 1).then_some((s.tab_titles.as_slice(), s.active));
+    let animating = s.tab_anim.tick(std::time::Instant::now(), s.tabs.len());
+    let tab_anim_dirty = s.tab_anim.take_dirty();
+    let tab_bar = (s.tabs.len() > 1).then(|| TabBarView {
+        shifts: s.tab_anim.shifts(),
+        dragged: s.tab_anim.dragged(),
+        dirty: tab_anim_dirty,
+        ..TabBarView::new(&s.tab_titles, s.active)
+    });
     let blink_on = cursor_is_visible_now(s);
 
     let show_tabs = s.tabs.len() > 1;
@@ -477,6 +486,10 @@ pub(super) fn render_active(s: &mut State) {
         &s.ime.preedit,
         inspector.as_deref(),
     );
+    // Tabs are still sliding: ask for the next frame (vsync paces it); idle stops here.
+    if animating {
+        s.window.request_redraw();
+    }
 
     // Keep the IME candidate window next to the text cursor.
     let cursor_cell = render_panes.iter().find(|p| p.is_active).and_then(|p| {

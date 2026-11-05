@@ -15,6 +15,7 @@ use pane_row::RowScratch;
 mod ui;
 use gpu::{make_bind_group, make_instance_buf, make_viewport_buffer};
 pub use ui::scrollbar::{scrollbar_thumb, SCROLLBAR_WIDTH};
+pub use ui::tab_bar::{slot_at as tab_slot_at, span as tab_span, TabBarView, MAX_SHIFTED_TABS};
 
 use crate::render::atlas::{Atlas, FontSet};
 use crate::terminal::grid::{Grid, Hyperlink};
@@ -89,9 +90,15 @@ struct Uniforms {
     /// 0 = draw everything, 1 = backgrounds only, 2 = text only (images under the text).
     layer: u32,
     pane_count: u32,
+    /// Tab being dragged plus one, or 0. Its pill is drawn above the others.
+    tab_drag: u32,
+    /// Pads `tab_shifts` to the 16-byte alignment WGSL requires of a uniform array.
+    tab_pad: [u32; 3],
+    /// Column shift of each of the first `MAX_SHIFTED_TABS` tabs, four per vector.
+    tab_shifts: [[i32; 4]; MAX_SHIFTED_TABS / 4],
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 128);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 208);
 const _: () = assert!(std::mem::size_of::<Instance>() == 12);
 
 
@@ -330,6 +337,16 @@ impl Renderer {
         ((rel_x % self.atlas.cell_w.max(1)) as usize, (rel_y % self.atlas.cell_h.max(1)) as usize)
     }
 
+    /// Columns the tab strip shares between tabs (the rest holds the New Tab button).
+    pub fn tab_cols_total(&self) -> usize {
+        ui::tab_bar::available_columns(self.grid_size().0)
+    }
+
+    /// Fractional grid column under window x position `x_px` (negative left of the grid).
+    pub fn column_at(&self, x_px: f64) -> f64 {
+        (x_px - self.origin().0 as f64) / self.atlas.cell_w.max(1) as f64
+    }
+
     pub fn cell_size(&self) -> (u32, u32) {
         (self.atlas.cell_w, self.atlas.cell_h)
     }
@@ -544,19 +561,13 @@ impl Renderer {
         if y_px < 0.0 || y_px >= bar_h {
             return None;
         }
-        let (cols, _) = self.grid_size();
-        let tab_cols_total = ui::tab_bar::available_columns(cols);
+        let tab_cols_total = self.tab_cols_total();
         let col = ((x_px - self.origin().0 as f64).max(0.0) as u32 / self.atlas.cell_w.max(1)) as usize;
         if col >= tab_cols_total {
             return Some(TabBarAction::NewTab);
         }
         let n = titles.len();
-        let mut tab_i = (col * n) / tab_cols_total;
-        let (_, next_start) = ui::tab_bar::span(tab_cols_total, n, tab_i);
-        if col >= next_start && tab_i + 1 < n {
-            tab_i += 1;
-        }
-        let tab_i = tab_i.min(n - 1);
+        let tab_i = ui::tab_bar::slot_at(tab_cols_total, n, col);
         let (c0, c1) = ui::tab_bar::span(tab_cols_total, n, tab_i);
         let span = c1.saturating_sub(c0);
 
