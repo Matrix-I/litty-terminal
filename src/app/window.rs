@@ -77,6 +77,13 @@ pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Op
         .with_visible(!quick)
         .with_transparent(cfg.background_opacity < 1.0)
         .with_inner_size(initial_inner_size);
+    // Wayland app_id / X11 WM_CLASS must match `litty.desktop` and the
+    // hicolor icon name, or the shell shows a generic icon.
+    #[cfg(target_os = "linux")]
+    let attrs = {
+        use winit::platform::wayland::WindowAttributesExtWayland;
+        attrs.with_name("litty", "litty")
+    };
     // Native tabs (`macos-native-tabs`) group under one identifier. Created
     // hidden so AppKit cannot merge a New Window into a tab of the focused one
     // before tabbing is turned off for it; native tabs re-enable it.
