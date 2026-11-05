@@ -9,7 +9,8 @@ optimization candidates are identified separately from reproduced failures.
 
 | Version | Record |
 | --- | --- |
-| [v0.8.1](./docs/plans/0.8.1.md) | Release plan — bug, reliability, and security fixes |
+| [v0.9.0](./docs/plans/0.9.0.md) | Release record (2026-11-05) — ships the v0.8.1 fixes, tab drag-and-drop and the Linux title bar |
+| [v0.8.1](./docs/plans/0.8.1.md) | Historical record — shipped in v0.9.0 (never tagged) |
 | [v0.8.0](./docs/plans/0.8.0.md) | Release record (2026-11-04) — ships the v0.7.3 and v0.7.4 items; open follow-ups are listed in the record |
 | [v0.7.4](./docs/plans/0.7.4.md) | Historical record — items 2.1–2.8 shipped in v0.8.0 (never tagged); Linux feature validation confirmed; historical measurement limits retained |
 | [v0.7.3](./docs/plans/0.7.3.md) | Historical record — 6/6 shipped in v0.8.0 (never tagged); Linux feature validation confirmed; macOS UI verification still pending |
