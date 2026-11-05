@@ -236,6 +236,7 @@ fn build_window(
         ime: ImeState { preedit: String::new(), cursor_cell: None },
         sync_pending: false,
         titles_refreshed_at: std::time::Instant::now(),
+        titled_tab: 0,
         requests: WindowRequests {
             close: false,
             new_window: false,
@@ -378,6 +379,12 @@ fn title_with_host(title: &str, user: &str, host: &str) -> String {
     format!("{user}@{host}:{path}")
 }
 
+/// The window title must be rewritten when a tab title changed or another tab became
+/// active: switching tabs leaves every tab's own title untouched.
+fn window_title_stale(titles_changed: bool, shown_tab: usize, active: usize) -> bool {
+    titles_changed || shown_tab != active
+}
+
 pub(super) fn refresh_tab_titles(s: &mut State) {
     s.titles_refreshed_at = std::time::Instant::now();
     let mut changed = s.tab_titles.len() != s.tabs.len();
@@ -397,7 +404,8 @@ pub(super) fn refresh_tab_titles(s: &mut State) {
             changed = true;
         }
     }
-    if changed {
+    if window_title_stale(changed, s.titled_tab, s.active) {
+        s.titled_tab = s.active;
         if s.show_bar() {
             s.renderer.invalidate();
         }
@@ -665,7 +673,14 @@ pub(super) fn apply_system_appearance(s: &mut State) {
 
 #[cfg(test)]
 mod title_tests {
-    use super::title_with_host;
+    use super::{title_with_host, window_title_stale};
+
+    #[test]
+    fn switching_tabs_rewrites_the_window_title() {
+        assert!(window_title_stale(false, 0, 1));
+        assert!(window_title_stale(true, 1, 1));
+        assert!(!window_title_stale(false, 1, 1));
+    }
 
     #[test]
     fn bare_directories_gain_user_and_host() {

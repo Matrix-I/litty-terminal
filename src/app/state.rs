@@ -55,6 +55,8 @@ pub(super) struct State {
     pub(super) sync_pending: bool,
     /// When tab titles were last recomputed (they also refresh on OSC 0/2/7).
     pub(super) titles_refreshed_at: std::time::Instant,
+    /// The tab whose title the window title currently shows.
+    pub(super) titled_tab: usize,
     pub(super) requests: WindowRequests,
     /// The window is completely covered, minimized or on an inactive Space.
     pub(super) occluded: bool,
