@@ -31,7 +31,7 @@ use winit::window::WindowId;
 
 use crate::terminal::grid::Selection;
 use crate::paste::{history_insert_payload, paste_payload, shell_quote};
-use crate::platform::clipboard::copy_to_clipboard;
+use crate::platform::clipboard::{copy_to_clipboard, copy_to_primary, paste_from_primary};
 use crate::platform::process::open_target;
 use crate::render::renderer::TabBarAction;
 
@@ -222,6 +222,15 @@ impl App {
         if btn_state == ElementState::Released {
             s.pointer.mouse_button_down = None;
         }
+        if button == MouseButton::Middle
+            && btn_state == ElementState::Pressed
+            && !s.history_search.is_open
+            && !s.search.is_open
+            && let Some(text) = paste_from_primary().filter(|t| !t.is_empty())
+        {
+            super::actions::paste_text(s, &text);
+            return;
+        }
         if button != MouseButton::Left {
             return;
         }
@@ -353,8 +362,11 @@ impl App {
                                             g.select_block(pane_row, pane_col)
                                         }
                                     };
-                                    if !line_text.is_empty() && s.config.copy_on_select {
-                                        copy_to_clipboard(&line_text);
+                                    if !line_text.is_empty() {
+                                        copy_to_primary(&line_text);
+                                        if s.config.copy_on_select {
+                                            copy_to_clipboard(&line_text);
+                                        }
                                     }
                                     s.pointer.selecting = false;
                                     s.pointer.drag_moved = false;
@@ -362,8 +374,11 @@ impl App {
                                 }
                                 3 => {
                                     let line_text = pane.grid.lock().select_line(pane_row);
-                                    if !line_text.is_empty() && s.config.copy_on_select {
-                                        copy_to_clipboard(&line_text);
+                                    if !line_text.is_empty() {
+                                        copy_to_primary(&line_text);
+                                        if s.config.copy_on_select {
+                                            copy_to_clipboard(&line_text);
+                                        }
                                     }
                                     s.pointer.selecting = false;
                                     s.pointer.drag_moved = false;
@@ -394,8 +409,11 @@ impl App {
                         if let Some(pane_id) = s.pointer.active_click_pane_id
                             && let Some(pane) = s.tabs.get(s.active).and_then(|t| t.pane(pane_id)) {
                                 let text = pane.grid.lock().selected_text();
-                                if let Some(t) = text.filter(|_| s.config.copy_on_select) {
-                                    copy_to_clipboard(&t);
+                                if let Some(t) = text {
+                                    copy_to_primary(&t);
+                                    if s.config.copy_on_select {
+                                        copy_to_clipboard(&t);
+                                    }
                                 }
                             }
                     } else if s.pointer.click_count == 1 && !s.history_search.is_open

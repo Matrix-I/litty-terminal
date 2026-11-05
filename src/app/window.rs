@@ -93,6 +93,7 @@ pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Op
         attrs.with_tabbing_identifier("litty").with_visible(false)
     };
     let window = Arc::new(event_loop.create_window(attrs).map_err(std::io::Error::other)?);
+    platform::init_clipboard(&window);
     platform::set_tabbing_allowed(&window, false);
     if !quick { window.set_visible(true); }
     // Composed input (Vietnamese Telex/VNI, CJK) arrives as `WindowEvent::Ime`.

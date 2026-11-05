@@ -1,9 +1,73 @@
-//! NSPasteboard has no Linux twin; the subprocess fallback is platform::clipboard.
+//! Wayland clipboard through Litty's own connection (`smithay-clipboard`).
+//!
+//! The `wl-copy` / `wl-paste` subprocess fallback (platform::clipboard) needs a
+//! temporary window on compositors without data-control (GNOME), which flashes
+//! in the dock on every copy and paste. On X11 these return `None` / `false`
+//! and the subprocess fallback is used.
 
-pub fn clipboard_string() -> Option<String> {
-    None
+use parking_lot::Mutex;
+use smithay_clipboard::Clipboard;
+use std::sync::{Arc, OnceLock, mpsc};
+use std::time::Duration;
+
+static CLIPBOARD: OnceLock<Arc<Mutex<Clipboard>>> = OnceLock::new();
+
+/// Attach to the window's `wl_display`. No-op on X11 and after the first call.
+pub fn init_clipboard(window: &winit::window::Window) {
+    use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    if CLIPBOARD.get().is_some() {
+        return;
+    }
+    if let Ok(handle) = window.display_handle()
+        && let RawDisplayHandle::Wayland(wl) = handle.as_raw()
+    {
+        // SAFETY: the display outlives the process-lifetime static; winit never
+        // closes it while windows exist and the app exits without dropping it.
+        let clipboard = unsafe { Clipboard::new(wl.display.as_ptr()) };
+        let _ = CLIPBOARD.set(Arc::new(Mutex::new(clipboard)));
+    }
 }
 
-pub fn clipboard_write_string(_s: &str) -> bool {
-    false
+/// Bounded load: `None` means "unavailable, use the subprocess fallback"; an
+/// empty selection is `Some("")` so no helper window flashes for it.
+fn load(primary: bool) -> Option<String> {
+    let clipboard = CLIPBOARD.get()?.clone();
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("litty-wl-clipboard".into())
+        .stack_size(128 * 1024)
+        .spawn(move || {
+            let Some(guard) = clipboard.try_lock() else { return };
+            let result = if primary { guard.load_primary() } else { guard.load() };
+            let _ = tx.send(result.unwrap_or_default());
+        })
+        .ok()?;
+    rx.recv_timeout(Duration::from_millis(500)).ok()
+}
+
+fn store(text: &str, primary: bool) -> bool {
+    let Some(clipboard) = CLIPBOARD.get() else { return false };
+    let Some(guard) = clipboard.try_lock() else { return false };
+    if primary {
+        guard.store_primary(text);
+    } else {
+        guard.store(text);
+    }
+    true
+}
+
+pub fn clipboard_string() -> Option<String> {
+    load(false)
+}
+
+pub fn clipboard_write_string(s: &str) -> bool {
+    store(s, false)
+}
+
+pub fn primary_string() -> Option<String> {
+    load(true)
+}
+
+pub fn primary_write_string(s: &str) -> bool {
+    store(s, true)
 }

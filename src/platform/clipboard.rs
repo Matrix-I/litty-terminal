@@ -17,10 +17,54 @@ fn clipboard_command(bin: &str) -> std::process::Command {
 static IN_FLIGHT_COPIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 const MAX_CONCURRENT_COPIES: usize = 2;
 
+type Helpers = &'static [(&'static str, &'static [&'static str])];
+
 pub(crate) fn copy_to_clipboard(text: &str) {
     if platform::clipboard_write_string(text) {
         return;
     }
+    #[cfg(target_os = "macos")]
+    let cmds: Helpers = &[("/usr/bin/pbcopy", &[])];
+    #[cfg(not(target_os = "macos"))]
+    let cmds: Helpers = &[
+        ("wl-copy", &[]),
+        ("xclip", &["-selection", "clipboard"]),
+        ("xsel", &["-ib"]),
+    ];
+    copy_with(text, cmds);
+}
+
+/// Set the X11 / Wayland PRIMARY selection (middle-click paste). No-op on macOS.
+pub(crate) fn copy_to_primary(text: &str) {
+    if platform::primary_write_string(text) {
+        return;
+    }
+    #[cfg(not(target_os = "macos"))]
+    copy_with(text, &[
+        ("wl-copy", &["--primary"]),
+        ("xclip", &["-selection", "primary"]),
+        ("xsel", &["-ip"]),
+    ]);
+    #[cfg(target_os = "macos")]
+    let _ = text;
+}
+
+/// Read the PRIMARY selection. `None` on macOS or when no helper succeeds.
+pub(crate) fn paste_from_primary() -> Option<String> {
+    if let Some(text) = platform::primary_string() {
+        return Some(text);
+    }
+    #[cfg(not(target_os = "macos"))]
+    return read_clipboard_with(&[
+        ("wl-paste", &["--primary", "-n"]),
+        ("xclip", &["-selection", "primary", "-o"]),
+        ("xsel", &["-op"]),
+    ]);
+    #[cfg(target_os = "macos")]
+    None
+}
+
+fn copy_with(text: &str, cmds: Helpers) {
     if IN_FLIGHT_COPIES.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= MAX_CONCURRENT_COPIES {
         IN_FLIGHT_COPIES.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         return;
@@ -39,15 +83,6 @@ pub(crate) fn copy_to_clipboard(text: &str) {
             let _guard = Guard;
             use std::io::Write;
             use std::process::Stdio;
-
-            #[cfg(target_os = "macos")]
-            let cmds: &[(&str, &[&str])] = &[("/usr/bin/pbcopy", &[])];
-            #[cfg(not(target_os = "macos"))]
-            let cmds: &[(&str, &[&str])] = &[
-                ("wl-copy", &[]),
-                ("xclip", &["-selection", "clipboard"]),
-                ("xsel", &["-ib"]),
-            ];
 
             for (bin, args) in cmds {
                 if let Ok(mut child) = clipboard_command(bin)
@@ -143,7 +178,7 @@ fn read_clipboard_child(command: &mut std::process::Command, deadline: std::time
 }
 
 /// Run the clipboard helpers in order on a worker thread and return the first
-/// successful output, waiting at most 100ms and killing any hung child process.
+/// successful output, waiting at most 500ms and killing any hung child process.
 pub(crate) fn read_clipboard_with(cmds: &'static [(&'static str, &'static [&'static str])]) -> Option<String> {
     if IN_FLIGHT_PASTES.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= MAX_CONCURRENT_PASTES {
         IN_FLIGHT_PASTES.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
@@ -161,7 +196,7 @@ pub(crate) fn read_clipboard_with(cmds: &'static [(&'static str, &'static [&'sta
                 }
             }
             let _guard = Guard;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(95);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(450);
             for (bin, args) in cmds {
                 if std::time::Instant::now() >= deadline { break; }
                 if let Some(bytes) = read_clipboard_child(clipboard_command(bin).args(*args), deadline, MAX_CLIPBOARD_BYTES)
@@ -178,7 +213,7 @@ pub(crate) fn read_clipboard_with(cmds: &'static [(&'static str, &'static [&'sta
         return None;
     }
 
-    rx.recv_timeout(std::time::Duration::from_millis(100)).ok().flatten()
+    rx.recv_timeout(std::time::Duration::from_millis(500)).ok().flatten()
 }
 
 #[cfg(test)]

@@ -141,32 +141,9 @@ pub(super) fn run_tab_action(
             }
         }
         A::Paste => {
-            if let Some(text) = paste_from_clipboard().filter(|t| !t.is_empty())
-                && let Some(pane) = s.tabs[s.active].active_pane() {
-                    let bracketed = {
-                        let mut g = pane.grid.lock();
-                        g.reset_display();
-                        g.modes.bracketed_paste
-                    };
-                    let has_newlines = text.contains('\n') || text.contains('\r');
-                    if !bracketed && has_newlines {
-                        let line_count = text.lines().count().max(2);
-                        let preview = text
-                            .lines()
-                            .take(3)
-                            .map(|l| if l.len() > 60 { format!("{}…", &l[..60]) } else { l.to_string() })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        let msg = format!(
-                            "Pasting {line_count} lines into a shell without bracketed paste may execute commands immediately.\n\nPreview:\n{preview}\n\nDo you want to paste anyway?"
-                        );
-                        if !platform::confirm("Confirm Multi-Line Paste", &msg, "Paste") {
-                            return true;
-                        }
-                    }
-                    write_pane_input(pane,&mut s.ai,&paste_payload(&text, bracketed));
-                    s.window.request_redraw();
-                }
+            if let Some(text) = paste_from_clipboard().filter(|t| !t.is_empty()) {
+                return paste_text(s, &text);
+            }
         }
         // A single in-window tab: move between native macOS tabs, if any.
         A::PrevTab if tabs < 2 => return platform::select_native_tab(&s.window, -1, None),
@@ -202,6 +179,36 @@ pub(super) fn run_tab_action(
             }
         }
         A::Quit | A::Minimize | A::OpenConfig | A::ReloadConfig | A::NewTab | A::NewWindow | A::CheckUpdate | A::ToggleQuickTerminal => {}
+    }
+    true
+}
+
+/// Write pasted text to the active pane (bracketed paste, multi-line confirm).
+pub(super) fn paste_text(s: &mut State, text: &str) -> bool {
+    if let Some(pane) = s.tabs[s.active].active_pane() {
+        let bracketed = {
+            let mut g = pane.grid.lock();
+            g.reset_display();
+            g.modes.bracketed_paste
+        };
+        let has_newlines = text.contains('\n') || text.contains('\r');
+        if !bracketed && has_newlines {
+            let line_count = text.lines().count().max(2);
+            let preview = text
+                .lines()
+                .take(3)
+                .map(|l| if l.len() > 60 { format!("{}…", &l[..60]) } else { l.to_string() })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let msg = format!(
+                "Pasting {line_count} lines into a shell without bracketed paste may execute commands immediately.\n\nPreview:\n{preview}\n\nDo you want to paste anyway?"
+            );
+            if !platform::confirm("Confirm Multi-Line Paste", &msg, "Paste") {
+                return true;
+            }
+        }
+        write_pane_input(pane, &mut s.ai, &paste_payload(text, bracketed));
+        s.window.request_redraw();
     }
     true
 }
