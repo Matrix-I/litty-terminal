@@ -3,6 +3,7 @@ name = "litty"
 version = "0.8.0"
 edition = "2024"
 description = "Minimal GPU terminal: <50MB RAM, 0% idle CPU (Metal on macOS, Vulkan on Linux)"
+license = "MIT"
 
 [[bin]]
 name = "litty"
