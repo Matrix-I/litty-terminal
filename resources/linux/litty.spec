@@ -35,6 +35,8 @@ Requires: libXrandr.so.2()(64bit)
 Recommends: mesa-vulkan-drivers
 Recommends: dejavu-sans-mono-fonts
 Recommends: xdg-utils
+Recommends: wl-clipboard
+Recommends: xclip
 
 %description
 Litty renders terminal sessions with Vulkan and supports tabs, splits,
