@@ -7,7 +7,7 @@ use super::window::spawn_pane;
 use super::window::sync_size;
 use super::window::tab_title;
 use super::tab_tearoff::{follow_torn_window, tear_off_while_dragging};
-use crate::render::renderer::{tab_slot_at, tab_span};
+use crate::render::renderer::tab_span;
 use winit::window::WindowId;
 
 use crate::platform;
@@ -487,6 +487,15 @@ pub(super) struct TabDrag {
     /// Columns between the tab's left edge and the pointer when it was grabbed.
     grab_col: f64,
     detach: Detach,
+    /// Where the last swap happened, so the opposite swap needs a real retreat.
+    swap: Option<Swap>,
+}
+
+/// A swap of the dragged tab: its left column then, and the direction it moved (+1 right).
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Swap {
+    left: i32,
+    dir: i32,
 }
 
 /// Whether the held tab has left the tab bar for a window of its own.
@@ -501,7 +510,7 @@ enum Detach {
 
 impl TabDrag {
     fn new(id: u64, x: f64, grab_col: f64) -> Self {
-        Self { id, start_x: Some(x), grab_col, detach: Detach::No }
+        Self { id, start_x: Some(x), grab_col, detach: Detach::No, swap: None }
     }
 
     /// Session ID of the held tab.
@@ -550,6 +559,41 @@ fn dragged_left_col(pointer_col: f64, grab_col: f64, width: usize, total: usize)
     (pointer_col - grab_col).round().clamp(0.0, max_left) as i32
 }
 
+/// Share of its own width a dragged tab must overlap a neighbour's slot before they swap.
+const SWAP_OVERLAP: f64 = 0.2;
+/// Share of its own width the tab must retreat after a swap before it may swap back.
+/// A swap moves the tab by a whole slot, so right after it the tab overlaps the slot it
+/// just left by far more than `SWAP_OVERLAP`; without this margin it would swap straight back.
+const SWAP_RETREAT: f64 = 0.1;
+
+/// Slot a tab dragged from `from` (left edge at column `left`) belongs in: it moves past
+/// every neighbour whose slot it overlaps by at least `SWAP_OVERLAP` of its own width,
+/// except that undoing the `last` swap needs a retreat of `SWAP_RETREAT`.
+fn reorder_target(left: i32, from: usize, n: usize, total: usize, last: Option<Swap>) -> usize {
+    let (c0, c1) = tab_span(total, n, from);
+    let width = (c1 - c0) as f64;
+    let (l, right) = (f64::from(left), f64::from(left) + width);
+    let need = SWAP_OVERLAP * width;
+    let mut to = from;
+    for j in from + 1..n {
+        let (j0, _) = tab_span(total, n, j);
+        if right - j0 as f64 >= need { to = j } else { break }
+    }
+    if to == from {
+        for j in (0..from).rev() {
+            let (_, j1) = tab_span(total, n, j);
+            if j1 as f64 - l >= need { to = j } else { break }
+        }
+    }
+    let dir = (to as i32 - from as i32).signum();
+    // Columns the tab has moved back against the direction of the last swap.
+    let retreat = last.filter(|swap| swap.dir == -dir).map(|swap| f64::from((swap.left - left) * swap.dir));
+    if retreat.is_some_and(|columns| columns < SWAP_RETREAT * width) {
+        return from;
+    }
+    to
+}
+
 /// Start tracking a press on tab `index`; it becomes a drag once the pointer moves.
 pub(super) fn begin_tab_drag(s: &mut State, index: usize) {
     let total = s.renderer.tab_cols_total();
@@ -595,8 +639,8 @@ pub(super) fn drag_tab(s: &mut State) {
     let (c0, c1) = tab_span(total, n, from);
     let mut left = dragged_left_col(pointer_col, grab_col, c1 - c0, total);
 
-    let centre = left as usize + (c1 - c0) / 2;
-    let to = tab_slot_at(total, n, centre.min(total - 1));
+    let last = s.pointer.tab_drag.as_ref().and_then(|drag| drag.swap);
+    let to = reorder_target(left, from, n, total, last);
     let mut slot = c0;
     if to != from && move_tab(&mut s.tabs, &mut s.active, from, to) {
         // Titles are cached in tab order; moving them avoids querying PTY state.
@@ -604,6 +648,9 @@ pub(super) fn drag_tab(s: &mut State) {
             rotate_range(&mut s.tab_titles, from, to);
         }
         s.tab_anim.moved(from, to, total);
+        if let Some(drag) = s.pointer.tab_drag.as_mut() {
+            drag.swap = Some(Swap { left, dir: (to as i32 - from as i32).signum() });
+        }
         let (n0, n1) = tab_span(total, n, to);
         slot = n0;
         // The new slot can be a column wider, so the clamp must use its width.
@@ -615,7 +662,48 @@ pub(super) fn drag_tab(s: &mut State) {
 
 #[cfg(test)]
 mod reorder_tests {
-    use super::{dragged_left_col, move_tab, TabDrag};
+    use super::{dragged_left_col, move_tab, reorder_target, Swap, TabDrag};
+
+    #[test]
+    fn a_twenty_percent_overlap_swaps_with_the_neighbour() {
+        // Four tabs of 20 columns in an 80-column strip.
+        assert_eq!(reorder_target(20, 1, 4, 80, None), 1, "exactly in its own slot");
+        assert_eq!(reorder_target(23, 1, 4, 80, None), 1, "3 of 20 columns into the next slot");
+        assert_eq!(reorder_target(24, 1, 4, 80, None), 2, "4 of 20 columns into the next slot");
+        assert_eq!(reorder_target(17, 1, 4, 80, None), 1, "3 of 20 columns into the previous slot");
+        assert_eq!(reorder_target(16, 1, 4, 80, None), 0, "4 of 20 columns into the previous slot");
+        assert_eq!(reorder_target(60, 0, 4, 80, None), 3, "a long drag passes several tabs at once");
+    }
+
+    #[test]
+    fn swapping_back_needs_a_retreat_so_the_tab_does_not_flap() {
+        let swap = Some(Swap { left: 24, dir: 1 });
+        // Just swapped right at left=24: the tab now sits at index 2 but over slot 1.
+        assert_eq!(reorder_target(24, 2, 4, 80, swap), 2, "no retreat yet");
+        assert_eq!(reorder_target(23, 2, 4, 80, swap), 2, "1 column back is not enough");
+        assert_eq!(reorder_target(22, 2, 4, 80, swap), 1, "2 columns (10%) back swaps again");
+        assert_eq!(reorder_target(30, 2, 4, 80, swap), 2, "moving on to the right keeps the slot");
+    }
+
+    #[test]
+    fn sweeping_the_pointer_one_way_swaps_each_slot_once() {
+        let (n, total) = (4, 80);
+        for (range, dir) in [((0..60).collect::<Vec<i32>>(), 1), ((0..60).rev().collect(), -1)] {
+            let mut at = if dir == 1 { 0 } else { 3 };
+            let mut last = None;
+            let mut swaps = 0;
+            for left in range {
+                let to = reorder_target(left, at, n, total, last);
+                if to != at {
+                    last = Some(Swap { left, dir: (to as i32 - at as i32).signum() });
+                    at = to;
+                    swaps += 1;
+                }
+            }
+            assert_eq!(swaps, 3, "dir={dir}");
+            assert_eq!(at, if dir == 1 { 3 } else { 0 });
+        }
+    }
 
     #[test]
     fn dragged_tab_follows_the_pointer_and_stays_inside_the_strip() {
