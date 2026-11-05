@@ -105,10 +105,9 @@ pub(super) fn handle_key(
         return;
     };
     let pane_id = pane.id;
-    if s.ai.get(&pane_id).is_some_and(|a| a.busy) {
+    if let Some(ai) = s.ai.get_mut(&pane_id).filter(|a| a.busy) {
         let cancel = keymap::ai_cancel(&ev.logical_key, m);
         if cancel {
-            let ai = s.ai.get_mut(&pane_id).unwrap();
             ai.cancel_request();
             if ai.authorized.take().is_some() {
                 // A canceled bridge must not leave input waiting for a worker
@@ -135,7 +134,7 @@ pub(super) fn handle_key(
             if let Some(bytes) =
                 encode_terminal_key(ev, m, s.locks, app_cursor, kitty_flags, modify_other_keys)
             {
-                s.ai.get_mut(&pane_id).unwrap().enqueue(&bytes);
+                ai.enqueue(&bytes);
             }
         }
         consume_key(s, ev);
