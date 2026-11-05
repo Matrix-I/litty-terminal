@@ -37,7 +37,8 @@ use crate::terminal::grid::Selection;
 use crate::paste::{history_insert_payload, paste_payload, shell_quote};
 use crate::platform::clipboard::{copy_to_clipboard, copy_to_primary, paste_from_primary};
 use crate::platform::process::open_target;
-use crate::render::renderer::TabBarAction;
+use crate::render::renderer::{TabBarAction, WindowControl};
+use super::csd::{update_corner_radius, begin_edge_resize, run_control, toggle_maximized, update_edge_cursor};
 
 
 impl App {
@@ -69,6 +70,7 @@ impl App {
             WindowEvent::Resized(size) => {
                 if size.width > 0 && size.height > 0 {
                     s.renderer.resize(size.width, size.height);
+                    update_corner_radius(s);
                     sync_size(s);
                     s.window.request_redraw();
                 }
@@ -79,6 +81,7 @@ impl App {
                 s.renderer.set_font_px(px, scale_factor);
                 let sz = s.window.inner_size();
                 s.renderer.resize(sz.width, sz.height);
+                update_corner_radius(s);
                 sync_size(s);
                 platform::apply_window_config(&s.window, &(&s.config).into());
                 s.window.request_redraw();
@@ -147,6 +150,23 @@ impl App {
             s.window.request_redraw();
         }
         s.renderer.set_mouse(position.x, position.y);
+        if s.csd
+            && !s.pointer.selecting
+            && s.pointer.scrollbar_drag.is_none()
+            && s.pointer.tab_drag.is_none()
+            && s.pointer.drag_holder.is_none()
+        {
+            let on_edge = update_edge_cursor(s);
+            if on_edge != s.pointer.on_edge {
+                s.pointer.on_edge = on_edge;
+                if !on_edge {
+                    s.window.set_cursor(s.pointer.pointer_icon);
+                }
+            }
+            if on_edge {
+                return;
+            }
+        }
         if s.pointer.drag_holder.is_some() {
             ping_drag(s);
             return;
@@ -170,14 +190,14 @@ impl App {
         }
         if s.pointer.selecting {
             if let (Some(start), Some(pane_id)) = (s.pointer.last_click_cell, s.pointer.active_click_pane_id) {
-                let show_tabs = s.tabs.len() > 1;
-                let (cols, rows) = s.renderer.grid_size_for_tabs(show_tabs);
-                if let Some((cell_row, cell_col)) = s.renderer.pixel_to_cell(position.x, position.y, show_tabs, cols, rows) {
+                let bands = s.bands();
+                let (cols, rows) = s.renderer.grid_size_for_tabs(bands);
+                if let Some((cell_row, cell_col)) = s.renderer.pixel_to_cell(position.x, position.y, bands, cols, rows) {
                     let tab = &s.tabs[s.active];
                     let rects = tab.compute_pane_rects(cols, rows);
                     if let Some(target) = rects.iter().find(|r| r.id == pane_id) {
                         let pane_col = cell_col.saturating_sub(target.col).min(target.cols.saturating_sub(1));
-                        let top = s.renderer.cell_origin_px(target.row, target.col, show_tabs).1;
+                        let top = s.renderer.cell_origin_px(target.row, target.col, bands).1;
                         let (pane_row, pane_col) = tab.pane(pane_id).map_or((cell_row.saturating_sub(target.row), pane_col), |p| {
                             let g = p.grid.lock();
                             let row = g.viewport_row(position.y - top, s.renderer.cell_size().1 as f64);
@@ -274,12 +294,12 @@ impl App {
                 && let Some((x0, y0, popup_w, popup_h, visible_rows)) =
                     s.renderer.history_popup_geometry(&s.history_search.view())
                 {
-                    let show_tabs = s.tabs.len() > 1;
-                    let (cols, rows) = s.renderer.grid_size_for_tabs(show_tabs);
+                    let bands = s.bands();
+                    let (cols, rows) = s.renderer.grid_size_for_tabs(bands);
                     if let Some((cell_row, cell_col)) =
-                        s.renderer.pixel_to_cell(s.pointer.mouse_pos.0, s.pointer.mouse_pos.1, show_tabs, cols, rows)
+                        s.renderer.pixel_to_cell(s.pointer.mouse_pos.0, s.pointer.mouse_pos.1, bands, cols, rows)
                     {
-                        let r = if show_tabs { cell_row + 1 } else { cell_row };
+                        let r = cell_row + bands;
                         let c = cell_col;
                         if c < x0 || c >= x0 + popup_w || r < y0 || r >= y0 + popup_h {
                             s.history_search.close();
@@ -324,6 +344,9 @@ impl App {
         }
         match btn_state {
             ElementState::Pressed => {
+                if begin_edge_resize(s) {
+                    return;
+                }
                 #[cfg(target_os = "macos")]
                 let cmd_pressed = s.mods.super_key();
                 #[cfg(not(target_os = "macos"))]
@@ -347,6 +370,25 @@ impl App {
                         },
                         TabBarAction::CloseTab(idx) => close_tab_at(s, idx),
                         TabBarAction::NewTab => duplicate_active_tab(s, &waker),
+                        TabBarAction::Control(WindowControl::Close) => {
+                            if confirm_close(&s.config, s.tabs.iter().flat_map(|t| &t.panes), "this window") {
+                                s.ai.clear();
+                                s.tabs.clear();
+                                close_last_window(s);
+                            }
+                        }
+                        TabBarAction::Control(control) => run_control(s, control),
+                        TabBarAction::TitleBar => {
+                            let now = std::time::Instant::now();
+                            let double = s.pointer.last_title_click.take()
+                                .is_some_and(|t| now.duration_since(t).as_millis() <= 400);
+                            if double {
+                                toggle_maximized(s);
+                            } else {
+                                s.pointer.last_title_click = Some(now);
+                                let _ = s.window.drag_window();
+                            }
+                        }
                     }
                     return;
                 }

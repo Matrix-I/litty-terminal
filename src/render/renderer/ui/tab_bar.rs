@@ -17,14 +17,28 @@ pub struct TabBarView<'a> {
     pub dragged: Option<usize>,
     /// The shifts changed since the last frame, so the strip must be rebuilt.
     pub dirty: bool,
+    /// A title bar band sits above the strip (Linux client-side decorations).
+    pub titlebar: bool,
+    /// Text of the title bar: the full window title.
+    pub title: &'a str,
 }
 
 impl<'a> TabBarView<'a> {
     pub fn new(titles: &'a [String], active: usize) -> Self {
-        Self { titles, active, shifts: &[], dragged: None, dirty: false }
+        Self { titles, active, shifts: &[], dragged: None, dirty: false, titlebar: false, title: "" }
     }
 
     /// Column shift of tab `index`; zero when there are too many tabs to shift.
+    /// Whether the tab strip is shown: always without a title bar, with two or more tabs under one.
+    pub fn has_strip(&self) -> bool {
+        !self.titlebar || self.titles.len() > 1
+    }
+
+    /// Rows of bands at the top of the window: the title bar and the tab strip.
+    pub fn bands(&self) -> usize {
+        usize::from(self.titlebar) + usize::from(self.has_strip())
+    }
+
     pub fn shift(&self, index: usize) -> i32 {
         if self.titles.len() > MAX_SHIFTED_TABS {
             return 0;
@@ -34,18 +48,49 @@ impl<'a> TabBarView<'a> {
 }
 
 pub(in crate::render::renderer) fn build(cells: &mut Cells, view: TabBarView) {
+    let mut row = 0;
+    if view.titlebar {
+        build_title(cells, view.title);
+        row = 1;
+    }
+    if view.has_strip() {
+        build_strip(cells, view, row);
+    }
+}
+
+/// Title bar row: the full window title centered, clear of the window buttons at the right.
+fn build_title(cells: &mut Cells, title: &str) {
+    const TITLE_FG: u32 = 0xF2F2_F780;
+    let cols = cells.cols;
+    for dst in &mut cells.instances[0..cols] {
+        *dst = Instance { glyph: 0, fg: TITLE_FG, bg: 0 };
+    }
+    // The title is centered on the window; the buttons' columns on each side stay free.
+    let avail = cols.saturating_sub(2 * CONTROL_COLS);
+    let count = title.chars().count();
+    let shown = count.min(avail);
+    let start = (cols - shown) / 2;
+    for (k, ch) in title.chars().take(shown).enumerate() {
+        let ch = if count > avail && k + 1 == shown { '…' } else { ch };
+        let slot = cells.atlas.slot(cells.queue, ch as u32);
+        cells.instances[start + k] = Instance { glyph: slot as u32, fg: TITLE_FG, bg: 0 };
+    }
+}
+
+fn build_strip(cells: &mut Cells, view: TabBarView, row: usize) {
     let cols = cells.cols;
     const INACTIVE_FG: u32 = 0x8E90_9980;
     const BAR_BG: u32 = 0x1C1D_2080;
+    let base = row * cols;
 
-    for dst in &mut cells.instances[0..cols] {
+    for dst in &mut cells.instances[base..base + cols] {
         *dst = Instance { glyph: 0, fg: INACTIVE_FG, bg: BAR_BG };
     }
 
-    let total = available_columns(cols);
+    let total = strip_columns(cols);
     let n = view.titles.len().max(1);
     for i in draw_order(view.titles.len(), view.dragged) {
-        draw_tab(cells, view, total, n, i);
+        draw_tab(cells, view, base, total, n, i);
     }
 }
 
@@ -55,7 +100,7 @@ fn draw_order(count: usize, dragged: Option<usize>) -> impl Iterator<Item = usiz
     (0..count).filter(move |&i| Some(i) != dragged).chain(dragged)
 }
 
-fn draw_tab(cells: &mut Cells, view: TabBarView, total: usize, n: usize, i: usize) {
+fn draw_tab(cells: &mut Cells, view: TabBarView, base: usize, total: usize, n: usize, i: usize) {
     const ACTIVE_FG: u32 = 0xF2F2_F780;
     const ACTIVE_BADGE_FG: u32 = 0xA6A8_B380;
     const INACTIVE_FG: u32 = 0x8E90_9980;
@@ -64,7 +109,7 @@ fn draw_tab(cells: &mut Cells, view: TabBarView, total: usize, n: usize, i: usiz
 
     let Some((c0, c1)) = shifted_span(total, n, i, view.shift(i)) else { return };
     // A tab drawn over a neighbour must not show the neighbour's glyphs.
-    for dst in &mut cells.instances[c0..c1] {
+    for dst in &mut cells.instances[base + c0..base + c1] {
         *dst = Instance { glyph: 0, fg: INACTIVE_FG, bg: BAR_BG };
     }
     let span = c1.saturating_sub(c0);
@@ -81,7 +126,7 @@ fn draw_tab(cells: &mut Cells, view: TabBarView, total: usize, n: usize, i: usiz
     // Left-aligned close button ('✕' at c0 + 1)
     let left_reserve = if shows_close(span) {
         let close_slot = cells.atlas.slot(cells.queue, '✕' as u32);
-        cells.instances[c0 + 1] = Instance { glyph: close_slot as u32, fg: badge_fg, bg: BAR_BG };
+        cells.instances[base + c0 + 1] = Instance { glyph: close_slot as u32, fg: badge_fg, bg: BAR_BG };
         3
     } else {
         1
@@ -97,8 +142,8 @@ fn draw_tab(cells: &mut Cells, view: TabBarView, total: usize, n: usize, i: usiz
         let bx = c1 - 3;
         let s0 = cells.atlas.slot(cells.queue, mod_ch as u32);
         let s1 = cells.atlas.slot(cells.queue, digit as u32);
-        cells.instances[bx] = Instance { glyph: s0 as u32, fg: badge_fg, bg: BAR_BG };
-        cells.instances[bx + 1] = Instance { glyph: s1 as u32, fg: badge_fg, bg: BAR_BG };
+        cells.instances[base + bx] = Instance { glyph: s0 as u32, fg: badge_fg, bg: BAR_BG };
+        cells.instances[base + bx + 1] = Instance { glyph: s1 as u32, fg: badge_fg, bg: BAR_BG };
         4
     } else {
         1
@@ -118,7 +163,7 @@ fn draw_tab(cells: &mut Cells, view: TabBarView, total: usize, n: usize, i: usiz
         let x = start_col + k;
         if x < c1.saturating_sub(badge_reserve) && x < cells.cols {
             let slot = cells.atlas.slot(cells.queue, ch as u32);
-            cells.instances[x] = Instance { glyph: slot as u32, fg, bg: BAR_BG };
+            cells.instances[base + x] = Instance { glyph: slot as u32, fg, bg: BAR_BG };
         }
     }
 }
@@ -195,8 +240,35 @@ mod tests {
     }
 }
 
-/// The two final columns are reserved for New Tab, even in narrow windows.
-pub fn available_columns(cols: usize) -> usize { cols.saturating_sub(2).max(1) }
+/// Columns taken by the window buttons at the right end of the title bar: three, two columns each.
+pub const CONTROL_COLS: usize = 6;
+
+/// Columns the tab strip shares between tabs. The two final columns are reserved for
+/// New Tab, even in narrow windows.
+pub fn strip_columns(cols: usize) -> usize {
+    cols.saturating_sub(2).max(1)
+}
+
+/// A window button in the title bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowControl {
+    Minimize,
+    Maximize,
+    Close,
+}
+
+/// Window button under column `col` of a `cols`-wide title bar.
+pub fn control_at(cols: usize, col: usize) -> Option<WindowControl> {
+    let first = cols.checked_sub(CONTROL_COLS)?;
+    if col < first || col >= cols {
+        return None;
+    }
+    Some(match (col - first) / 2 {
+        0 => WindowControl::Minimize,
+        1 => WindowControl::Maximize,
+        _ => WindowControl::Close,
+    })
+}
 
 /// Columns `c0..c1` of tab `index` when `count` tabs share `available` columns equally.
 pub fn span(available: usize, count: usize, index: usize) -> (usize, usize) {
@@ -227,9 +299,35 @@ pub(in crate::render::renderer) fn shows_close(width: usize) -> bool { width >= 
 
 #[cfg(test)]
 #[test]
+fn title_bar_window_buttons_sit_at_the_right_end() {
+    assert_eq!(control_at(80, 73), None);
+    assert_eq!(control_at(80, 74), Some(WindowControl::Minimize));
+    assert_eq!(control_at(80, 75), Some(WindowControl::Minimize));
+    assert_eq!(control_at(80, 76), Some(WindowControl::Maximize));
+    assert_eq!(control_at(80, 78), Some(WindowControl::Close));
+    assert_eq!(control_at(80, 79), Some(WindowControl::Close));
+    assert_eq!(control_at(80, 80), None);
+    assert_eq!(control_at(4, 3), None, "too narrow for buttons");
+}
+
+#[cfg(test)]
+#[test]
+fn title_bar_sits_above_the_strip_once_there_are_two_tabs() {
+    let one = vec![String::new()];
+    let two = vec![String::new(); 2];
+    let bands = |titlebar, titles: &[String]| TabBarView { titlebar, ..TabBarView::new(titles, 0) }.bands();
+    assert_eq!(bands(false, &one), 1, "no title bar: the strip alone, as before");
+    assert_eq!(bands(true, &one), 1, "a lone tab is only the title bar");
+    assert_eq!(bands(true, &two), 2);
+    assert!(!TabBarView { titlebar: true, ..TabBarView::new(&one, 0) }.has_strip());
+    assert!(TabBarView::new(&one, 0).has_strip());
+}
+
+#[cfg(test)]
+#[test]
 fn shared_geometry_preserves_thresholds_and_uneven_spans() {
-    assert_eq!(available_columns(0), 1);
-    assert_eq!(available_columns(82), 80);
+    assert_eq!(strip_columns(0), 1);
+    assert_eq!(strip_columns(82), 80);
     assert_eq!(span(11, 3, 0), (0, 3));
     assert_eq!(span(11, 3, 1), (3, 7));
     assert_eq!(span(11, 3, 2), (7, 11));

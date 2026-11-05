@@ -3,6 +3,7 @@
 
 mod actions;
 mod ai_bridge;
+mod csd;
 mod history_ui;
 mod ime;
 mod inspector;

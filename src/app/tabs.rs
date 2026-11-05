@@ -26,7 +26,7 @@ pub(super) fn open_fresh_tab(
 ) {
     let sz = s.window.inner_size();
     s.renderer.resize(sz.width, sz.height);
-    let (cols, rows) = s.renderer.grid_size_for_tabs(false);
+    let (cols, rows) = s.renderer.grid_size_for_tabs(s.bands_for(s.tabs.len() + 1));
     let (cw, ch) = s.renderer.cell_size();
     let tab_id = next_id();
     let pane_id = next_id();
@@ -72,7 +72,7 @@ pub(super) fn duplicate_active_tab(
         return;
     }
     let cwd = s.tabs.get_mut(s.active).and_then(|t| t.active_pane_mut()?.cwd());
-    let (cols, rows) = s.renderer.grid_size_for_tabs(true);
+    let (cols, rows) = s.renderer.grid_size_for_tabs(s.bands_for(s.tabs.len() + 1));
     let (cw, ch) = s.renderer.cell_size();
     let id = next_id();
     let pane_id = next_id();
@@ -221,7 +221,7 @@ pub(super) fn split_active_pane(
     if s.tabs.is_empty() {
         return;
     }
-    let (total_cols, total_rows) = s.renderer.grid_size_for_tabs(s.tabs.len() > 1);
+    let (total_cols, total_rows) = s.renderer.grid_size_for_tabs(s.bands());
     let (cw, ch) = s.renderer.cell_size();
 
     let tab = &mut s.tabs[s.active];
@@ -286,7 +286,7 @@ pub(super) fn close_active_pane_or_tab(s: &mut State) {
     if !confirm_close(&s.config, std::iter::once(pane), "this terminal") {
         return;
     }
-    let (total_cols, total_rows) = s.renderer.grid_size_for_tabs(s.tabs.len() > 1);
+    let (total_cols, total_rows) = s.renderer.grid_size_for_tabs(s.bands());
     let tab = &mut s.tabs[s.active];
     if tab.panes.len() > 1 {
         let closing_id = tab.active_pane_id;
@@ -336,7 +336,7 @@ pub(super) fn navigate_split_directional(s: &mut State, dir: Direction) -> bool 
     if s.tabs.is_empty() {
         return false;
     }
-    let (total_cols, total_rows) = s.renderer.grid_size_for_tabs(s.tabs.len() > 1);
+    let (total_cols, total_rows) = s.renderer.grid_size_for_tabs(s.bands());
     let tab = &mut s.tabs[s.active];
     if tab.panes.len() <= 1 {
         return false;

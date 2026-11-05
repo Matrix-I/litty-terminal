@@ -15,7 +15,7 @@ use pane_row::RowScratch;
 mod ui;
 use gpu::{make_bind_group, make_instance_buf, make_viewport_buffer};
 pub use ui::scrollbar::{scrollbar_thumb, SCROLLBAR_WIDTH};
-pub use ui::tab_bar::{slot_at as tab_slot_at, span as tab_span, TabBarView, MAX_SHIFTED_TABS};
+pub use ui::tab_bar::{slot_at as tab_slot_at, span as tab_span, TabBarView, WindowControl, MAX_SHIFTED_TABS};
 
 use crate::render::atlas::{Atlas, FontSet};
 use crate::terminal::grid::{Grid, Hyperlink};
@@ -146,6 +146,13 @@ pub struct Renderer {
     pad_pt: (f32, f32),
     /// `window-padding-balance`: spread the leftover pixels evenly around the grid.
     pad_balance: bool,
+    /// The window draws its own title bar band (client-side decorations).
+    titlebar: bool,
+    /// Rounded window corner radius in physical pixels (0 = square).
+    corner_radius: f32,
+    /// The surface composites with alpha, so cleared corners show what is behind the window.
+    transparent_surface: bool,
+    corner_pipeline: Option<wgpu::RenderPipeline>,
     scale_factor: f64,
     bg_opacity: f32,
     cursor_style: u32,
@@ -294,6 +301,10 @@ impl Renderer {
             pad: (pad_px, pad_px),
             pad_pt: (4.0, 4.0),
             pad_balance: false,
+            titlebar: false,
+            corner_radius: 0.0,
+            transparent_surface: bg_opacity < 1.0 && alpha_mode != wgpu::CompositeAlphaMode::Opaque,
+            corner_pipeline: None,
             scale_factor,
             bg_opacity: bg_opacity.clamp(0.0, 1.0),
             cursor_style,
@@ -327,14 +338,18 @@ pub enum TabBarAction {
     Select(usize),
     CloseTab(usize),
     NewTab,
+    /// A window button of the title bar.
+    Control(WindowControl),
+    /// Empty title bar: drags the window, double-click maximizes.
+    TitleBar,
 }
 
 impl Renderer {
     /// Offset in pixels of a window position inside the cell under it (for SGR
     /// pixel mouse reports).
-    pub fn offset_in_cell(&self, x_px: f64, y_px: f64, show_tab_bar: bool) -> (usize, usize) {
+    pub fn offset_in_cell(&self, x_px: f64, y_px: f64, bands: usize) -> (usize, usize) {
         let (ox, oy) = self.origin();
-        let top_y = if show_tab_bar { (oy + self.atlas.cell_h * 2) as f64 } else { oy as f64 };
+        let top_y = (oy + self.atlas.cell_h * 2 * bands as u32) as f64;
         let rel_x = (x_px - ox as f64).max(0.0) as u32;
         let rel_y = (y_px - top_y).max(0.0) as u32;
         ((rel_x % self.atlas.cell_w.max(1)) as usize, (rel_y % self.atlas.cell_h.max(1)) as usize)
@@ -347,7 +362,58 @@ impl Renderer {
 
     /// Columns the tab strip shares between tabs (the rest holds the New Tab button).
     pub fn tab_cols_total(&self) -> usize {
-        ui::tab_bar::available_columns(self.grid_size().0)
+        ui::tab_bar::strip_columns(self.grid_size().0)
+    }
+
+    /// Height in pixels of everything drawn above the terminal: title bar band and tab strip.
+    pub fn chrome_height(&self) -> f64 {
+        self.tab_strip_top() + self.tab_bar_height()
+    }
+
+    /// Top of the tab strip in pixels: below the title bar band when there is one.
+    pub fn tab_strip_top(&self) -> f64 {
+        if self.titlebar {
+            f64::from(self.origin().1 + self.atlas.cell_h * 2)
+        } else {
+            0.0
+        }
+    }
+
+    /// Draw a title bar band (window title and buttons) above the tab strip. The
+    /// surface then needs alpha so the window's rounded corners can be transparent.
+    pub fn set_titlebar(&mut self, on: bool) {
+        self.titlebar = on;
+        self.reconfigure_alpha();
+        self.force_full = true;
+    }
+
+    /// Round the window's corners by `radius_px` physical pixels (0 for square corners,
+    /// as when maximized). Ignored when the surface cannot be transparent.
+    pub fn set_corner_radius(&mut self, radius_px: f32) {
+        if (self.corner_radius - radius_px).abs() > 0.01 {
+            self.corner_radius = radius_px;
+            self.force_full = true;
+        }
+    }
+
+    /// Pick the surface alpha mode: transparent when the background is translucent or
+    /// the window has rounded corners, when the platform offers one.
+    fn reconfigure_alpha(&mut self) {
+        let wanted = self.bg_opacity < 1.0 || self.titlebar;
+        let alpha_mode = if wanted {
+            self.caps_alpha_modes
+                .iter()
+                .copied()
+                .find(|&m| m == wgpu::CompositeAlphaMode::PreMultiplied || m == wgpu::CompositeAlphaMode::PostMultiplied)
+                .unwrap_or(self.caps_alpha_modes[0])
+        } else {
+            self.caps_alpha_modes[0]
+        };
+        self.transparent_surface = wanted && alpha_mode != wgpu::CompositeAlphaMode::Opaque;
+        if self.config.alpha_mode != alpha_mode {
+            self.config.alpha_mode = alpha_mode;
+            self.surface.configure(&self.device, &self.config);
+        }
     }
 
     /// Fractional grid column under window x position `x_px` (negative left of the grid).
@@ -433,12 +499,12 @@ impl Renderer {
         self.force_full = true;
     }
 
-    /// Columns and terminal PTY rows when accounting for the top tab bar + gap
-    /// shown whenever 2 or more tabs are open.
-    pub fn grid_size_for_tabs(&self, show_tab_bar: bool) -> (usize, usize) {
+    /// Columns and terminal PTY rows when accounting for `bands` bands (title bar,
+    /// tab strip) at the top, each two rows tall including the gap below it.
+    pub fn grid_size_for_tabs(&self, bands: usize) -> (usize, usize) {
         let (cols, total_rows) = self.grid_size();
-        let rows = if show_tab_bar && total_rows > 2 {
-            total_rows - 2
+        let rows = if bands > 0 && total_rows > 2 * bands {
+            total_rows - 2 * bands
         } else {
             total_rows
         };
@@ -511,17 +577,7 @@ impl Renderer {
         let op = opacity.clamp(0.0, 1.0);
         if (self.bg_opacity - op).abs() > 0.001 {
             self.bg_opacity = op;
-            let alpha_mode = if self.bg_opacity < 1.0 {
-                self.caps_alpha_modes
-                    .iter()
-                    .copied()
-                    .find(|&m| m == wgpu::CompositeAlphaMode::PreMultiplied || m == wgpu::CompositeAlphaMode::PostMultiplied)
-                    .unwrap_or(self.caps_alpha_modes[0])
-            } else {
-                self.caps_alpha_modes[0]
-            };
-            self.config.alpha_mode = alpha_mode;
-            self.surface.configure(&self.device, &self.config);
+            self.reconfigure_alpha();
             self.force_full = true;
         }
     }
@@ -562,19 +618,27 @@ impl Renderer {
     }
 
     pub fn hit_test_tab_bar(&self, x_px: f64, y_px: f64, titles: &[String]) -> Option<TabBarAction> {
-        if titles.len() <= 1 {
-            return None;
-        }
+        let n = titles.len();
+        let has_strip = !self.titlebar || n > 1;
         let bar_h = self.tab_bar_height();
-        if y_px < 0.0 || y_px >= bar_h {
+        let col = ((x_px - self.origin().0 as f64).max(0.0) as u32 / self.atlas.cell_w.max(1)) as usize;
+
+        // Title bar band: window buttons, the rest drags the window.
+        if self.titlebar && (0.0..bar_h).contains(&y_px) {
+            let cols = self.grid_size().0;
+            return Some(match ui::tab_bar::control_at(cols, col) {
+                Some(control) => TabBarAction::Control(control),
+                None => TabBarAction::TitleBar,
+            });
+        }
+        let strip_top = self.tab_strip_top();
+        if !has_strip || y_px < strip_top || y_px >= strip_top + bar_h {
             return None;
         }
         let tab_cols_total = self.tab_cols_total();
-        let col = ((x_px - self.origin().0 as f64).max(0.0) as u32 / self.atlas.cell_w.max(1)) as usize;
         if col >= tab_cols_total {
             return Some(TabBarAction::NewTab);
         }
-        let n = titles.len();
         let tab_i = ui::tab_bar::slot_at(tab_cols_total, n, col);
         let (c0, c1) = ui::tab_bar::span(tab_cols_total, n, tab_i);
         let span = c1.saturating_sub(c0);
@@ -589,19 +653,19 @@ impl Renderer {
 
     /// Physical pixel position of the top-left corner of terminal cell `(row, col)`
     /// (the inverse of [`Renderer::pixel_to_cell`]).
-    pub fn cell_origin_px(&self, row: usize, col: usize, show_tab_bar: bool) -> (f64, f64) {
+    pub fn cell_origin_px(&self, row: usize, col: usize, bands: usize) -> (f64, f64) {
         let (ox, oy) = self.origin();
-        let top_y = if show_tab_bar { oy + self.atlas.cell_h * 2 } else { oy };
+        let top_y = oy + self.atlas.cell_h * 2 * bands as u32;
         let x = ox as f64 + (col as u32 * self.atlas.cell_w) as f64;
         let y = top_y as f64 + (row as u32 * self.atlas.cell_h) as f64;
         (x, y)
     }
 
     /// Outer panes extend through window padding; inner panes end at their divider.
-    pub fn scrollbar_track(&self, rect: &PaneRect, show_tabs: bool) -> (f64, f64, f64) {
-        let (cols, rows) = self.grid_size_for_tabs(show_tabs);
-        let (_, top) = self.cell_origin_px(rect.row, rect.col, show_tabs);
-        let (right, bottom) = self.cell_origin_px(rect.row + rect.rows, rect.col + rect.cols, show_tabs);
+    pub fn scrollbar_track(&self, rect: &PaneRect, bands: usize) -> (f64, f64, f64) {
+        let (cols, rows) = self.grid_size_for_tabs(bands);
+        let (_, top) = self.cell_origin_px(rect.row, rect.col, bands);
+        let (right, bottom) = self.cell_origin_px(rect.row + rect.rows, rect.col + rect.cols, bands);
         let right = if rect.col + rect.cols >= cols { self.config.width as f64 } else { right };
         let bottom = if rect.row + rect.rows >= rows { self.config.height as f64 } else { bottom };
         (right, top, bottom)
@@ -613,21 +677,18 @@ impl Renderer {
         &self,
         x_px: f64,
         y_px: f64,
-        show_tab_bar: bool,
+        bands: usize,
         cols: usize,
         rows: usize,
     ) -> Option<(usize, usize)> {
         if cols == 0 || rows == 0 {
             return None;
         }
-        if show_tab_bar && y_px < self.tab_bar_height() {
+        let top_y = (self.origin().1 + self.atlas.cell_h * 2 * bands as u32) as f64;
+        // The last band's content (not the gap below it) is chrome.
+        if bands > 0 && y_px < top_y - f64::from(self.atlas.cell_h) * 2.0 + self.tab_bar_height() {
             return None;
         }
-        let top_y = if show_tab_bar {
-            (self.origin().1 + self.atlas.cell_h * 2) as f64
-        } else {
-            self.origin().1 as f64
-        };
         let rel_x = (x_px - self.origin().0 as f64).max(0.0);
         let rel_y = (y_px - top_y).max(0.0);
         let col = ((rel_x as u32) / self.atlas.cell_w.max(1)) as usize;

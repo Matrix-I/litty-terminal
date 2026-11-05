@@ -101,7 +101,7 @@ pub(super) fn tab_bar_hit_x(s: &State, at: LogicalPosition<f64>) -> Option<f64> 
     let origin = s.window.inner_position().ok()?.to_logical::<f64>(scale);
     let local = (at.x - origin.x, at.y - origin.y);
     let width = f64::from(s.window.inner_size().width) / scale;
-    in_tab_bar(local, width, s.renderer.tab_bar_height() / scale).then_some(local.0 * scale)
+    in_tab_bar(local, width, s.renderer.chrome_height() / scale).then_some(local.0 * scale)
 }
 
 /// Slot a tab dropped at fractional strip column `col` takes among `tabs_after` tabs.
@@ -180,7 +180,7 @@ fn detach_held_tab(s: &mut State) -> bool {
     let size = s.window.inner_size();
     let scale = s.window.scale_factor();
     let cell_h = f64::from(s.renderer.cell_size().1);
-    if !is_torn_off(pointer, f64::from(size.width), s.renderer.tab_bar_height(), TEAR_OFF_CELLS * cell_h) {
+    if !is_torn_off(pointer, f64::from(size.width), s.renderer.chrome_height(), TEAR_OFF_CELLS * cell_h) {
         return false;
     }
     let position = pointer_on_screen(s).map(|screen| new_window_origin(screen, size.width, scale));
