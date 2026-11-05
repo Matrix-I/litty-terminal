@@ -1,7 +1,7 @@
 //! One frame: decide whether anything changed, rebuild dirty instance rows,
 //! draw overlays, upload, and submit the cell / image / custom-shader passes.
 
-use super::gpu::{make_instance_buf, make_viewport_buffer};
+use super::gpu::{self, make_instance_buf, make_viewport_buffer};
 use super::pane_row::{build_pane_row, PaneRowCtx};
 use super::ui::{self, DirtyRows};
 use super::{scrollbar_thumb, Instance, RenderPane, Renderer, TabBarView, Uniforms, Viewport, MAX_SHIFTED_TABS};
@@ -14,7 +14,7 @@ use crate::render::PaneRect;
 #[derive(Clone, Copy)]
 struct FrameLayout {
     cols: usize,
-    /// 1 when the tab bar takes the first row.
+    /// Instance rows taken by the top bands (title bar, tab strip).
     top_rows: usize,
     total_rows: usize,
     /// `cols * total_rows`: first instance after the window grid (extra bottom rows follow).
@@ -39,7 +39,7 @@ struct ActivePane {
 #[derive(Clone, Copy)]
 struct FrameCtx<'a> {
     layout: FrameLayout,
-    show_tabs: bool,
+    bands: usize,
     tab_bar: Option<TabBarView<'a>>,
     hovered_link: Option<(u64, &'a Hyperlink)>,
     /// Active pane's default fg / bg (OSC 10 / 11), sent to the shader.
@@ -88,7 +88,7 @@ impl Renderer {
         if is_search_open || inspector.is_some() {
             snap_fractional_scroll(panes);
         }
-        let layout = self.frame_layout(panes, tab_bar.is_some());
+        let layout = self.frame_layout(panes, tab_bar.map_or(0, |view| view.bands()));
         let active_pane = panes.iter().find(|p| p.is_active).unwrap_or(&panes[0]);
         let active = self.read_active_pane(active_pane, layout.top_rows);
         self.note_active_changes(&active, active_pane.id);
@@ -119,7 +119,7 @@ impl Renderer {
         let mut dirty = DirtyRows::NONE;
         let ctx = FrameCtx {
             layout,
-            show_tabs: tab_bar.is_some(),
+            bands: tab_bar.map_or(0, |view| view.bands()),
             tab_bar,
             hovered_link,
             defaults: active.defaults,
@@ -169,9 +169,9 @@ impl Renderer {
     }
 
     /// Window geometry in cells and the instance-buffer layout derived from it.
-    fn frame_layout(&self, panes: &[RenderPane], show_tabs: bool) -> FrameLayout {
-        let top_rows = usize::from(show_tabs);
-        let (cols, term_rows) = self.grid_size_for_tabs(show_tabs);
+    fn frame_layout(&self, panes: &[RenderPane], bands: usize) -> FrameLayout {
+        let top_rows = bands;
+        let (cols, term_rows) = self.grid_size_for_tabs(bands);
         let total_rows = term_rows + top_rows;
         let n = cols * total_rows;
         let extra_cells: usize = panes.iter().map(|p| p.rect.cols).sum();
@@ -290,7 +290,7 @@ impl Renderer {
             let pane_defaults = Some((g.fg_color(), g.bg_color())).filter(|&d| d != defaults);
             let p_cols = pane.rect.cols.min(g.cols);
             let p_rows = pane.rect.rows.min(g.rows);
-            let (right, top, bottom) = self.scrollbar_track(&pane.rect, ctx.show_tabs);
+            let (right, top, bottom) = self.scrollbar_track(&pane.rect, ctx.bands);
             let (history, offset) = g.scroll_position();
             let track_height = (bottom - top).max(0.0);
             let (thumb_y, height) = scrollbar_thumb(track_height, g.rows, history, offset);
@@ -302,8 +302,8 @@ impl Renderer {
                 rows: pane.rect.rows as u32,
                 extra_start: extra_start as u32,
                 shift: -(g.scroll_fraction as f32) * ch as f32,
-                top: self.cell_origin_px(pane.rect.row, pane.rect.col, ctx.show_tabs).1 as f32,
-                bottom: self.cell_origin_px(pane.rect.row + pane.rect.rows, pane.rect.col, ctx.show_tabs).1 as f32,
+                top: self.cell_origin_px(pane.rect.row, pane.rect.col, ctx.bands).1 as f32,
+                bottom: self.cell_origin_px(pane.rect.row + pane.rect.rows, pane.rect.col, ctx.bands).1 as f32,
                 divider: u32::from(pane.rect.has_border_bottom) | (u32::from(pane.is_active || active_rect.is_some_and(|ar| {
                     ar.row == pane.rect.row + pane.rect.rows && ar.col < pane.rect.col + pane.rect.cols && ar.col + ar.cols > pane.rect.col
                 })) << 1),
@@ -313,7 +313,7 @@ impl Renderer {
 
             // Collect visible images while g is locked to eliminate redundant grid locking in subsequent passes.
             g.visible_images(&mut self.image_draws);
-            let (px0, py0) = self.cell_origin_px(pane.rect.row, pane.rect.col, ctx.show_tabs);
+            let (px0, py0) = self.cell_origin_px(pane.rect.row, pane.rect.col, ctx.bands);
             let clip = [px0 as u32, py0 as u32, pane.rect.cols as u32 * cw, pane.rect.rows as u32 * ch];
             for draw in self.image_draws.drain(..) {
                 let x = px0 as f32 + (draw.col as u32 * cw) as f32;
@@ -533,7 +533,7 @@ impl Renderer {
             layer: 0,
             pane_count: ctx.layout.pane_count as u32,
             tab_drag,
-            tab_pad: [0; 3],
+            tab_pad: [u32::from(self.titlebar) | (ctx.bands as u32) << 1, self.corner_radius.to_bits(), 0],
             tab_shifts,
         }
     }
@@ -607,6 +607,24 @@ impl Renderer {
         }
         if let Some(fx) = &mut self.postfx {
             fx.run(&self.device, &self.queue, &mut encoder, &screen, self.mouse_px);
+        }
+        if self.corner_radius > 0.0 && self.transparent_surface {
+            let format = self.config.format;
+            let pipeline = self.corner_pipeline.get_or_insert_with(|| gpu::create_corner_pipeline(&self.device, format, &self.bgl));
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("corners"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &screen,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.draw(0..4, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
         frame.present();

@@ -20,6 +20,7 @@
 - **0.0% idle CPU** and ~36 MB idle RAM (`ControlFlow::Wait`, event-driven).
 - **Ghostty-compatible configuration** with live reload.
 - **Tabs, windows and splits** that inherit the working directory. Drag a tab title left or right to reorder tabs within a window, or drag it away from the tab bar to pull it out into a new window that follows the pointer, and move it over another window's tab bar to merge it there, as in Chrome.
+- **Seamless title bar on Linux**: the window has no native frame; its title bar is drawn in the terminal's background color with minimize / maximize / close buttons, drag-to-move, double-click to maximize and resizable edges.
 - **Built-in history search, regex find, click-to-position cursor and hyperlink detection.**
 - **Automatic shell integration** (zsh, bash, fish, nushell, elvish) and the **Kitty keyboard / graphics protocols**, Sixel and full Unicode support.
 - **`yo` AI shell assistant** with multiple providers, including local Ollama.

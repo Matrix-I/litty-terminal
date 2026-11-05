@@ -14,12 +14,12 @@ use winit::window::CursorIcon;
 /// Pane under the mouse pointer and the pane-relative `(row, col)` cell.
 /// Pane whose visible scrollbar (shown while scrolled back) is under the mouse.
 pub(super) fn scrollbar_at_mouse(s: &State) -> Option<u64> {
-    let show_tabs = s.tabs.len() > 1;
-    let (cols, rows) = s.renderer.grid_size_for_tabs(show_tabs);
+    let bands = s.bands();
+    let (cols, rows) = s.renderer.grid_size_for_tabs(bands);
     let tab = s.tabs.get(s.active)?;
     let (mx, my) = s.pointer.mouse_pos;
     tab.compute_pane_rects(cols, rows).into_iter().find_map(|r| {
-        let (right, top, bottom) = s.renderer.scrollbar_track(&r, show_tabs);
+        let (right, top, bottom) = s.renderer.scrollbar_track(&r, bands);
         let over = mx <= right && mx >= right - renderer::SCROLLBAR_WIDTH && my >= top && my < bottom;
         let scrolled = tab.pane(r.id).is_some_and(|p| p.grid.lock().scroll_position().1 > 0);
         (over && scrolled).then_some(r.id)
@@ -28,12 +28,12 @@ pub(super) fn scrollbar_at_mouse(s: &State) -> Option<u64> {
 
 /// Scroll the dragged pane so the thumb is centered on the mouse.
 pub(super) fn drag_scrollbar(s: &mut State, pane_id: u64) {
-    let show_tabs = s.tabs.len() > 1;
-    let (cols, rows) = s.renderer.grid_size_for_tabs(show_tabs);
+    let bands = s.bands();
+    let (cols, rows) = s.renderer.grid_size_for_tabs(bands);
     let Some(tab) = s.tabs.get(s.active) else { return };
     let Some(rect) = tab.compute_pane_rects(cols, rows).into_iter().find(|r| r.id == pane_id) else { return };
     let Some(pane) = tab.pane(pane_id) else { return };
-    let (_, top, bottom) = s.renderer.scrollbar_track(&rect, show_tabs);
+    let (_, top, bottom) = s.renderer.scrollbar_track(&rect, bands);
     let mut g = pane.grid.lock();
     let (history, offset) = g.scroll_position();
     let track_height = (bottom - top).max(0.0);
@@ -46,16 +46,16 @@ pub(super) fn drag_scrollbar(s: &mut State, pane_id: u64) {
 }
 
 pub(super) fn pane_cell_at_mouse(s: &State) -> Option<(u64, usize, usize)> {
-    let show_tabs = s.tabs.len() > 1;
-    let (cols, rows) = s.renderer.grid_size_for_tabs(show_tabs);
-    let (row, col) = s.renderer.pixel_to_cell(s.pointer.mouse_pos.0, s.pointer.mouse_pos.1, show_tabs, cols, rows)?;
+    let bands = s.bands();
+    let (cols, rows) = s.renderer.grid_size_for_tabs(bands);
+    let (row, col) = s.renderer.pixel_to_cell(s.pointer.mouse_pos.0, s.pointer.mouse_pos.1, bands, cols, rows)?;
     let tab = s.tabs.get(s.active)?;
     tab.compute_pane_rects(cols, rows)
         .into_iter()
         .find(|r| col >= r.col && col < r.col + r.cols && row >= r.row && row < r.row + r.rows)
         .map(|r| {
             // Right-to-left rows are drawn reordered: hit-test the logical cell.
-            let top = s.renderer.cell_origin_px(r.row, r.col, show_tabs).1;
+            let top = s.renderer.cell_origin_px(r.row, r.col, bands).1;
             let col = col - r.col;
             let (row, col) = tab.pane(r.id).map_or((row - r.row, col), |p| {
                 let g = p.grid.lock();
@@ -88,7 +88,7 @@ pub(super) fn report_mouse(s: &mut State, button: mouse::Button, action: mouse::
     // SGR-Pixels (DECSET 1016): the same report with pane-relative pixel coordinates.
     let (row, col) = if pixels {
         let (cw, ch) = s.renderer.cell_size();
-        let (dx, dy) = s.renderer.offset_in_cell(s.pointer.mouse_pos.0, s.pointer.mouse_pos.1, s.tabs.len() > 1);
+        let (dx, dy) = s.renderer.offset_in_cell(s.pointer.mouse_pos.0, s.pointer.mouse_pos.1, s.bands());
         (row * ch as usize + dy, col * cw as usize + dx)
     } else {
         (row, col)
@@ -191,11 +191,11 @@ pub(super) fn update_hovered_link(s: &mut State) {
         return;
     }
 
-    let show_tabs = s.tabs.len() > 1;
-    let (cols, rows) = s.renderer.grid_size_for_tabs(show_tabs);
+    let bands = s.bands();
+    let (cols, rows) = s.renderer.grid_size_for_tabs(bands);
 
     let new_link = if cmd_pressed && !s.pointer.selecting {
-        if let Some((cell_row, cell_col)) = s.renderer.pixel_to_cell(s.pointer.mouse_pos.0, s.pointer.mouse_pos.1, show_tabs, cols, rows) {
+        if let Some((cell_row, cell_col)) = s.renderer.pixel_to_cell(s.pointer.mouse_pos.0, s.pointer.mouse_pos.1, bands, cols, rows) {
             let rects = s.tabs[s.active].compute_pane_rects(cols, rows);
             if let Some(target) = rects.iter().find(|r| {
                 cell_col >= r.col
@@ -204,7 +204,7 @@ pub(super) fn update_hovered_link(s: &mut State) {
                     && cell_row < r.row + r.rows
             }) {
                 if let Some(pane) = s.tabs[s.active].pane_mut(target.id) {
-                    let top = s.renderer.cell_origin_px(target.row, target.col, show_tabs).1;
+                    let top = s.renderer.cell_origin_px(target.row, target.col, bands).1;
                     let (pane_row, pane_col, candidate) = {
                         let g = pane.grid.lock();
                         let pane_row = g.viewport_row(s.pointer.mouse_pos.1 - top, s.renderer.cell_size().1 as f64);

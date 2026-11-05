@@ -60,6 +60,10 @@ pub(super) struct State {
     pub(super) occluded: bool,
     /// This is the Quick Terminal window.
     pub(super) quick: bool,
+    /// The tab strip is this window's title bar (Linux, no native frame): always shown.
+    pub(super) csd: bool,
+    /// Title bar text: the active tab's title as `user@host:path`.
+    pub(super) bar_title: String,
     pub(super) inspector: InspectorState,
 }
 
@@ -72,6 +76,23 @@ pub(super) struct InspectorState {
 }
 
 impl State {
+    /// Whether anything is drawn above the terminal: the tab strip with two or more
+    /// tabs, or always the title bar.
+    pub(super) fn show_bar(&self) -> bool {
+        self.bands() > 0
+    }
+
+    /// Bands at the top of the window: the title bar (Linux, no native frame) and
+    /// the tab strip (two or more tabs). Each takes two rows with its gap.
+    pub(super) fn bands(&self) -> usize {
+        self.bands_for(self.tabs.len())
+    }
+
+    /// `bands` as it will be once the window holds `tab_count` tabs.
+    pub(super) fn bands_for(&self, tab_count: usize) -> usize {
+        usize::from(self.csd) + usize::from(tab_count > 1)
+    }
+
     pub(super) fn invalidate_pane_state(&mut self, pane_id: u64) {
         self.ai.remove(&pane_id);
         if self.search.pane_id == Some(pane_id) {
@@ -141,6 +162,10 @@ pub(super) struct PointerState {
     pub(super) selecting: bool,
     pub(super) drag_moved: bool,
     pub(super) last_click_time: Option<std::time::Instant>,
+    /// Last press on an empty title bar, for the double-click that maximizes.
+    pub(super) last_title_click: Option<std::time::Instant>,
+    /// The pointer is on a resize edge of a window with its own frame.
+    pub(super) on_edge: bool,
     pub(super) last_click_cell: Option<(usize, usize)>,
     pub(super) active_click_pane_id: Option<u64>,
     pub(super) click_count: u8,

@@ -31,8 +31,8 @@ struct Uniforms {
     layer: u32,             // 0 = everything, 1 = backgrounds only, 2 = text only (images under the text)
     pane_count: u32,
     tab_drag: u32,          // dragged tab + 1 (drawn above the others), 0 = none
-    tab_pad0: u32,
-    tab_pad1: u32,
+    tab_flags: u32,         // bit 0 = a title bar band (window buttons, terminal-colored); bits 1..2 = bands at the top
+    corner_radius: f32,     // rounded window corners in pixels (0 = square)
     tab_pad2: u32,
     tab_shifts: array<vec4<i32>, 4>, // column shift of each of the first 16 tabs from its equal-width slot
 };
@@ -225,7 +225,12 @@ fn vs_main(
         }
     }
     let tab_count = u.tab_info & 0xFFFFu;
-    let is_tab_row = tab_count > 0u && row == 0u;
+    // Bands at the top, two cell rows each: the title bar and/or the tab strip.
+    var bands = (u.tab_flags >> 1u) & 3u;
+    if (bands == 0u && tab_count > 0u) {
+        bands = 1u;
+    }
+    let is_tab_row = row < bands;
 
     var px: vec2<f32>;
     if (is_tab_row) {
@@ -235,13 +240,14 @@ fn vs_main(
         } else if (u.cols > 0u && col == u.cols - 1u && corner.x == 1.0) {
             x = u.screen.x;
         }
-        let total_top = u.cell.y * 2.0 + u.offset.y;
-        px = vec2<f32>(x, corner.y * total_top);
-    } else if (tab_count > 0u) {
-        // Shift terminal rows down by 2 cell rows so there is a clean gap below the tab bar.
+        let y0 = select(0.0, u.cell.y * 2.0 * f32(row) + u.offset.y, row > 0u);
+        let y1 = u.cell.y * 2.0 * f32(row + 1u) + u.offset.y;
+        px = vec2<f32>(x, mix(y0, y1, corner.y));
+    } else if (bands > 0u) {
+        // Shift terminal rows down by 2 cell rows per band so there is a clean gap below it.
         px = vec2<f32>(
             (f32(col) + corner.x) * u.cell.x + u.offset.x,
-            (f32(row + 1u) + corner.y) * u.cell.y + u.offset.y,
+            (f32(row + bands) + corner.y) * u.cell.y + u.offset.y,
         );
     } else {
         px = (vec2<f32>(f32(col), f32(row)) + corner) * u.cell + u.offset;
@@ -300,6 +306,29 @@ fn vs_main(
     return out;
 }
 
+// Rounded window corners: one full-screen pass over the finished frame that fades
+// the pixels outside each corner arc to transparent (blend: dst * (1 - alpha)).
+@vertex
+fn vs_corner(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let p = vec2<f32>(f32(i & 1u), f32(i >> 1u));
+    return vec4<f32>(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs_corner(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let r = u.corner_radius;
+    let half_size = u.screen * 0.5;
+    let q = abs(pos.xy - half_size) - (half_size - vec2<f32>(r));
+    if (q.x <= 0.0 || q.y <= 0.0) {
+        discard;
+    }
+    let cut = clamp(length(q) - r + 0.5, 0.0, 1.0);
+    if (cut <= 0.0) {
+        discard;
+    }
+    return vec4<f32>(0.0, 0.0, 0.0, cut);
+}
+
 @fragment
 fn fs_main(v: VsOut) -> @location(0) vec4<f32> {
     // Pixel position in screen space, top-left origin, even when drawing flipped.
@@ -330,20 +359,72 @@ fn fs_main(v: VsOut) -> @location(0) vec4<f32> {
         let active_tab = u.tab_info >> 16u;
         let bar_h = floor(u.cell.y * 1.56);
         let term_bg = unpack(u.default_bg);
+        let titlebar = (u.tab_flags & 1u) != 0u;
+        // With a title bar the first band is the title and the second the tab strip.
+        let strip_top = u.cell.y * 2.0 + u.offset.y;
+        let in_title = titlebar && fp.y < strip_top;
+        // Position inside the band, so both share one set of measurements.
+        let fp = vec2<f32>(fp.x, select(fp.y, fp.y - strip_top, titlebar && !in_title));
 
-        // Clean breathing gap between the bottom of the tab bar and the first terminal line.
+        // Clean breathing gap between the bottom of the band and what follows it.
         if (fp.y >= bar_h) {
             return vec4<f32>(term_bg, 1.0);
         }
 
-        let bar_bg = vec3<f32>(0.110, 0.114, 0.125); // #1c1d20 Ghostty tab bar backdrop
+        // A title bar is the terminal's own background, so window and terminal read as one surface.
+        let bar_bg = select(vec3<f32>(0.110, 0.114, 0.125), term_bg, titlebar); // #1c1d20 Ghostty tab bar backdrop
         var col_rgb = bar_bg;
-        if (fp.y >= bar_h - 1.0) {
+        if (fp.y >= bar_h - 1.0 && !titlebar) {
             return vec4<f32>(vec3<f32>(0.07, 0.075, 0.085), 1.0);
         }
 
         let cy = bar_h * 0.5;
         let half_h = floor(u.cell.y * 0.58);
+
+        if (in_title) {
+            // Window buttons (minimize, maximize, close) in the last six columns.
+            if (u.cols >= 6u && v.col + 6u >= u.cols) {
+                let slot = (v.col + 6u - u.cols) / 2u;
+                let bx = u.offset.x + (f32(u.cols - 6u + slot * 2u) + 1.0) * u.cell.x;
+                let d = fp - vec2<f32>(bx, cy);
+                let arm = floor(u.cell.y * 0.30);
+                let thick = max(1.0, round(u.cell.y / 12.0)) * 0.55;
+                let luma = dot(term_bg, vec3<f32>(0.299, 0.587, 0.114));
+                let icon = select(vec3<f32>(0.86, 0.87, 0.90), vec3<f32>(0.14, 0.14, 0.16), luma > 0.5);
+                var cov = 0.0;
+                if (slot == 0u) {
+                    // Minimize: a low horizontal bar.
+                    if (abs(d.x) <= arm && abs(d.y - arm * 0.6) <= thick) { cov = 1.0; }
+                } else if (slot == 1u) {
+                    // Maximize: a square outline.
+                    let m = max(abs(d.x), abs(d.y));
+                    if (m <= arm && m >= arm - thick * 2.0) { cov = 1.0; }
+                } else {
+                    // Close: two diagonals.
+                    if (max(abs(d.x), abs(d.y)) <= arm) {
+                        cov = clamp(1.0 - (abs(abs(d.x) - abs(d.y)) * 0.7071 - thick), 0.0, 1.0);
+                    }
+                }
+                return vec4<f32>(mix(bar_bg, icon, cov), 1.0);
+            }
+            // The title: glyphs centered vertically in the band.
+            let text_y0 = floor(cy - u.cell.y * 0.5);
+            let gy = fp.y - text_y0;
+            if (gy >= 0.0 && gy < u.cell.y) {
+                let luma = dot(term_bg, vec3<f32>(0.299, 0.587, 0.114));
+                let title_fg = select(v.fg, vec3<f32>(0.12, 0.12, 0.14), luma > 0.5);
+                let slot_y = f32(v.flags >> 16u);
+                let uv = vec2<f32>(v.uv.x, (slot_y * u.cell.y + gy) / u.atlas_size.y);
+                let ga = textureSampleLevel(atlas, samp, uv, 0.0).r;
+                if (ga >= 1.0) {
+                    col_rgb = title_fg;
+                } else if (ga > 0.0) {
+                    col_rgb = linear_to_srgb(mix(srgb_to_linear(col_rgb), srgb_to_linear(title_fg), ga));
+                }
+            }
+            return vec4<f32>(col_rgb, 1.0);
+        }
+
         var tab_cols_total = 1u;
         if (u.cols > 2u) {
             tab_cols_total = u.cols - 2u;

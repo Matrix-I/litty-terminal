@@ -44,6 +44,51 @@ static SHARED_GPU: parking_lot::Mutex<Option<SharedGpu>> = parking_lot::const_mu
 static SHARED_PIPELINE: parking_lot::Mutex<Option<(wgpu::TextureFormat, wgpu::BindGroupLayout, wgpu::RenderPipeline)>> =
     parking_lot::const_mutex(None);
 
+/// Pass that clears the outside of the window's rounded corners to transparent.
+pub(super) fn create_corner_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    bgl: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::include_wgsl!("../shaders/shader.wgsl"));
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("corner layout"),
+        bind_group_layouts: &[bgl],
+        push_constant_ranges: &[],
+    });
+    // dst * (1 - src.a): the cut area fades out, antialiased on the arc.
+    let fade = wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Zero,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    };
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("corners"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_corner"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_corner"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState { color: fade, alpha: fade }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    })
+}
+
 pub(super) fn create_cells_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
