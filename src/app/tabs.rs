@@ -6,7 +6,9 @@ use super::window::refresh_tab_titles;
 use super::window::spawn_pane;
 use super::window::sync_size;
 use super::window::tab_title;
+use super::tab_tearoff::{follow_torn_window, tear_off_while_dragging};
 use crate::render::renderer::{tab_slot_at, tab_span};
+use winit::window::WindowId;
 
 use crate::platform;
 #[cfg(target_os = "linux")]
@@ -484,11 +486,51 @@ pub(super) struct TabDrag {
     start_x: Option<f64>,
     /// Columns between the tab's left edge and the pointer when it was grabbed.
     grab_col: f64,
+    detach: Detach,
+}
+
+/// Whether the held tab has left the tab bar for a window of its own.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Detach {
+    No,
+    /// Taken out of this window; `App` has not opened its window yet.
+    Pending,
+    /// Held in this window, whose events keep arriving here while the pointer moves.
+    Following(WindowId),
 }
 
 impl TabDrag {
     fn new(id: u64, x: f64, grab_col: f64) -> Self {
-        Self { id, start_x: Some(x), grab_col }
+        Self { id, start_x: Some(x), grab_col, detach: Detach::No }
+    }
+
+    /// Session ID of the held tab.
+    pub(super) fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// The tab left this window; its new window is moved with the pointer from now on.
+    pub(super) fn mark_detached(&mut self) {
+        self.detach = Detach::Pending;
+    }
+
+    pub(super) fn is_detached(&self) -> bool {
+        self.detach != Detach::No
+    }
+
+    /// `App` opened the window that now holds the tab.
+    pub(super) fn follow(&mut self, window: WindowId) {
+        if self.detach == Detach::Pending {
+            self.detach = Detach::Following(window);
+        }
+    }
+
+    /// The window to move under the pointer, once it exists.
+    pub(super) fn follower(&self) -> Option<WindowId> {
+        match self.detach {
+            Detach::Following(window) => Some(window),
+            Detach::No | Detach::Pending => None,
+        }
     }
 
     fn update(&mut self, x: f64, scale: f64) -> bool {
@@ -535,17 +577,24 @@ pub(super) fn drag_tab(s: &mut State) {
     if !drag.update(x, s.window.scale_factor()) {
         return;
     }
+    if drag.is_detached() {
+        follow_torn_window(s);
+        return;
+    }
     let (id, grab_col) = (drag.id, drag.grab_col);
     let Some(from) = s.tabs.iter().position(|tab| tab.id == id) else {
         end_tab_drag(s);
         return;
     };
+    s.tab_anim.begin_drag(from);
+    if tear_off_while_dragging(s) {
+        return;
+    }
     let (n, total) = (s.tabs.len(), s.renderer.tab_cols_total());
     let pointer_col = s.renderer.column_at(x);
     let (c0, c1) = tab_span(total, n, from);
     let mut left = dragged_left_col(pointer_col, grab_col, c1 - c0, total);
 
-    s.tab_anim.begin_drag(from);
     let centre = left as usize + (c1 - c0) / 2;
     let to = tab_slot_at(total, n, centre.min(total - 1));
     let mut slot = c0;
@@ -581,6 +630,16 @@ mod reorder_tests {
         // must use the width of the slot the tab now occupies.
         assert_eq!(dragged_left_col(200.0, 0.0, 40, 81), 41);
         assert_eq!(dragged_left_col(200.0, 0.0, 41, 81), 40);
+    }
+
+    #[test]
+    fn a_drag_starts_attached_and_follows_only_after_it_is_detached() {
+        let mut drag = TabDrag::new(7, 0.0, 0.0);
+        assert!(!drag.is_detached());
+        assert_eq!(drag.follower(), None);
+        drag.mark_detached();
+        assert!(drag.is_detached());
+        assert_eq!(drag.follower(), None, "its window does not exist yet");
     }
 
     #[test]

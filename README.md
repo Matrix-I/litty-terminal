@@ -19,7 +19,7 @@
 - **12-byte cells in a zero-allocation ring buffer**, so heavy output never thrashes the heap.
 - **0.0% idle CPU** and ~36 MB idle RAM (`ControlFlow::Wait`, event-driven).
 - **Ghostty-compatible configuration** with live reload.
-- **Tabs, windows and splits** that inherit the working directory. Drag a tab title left or right to reorder tabs within a window.
+- **Tabs, windows and splits** that inherit the working directory. Drag a tab title left or right to reorder tabs within a window, or drag it away from the tab bar to pull it out into a new window that follows the pointer.
 - **Built-in history search, regex find, click-to-position cursor and hyperlink detection.**
 - **Automatic shell integration** (zsh, bash, fish, nushell, elvish) and the **Kitty keyboard / graphics protocols**, Sixel and full Unicode support.
 - **`yo` AI shell assistant** with multiple providers, including local Ollama.

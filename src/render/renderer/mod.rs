@@ -101,6 +101,9 @@ struct Uniforms {
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 208);
 const _: () = assert!(std::mem::size_of::<Instance>() == 12);
 
+/// Tab bar height in cell heights; `shader.wgsl` uses the same 1.56.
+const TAB_BAR_CELLS: f64 = 1.56;
+
 
 /// One descriptor per pane, shared by its cells and its additional bottom row.
 #[repr(C)]
@@ -337,6 +340,11 @@ impl Renderer {
         ((rel_x % self.atlas.cell_w.max(1)) as usize, (rel_y % self.atlas.cell_h.max(1)) as usize)
     }
 
+    /// Height in pixels of the tab bar band at the top of the window.
+    pub fn tab_bar_height(&self) -> f64 {
+        f64::from(self.atlas.cell_h) * TAB_BAR_CELLS
+    }
+
     /// Columns the tab strip shares between tabs (the rest holds the New Tab button).
     pub fn tab_cols_total(&self) -> usize {
         ui::tab_bar::available_columns(self.grid_size().0)
@@ -557,7 +565,7 @@ impl Renderer {
         if titles.len() <= 1 {
             return None;
         }
-        let bar_h = (self.atlas.cell_h as f64) * 1.56;
+        let bar_h = self.tab_bar_height();
         if y_px < 0.0 || y_px >= bar_h {
             return None;
         }
@@ -612,7 +620,7 @@ impl Renderer {
         if cols == 0 || rows == 0 {
             return None;
         }
-        if show_tab_bar && y_px < (self.atlas.cell_h as f64) * 1.56 {
+        if show_tab_bar && y_px < self.tab_bar_height() {
             return None;
         }
         let top_y = if show_tab_bar {
