@@ -50,7 +50,7 @@ Architecture: amd64
 Maintainer: Litty contributors <noreply@github.com>
 Installed-Size: $installed_size
 Depends: libc6 (>= 2.34), libgcc-s1, libfontconfig1, libxkbcommon0, libxkbcommon-x11-0, libvulkan1, libwayland-client0, libwayland-cursor0, libwayland-egl1, libx11-6, libx11-xcb1, libxcb1, libxcursor1, libxi6, libxrandr2
-Recommends: mesa-vulkan-drivers | vulkan-icd, fonts-dejavu-core, xdg-utils
+Recommends: mesa-vulkan-drivers | vulkan-icd, fonts-dejavu-core, xdg-utils, wl-clipboard | xclip | xsel
 Homepage: https://github.com/Matrix-I/litty-terminal
 Description: GPU-accelerated terminal emulator
  Litty renders terminal sessions with Vulkan and supports tabs, splits,
