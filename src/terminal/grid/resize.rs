@@ -194,7 +194,7 @@ impl Grid {
         self.wrap_pending = false;
         self.selection = None;
         self.prompt_input_mark = None;
-        self.dirty = vec![true; rows];
+        self.dirty = BitSet512::ones(rows);
         self.all_dirty = true;
         self.extras_dirty = true;
         if !self.graphics.virtuals.is_empty() {

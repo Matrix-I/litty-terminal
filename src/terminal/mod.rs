@@ -9,6 +9,7 @@ pub(crate) mod graphics;
 pub(crate) mod grid;
 pub(crate) mod history;
 pub(crate) mod pty;
+pub(crate) mod regex_lite;
 pub(crate) mod search;
 pub(crate) mod shell_integration;
 pub(crate) mod text;

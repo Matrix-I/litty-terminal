@@ -80,7 +80,11 @@ impl Grid {
 
     pub(super) fn sgr(&mut self, params: &Params) {
         if params.is_empty() {
+            let extra = self.cur.pen.extra;
             self.cur.pen = Pen::default();
+            if extra != 0 {
+                self.set_underline_color(extra, 0);
+            }
             return;
         }
         // Moved out for the loop so palette lookups do not borrow `self`.
@@ -94,7 +98,9 @@ impl Grid {
                     // SGR 0 resets the underline color but not the OSC 8 hyperlink.
                     let extra = pen.extra;
                     *pen = Pen::default();
-                    self.set_underline_color(extra, 0);
+                    if extra != 0 {
+                        self.set_underline_color(extra, 0);
+                    }
                 }
                 1 => pen.attrs |= ATTR_BOLD,
                 2 => pen.attrs |= ATTR_DIM,
@@ -133,7 +139,84 @@ impl Grid {
                 }
                 59 => {
                     let extra = pen.extra;
-                    self.set_underline_color(extra, 0);
+                    if extra != 0 {
+                        self.set_underline_color(extra, 0);
+                    }
+                }
+                n @ 90..=97 => pen.fg = palette((n - 90 + 8) as u8) | FG_SET,
+                n @ 100..=107 => pen.bg = palette((n - 100 + 8) as u8) | BG_SET,
+                _ => {}
+            }
+        }
+        self.palette_override = pal;
+    }
+
+    /// Apply flat semicolon-separated SGR parameters parsed directly from a
+    /// `\x1b[...m` sequence without going through `vte::Parser`.
+    #[inline]
+    pub(super) fn sgr_flat(&mut self, params: &[u16]) {
+        if params.is_empty() {
+            let extra = self.cur.pen.extra;
+            self.cur.pen = Pen::default();
+            if extra != 0 {
+                self.set_underline_color(extra, 0);
+            }
+            return;
+        }
+        let pal = std::mem::take(&mut self.palette_override);
+        let palette = |i: u8| palette_with(&pal, i);
+        let mut idx = 0;
+        while idx < params.len() {
+            let code = params[idx];
+            idx += 1;
+            let pen = &mut self.cur.pen;
+            match code {
+                0 => {
+                    let extra = pen.extra;
+                    *pen = Pen::default();
+                    if extra != 0 {
+                        self.set_underline_color(extra, 0);
+                    }
+                }
+                1 => pen.attrs |= ATTR_BOLD,
+                2 => pen.attrs |= ATTR_DIM,
+                3 => pen.attrs |= ATTR_ITALIC,
+                4 => pen.underline = UNDERLINE_SINGLE,
+                7 => pen.attrs |= ATTR_INVERSE,
+                8 => pen.attrs |= ATTR_HIDDEN,
+                9 => pen.attrs |= ATTR_STRIKE,
+                21 => pen.underline = UNDERLINE_DOUBLE,
+                22 => pen.attrs &= !(ATTR_BOLD | ATTR_DIM),
+                23 => pen.attrs &= !ATTR_ITALIC,
+                24 => pen.underline = 0,
+                27 => pen.attrs &= !ATTR_INVERSE,
+                28 => pen.attrs &= !ATTR_HIDDEN,
+                29 => pen.attrs &= !ATTR_STRIKE,
+                n @ 30..=37 => pen.fg = palette((n - 30) as u8) | FG_SET,
+                38 => {
+                    if let Some(c) = ext_color_flat(params, &mut idx, palette) {
+                        self.cur.pen.fg = c | FG_SET;
+                    }
+                }
+                39 => pen.fg = 0,
+                n @ 40..=47 => pen.bg = palette((n - 40) as u8) | BG_SET,
+                48 => {
+                    if let Some(c) = ext_color_flat(params, &mut idx, palette) {
+                        self.cur.pen.bg = c | BG_SET;
+                    }
+                }
+                49 => pen.bg = 0,
+                58 => {
+                    if let Some(c) = ext_color_flat(params, &mut idx, palette) {
+                        let extra = self.cur.pen.extra;
+                        self.set_underline_color(extra, c | 1);
+                    }
+                }
+                59 => {
+                    let extra = pen.extra;
+                    if extra != 0 {
+                        self.set_underline_color(extra, 0);
+                    }
                 }
                 n @ 90..=97 => pen.fg = palette((n - 90 + 8) as u8) | FG_SET,
                 n @ 100..=107 => pen.bg = palette((n - 100 + 8) as u8) | BG_SET,
@@ -310,6 +393,30 @@ impl Grid {
     pub(super) fn reply_color(&mut self, code: &str, c: u32, st: &str) {
         let (r, g, b) = ((c >> 24) & 0xFF, (c >> 16) & 0xFF, (c >> 8) & 0xFF);
         let _ = write!(self.response, "\x1b]{code};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}{st}");
+    }
+}
+
+/// Parse `38;5;n`, `38;2;r;g;b` from flat semicolon-separated parameters.
+#[inline]
+fn ext_color_flat(params: &[u16], idx: &mut usize, palette: impl Fn(u8) -> u32) -> Option<u32> {
+    let kind = *params.get(*idx)?;
+    *idx += 1;
+    match kind {
+        5 => {
+            let n = *params.get(*idx)?;
+            *idx += 1;
+            Some(palette(n as u8))
+        }
+        2 => {
+            let r = *params.get(*idx)?;
+            *idx += 1;
+            let g = *params.get(*idx)?;
+            *idx += 1;
+            let b = *params.get(*idx)?;
+            *idx += 1;
+            Some(rgb(r, g, b))
+        }
+        _ => None,
     }
 }
 

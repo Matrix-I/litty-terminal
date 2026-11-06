@@ -74,6 +74,7 @@ impl Grid {
         if !self.graphics.virtuals.is_empty() {
             self.prune_dead_virtuals();
         }
+        self.release_scrollback_pages();
         self.all_dirty = true;
     }
 

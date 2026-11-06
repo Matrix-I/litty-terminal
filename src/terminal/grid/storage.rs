@@ -120,9 +120,10 @@ impl Grid {
         let b = self.blank();
         let c1 = c1.min(self.cols);
         if c0 < c1 {
-            let had_extra = self.row_mut(r)[c0..c1]
-                .iter()
-                .any(|c| ((c.fg & FG_EXTRA) | (c.bg & BG_EXTRA)) != 0);
+            let had_extra = self.extras.len() > 1
+                && self.row_mut(r)[c0..c1]
+                    .iter()
+                    .any(|c| ((c.fg & FG_EXTRA) | (c.bg & BG_EXTRA)) != 0);
             if had_extra {
                 self.extras_dirty = true;
             }
@@ -145,8 +146,12 @@ impl Grid {
         let s = self.row_start(src);
         let d = self.row_start(dst);
         let c = self.cols;
-        let buf = self.buf_mut();
-        if buf[d..d + c].iter().any(|cell| ((cell.fg & FG_EXTRA) | (cell.bg & BG_EXTRA)) != 0) {
+        let check_extras = self.extras.len() > 1;
+        let had_extra = check_extras && {
+            let buf = self.buf_mut();
+            buf[d..d + c].iter().any(|cell| ((cell.fg & FG_EXTRA) | (cell.bg & BG_EXTRA)) != 0)
+        };
+        if had_extra {
             self.extras_dirty = true;
         }
         self.buf_mut().copy_within(s..s + c, d);
@@ -205,7 +210,7 @@ impl Grid {
                     if self.clusters.texts.len() >= 4096 && self.cells[start..end].iter().any(|c| c.codepoint & (CLUSTER_FLAG | PH_FLAG) == CLUSTER_FLAG) {
                         self.clusters.evictions = self.clusters.evictions.saturating_add(1);
                     }
-                    if self.cells[start..end].iter().any(|c| ((c.fg & FG_EXTRA) | (c.bg & BG_EXTRA)) != 0) {
+                    if self.extras.len() > 1 && self.cells[start..end].iter().any(|c| ((c.fg & FG_EXTRA) | (c.bg & BG_EXTRA)) != 0) {
                         self.extras_dirty = true;
                     }
                 }
@@ -255,6 +260,53 @@ impl Grid {
         self.clear_rows(t, t + n);
         if self.alt_active && !self.graphics.placements.is_empty() {
             self.graphics.scroll_alt_down(self.lines_pushed + t, self.lines_pushed + b, n);
+        }
+    }
+
+    /// Release physical OS pages backing scrollback rows outside the visible screen
+    /// (`top .. top + rows` in the ring) using `madvise` (`MADV_FREE` on macOS,
+    /// `MADV_DONTNEED` on Linux) so clearing scrollback immediately frees dirty RAM
+    /// without reallocating `self.cells`.
+    pub(super) fn release_scrollback_pages(&mut self) {
+        if self.cols == 0 || self.cap <= self.rows || self.cells.is_empty() {
+            return;
+        }
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        if page_size <= 0 {
+            return;
+        }
+        let page = page_size as usize;
+        let base = self.cells.as_mut_ptr() as usize;
+        let cell_bytes = std::mem::size_of::<Cell>();
+        let row_bytes = self.cols * cell_bytes;
+
+        let advise_range = |start_row: usize, end_row: usize| {
+            if start_row >= end_row {
+                return;
+            }
+            let raw_start = base + start_row * row_bytes;
+            let raw_end = base + end_row * row_bytes;
+            let aligned_start = (raw_start + page - 1) & !(page - 1);
+            let aligned_end = raw_end & !(page - 1);
+            if aligned_start < aligned_end {
+                #[cfg(target_os = "macos")]
+                let advice = libc::MADV_FREE;
+                #[cfg(not(target_os = "macos"))]
+                let advice = libc::MADV_DONTNEED;
+                // SAFETY: `[aligned_start, aligned_end)` is page-aligned and strictly within
+                // `self.cells`'s heap allocation outside the active visible rows.
+                unsafe {
+                    let _ = libc::madvise(aligned_start as *mut libc::c_void, aligned_end - aligned_start, advice);
+                }
+            }
+        };
+
+        if self.top + self.rows <= self.cap {
+            advise_range(0, self.top);
+            advise_range(self.top + self.rows, self.cap);
+        } else {
+            let wrap_end = (self.top + self.rows) - self.cap;
+            advise_range(wrap_end, self.top);
         }
     }
 }

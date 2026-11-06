@@ -718,7 +718,7 @@ pub fn run_critical_features_benchmark() -> FeatureMetrics {
         }
     }
     let search_data = grid.search_text();
-    let regex_pat = regex::Regex::new(r"ERR_\d{4}").expect("regex");
+    let regex_pat = crate::terminal::regex_lite::Regex::new(r"ERR_\d{4}").expect("regex");
     let mut regex_matches = 0usize;
     let mut regex_dur_ms = f64::MAX;
     for _ in 0..BEST_OF_PASSES {

@@ -186,7 +186,7 @@ impl Renderer {
         let cur = g
             .cursor_pos()
             .map(|(cx, cy)| (pane.rect.col + g.cursor_visual_col(cy, cx), pane.rect.row + cy + top_rows));
-        let dirty = g.all_dirty || g.viewport_dirty || g.dirty.iter().any(|&d| d);
+        let dirty = g.all_dirty || g.viewport_dirty || g.dirty.any();
         let cursor_color = g.cursor_color().map_or(self.config_cursor_color, |c| c | 1);
         let cursor_style = match g.modes.cursor_shape {
             1 | 2 => 0, // Block
@@ -226,7 +226,7 @@ impl Renderer {
     ) -> bool {
         let any_dirty = active.dirty || panes.iter().filter(|p| p.id != active_id).any(|p| {
             let g = p.grid.lock();
-            g.all_dirty || g.viewport_dirty || g.dirty.iter().any(|&d| d)
+            g.all_dirty || g.viewport_dirty || g.dirty.any()
         });
         !any_dirty
             && self.instances.len() == layout.instance_count
@@ -336,18 +336,19 @@ impl Renderer {
                 selection_colors: self.selection_colors,
             };
             let (mut cells, scratch) = self.row_target(cols);
+            let has_dirty = g.dirty.any();
 
-            if g.scroll_fraction > 0.0 && (pane_full || g.dirty.iter().any(|&d| d)) {
+            if g.scroll_fraction > 0.0 && (pane_full || has_dirty) {
                 build_pane_row(&mut cells, scratch, &g, &row_ctx, p_rows, Some(extra_start), top_rows + pane.rect.row + p_rows);
             }
             extra_start += pane.rect.cols;
             g.viewport_dirty = false;
-            if !pane_full && !g.dirty.iter().any(|&d| d) {
+            if !pane_full && !has_dirty {
                 continue;
             }
 
             for r in 0..p_rows {
-                if pane_full || g.dirty[r] {
+                if pane_full || g.dirty.get(r) {
                     let dst_row = top_rows + pane.rect.row + r;
                     if dst_row < total_rows {
                         build_pane_row(&mut cells, scratch, &g, &row_ctx, r, None, dst_row);
@@ -355,7 +356,7 @@ impl Renderer {
                     }
                 }
             }
-            g.dirty.fill(false);
+            g.dirty.clear();
             g.all_dirty = false;
         }
     }

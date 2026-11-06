@@ -6,9 +6,8 @@
 //! Matches are stored back in the grid as absolute-line selections, so they stay
 //! on their text while output scrolls.
 
-use regex::{Regex, RegexBuilder};
-
 use crate::terminal::grid::Selection;
+use crate::terminal::regex_lite::Regex;
 
 /// Upper bound on highlighted matches (keeps memory bounded for `.` and friends).
 pub const MAX_MATCHES: usize = 10_000;
@@ -80,11 +79,8 @@ impl SearchBar {
         if self.query.is_empty() {
             return None;
         }
-        let pattern = if self.regex { self.query.clone() } else { regex::escape(&self.query) };
-        let re = RegexBuilder::new(&pattern)
-            .case_insensitive(!self.query.chars().any(char::is_uppercase))
-            .size_limit(1 << 20)
-            .build();
+        let case_insensitive = !self.query.chars().any(char::is_uppercase);
+        let re = Regex::with_options(&self.query, case_insensitive, self.regex);
         self.invalid = re.is_err();
         re.ok()
     }
