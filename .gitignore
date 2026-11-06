@@ -4,5 +4,6 @@
 .DS_Store
 
 .claude/
+.cargo/config.toml
 # Release test reports (auto-generated)
 scripts/release-test-report.md

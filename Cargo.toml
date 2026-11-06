@@ -20,7 +20,7 @@ parking_lot = "0.12"
 bytemuck = { version = "1", features = ["derive", "extern_crate_alloc"] }
 pollster = "0.4"
 memmap2 = "0.9"
-unicode-width = "0.2"
+unicode-width = "0.1"
 unicode-normalization = "0.1"
 regex = "1"
 rustybuzz = "0.20.1"
@@ -41,6 +41,10 @@ smithay-clipboard = "0.7"
 
 [profile.dev]
 debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+opt-level = 2
 
 [profile.release]
 opt-level = 3
