@@ -110,8 +110,8 @@ impl Perform for Grid {
             'I' => self.tab_forward(arg(0, 1)),
             'Z' => self.tab_backward(arg(0, 1)),
             'g' => match raw(0) {
-                0 => self.tab_stops[self.cur.col] = false,
-                3 => self.tab_stops.fill(false),
+                0 => self.tab_stops.set(self.cur.col, false),
+                3 => self.tab_stops.clear(),
                 _ => {}
             },
             'J' => {
@@ -135,6 +135,7 @@ impl Perform for Grid {
                         self.display_offset = 0;
                         self.scroll_fraction = 0.0;
                         self.graphics.prune(self.lines_pushed);
+                        self.release_scrollback_pages();
                         self.all_dirty = true;
                     }
                     _ => {}
@@ -521,7 +522,7 @@ impl Perform for Grid {
             }
             ([], b'M') => self.reverse_index(),
             ([], b'c') => self.full_reset(),
-            ([], b'H') => self.tab_stops[self.cur.col] = true,
+            ([], b'H') => self.tab_stops.set(self.cur.col, true),
             ([b'('], b'0') => self.cur.line_drawing = true,
             ([b'('], b'B') => self.cur.line_drawing = false,
             _ => {}

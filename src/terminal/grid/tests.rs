@@ -979,7 +979,7 @@ fn search_focuses_nearest_match_and_scrolls_to_it() {
     for i in 0..10 {
         feed(&mut g, &format!("line{i}\r\n"));
     }
-    let re = regex::Regex::new(r"line[13]").unwrap();
+    let re = crate::terminal::regex_lite::Regex::new(r"line[13]").unwrap();
     let matches = g.search_text().find(&re);
     assert_eq!(matches.len(), 2);
     g.set_search_matches(matches);
@@ -2000,7 +2000,7 @@ fn sparse_snapshot_matches_dense_cell_oracle() {
             assert_eq!(sparse.text, dense.text);
             assert_eq!(sparse.rows, dense.rows);
             for pattern in [".", "[\\s\\S]", "\n", "❤️", "\u{fe0f}", "x", "b?", "e\u{301}", "jk", "界", "absent"] {
-                let re = regex::Regex::new(pattern).unwrap();
+                let re = crate::terminal::regex_lite::Regex::new(pattern).unwrap();
                 // Dense entries never carry the run bit, so both use the same matcher.
                 assert_eq!(sparse.find(&re), dense.find(&re), "pattern={pattern:?} input={input:?}");
             }
@@ -2012,7 +2012,7 @@ fn sparse_snapshot_matches_dense_cell_oracle() {
     let mut parser = vte::Parser::new();
     for byte in "\x1b[?2027h❤️".bytes() { parser.advance(&mut b, byte); }
     b.resize(4, 1);
-    let re = regex::Regex::new("❤️").unwrap();
+    let re = crate::terminal::regex_lite::Regex::new("❤️").unwrap();
     assert_eq!(a.search_text().text, b.search_text().text);
     assert_ne!(a.search_text().find(&re), b.search_text().find(&re));
 }

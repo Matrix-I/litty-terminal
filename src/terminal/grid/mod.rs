@@ -15,6 +15,7 @@ pub mod cell;
 pub mod perform;
 pub mod prompt;
 pub mod selection;
+pub mod simd;
 
 #[cfg(test)]
 mod perf_probe;
@@ -33,6 +34,7 @@ mod viewport;
 mod visual;
 mod width;
 
+pub use simd::BitSet512;
 pub use width::{char_width, is_wide_cp};
 use width::is_pictographic;
 pub use modes::{TerminalModes, set_grapheme_default};
@@ -98,8 +100,8 @@ pub struct Grid {
 
     /// Per physical main-screen row: the line continues on the next row (soft wrap).
     wrapped: Vec<bool>,
-    /// Horizontal tab stops, one flag per column.
-    tab_stops: Vec<bool>,
+    /// Horizontal tab stops, one bit per column (up to 512 columns on stack).
+    tab_stops: BitSet512,
     /// Lines ever pushed into scrollback; anchors absolute line numbers.
     lines_pushed: usize,
 
@@ -149,8 +151,8 @@ pub struct Grid {
     /// Index of the focused match in `search_matches`.
     search_current: Option<usize>,
 
-    /// Per visible row dirty flags, plus a "everything changed" shortcut.
-    pub dirty: Vec<bool>,
+    /// Per visible row dirty flags (up to 512 rows on stack), plus a "everything changed" shortcut.
+    pub dirty: BitSet512,
     pub all_dirty: bool,
 
     /// Bytes the terminal must send back to the shell (DSR, DA replies).
@@ -258,7 +260,7 @@ impl Grid {
             selection: None,
             search_matches: Vec::new(),
             search_current: None,
-            dirty: vec![true; rows],
+            dirty: BitSet512::ones(rows),
             all_dirty: true,
             response: Vec::with_capacity(256),
             extras: vec![None],
@@ -402,12 +404,13 @@ impl Grid {
         let cols = self.cols;
         let insert = self.modes.insert_mode;
         let prev_extra = {
+            let check_extras = self.extras.len() > 1;
             let r = self.row_mut(row);
             if insert && col + w < cols {
                 r.copy_within(col..cols - w, col + w);
             }
             let p_prev = if col > 0 && r[col].codepoint == 0 && is_wide_cp(r[col - 1].codepoint) {
-                let e = r[col - 1].extra();
+                let e = if check_extras { r[col - 1].extra() } else { 0 };
                 r[col - 1] = blank;
                 e
             } else {
@@ -415,16 +418,16 @@ impl Grid {
             };
             let last = col + w - 1;
             let p_next = if last + 1 < cols && r[last + 1].codepoint == 0 && is_wide_cp(r[last].codepoint) {
-                let e = r[last + 1].extra();
+                let e = if check_extras { r[last + 1].extra() } else { 0 };
                 r[last + 1] = blank;
                 e
             } else {
                 0
             };
-            let p_curr = r[col].extra();
+            let p_curr = if check_extras { r[col].extra() } else { 0 };
             r[col] = Cell { codepoint, fg, bg };
             let p_w2 = if w == 2 {
-                let e = r[col + 1].extra();
+                let e = if check_extras { r[col + 1].extra() } else { 0 };
                 r[col + 1] = Cell { codepoint: 0, fg, bg };
                 e
             } else {
@@ -520,8 +523,8 @@ impl Grid {
 
     #[inline]
     fn mark(&mut self, r: usize) {
-        if let Some(d) = self.dirty.get_mut(r) {
-            *d = true;
+        if r < self.rows {
+            self.dirty.set(r, true);
         }
     }
 
@@ -532,29 +535,120 @@ impl Grid {
 
     /// Feed a prefix of `bytes` and return how many were consumed (at least 1).
     /// Behaves exactly like calling `feed_byte` on those bytes, but a run of
-    /// printable ASCII in the parser's ground state is written in one batch.
+    /// printable ASCII in the parser's ground state (together with inline `\r`,
+    /// `\n` and `\x1b[...m` SGR sequences) is written in one batch.
     #[inline]
     pub fn feed_bytes(&mut self, parser: &mut vte::Parser, bytes: &[u8]) -> usize {
-        // Cheap reject first: most bytes outside a long run fail here without
-        // touching any grid state.
-        if bytes.len() >= MIN_ASCII_RUN
-            && bytes[..MIN_ASCII_RUN].iter().all(|b| (0x20..0x7f).contains(b))
-            && self.ground
+        if self.ground
             && self.osc_len.is_none()
             && self.apc_state == 0
-            // Redundant today (ASCII ignores `joiner`) but kept so the fast path
-            // never rests on that subtlety alone.
             && !self.joiner
             && !self.cur.line_drawing
             && !self.modes.insert_mode
             && self.modes.autowrap
         {
-            let run = printable_ascii_prefix(bytes);
-            self.print_ascii_run(&bytes[..run]);
-            return run;
+            let mut offset = 0;
+            let mut csi_params = [0u16; 16];
+            while offset < bytes.len() {
+                let rem = &bytes[offset..];
+                if rem.len() >= MIN_ASCII_RUN
+                    && rem[0].wrapping_sub(0x20) < 0x5f
+                    && rem[1].wrapping_sub(0x20) < 0x5f
+                    && rem[2].wrapping_sub(0x20) < 0x5f
+                    && rem[3].wrapping_sub(0x20) < 0x5f
+                {
+                    let run = simd::printable_ascii_prefix(rem);
+                    self.print_ascii_run(&rem[..run]);
+                    offset += run;
+                } else if rem.starts_with(b"\r\n") && offset > 0 {
+                    self.cur.col = 0;
+                    self.wrap_pending = false;
+                    self.linefeed();
+                    offset += 2;
+                } else if rem[0] == b'\n' && offset > 0 {
+                    self.linefeed();
+                    self.wrap_pending = false;
+                    offset += 1;
+                } else if rem[0] == b'\r' && offset > 0 {
+                    self.cur.col = 0;
+                    self.wrap_pending = false;
+                    offset += 1;
+                } else if let Some((consumed, n_params, action)) = simd::try_parse_simple_csi(rem, &mut csi_params) {
+                    self.dispatch_simple_csi(&csi_params[..n_params], action);
+                    offset += consumed;
+                } else {
+                    break;
+                }
+            }
+            if offset > 0 {
+                return offset;
+            }
         }
         self.feed_byte(parser, bytes[0]);
         1
+    }
+
+    #[inline]
+    fn dispatch_simple_csi(&mut self, p: &[u16], action: u8) {
+        if action == b'm' {
+            self.sgr_flat(p);
+            return;
+        }
+        let raw = |i: usize| p.get(i).copied().unwrap_or(0) as usize;
+        let arg = |i: usize, d: usize| match raw(i) {
+            0 => d,
+            v => v,
+        };
+        let (rows, cols) = (self.rows, self.cols);
+        self.wrap_pending = false;
+        match action {
+            b'A' => self.cur.row = self.cur.row.saturating_sub(arg(0, 1)),
+            b'B' => self.cur.row = (self.cur.row + arg(0, 1)).min(rows - 1),
+            b'C' => self.cur.col = (self.cur.col + arg(0, 1)).min(cols - 1),
+            b'D' => self.cur.col = self.cur.col.saturating_sub(arg(0, 1)),
+            b'G' => self.cur.col = (arg(0, 1) - 1).min(cols - 1),
+            b'H' | b'f' => {
+                self.goto_row(arg(0, 1));
+                self.cur.col = (arg(1, 1) - 1).min(cols - 1);
+            }
+            b'J' => {
+                let (r, c) = (self.cur.row, self.cur.col);
+                match raw(0) {
+                    0 => {
+                        self.clear_cols(r, c, cols);
+                        self.clear_rows(r + 1, rows);
+                    }
+                    1 => {
+                        self.clear_rows(0, r);
+                        self.clear_cols(r, 0, c + 1);
+                    }
+                    2 => {
+                        self.clear_rows(0, rows);
+                        let top = self.lines_pushed;
+                        self.graphics.delete_lines(top..top + rows, self.alt_active);
+                    }
+                    3 => {
+                        self.history = 0;
+                        self.display_offset = 0;
+                        self.scroll_fraction = 0.0;
+                        self.graphics.prune(self.lines_pushed);
+                        self.release_scrollback_pages();
+                        self.all_dirty = true;
+                    }
+                    _ => {}
+                }
+            }
+            b'K' => {
+                let (r, c) = (self.cur.row, self.cur.col);
+                match raw(0) {
+                    0 => self.clear_cols(r, c, cols),
+                    1 => self.clear_cols(r, 0, c + 1),
+                    2 => self.clear_cols(r, 0, cols),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Same result as `put_char(b, 1)` for every byte of `run`, with the
@@ -562,6 +656,9 @@ impl Grid {
     /// insert mode off and a run of printable ASCII.
     fn print_ascii_run(&mut self, run: &[u8]) {
         let mut rest = run;
+        let (fg, bg) = self.colors();
+        let blank = self.blank();
+        let check_extras = self.extras.len() > 1;
         while !rest.is_empty() {
             if self.wrap_pending {
                 self.wrap_pending = false;
@@ -572,25 +669,10 @@ impl Grid {
             let (row, col, cols) = (self.cur.row, self.cur.col, self.cols);
             let n = rest.len().min(cols - col);
             let (seg, tail) = rest.split_at(n);
-            let (fg, bg) = self.colors();
-            let blank = self.blank();
             let last = col + n - 1;
             let r = self.row_mut(row);
-            let mut prev_extra = false;
-            // Overwriting half of a wide glyph blanks the orphaned other half.
-            if col > 0 && r[col].codepoint == 0 && is_wide_cp(r[col - 1].codepoint) {
-                prev_extra |= r[col - 1].extra() != 0;
-                r[col - 1] = blank;
-            }
-            if last + 1 < cols && r[last + 1].codepoint == 0 && is_wide_cp(r[last].codepoint) {
-                prev_extra |= r[last + 1].extra() != 0;
-                r[last + 1] = blank;
-            }
-            let dst = &mut r[col..=last];
-            prev_extra |= dst.iter().any(|c| c.extra() != 0);
-            for (cell, &b) in dst.iter_mut().zip(seg) {
-                *cell = Cell { codepoint: b as u32, fg, bg };
-            }
+            let mut prev_extra = simd::fixup_wide_edges(r, col, last, cols, blank, check_extras);
+            prev_extra |= simd::write_ascii_cells(&mut r[col..=last], seg, fg, bg, check_extras);
             if prev_extra {
                 self.extras_dirty = true;
             }
@@ -770,14 +852,14 @@ impl Grid {
 
     fn tab_forward(&mut self, n: usize) {
         for _ in 0..n {
-            let next = (self.cur.col + 1..self.cols).find(|&c| self.tab_stops[c]);
+            let next = self.tab_stops.next_set(self.cur.col, self.cols);
             self.cur.col = next.unwrap_or(self.cols - 1);
         }
     }
 
     fn tab_backward(&mut self, n: usize) {
         for _ in 0..n {
-            let prev = (1..self.cur.col).rev().find(|&c| self.tab_stops[c]);
+            let prev = self.tab_stops.prev_set(self.cur.col, 1);
             self.cur.col = prev.unwrap_or(0);
         }
     }
@@ -875,13 +957,14 @@ impl Grid {
         self.dcs_buf.clear();
         self.dcs_buf.shrink_to_fit();
         self.dcs_start = None;
+        self.release_scrollback_pages();
         self.all_dirty = true;
     }
 
 }
 
-fn default_tab_stops(cols: usize) -> Vec<bool> {
-    (0..cols).map(|c| c > 0 && c % 8 == 0).collect()
+fn default_tab_stops(cols: usize) -> BitSet512 {
+    BitSet512::default_tabs(cols)
 }
 
 /// DEC Special Graphics (ESC ( 0) used by tmux, mc, etc. for box drawing.
@@ -900,22 +983,3 @@ mod tests;
 
 /// Shortest printable-ASCII run worth batching; shorter ones cost more to set up.
 const MIN_ASCII_RUN: usize = 4;
-
-/// Length of the leading run of bytes in `0x20..=0x7E`. Branch-free per block
-/// so the compiler can vectorize the scan.
-#[inline]
-fn printable_ascii_prefix(bytes: &[u8]) -> usize {
-    const BLOCK: usize = 32;
-    let mut i = 0;
-    while i + BLOCK <= bytes.len() {
-        let bad = bytes[i..i + BLOCK].iter().fold(0u8, |acc, &b| acc | (b.wrapping_sub(0x20) >= 0x5f) as u8);
-        if bad != 0 {
-            break;
-        }
-        i += BLOCK;
-    }
-    while i < bytes.len() && (0x20..0x7f).contains(&bytes[i]) {
-        i += 1;
-    }
-    i
-}

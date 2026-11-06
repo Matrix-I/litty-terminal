@@ -11,7 +11,7 @@ fn snapshot(g: &Grid) -> impl PartialEq + std::fmt::Debug {
         g.history,
         (g.cur.row, g.cur.col),
         g.wrap_pending,
-        g.dirty.clone(),
+        g.dirty,
         g.all_dirty,
         g.extras_dirty,
         g.lines_pushed,
@@ -25,7 +25,7 @@ fn snapshot(g: &Grid) -> impl PartialEq + std::fmt::Debug {
 fn reset_dirty(g: &mut Grid) {
     g.extras_dirty = false;
     g.all_dirty = false;
-    g.dirty.iter_mut().for_each(|d| *d = false);
+    g.dirty.clear();
 }
 
 fn feed_chunked(g: &mut Grid, parser: &mut vte::Parser, data: &[u8], mut next_chunk: impl FnMut() -> usize) {

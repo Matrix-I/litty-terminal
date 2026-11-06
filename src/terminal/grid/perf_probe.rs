@@ -21,8 +21,9 @@ fn best_ns_per_byte(data: &[u8]) -> f64 {
         let mut grid = Grid::new(160, 50);
         let mut parser = vte::Parser::new();
         let start = Instant::now();
-        for &b in data {
-            grid.feed_byte(&mut parser, b);
+        let mut off = 0;
+        while off < data.len() {
+            off += grid.feed_bytes(&mut parser, &data[off..]);
         }
         let ns = start.elapsed().as_nanos() as f64 / data.len() as f64;
         // Keep every cell write observable so the optimizer cannot drop the work.
