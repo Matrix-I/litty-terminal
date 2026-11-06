@@ -1,0 +1,22 @@
+# Fast Linker Configuration Example
+#
+# To enable fast linking locally:
+#   cp .cargo/config.toml.example .cargo/config.toml
+#
+# Prerequisites:
+# - Linux: install `clang` and `mold` (e.g. `sudo apt-get install clang mold` or `sudo dnf install clang mold`)
+# - macOS: system ld64 is default; lld can be configured if LLVM is installed
+
+# Linux x86_64: use mold for ultra-fast linking
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# Linux AArch64: use mold
+[target.aarch64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# macOS Apple Silicon (opt-in if LLVM lld is available):
+# [target.aarch64-apple-darwin]
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]

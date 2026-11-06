@@ -20,6 +20,38 @@ cargo test
 cargo build --release
 ```
 
+## Fast Inner-Loop Builds & Compile-Time Optimization
+
+To accelerate iterative builds and debug cycles:
+
+### 1. Fast Linker (`mold`)
+On Linux, enable the multi-threaded `mold` linker for instant incremental links:
+```bash
+# Install clang and mold
+sudo apt-get install -y clang mold   # Debian / Ubuntu
+sudo dnf install -y clang mold       # Fedora
+
+# Enable config template
+cp .cargo/config.toml.example .cargo/config.toml
+```
+
+### 2. Compilation Caching (`sccache`)
+To share build artifacts across git branch switches and clean builds:
+```bash
+# Install sccache
+cargo install sccache
+
+# Enable rustc wrapper
+export RUSTC_WRAPPER=sccache
+```
+
+### 3. Profiling Compile Times (`cargo build --timings`)
+To inspect pipeline bottlenecks and crate compilation graphs:
+```bash
+cargo build --timings
+# Report generated at target/cargo-timings/cargo-timing.html
+```
+
 ## macOS Application Bundle & DMG
 
 Run the automated bundling script:
