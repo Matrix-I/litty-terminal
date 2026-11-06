@@ -9,6 +9,7 @@ optimization candidates are identified separately from reproduced failures.
 
 | Version | Record |
 | --- | --- |
+| [v0.10.0](./docs/plans/0.10.0.md) | Planned — bare-metal Metal/Vulkan-EGL renderer, native AppKit/Wayland-X11 windowing, native OS font/image engines, and SIMD VT/search core |
 | [v0.9.0](./docs/plans/0.9.0.md) | Release record (2026-11-05) — ships the v0.8.1 fixes, tab drag-and-drop and the Linux title bar |
 | [v0.8.1](./docs/plans/0.8.1.md) | Historical record — shipped in v0.9.0 (never tagged) |
 | [v0.8.0](./docs/plans/0.8.0.md) | Release record (2026-11-04) — ships the v0.7.3 and v0.7.4 items; open follow-ups are listed in the record |
