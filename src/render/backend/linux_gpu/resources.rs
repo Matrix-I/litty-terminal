@@ -254,10 +254,6 @@ impl Drop for TextureInner {
 #[derive(Clone)]
 pub struct Texture {
     inner: Arc<TextureInner>,
-    #[cfg(test)]
-    pub width: u32,
-    #[cfg(test)]
-    pub height: u32,
 }
 
 impl Texture {
@@ -358,10 +354,6 @@ impl Texture {
                         mem,
                         view,
                     }),
-                    #[cfg(test)]
-                    width: w,
-                    #[cfg(test)]
-                    height: h,
                 };
             }
         }
@@ -372,10 +364,6 @@ impl Texture {
                 mem: 0,
                 view: 0,
             }),
-            #[cfg(test)]
-            width: w,
-            #[cfg(test)]
-            height: h,
         }
     }
 
