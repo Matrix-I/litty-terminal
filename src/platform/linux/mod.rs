@@ -10,5 +10,6 @@ mod menu;
 mod native_clipboard;
 mod tabs;
 mod window;
+pub(crate) mod native;
 
 pub use self::{app::*, dialog::*, hotkey::*, input::*, menu::*, native_clipboard::*, tabs::*, window::*};
