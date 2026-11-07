@@ -379,9 +379,7 @@ impl Window {
         match &self.0 {
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => {
-                if visible {
-                    w.focus_window();
-                }
+                w.set_visible(visible);
             }
             #[cfg(target_os = "linux")]
             WindowInner::NativeLinux(w) => {
@@ -393,7 +391,7 @@ impl Window {
     pub fn is_visible(&self) -> Option<bool> {
         match &self.0 {
             #[cfg(target_os = "macos")]
-            WindowInner::Native(_) => Some(true),
+            WindowInner::Native(w) => Some(w.is_visible()),
             #[cfg(target_os = "linux")]
             WindowInner::NativeLinux(w) => Some(w.is_visible()),
         }

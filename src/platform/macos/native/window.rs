@@ -28,6 +28,36 @@ pub struct NativeWindowInner {
 unsafe impl Send for NativeWindowInner {}
 unsafe impl Sync for NativeWindowInner {}
 
+impl Drop for NativeWindowInner {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.ns_window.is_null() {
+                msg_send!(self.ns_window, c"close");
+                msg_send!(self.ns_window, c"release");
+            }
+        }
+    }
+}
+
+fn primary_screen_height() -> f64 {
+    unsafe {
+        if let Some(screen_cls) = class(c"NSScreen") {
+            let screens = msg_send!(screen_cls, c"screens"; -> Id);
+            if !screens.is_null() {
+                let count = msg_send!(screens, c"count"; -> usize);
+                if count > 0 {
+                    let primary = msg_send!(screens, c"objectAtIndex:", 0usize => usize; -> Id);
+                    if !primary.is_null() {
+                        let frame = msg_send!(primary, c"frame"; -> NSRect);
+                        return frame.h;
+                    }
+                }
+            }
+        }
+        900.0
+    }
+}
+
 impl NativeWindow {
     pub fn new(id: WindowId, ns_window: Id, ns_view: Id) -> Self {
         Self {
@@ -45,7 +75,13 @@ impl NativeWindow {
         unsafe {
             let width = spec.inner_size.width;
             let height = spec.inner_size.height;
-            let rect = NSRect { x: 100.0, y: 100.0, w: width, h: height };
+            let screen_h = primary_screen_height();
+            let (x, y) = if let Some(pos) = spec.position {
+                (pos.x, (screen_h - pos.y - height).max(0.0))
+            } else {
+                (100.0, (screen_h - 100.0 - height).max(0.0))
+            };
+            let rect = NSRect { x, y, w: width, h: height };
 
             // NSWindowStyleMask: Titled (1) | Closable (2) | Miniaturizable (4) | Resizable (8)
             let style_mask: usize = if spec.decorations {
@@ -73,10 +109,11 @@ impl NativeWindow {
                 return Err(std::io::Error::other("failed to create NSWindow"));
             }
 
-            // Tabbing identifier for native tabs grouping
-            if let Some(tab_id) = ns_string("litty") {
-                msg_send!(ns_window, c"setTabbingIdentifier:", tab_id => Id);
-            }
+            // Do NOT let AppKit auto-release NSWindow when closed (Rust manages lifetime)
+            msg_send!(ns_window, c"setReleasedWhenClosed:", false => bool);
+
+            // Disallow native AppKit tab auto-grouping by default
+            msg_send!(ns_window, c"setTabbingMode:", 2isize => isize); // NSWindowTabbingModeDisallowed
 
             // Create LittyView
             let view_cls = class(c"LittyView").ok_or_else(|| std::io::Error::other("no LittyView class"))?;
@@ -90,8 +127,9 @@ impl NativeWindow {
             // Make view layer-backed
             msg_send!(ns_view, c"setWantsLayer:", true => bool);
 
-            // Set content view
+            // Set content view (retains ns_view, so release our alloc retain)
             msg_send!(ns_window, c"setContentView:", ns_view => Id);
+            msg_send!(ns_view, c"release");
 
             // Title
             if let Some(ns_title) = ns_string(spec.title) {
@@ -147,17 +185,35 @@ impl NativeWindow {
     pub fn outer_position(&self) -> Result<PhysicalPosition<i32>, Unsupported> {
         unsafe {
             let frame = msg_send!(self.inner.ns_window, c"frame"; -> NSRect);
+            let screen_h = primary_screen_height();
+            let top_left_y = screen_h - (frame.y + frame.h);
             let scale = self.scale_factor();
-            Ok(PhysicalPosition::new((frame.x * scale).round() as i32, (frame.y * scale).round() as i32))
+            Ok(PhysicalPosition::new((frame.x * scale).round() as i32, (top_left_y * scale).round() as i32))
         }
     }
 
     pub fn set_outer_position(&self, position: LogicalPosition<f64>) {
         unsafe {
-            let mut frame = msg_send!(self.inner.ns_window, c"frame"; -> NSRect);
-            frame.x = position.x;
-            frame.y = position.y;
-            msg_send!(self.inner.ns_window, c"setFrameOrigin:", NSPoint { x: frame.x, y: frame.y } => NSPoint);
+            let frame = msg_send!(self.inner.ns_window, c"frame"; -> NSRect);
+            let screen_h = primary_screen_height();
+            let cocoa_y = screen_h - position.y - frame.h;
+            msg_send!(self.inner.ns_window, c"setFrameOrigin:", NSPoint { x: position.x, y: cocoa_y } => NSPoint);
+        }
+    }
+
+    pub fn is_visible(&self) -> bool {
+        unsafe {
+            msg_send!(self.inner.ns_window, c"isVisible"; -> bool)
+        }
+    }
+
+    pub fn set_visible(&self, visible: bool) {
+        unsafe {
+            if visible {
+                msg_send!(self.inner.ns_window, c"makeKeyAndOrderFront:", std::ptr::null_mut::<c_void>() => Id);
+            } else {
+                msg_send!(self.inner.ns_window, c"orderOut:", std::ptr::null_mut::<c_void>() => Id);
+            }
         }
     }
 
@@ -256,10 +312,12 @@ impl NativeWindow {
 
     pub fn drag_window(&self) -> Result<(), Unsupported> {
         unsafe {
-            let event = msg_send!(self.inner.ns_window, c"currentEvent"; -> Id);
-            if !event.is_null() {
-                msg_send!(self.inner.ns_window, c"performWindowDragWithEvent:", event => Id);
-                return Ok(());
+            if let Some(app) = shared_application() {
+                let event = msg_send!(app, c"currentEvent"; -> Id);
+                if !event.is_null() {
+                    msg_send!(self.inner.ns_window, c"performWindowDragWithEvent:", event => Id);
+                    return Ok(());
+                }
             }
         }
         Err(Unsupported)
