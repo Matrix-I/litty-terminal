@@ -287,6 +287,26 @@ pub enum RawHandle {
     Xcb { connection: *mut c_void, window: u32 },
 }
 
+/// Posts events from any thread to the thread that runs the event loop.
+pub struct EventProxy<T: 'static>(winit::event_loop::EventLoopProxy<T>);
+
+impl<T: 'static> EventProxy<T> {
+    pub fn new(proxy: winit::event_loop::EventLoopProxy<T>) -> Self {
+        EventProxy(proxy)
+    }
+
+    /// Fails only once the event loop has exited, when nobody is left to handle `event`.
+    pub fn send_event(&self, event: T) -> Result<(), T> {
+        self.0.send_event(event).map_err(|e| e.0)
+    }
+}
+
+impl<T: 'static> Clone for EventProxy<T> {
+    fn clone(&self) -> Self {
+        EventProxy(self.0.clone())
+    }
+}
+
 pub struct Window(ww::Window);
 
 impl Window {

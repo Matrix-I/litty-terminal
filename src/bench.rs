@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use winit::event_loop::EventLoopProxy;
+use crate::platform::gui::EventProxy;
 
 use crate::bench_dsr as bd;
 use crate::event::AppEvent;
@@ -145,7 +145,7 @@ pub fn get_process_memory() -> (f64, f64) {
 
 /// Execute the RAM profiling sequence:
 /// 1 Window 1 Tab (Idle) -> 1 Window 3 Tabs -> 2 Windows 6 Tabs -> Cleanup
-pub fn run_ram_benchmark_thread(proxy: EventLoopProxy<AppEvent>) {
+pub fn run_ram_benchmark_thread(proxy: EventProxy<AppEvent>) {
     std::thread::Builder::new()
         .name("litty-ram-bench".into())
         .spawn(move || {

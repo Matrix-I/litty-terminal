@@ -515,7 +515,7 @@ pub(crate) fn run(bench_ram_mode: bool, scroll_fps: bool) {
     let event_loop = EventLoop::<AppEvent>::with_user_event().build().expect("event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App {
-        waker: Waker { proxy: event_loop.create_proxy(), queued: Arc::new(AtomicBool::new(false)) },
+        waker: Waker { proxy: crate::platform::gui::EventProxy::new(event_loop.create_proxy()), queued: Arc::new(AtomicBool::new(false)) },
         windows: Vec::new(),
         bench_ram_mode,
         scroll_fps_run: scroll_fps.then(frame_metrics::ScrollRun::new),
