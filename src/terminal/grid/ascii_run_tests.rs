@@ -4,9 +4,17 @@
 use super::*;
 
 fn snapshot(g: &Grid) -> impl PartialEq + std::fmt::Debug {
+    let mut active_cells = Vec::with_capacity((g.history + g.rows) * g.cols * std::mem::size_of::<Cell>());
+    let mut active_wrapped = Vec::with_capacity(g.history + g.rows);
+    for i in 0..g.history + g.rows {
+        let p = (g.top + g.cap - g.history + i) % g.cap;
+        let s = p * g.cols;
+        active_cells.extend_from_slice(bytemuck::cast_slice::<Cell, u8>(&g.cells[s..s + g.cols]));
+        active_wrapped.push(g.wrapped[p]);
+    }
     (
-        bytemuck::cast_slice::<Cell, u8>(&g.cells).to_vec(),
-        g.wrapped.clone(),
+        active_cells,
+        active_wrapped,
         g.top,
         g.history,
         (g.cur.row, g.cur.col),
