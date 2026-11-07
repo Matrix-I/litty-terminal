@@ -6,6 +6,7 @@
 
 mod animation;
 mod kitty;
+pub(crate) mod png;
 mod sixel;
 mod store;
 
@@ -41,8 +42,8 @@ fn next_key() -> u64 {
 
 pub use animation::any_animation;
 pub(crate) use kitty::{decode_kitty, DecodedImage, KittyPreparation};
-#[cfg(target_os = "linux")]
-pub use kitty::decode_png;
 pub use kitty::{parse_kitty, KittyCommand, KittyOutcome};
+#[cfg(test)]
+pub use png::decode_png;
 pub use sixel::decode_sixel;
 pub use store::{ImageDraw, Placement, Store, VirtualPlacement, PLACEHOLDER_DIACRITICS, Z_BELOW_BG};

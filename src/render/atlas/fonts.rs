@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
+use super::system::NativeFont;
 use super::FontSet;
 
 pub(super) static FONT_CACHE: Mutex<Option<(Vec<String>, Arc<FontSet>)>> = parking_lot::const_mutex(None);
@@ -19,9 +20,10 @@ pub(super) static FONT_CACHE: Mutex<Option<(Vec<String>, Arc<FontSet>)>> = parki
 pub fn load_font(families: &[String]) -> Arc<FontSet> {
     let mut cache = FONT_CACHE.lock();
     if let Some((ref cached_families, ref font_set)) = *cache
-        && cached_families.as_slice() == families {
-            return Arc::clone(font_set);
-        }
+        && cached_families.as_slice() == families
+    {
+        return Arc::clone(font_set);
+    }
 
     let mut configured_faces: Vec<(String, u32)> = Vec::new();
     for fam in families {
@@ -64,26 +66,22 @@ pub fn load_font(families: &[String]) -> Arc<FontSet> {
         .map(String::from),
     );
 
-    let (mut primary_path, mut primary, mut shaper) = (None, None, None);
+    let (mut primary_path, mut primary) = (None, None);
 
     let mut configured_iter = configured_faces.into_iter();
     for (p, idx) in configured_iter.by_ref() {
-        let s = shaper_mmap_for(&p, idx);
-        if let Some(f) = parse_font(&p, idx, s.is_some()) {
+        if let Some(f) = parse_font(&p, idx, true) {
             primary_path = Some(p);
             primary = Some(f);
-            shaper = s;
             break;
         }
     }
 
     if primary.is_none() {
         for path in &primary_candidates {
-            let s = shaper_mmap_for(path, 0);
-            if let Some(f) = parse_font(path, 0, s.is_some()) {
+            if let Some(f) = parse_font(path, 0, true) {
                 primary_path = Some(path.clone());
                 primary = Some(f);
-                shaper = s;
                 break;
             }
         }
@@ -93,18 +91,16 @@ pub fn load_font(families: &[String]) -> Arc<FontSet> {
     if primary.is_none() {
         let (discovered_mono_nerd, _) = discover_nerd_fonts();
         for path in &discovered_mono_nerd {
-            let s = shaper_mmap_for(path, 0);
-            if let Some(f) = parse_font(path, 0, s.is_some()) {
+            if let Some(f) = parse_font(path, 0, true) {
                 primary_path = Some(path.clone());
                 primary = Some(f);
-                shaper = s;
                 break;
             }
         }
     }
     let primary = primary.expect("litty: no usable monospace font found; set font-family in the config");
 
-    let mut fallbacks: Vec<fontdue::Font> = Vec::new();
+    let mut fallbacks: Vec<NativeFont> = Vec::new();
     for (p, idx) in configured_iter {
         if let Some(f) = try_parse_font_index(&p, idx) {
             fallbacks.push(f);
@@ -114,25 +110,12 @@ pub fn load_font(families: &[String]) -> Arc<FontSet> {
         fallbacks.push(f);
     }
 
-    let (shaper_mmap, shaper_index) = match shaper {
-        Some((m, idx)) => (Some(m), idx),
-        None => (None, 0),
-    };
-    let set = Arc::new(FontSet { primary, fallbacks, shaper_mmap, shaper_index });
+    let set = Arc::new(FontSet { primary, fallbacks });
     *cache = Some((families.to_vec(), Arc::clone(&set)));
     set
 }
 
-/// A shaping mmap over `path`. The memory-mapped file is kept alive in the returned `Arc<Mmap>`.
-pub(super) fn shaper_mmap_for(path: &str, index: u32) -> Option<(Arc<memmap2::Mmap>, u32)> {
-    let file = std::fs::File::open(path).ok()?;
-    // SAFETY: font files are not modified while mapped (same as for fontdue).
-    let map = Arc::new(unsafe { memmap2::Mmap::map(&file) }.ok()?);
-    rustybuzz::Face::from_slice(&map, index)?;
-    Some((map, index))
-}
-
-fn find_first_symbol_font(exclude_path: Option<&str>) -> Option<fontdue::Font> {
+fn find_first_symbol_font(exclude_path: Option<&str>) -> Option<NativeFont> {
     let mut candidates = Vec::new();
     if let Ok(home) = std::env::var("HOME") {
         candidates.push(format!("{home}/Library/Fonts/SymbolsNerdFont-Regular.ttf"));
@@ -161,31 +144,18 @@ fn find_first_symbol_font(exclude_path: Option<&str>) -> Option<fontdue::Font> {
     None
 }
 
-fn try_parse_font(path: &str) -> Option<fontdue::Font> {
+fn try_parse_font(path: &str) -> Option<NativeFont> {
     try_parse_font_index(path, 0)
 }
 
-fn try_parse_font_index(path: &str, collection_index: u32) -> Option<fontdue::Font> {
+fn try_parse_font_index(path: &str, collection_index: u32) -> Option<NativeFont> {
     parse_font(path, collection_index, false)
 }
 
-/// `substitutions`: also load glyphs only reachable through GSUB (ligatures,
-/// stylistic sets), which shaping needs for the primary font.
-pub(super) fn parse_font(path: &str, collection_index: u32, substitutions: bool) -> Option<fontdue::Font> {
-    let file = std::fs::File::open(path).ok()?;
-    let mmap = unsafe { memmap2::Mmap::map(&file) }.ok()?;
-    let settings = fontdue::FontSettings {
-        scale: 32.0,
-        collection_index,
-        load_substitutions: substitutions,
-    };
-    match fontdue::Font::from_bytes(mmap, settings) {
-        Ok(f) => Some(f),
-        Err(e) => {
-            eprintln!("litty: failed to parse font {path}: {e}");
-            None
-        }
-    }
+/// `substitutions`: also configure GSUB/GPOS shaping (`font-feature`, ligatures)
+/// on the primary font.
+pub(super) fn parse_font(path: &str, collection_index: u32, substitutions: bool) -> Option<NativeFont> {
+    super::system::parse_font(path, collection_index, substitutions)
 }
 
 /// Scan standard font directories for installed Nerd Fonts or Symbols Nerd Font.

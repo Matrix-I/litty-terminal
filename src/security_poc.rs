@@ -147,24 +147,7 @@ fn poc_cwe770_raw_rgb_is_capped() {
     // (70.5 MiB) does not. Compress a 4300x4300 zero stream on the fly without
     // allocating a 53 MiB input buffer in the test harness itself.
     let (w, h) = (4300u32, 4300u32);
-    let z = {
-        use miniz_oxide::deflate::core::{compress_to_output, create_comp_flags_from_zip_params, CompressorOxide, TDEFLFlush};
-        let flags = create_comp_flags_from_zip_params(1, 1, 0);
-        let mut comp = CompressorOxide::new(flags);
-        let mut out = Vec::new();
-        let chunk = [0u8; 65536];
-        let mut rem = (w as usize) * (h as usize) * 3;
-        while rem > 0 {
-            let n = rem.min(chunk.len());
-            let flush = if rem == n { TDEFLFlush::Finish } else { TDEFLFlush::None };
-            let (_, consumed) = compress_to_output(&mut comp, &chunk[..n], flush, |b| {
-                out.extend_from_slice(b);
-                true
-            });
-            rem -= consumed;
-        }
-        out
-    };
+    let z = graphics::png::zlib_compress_zeros((w as usize) * (h as usize) * 3);
     let cmd = KittyCommand { action: b't', format: 24, medium: b'd', compression: b'z', width: w, height: h, ..Default::default() };
     let res = graphics::decode_kitty(&cmd, &b64(&z));
     let bytes = res.as_ref().map_or(0, |(_, _, rgba)| rgba.len());

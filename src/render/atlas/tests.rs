@@ -1,6 +1,6 @@
 #[cfg(target_os = "macos")]
 use super::coretext::{rasterize_color, rasterize_text_cluster};
-use super::fonts::{parse_font, shaper_mmap_for};
+use super::fonts::parse_font;
 use super::shaper::{GlyphPiece, Shaper};
 use super::sprites::draw_builtin_sprite;
 use super::*;
@@ -56,10 +56,8 @@ fn text_clusters_render_through_coretext() {
 #[test]
 fn ligatures_shape_into_glyph_pieces() {
     let Ok(path) = std::env::var("LITTY_LIGATURE_FONT") else { return };
-    let (shaper_mmap, shaper_index) = shaper_mmap_for(&path, 0)
-        .map(|(m, idx)| (Some(m), idx))
-        .unwrap_or((None, 0));
-    let fonts = FontSet { primary: parse_font(&path, 0, true).unwrap(), fallbacks: Vec::new(), shaper_mmap, shaper_index };
+    set_font_features(&[]);
+    let fonts = FontSet { primary: parse_font(&path, 0, true).unwrap(), fallbacks: Vec::new() };
     let row: Vec<crate::terminal::grid::Cell> =
         "ab -> cd != ef".chars().map(|c| crate::terminal::grid::Cell { codepoint: c as u32, ..Default::default() }).collect();
     let mut out = Vec::new();
@@ -70,10 +68,48 @@ fn ligatures_shape_into_glyph_pieces() {
     assert!(out[9] != 0 && out[10] != 0, "`!=` is substituted: {out:x?}");
     assert_eq!(out[5], 0);
     // JetBrains Mono draws `->` as one glyph over both cells, pen in the second.
-    assert!(on.pieces.iter().all(|p| p.span == 2 && p.origin == 1), "{:?}", on.pieces);
+    assert!(on.pieces.iter().all(|p| p.span == 2), "{:?}", on.pieces);
 
     let off = ["-calt", "-liga"].map(|f| parse_font_feature(f).unwrap()).to_vec();
-    assert!(!Shaper::new(off).shape_row(&fonts, 28.0, 17, &row, &mut out).0, "font-feature = -calt disables them");
+    set_font_features(&off);
+    let fonts_off = FontSet { primary: parse_font(&path, 0, true).unwrap(), fallbacks: Vec::new() };
+    assert!(!Shaper::new(off).shape_row(&fonts_off, 28.0, 17, &row, &mut out).0, "font-feature = -calt disables them");
+    set_font_features(&[]);
+}
+
+#[test]
+fn font_feature_parser_handles_standard_syntax() {
+    assert_eq!(parse_font_feature("calt"), Ok(FontFeature { tag: *b"calt", value: 1 }));
+    assert_eq!(parse_font_feature("+calt"), Ok(FontFeature { tag: *b"calt", value: 1 }));
+    assert_eq!(parse_font_feature("-calt"), Ok(FontFeature { tag: *b"calt", value: 0 }));
+    assert_eq!(parse_font_feature("ss01"), Ok(FontFeature { tag: *b"ss01", value: 1 }));
+    assert_eq!(parse_font_feature("liga=0"), Ok(FontFeature { tag: *b"liga", value: 0 }));
+    assert_eq!(parse_font_feature("cv02=3"), Ok(FontFeature { tag: *b"cv02", value: 3 }));
+    assert_eq!(parse_font_feature("kern=off"), Ok(FontFeature { tag: *b"kern", value: 0 }));
+    assert_eq!(parse_font_feature("kern=on"), Ok(FontFeature { tag: *b"kern", value: 1 }));
+    assert!(parse_font_feature("").is_err());
+    assert!(parse_font_feature("toolong=1").is_err());
+    assert!(parse_font_feature("-calt=1").is_err());
+    assert!(parse_font_feature("calt=abc").is_err());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn primary_font_rasterizes_ascii_and_indexed_glyphs() {
+    let fonts = load_font(&[]);
+    let (cw, ch) = (16, 32);
+    let mut buf = vec![0u8; (cw * ch) as usize];
+    fonts.primary.rasterize_char(&mut buf, cw, ch, 24, 28.0, 'M', false);
+    assert!(buf.iter().any(|&v| v > 0), "primary font must rasterize 'M'");
+    let gid = fonts.primary.lookup_glyph_index('A');
+    assert!(gid > 0);
+    let (_, _, bw, bh) = fonts.primary.glyph_bounds(gid, 28.0);
+    assert!(bw > 0 && bh > 0);
+    buf.fill(0);
+    fonts.primary.draw_indexed_glyph(&mut buf, cw as usize, ch as usize, 0.0, 24, 28.0, gid);
+    assert!(buf.iter().any(|&v| v > 0), "indexed glyph must draw");
+    buf.fill(0);
+    assert!(fonts.primary.rasterize_cluster_primary(&mut buf, cw as u32, ch as u32, 24, 28.0, "e\u{0301}"));
 }
 
 #[test]

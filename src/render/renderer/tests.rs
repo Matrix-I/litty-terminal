@@ -90,10 +90,8 @@ fn precise_scroll_gpu_pixels() {
         assert_ne!(rgb(63, 24), [0, 255, 0]); // flush against right edge
         assert_eq!(rgb(54, 12), [255, 0, 0]); // rounded top-left corner
         if flip_y == 0 && let Some(path) = std::env::var_os("LITTY_SCROLL_TEST_IMAGE") {
-            let mut png = png::Encoder::new(std::fs::File::create(path).unwrap(), 64, 48);
-            png.set_color(png::ColorType::Rgba);
-            png.set_depth(png::BitDepth::Eight);
-            png.write_header().unwrap().write_image_data(&pixels).unwrap();
+            let data = crate::terminal::graphics::png::encode_test_png(64, 48, 6, &pixels);
+            std::fs::write(path, data).unwrap();
         }
     }
 }

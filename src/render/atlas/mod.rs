@@ -27,7 +27,7 @@ mod shaper;
 mod sprites;
 pub use fonts::load_font;
 use fonts::FONT_CACHE;
-pub use shaper::{parse_font_feature, set_font_features};
+pub use shaper::{parse_font_feature, set_font_features, FontFeature};
 use shaper::{Shaper, FONT_FEATURES};
 use sprites::is_builtin_sprite;
 
@@ -109,20 +109,18 @@ pub struct GlyphStyle {
     pub italic: bool,
 }
 
-pub struct FontSet {
-    pub primary: fontdue::Font,
-    pub fallbacks: Vec<fontdue::Font>,
-    /// HarfBuzz-compatible shaper over the primary font, for ligatures and
-    /// `font-feature`; its bytes stay mapped for the lifetime of this FontSet.
-    shaper_mmap: Option<Arc<memmap2::Mmap>>,
-    shaper_index: u32,
+/// Horizontal line metrics for a font at a given pixel size.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct LineMetrics {
+    pub ascent: f32,
+    pub descent: f32,
+    pub line_gap: f32,
+    pub new_line_size: f32,
 }
 
-impl FontSet {
-    pub fn shaper(&self) -> Option<rustybuzz::Face<'_>> {
-        let mmap = self.shaper_mmap.as_ref()?;
-        rustybuzz::Face::from_slice(mmap, self.shaper_index)
-    }
+pub struct FontSet {
+    pub primary: system::NativeFont,
+    pub fallbacks: Vec<system::NativeFont>,
 }
 
 /// Slot-map key tag for a shaped glyph piece: bits 5..27 index `Atlas::pieces`,
@@ -178,13 +176,13 @@ const FALLBACK_DESCENT: f32 = 0.2;
 
 /// Line metrics at `px`, synthesized when the font lacks horizontal ones so a
 /// user-configured font can never panic startup (CWE-754).
-fn line_metrics(font: &fontdue::Font, px: f32) -> fontdue::LineMetrics {
-    font.horizontal_line_metrics(px).unwrap_or_else(|| synthesized_line_metrics(px))
+fn line_metrics(font: &system::NativeFont, px: f32) -> LineMetrics {
+    system::line_metrics(font, px)
 }
 
-fn synthesized_line_metrics(px: f32) -> fontdue::LineMetrics {
+fn synthesized_line_metrics(px: f32) -> LineMetrics {
     let (ascent, descent) = (px * FALLBACK_ASCENT, -px * FALLBACK_DESCENT);
-    fontdue::LineMetrics { ascent, descent, line_gap: 0.0, new_line_size: ascent - descent }
+    LineMetrics { ascent, descent, line_gap: 0.0, new_line_size: ascent - descent }
 }
 
 impl Atlas {
@@ -201,7 +199,7 @@ impl Atlas {
     pub fn cell_size_pt(fonts: &FontSet, pt: f32) -> (f64, f64) {
         let font = &fonts.primary;
         let lm = line_metrics(font, pt);
-        let natural_w = font.metrics('M', pt).advance_width.round().max(1.0) as u32;
+        let natural_w = font.advance_width('M', pt).round().max(1.0) as u32;
         let natural_h = (lm.ascent - lm.descent + lm.line_gap).ceil().max(1.0) as u32;
         let (adjust_w, adjust_h) = *CELL_ADJUST.lock();
         (adjust_w.apply(natural_w) as f64, adjust_h.apply(natural_h) as f64)
@@ -210,7 +208,7 @@ impl Atlas {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, fonts: Arc<FontSet>, px: f32) -> Self {
         let font = &fonts.primary;
         let lm = line_metrics(font, px);
-        let natural_w = font.metrics('M', px).advance_width.round().max(1.0) as u32;
+        let natural_w = font.advance_width('M', px).round().max(1.0) as u32;
         let natural_h = (lm.ascent - lm.descent + lm.line_gap).ceil().max(1.0) as u32;
         let (adjust_w, adjust_h) = *CELL_ADJUST.lock();
         let cell_w = adjust_w.apply(natural_w);

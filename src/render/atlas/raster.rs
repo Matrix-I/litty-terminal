@@ -1,14 +1,15 @@
 //! Glyph rasterization into atlas slots: primary font + fallbacks, synthetic
 //! bold / italic, shaped ligature pieces, clusters, wide and color glyphs, and
-//! the texture uploads. Sprites, CoreText and bitmap emoji are called from here.
+//! the texture uploads. Sprites, CoreText / FreeType and color emoji are called
+//! from here.
 
 use std::sync::atomic::Ordering;
 
-use super::system::{macos_coretext_rasterize, rasterize_color, rasterize_text_cluster};
 use super::sprites::{draw_builtin_sprite, draw_nerd_icon_fallback};
+use super::system::{macos_coretext_rasterize, rasterize_color, rasterize_text_cluster};
 use super::{
-    is_emoji, is_emoji_text, Atlas, GlyphStyle,
-    CLUSTER_KEY, CODEPOINT_MASK, GLYPH_PIECE, SHAPED_BLANK, STYLE_BOLD, STYLE_ITALIC, THICKEN, WIDE_LEFT, WIDE_RIGHT,
+    is_emoji, is_emoji_text, Atlas, GlyphStyle, CLUSTER_KEY, CODEPOINT_MASK, GLYPH_PIECE, SHAPED_BLANK, STYLE_BOLD,
+    STYLE_ITALIC, THICKEN, WIDE_LEFT, WIDE_RIGHT,
 };
 
 impl Atlas {
@@ -19,24 +20,8 @@ impl Atlas {
         let (cw, ch) = (self.cell_w as usize, self.cell_h as usize);
         let w = cw * p.span as usize;
         let mut canvas = vec![0u8; w * ch];
-        let (m, bmp) = self.fonts.primary.rasterize_indexed(p.gid, self.px);
-        let x0 = p.origin as i32 * cw as i32 + m.xmin;
-        let y0 = self.baseline - (m.ymin + m.height as i32);
-        for gy in 0..m.height as i32 {
-            let y = y0 + gy;
-            if y < 0 || y >= ch as i32 {
-                continue;
-            }
-            for gx in 0..m.width as i32 {
-                let x = x0 + gx;
-                if x < 0 || x >= w as i32 {
-                    continue;
-                }
-                let v = stem_boost(bmp[(gy * m.width as i32 + gx) as usize]);
-                let d = &mut canvas[y as usize * w + x as usize];
-                *d = (*d).max(v);
-            }
-        }
+        let pen_x = (p.origin as usize * cw) as f32;
+        self.fonts.primary.draw_indexed_glyph(&mut canvas, w, ch, pen_x, self.baseline, self.px, p.gid);
         self.apply_style(&mut canvas, w, GlyphStyle { bold: p.bold, italic: p.italic });
         for y in 0..ch {
             buf[y * cw..(y + 1) * cw].copy_from_slice(&canvas[y * w + k * cw..y * w + (k + 1) * cw]);
@@ -149,49 +134,16 @@ impl Atlas {
     }
 
     /// Rasterize a grapheme cluster (base + marks) into a `w × cell_h` canvas:
-    /// shaped with the primary font so marks are positioned, else its first
-    /// character alone.
+    /// shaped with the primary font so marks are positioned, else system shaping,
+    /// else its first character alone.
     fn rasterize_cluster_into(&self, buf: &mut [u8], w: u32, text: &str) {
-        let first = text.chars().next().map_or(0, |c| c as u32);
-        let shaper = self.fonts.shaper();
-        let shaped = shaper.as_ref().map(|face| {
-            let mut ub = rustybuzz::UnicodeBuffer::new();
-            ub.push_str(text);
-            (face, rustybuzz::shape(face, &[], ub))
-        });
-        let Some((face, shaped)) = shaped.filter(|(_, s)| s.glyph_infos().iter().all(|g| g.glyph_id != 0)) else {
-            // The primary font lacks a glyph: the system's shaping and fonts, else the base alone.
-            if !rasterize_text_cluster(buf, w, self.cell_h, self.baseline, self.px, text) {
-                buf.fill(0);
-                self.rasterize_into(buf, w, first);
-            }
+        if self.fonts.primary.rasterize_cluster_primary(buf, w, self.cell_h, self.baseline, self.px, text) {
             return;
-        };
-        let scale = self.px / face.units_per_em() as f32;
-        let advance: f32 = shaped.glyph_positions().iter().map(|p| p.x_advance as f32 * scale).sum();
-        // Centered like single glyphs are.
-        let mut pen = ((w as f32 - advance) / 2.0).max(0.0);
-        let h = self.cell_h as i32;
-        for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
-            let (m, bmp) = self.fonts.primary.rasterize_indexed(info.glyph_id as u16, self.px);
-            let x0 = (pen + pos.x_offset as f32 * scale).round() as i32 + m.xmin;
-            let y0 = self.baseline - (m.ymin + m.height as i32) - (pos.y_offset as f32 * scale).round() as i32;
-            for gy in 0..m.height as i32 {
-                let y = y0 + gy;
-                if !(0..h).contains(&y) {
-                    continue;
-                }
-                for gx in 0..m.width as i32 {
-                    let x = x0 + gx;
-                    if !(0..w as i32).contains(&x) {
-                        continue;
-                    }
-                    let v = stem_boost(bmp[(gy * m.width as i32 + gx) as usize]);
-                    let d = &mut buf[y as usize * w as usize + x as usize];
-                    *d = (*d).max(v);
-                }
-            }
-            pen += pos.x_advance as f32 * scale;
+        }
+        if !rasterize_text_cluster(buf, w, self.cell_h, self.baseline, self.px, text) {
+            buf.fill(0);
+            let first = text.chars().next().map_or(0, |c| c as u32);
+            self.rasterize_into(buf, w, first);
         }
     }
 
@@ -240,13 +192,12 @@ impl Atlas {
 
         // 2. Primary font (only if the font actually contains a glyph for `ch`).
         if self.fonts.primary.lookup_glyph_index(ch) != 0 {
-            rasterize_with_font(
+            self.fonts.primary.rasterize_char(
                 buf,
                 cw as i32,
                 self.cell_h as i32,
                 self.baseline,
                 self.px,
-                &self.fonts.primary,
                 ch,
                 false,
             );
@@ -256,13 +207,12 @@ impl Atlas {
         // 3. Fallback fonts (e.g., Symbols Nerd Font or user/system symbol fonts).
         for fb in &self.fonts.fallbacks {
             if fb.lookup_glyph_index(ch) != 0 {
-                rasterize_with_font(
+                fb.rasterize_char(
                     buf,
                     cw as i32,
                     self.cell_h as i32,
                     self.baseline,
                     self.px,
-                    fb,
                     ch,
                     true,
                 );
@@ -275,10 +225,10 @@ impl Atlas {
             return;
         }
 
-        // 5. macOS CoreText system font cascade (Apple Symbols, PingFang, Supplemental, etc.).
+        // 5. System font cascade (CoreText on macOS, Fontconfig on Linux).
         // Skip Private Use Area codepoints (0xE000..=0xF8FF, 0xF0000..=0x10FFFF) because
-        // macOS system fonts do not map Nerd Font PUA glyphs and searching the CoreText
-        // cascade list for unmapped PUA characters takes ~50ms on first encounter.
+        // system fonts do not map Nerd Font PUA glyphs and searching the cascade list
+        // for unmapped PUA characters takes ~50ms on first encounter.
         if !(0xE000..=0xF8FF).contains(&cp) && cp < 0xF0000 {
             macos_coretext_rasterize(buf, cw, self.cell_h, self.baseline, self.px, ch);
         }
@@ -331,66 +281,13 @@ impl Atlas {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn rasterize_with_font(
-    scratch: &mut [u8],
-    cw: i32,
-    chh: i32,
-    baseline: i32,
-    mut px: f32,
-    font: &fontdue::Font,
-    ch: char,
-    center_if_symbol: bool,
-) {
-    // Scale down if a fallback symbol glyph is wider/taller than the cell.
-    if center_if_symbol {
-        let m0 = font.metrics(ch, px);
-        if m0.width as i32 > cw || m0.height as i32 > chh {
-            let sx = cw as f32 / (m0.width.max(1) as f32);
-            let sy = chh as f32 / (m0.height.max(1) as f32);
-            px = (px * sx.min(sy) * 0.92).max(6.0);
-        }
-    }
-    let (m, bmp) = font.rasterize(ch, px);
-    if m.width == 0 || m.height == 0 {
-        return;
-    }
-    let mut x0 = if center_if_symbol {
-        (cw - m.width as i32) / 2
-    } else {
-        m.xmin
-    };
-    let mut y0 = baseline - (m.ymin + m.height as i32);
-    if (m.width as i32) <= cw {
-        x0 = x0.clamp(0, cw - m.width as i32);
-    }
-    if (m.height as i32) <= chh {
-        y0 = y0.clamp(0, chh - m.height as i32);
-    }
-    for gy in 0..m.height as i32 {
-        let y = y0 + gy;
-        if y < 0 || y >= chh {
-            continue;
-        }
-        for gx in 0..m.width as i32 {
-            let x = x0 + gx;
-            if x < 0 || x >= cw {
-                continue;
-            }
-            let v = stem_boost(bmp[(gy * m.width as i32 + gx) as usize]);
-            let d = &mut scratch[(y * cw + x) as usize];
-            *d = (*d).max(v);
-        }
-    }
-}
-
-/// Slight gamma/stem darkening for fontdue grayscale coverage so Retina stems
-/// match Ghostty/CoreText weight while keeping 0 -> 0 and 255 -> 255 exact.
+/// Slight gamma/stem darkening for grayscale coverage so Retina stems match
+/// Ghostty/CoreText weight while keeping 0 -> 0 and 255 -> 255 exact.
 #[path = "stem_tables.rs"]
 mod stem_tables;
 
 #[inline]
-fn stem_boost(v: u8) -> u8 {
+pub(super) fn stem_boost(v: u8) -> u8 {
     let table = if THICKEN.load(Ordering::Relaxed) { &stem_tables::THICK } else { &stem_tables::NORMAL };
     table[v as usize]
 }

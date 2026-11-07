@@ -409,29 +409,49 @@ pub(crate) fn decode_kitty(c: &KittyCommand, payload: &[u8]) -> Result<(u32, u32
             if fd < 0 {
                 return Err("ENOENT:shared memory not found".into());
             }
-            let file = unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd) };
             // Mapped, since macOS cannot read() shared memory objects.
-            // SAFETY: a read-only private view, dropped before the object is unlinked.
-            let data = unsafe { memmap2::Mmap::map(&file) }.map_err(|_| "EIO:cannot map shared memory".to_string()).and_then(|map| {
-                let start = (c.offset as usize).min(map.len());
-                let end = if c.size == 0 { map.len() } else { (start + c.size as usize).min(map.len()) };
-                if end - start > STORE_LIMIT {
-                    return Err("EINVAL:too large".into());
-                }
-                Ok(map[start..end].to_vec())
-            });
-            unsafe { libc::shm_unlink(name.as_ptr()) };
+            // SAFETY: a read-only mapping dropped before the object is unlinked and closed.
+            let data = unsafe {
+                let mut st: libc::stat = core::mem::zeroed();
+                let res = if libc::fstat(fd, &mut st) != 0 || st.st_size < 0 {
+                    Err("EIO:cannot map shared memory".to_string())
+                } else {
+                    let map_len = st.st_size as usize;
+                    if map_len == 0 {
+                        Ok(Vec::new())
+                    } else {
+                        let ptr = libc::mmap(core::ptr::null_mut(), map_len, libc::PROT_READ, libc::MAP_SHARED, fd, 0);
+                        if ptr == libc::MAP_FAILED {
+                            Err("EIO:cannot map shared memory".to_string())
+                        } else {
+                            let start = (c.offset as usize).min(map_len);
+                            let end = if c.size == 0 { map_len } else { (start + c.size as usize).min(map_len) };
+                            let res = if end - start > STORE_LIMIT {
+                                Err("EINVAL:too large".to_string())
+                            } else {
+                                let slice = core::slice::from_raw_parts((ptr as *const u8).add(start), end - start);
+                                Ok(slice.to_vec())
+                            };
+                            libc::munmap(ptr, map_len);
+                            res
+                        }
+                    }
+                };
+                libc::shm_unlink(name.as_ptr());
+                libc::close(fd);
+                res
+            };
             data?
         }
         _ => return Err("EINVAL:unsupported transmission medium".into()),
     };
     let data = if c.compression == b'z' {
-        miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&data, STORE_LIMIT).map_err(|_| "EINVAL:bad zlib data")?
+        super::png::zlib_decompress_with_limit(&data, STORE_LIMIT).map_err(String::from)?
     } else {
         data
     };
     match c.format {
-        100 => decode_png(&data),
+        100 => super::png::decode_png(&data),
         24 | 32 => {
             let (w, h) = (c.width, c.height);
             let bpp = if c.format == 24 { 3 } else { 4 };
@@ -480,39 +500,6 @@ fn read_range(file: std::fs::File, offset: u32, size: u32) -> Result<Vec<u8>, St
     let mut data = Vec::new();
     file.take(limit).read_to_end(&mut data).map_err(|_| "EIO:cannot read")?;
     Ok(data)
-}
-
-pub fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
-    decoder.set_transformations(png::Transformations::normalize_to_color8());
-    let mut reader = decoder.read_info().map_err(|_| "EINVAL:bad PNG")?;
-    let (w, h) = (reader.info().width, reader.info().height);
-    if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
-        return Err("EINVAL:bad image size".into());
-    }
-    let buf_size = reader.output_buffer_size().ok_or("EINVAL:bad PNG")?;
-    if buf_size > STORE_LIMIT || (w as usize).saturating_mul(h as usize).saturating_mul(4) > STORE_LIMIT {
-        return Err("EINVAL:image too large".into());
-    }
-    let mut buf = vec![0; buf_size];
-    let info = reader.next_frame(&mut buf).map_err(|_| "EINVAL:bad PNG")?;
-    // A sub-frame smaller than the canvas would leave the pixel buffer short
-    // and make the uploader / animation compositor read out of bounds.
-    if (info.width, info.height) != (w, h) {
-        return Err("EINVAL:bad PNG".into());
-    }
-    let buf = &buf[..info.buffer_size()];
-    let rgba = match info.color_type {
-        png::ColorType::Rgba => buf.to_vec(),
-        png::ColorType::Rgb => buf.as_chunks::<3>().0.iter().flat_map(|&[r, g, b]| [r, g, b, 255]).collect(),
-        png::ColorType::GrayscaleAlpha => buf.as_chunks::<2>().0.iter().flat_map(|&[g, a]| [g, g, g, a]).collect(),
-        png::ColorType::Grayscale => buf.iter().flat_map(|&g| [g, g, g, 255]).collect(),
-        png::ColorType::Indexed => return Err("EINVAL:bad PNG".into()),
-    };
-    if rgba.len() != (w as usize) * (h as usize) * 4 {
-        return Err("EINVAL:bad PNG".into());
-    }
-    Ok((w, h, rgba))
 }
 
 /// Standard base64 (padding optional, whitespace ignored).
