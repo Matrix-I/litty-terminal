@@ -3,8 +3,7 @@
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
-use winit::window::Window;
+use crate::platform::gui::{RawHandle, Window};
 
 use super::device::{shared_pipelines, Device, Queue, VulkanCore};
 use super::ffi::*;
@@ -51,9 +50,9 @@ impl Surface {
 
         if let Some(vk) = &device.vk {
             unsafe {
-                if let (Ok(wh), Ok(dh)) = (window.window_handle(), window.display_handle()) {
-                    match (wh.as_raw(), dh.as_raw()) {
-                        (RawWindowHandle::Wayland(w), RawDisplayHandle::Wayland(d)) => {
+                if let Some(handle) = window.raw_handle() {
+                    match handle {
+                        RawHandle::Wayland { display, surface } => {
                             if let Some(create_wl) = vk.lib.vkCreateWaylandSurfaceKHR {
                                 #[repr(C)]
                                 struct WlInfo {
@@ -67,13 +66,13 @@ impl Surface {
                                     s_type: VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
                                     p_next: std::ptr::null(),
                                     flags: 0,
-                                    display: d.display.as_ptr(),
-                                    surface: w.surface.as_ptr(),
+                                    display,
+                                    surface,
                                 };
                                 create_wl(vk.instance, &info as *const _ as *const c_void, std::ptr::null(), &mut surface_khr);
                             }
                         }
-                        (RawWindowHandle::Xlib(w), RawDisplayHandle::Xlib(d)) => {
+                        RawHandle::Xlib { display, window } => {
                             if let Some(create_xlib) = vk.lib.vkCreateXlibSurfaceKHR {
                                 #[repr(C)]
                                 struct XlibInfo {
@@ -87,13 +86,13 @@ impl Surface {
                                     s_type: VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR,
                                     p_next: std::ptr::null(),
                                     flags: 0,
-                                    dpy: d.display.map_or(std::ptr::null_mut(), |p| p.as_ptr()),
-                                    window: w.window,
+                                    dpy: display,
+                                    window,
                                 };
                                 create_xlib(vk.instance, &info as *const _ as *const c_void, std::ptr::null(), &mut surface_khr);
                             }
                         }
-                        (RawWindowHandle::Xcb(w), RawDisplayHandle::Xcb(d)) => {
+                        RawHandle::Xcb { connection, window } => {
                             if let Some(create_xcb) = vk.lib.vkCreateXcbSurfaceKHR {
                                 #[repr(C)]
                                 struct XcbInfo {
@@ -107,8 +106,8 @@ impl Surface {
                                     s_type: VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR,
                                     p_next: std::ptr::null(),
                                     flags: 0,
-                                    connection: d.connection.map_or(std::ptr::null_mut(), |p| p.as_ptr()),
-                                    window: w.window.get(),
+                                    connection,
+                                    window,
                                 };
                                 create_xcb(vk.instance, &info as *const _ as *const c_void, std::ptr::null(), &mut surface_khr);
                             }

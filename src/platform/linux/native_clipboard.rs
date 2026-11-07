@@ -13,17 +13,15 @@ use std::time::Duration;
 static CLIPBOARD: OnceLock<Arc<Mutex<Clipboard>>> = OnceLock::new();
 
 /// Attach to the window's `wl_display`. No-op on X11 and after the first call.
-pub fn init_clipboard(window: &winit::window::Window) {
-    use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+pub fn init_clipboard(window: &crate::platform::gui::Window) {
+    use crate::platform::gui::RawHandle;
     if CLIPBOARD.get().is_some() {
         return;
     }
-    if let Ok(handle) = window.display_handle()
-        && let RawDisplayHandle::Wayland(wl) = handle.as_raw()
-    {
+    if let Some(RawHandle::Wayland { display, .. }) = window.raw_handle() {
         // SAFETY: the display outlives the process-lifetime static; winit never
         // closes it while windows exist and the app exits without dropping it.
-        let clipboard = unsafe { Clipboard::new(wl.display.as_ptr()) };
+        let clipboard = unsafe { Clipboard::new(display) };
         let _ = CLIPBOARD.set(Arc::new(Mutex::new(clipboard)));
     }
 }

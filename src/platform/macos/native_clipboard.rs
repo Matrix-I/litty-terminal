@@ -34,7 +34,7 @@ pub fn clipboard_write_string(s: &str) -> bool {
 }
 
 /// Wayland-only; macOS has no PRIMARY selection or clipboard connection to set up.
-pub fn init_clipboard(_window: &winit::window::Window) {}
+pub fn init_clipboard(_window: &crate::platform::gui::Window) {}
 
 pub fn primary_string() -> Option<String> {
     None

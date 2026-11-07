@@ -5,7 +5,7 @@
 use super::state::State;
 use crate::render::renderer::WindowControl;
 
-use winit::window::{CursorIcon, ResizeDirection};
+use crate::platform::gui::{CursorIcon, ResizeDirection};
 
 /// Width in logical pixels of the invisible resize border.
 const BORDER_LOGICAL: f64 = 5.0;
@@ -49,7 +49,7 @@ pub(super) fn resize_cursor(direction: ResizeDirection) -> CursorIcon {
 
 /// Resize edge under the pointer, when this window draws its own frame and can be resized.
 pub(super) fn edge_at_pointer(s: &State) -> Option<ResizeDirection> {
-    if !s.csd || s.window.is_maximized() || s.window.fullscreen().is_some() {
+    if !s.csd || s.window.is_maximized() || s.window.is_fullscreen() {
         return None;
     }
     let size = s.window.inner_size();
@@ -78,7 +78,7 @@ const CORNER_LOGICAL: f64 = 10.0;
 
 /// Round the corners, except where the window fills the screen.
 pub(super) fn update_corner_radius(s: &mut State) {
-    let full = s.window.is_maximized() || s.window.fullscreen().is_some();
+    let full = s.window.is_maximized() || s.window.is_fullscreen();
     let radius = if s.csd && !full { CORNER_LOGICAL * s.window.scale_factor() } else { 0.0 };
     s.renderer.set_corner_radius(radius as f32);
 }

@@ -1,7 +1,6 @@
 //! Swapchain surface backed directly by a `CAMetalLayer` attached to the window's `NSView`.
 
-use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use winit::window::Window;
+use crate::platform::gui::{RawHandle, Window};
 
 use super::device::{Device, Queue};
 use super::ffi::*;
@@ -31,11 +30,10 @@ impl SurfaceFrame {
 
 impl Surface {
     pub fn new(window: &Window, device: &Device) -> Self {
-        let handle = window.window_handle().expect("window handle");
-        let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        let Some(RawHandle::AppKit { ns_view }) = window.raw_handle() else {
             panic!("expected AppKit window handle on macOS");
         };
-        let ns_view = appkit.ns_view.as_ptr() as Id;
+        let ns_view = ns_view as Id;
         unsafe {
             let cls = class(c"CAMetalLayer").expect("CAMetalLayer");
             let layer = msg_send!(cls, c"new"; -> Id);

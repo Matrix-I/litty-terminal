@@ -48,10 +48,9 @@ use crate::platform;
 use crate::{AppEvent, Waker};
 
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalPosition;
+use crate::platform::gui::{LogicalPosition, PhysicalPosition, WindowId};
 use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::window::WindowId;
 
 
 struct App {
@@ -144,7 +143,7 @@ impl App {
         for i in 0..self.windows.len() {
             let Some((target, position)) = self.windows[i].requests.move_torn.take() else { continue };
             if let Some(torn) = self.window_mut(target) {
-                torn.window.set_outer_position(position);
+                torn.window.set_outer_position_logical(position);
             }
         }
     }
@@ -159,7 +158,7 @@ impl App {
         }
     }
 
-    fn drive_dragged_tab(&mut self, owner: WindowId, at: winit::dpi::LogicalPosition<f64>) {
+    fn drive_dragged_tab(&mut self, owner: WindowId, at: LogicalPosition<f64>) {
         let holder = self.window_mut(owner).and_then(|o| o.pointer.drag_holder).unwrap_or(owner);
         let Some(h) = self.window_mut(holder) else {
             // The holder was closed under the drag.
@@ -191,7 +190,7 @@ impl App {
     /// The tab of the torn-off window `torn`, held by the drag of `holder`, entered the tab
     /// bar of a window under the pointer `at`: move it there, close `torn`, and carry the
     /// drag on in that window, as in Chrome.
-    fn merge_into_tab_bar(&mut self, owner: WindowId, holder: WindowId, torn: WindowId, at: winit::dpi::LogicalPosition<f64>) {
+    fn merge_into_tab_bar(&mut self, owner: WindowId, holder: WindowId, torn: WindowId, at: LogicalPosition<f64>) {
         let target = self.windows.iter().find_map(|w| {
             (w.window.id() != torn).then(|| tab_bar_hit_x(w, at).map(|x| (w.window.id(), x))).flatten()
         });
@@ -331,7 +330,7 @@ impl ApplicationHandler<AppEvent> for App {
             g.scroll_display(2000);
             drop(g);
             let size = s.window.inner_size();
-            let refresh = s.window.current_monitor().and_then(|m| m.refresh_rate_millihertz());
+            let refresh = s.window.current_monitor().and_then(|m| m.refresh_rate_millihertz);
             println!("{{\"benchmark\":\"scroll_swapchain\",\"width_px\":{},\"height_px\":{},\"scale_factor\":{},\"monitor_millihz\":{},\"custom_shaders\":{},\"warmup_ms\":1000,\"scenario_ms\":5000}}",
                 size.width, size.height, s.window.scale_factor(), refresh.unwrap_or(0), s.config.custom_shaders.len());
             s.renderer.start_frame_capture(s.occluded);
@@ -431,8 +430,8 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        self.handle_window_event(id, event);
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: winit::window::WindowId, event: WindowEvent) {
+        self.handle_window_event(id.into(), event);
         self.process_window_requests(event_loop);
     }
 
