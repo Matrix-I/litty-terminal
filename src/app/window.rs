@@ -17,7 +17,6 @@ use crate::{next_id, AppEvent, Pane, Tab, Waker};
 use parking_lot::Mutex;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::ModifiersState;
 use winit::window::{CursorIcon, Window};
 
 use crate::terminal::grid::Grid;
@@ -197,7 +196,7 @@ fn build_window(
         pane_rects: Vec::new(),
         render_panes: Vec::new(),
         active: 0,
-        mods: ModifiersState::default(),
+        mods: crate::keymap::Mods::default(),
         font_pt,
         pointer: PointerState {
             mouse_pos: (0.0, 0.0),

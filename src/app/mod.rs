@@ -18,6 +18,7 @@ mod terminal_io;
 mod user_event;
 mod window;
 mod window_event;
+mod winit_input;
 
 use actions::run_action;
 use ai_bridge::handle_ai_requests;

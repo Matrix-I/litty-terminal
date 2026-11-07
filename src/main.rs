@@ -9,6 +9,7 @@ mod cli;
 mod config;
 mod curl_config;
 mod event;
+mod input;
 mod json;
 mod keymap;
 mod mouse;

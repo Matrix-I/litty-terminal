@@ -3,7 +3,7 @@
 //! compiled so the macOS/Linux shortcut matrix in CLAUDE.md is unit-tested on
 //! any host.
 
-use winit::keyboard::{Key, KeyCode, KeyLocation, NamedKey};
+use crate::input::{Key, KeyCode, KeyLocation, NamedKey};
 
 use crate::split::Direction;
 
@@ -1069,7 +1069,6 @@ fn is_word_jump(platform: Platform, m: Mods) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::keyboard::SmolStr;
 
     const NONE: Mods = Mods { ctrl: false, alt: false, shift: false, sup: false };
     const CMD: Mods = Mods { sup: true, ..NONE };
@@ -1080,7 +1079,7 @@ mod tests {
     const ALT: Mods = Mods { alt: true, ..NONE };
 
     fn ch(c: &str) -> Key {
-        Key::Character(SmolStr::new(c))
+        Key::Character(c.to_string())
     }
 
     fn mac(key: &Key, m: Mods) -> Option<Action> {

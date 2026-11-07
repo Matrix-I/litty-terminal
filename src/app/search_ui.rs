@@ -5,7 +5,7 @@ use super::terminal_io::write_pane_input;
 
 use crate::keymap;
 
-use winit::keyboard::{Key, NamedKey};
+use crate::input::{Key, NamedKey};
 
 use crate::paste::history_insert_payload;
 

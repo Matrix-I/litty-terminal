@@ -16,35 +16,28 @@ use crate::{ai, keymap};
 use crate::platform;
 use crate::{next_id, Waker};
 
-use winit::event::{ElementState, KeyEvent};
-use winit::keyboard::{Key, NamedKey, PhysicalKey};
-use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+use crate::input::{Key, KeyInput, NamedKey};
 
 pub(super) fn handle_key(
     s: &mut State,
-    ev: &KeyEvent,
+    ev: &KeyInput,
     waker: &Waker,
 ) {
-    let m = keymap::Mods {
-        ctrl: s.mods.control_key(),
-        alt: s.mods.alt_key(),
-        shift: s.mods.shift_key(),
-        sup: s.mods.super_key(),
-    };
-    if ev.state != ElementState::Pressed {
+    let m = s.mods;
+    if !ev.pressed {
         handle_key_release(s, ev, m);
         return;
     }
-    s.locks = keymap::infer_locks(s.locks, &ev.logical_key, ev.location, m.shift);
+    s.locks = keymap::infer_locks(s.locks, &ev.logical, ev.location, m.shift);
 
-    let is_modifier = keymap::is_modifier_key(&ev.logical_key);
+    let is_modifier = keymap::is_modifier_key(&ev.logical);
     if !is_modifier && s.config.mouse_hide_while_typing && !s.pointer.mouse_hidden {
         s.window.set_cursor_visible(false);
         s.pointer.mouse_hidden = true;
     }
     s.cursor_blink_epoch = std::time::Instant::now();
 
-    if s.history_search.is_open && handle_history_search_key(s, &ev.logical_key, m) {
+    if s.history_search.is_open && handle_history_search_key(s, &ev.logical, m) {
         consume_key(s, ev);
         return;
     }
@@ -54,20 +47,20 @@ pub(super) fn handle_key(
         // Keys belong to the search box; shortcuts it does not consume still work,
         // but nothing reaches the shell.
         consume_key(s, ev);
-        if !handle_search_key(s, &ev.logical_key, m)
-            && let Some(action) = keymap::resolve(keymap::PLATFORM, &ev.logical_key, m, alt_screen) {
+        if !handle_search_key(s, &ev.logical, m)
+            && let Some(action) = keymap::resolve(keymap::PLATFORM, &ev.logical, m, alt_screen) {
                 run_action(s, action, waker);
             }
         return;
     }
     // User `keybind` entries come first; the last matching one wins.
-    let unshifted_key = ev.key_without_modifiers();
+    let unshifted_key = &ev.unshifted;
     let user_binding = s
         .config
         .keybinds
         .iter()
         .rev()
-        .find(|(t, _)| keymap::trigger_matches(t, &unshifted_key, m))
+        .find(|(t, _)| keymap::trigger_matches(t, unshifted_key, m))
         .map(|(_, b)| b.clone());
     let builtin = match user_binding {
         Some(keymap::Binding::Action(action)) => {
@@ -88,7 +81,7 @@ pub(super) fn handle_key(
             return;
         }
         Some(keymap::Binding::Unbind) => None,
-        None => keymap::resolve(keymap::PLATFORM, &ev.logical_key, m, alt_screen),
+        None => keymap::resolve(keymap::PLATFORM, &ev.logical, m, alt_screen),
     };
     if let Some(action) = builtin
         && run_action(s, action, waker) {
@@ -106,7 +99,7 @@ pub(super) fn handle_key(
     };
     let pane_id = pane.id;
     if let Some(ai) = s.ai.get_mut(&pane_id).filter(|a| a.busy) {
-        let cancel = keymap::ai_cancel(&ev.logical_key, m);
+        let cancel = keymap::ai_cancel(&ev.logical, m);
         if cancel {
             ai.cancel_request();
             if ai.authorized.take().is_some() {
@@ -145,7 +138,7 @@ pub(super) fn handle_key(
         return;
     }
     let is_enter =
-        ev.logical_key == Key::Named(NamedKey::Enter) && !m.alt && !m.ctrl && !m.shift && !m.sup;
+        ev.logical == Key::Named(NamedKey::Enter) && !m.alt && !m.ctrl && !m.shift && !m.sup;
     if is_enter {
         let trigger = s.config.ai.trigger().to_owned();
         let trigger = trigger.as_str();
@@ -176,7 +169,7 @@ pub(super) fn handle_key(
             ai.prompt_epoch = epoch;
         }
     } else if m.ctrl
-        && matches!(&ev.logical_key,Key::Character(ch) if ch.eq_ignore_ascii_case("c"))
+        && matches!(&ev.logical,Key::Character(ch) if ch.eq_ignore_ascii_case("c"))
         && let Some(ai) = s.ai.get_mut(&pane_id)
     {
         ai.suggestion = None;
@@ -197,7 +190,7 @@ pub(super) fn handle_key(
             g.reset_display();
         }
 
-        let ctrl_u_bytes = match &ev.logical_key {
+        let ctrl_u_bytes = match &ev.logical {
             // Ctrl+U at a prompt: delete back to the prompt only (vim keeps its half-page scroll).
             Key::Character(ch) if m == (keymap::Mods { ctrl: true, ..Default::default() }) && ch.eq_ignore_ascii_case("u") => {
                 if !g.alt_active {
@@ -237,7 +230,7 @@ pub(super) fn handle_key(
         write_pty(pane, bytes);
     }
     if s.inspector.shown {
-        s.inspector.last_key = describe_key(&ev.logical_key, m, bytes.as_deref());
+        s.inspector.last_key = describe_key(&ev.logical, m, bytes.as_deref());
         s.window.request_redraw();
     }
 }
@@ -289,7 +282,7 @@ fn inspect_enter(g: &mut Grid, has_ai_state: bool, trigger: &str) -> EnterDecisi
 
 /// Encode queued input with the same protocol and modifiers as immediate input.
 pub(super) fn encode_terminal_key(
-    ev: &KeyEvent,
+    ev: &KeyInput,
     m: keymap::Mods,
     locks: u8,
     app_cursor: bool,
@@ -302,10 +295,9 @@ pub(super) fn encode_terminal_key(
         } else {
             keymap::KeyKind::Press
         };
-        let unshifted = ev.key_without_modifiers();
         keymap::encode_kitty(
             keymap::PLATFORM,
-            &kitty_key(ev, &unshifted, kind, locks),
+            &kitty_key(ev, kind, locks),
             m,
             kitty_flags,
             app_cursor,
@@ -314,7 +306,7 @@ pub(super) fn encode_terminal_key(
         let text = ev.text.as_deref();
         keymap::encode_modify_other_keys(
             keymap::PLATFORM,
-            &ev.logical_key,
+            &ev.logical,
             text,
             m,
             modify_other_keys,
@@ -323,7 +315,7 @@ pub(super) fn encode_terminal_key(
     } else {
         keymap::encode(
             keymap::PLATFORM,
-            &ev.logical_key,
+            &ev.logical,
             ev.text.as_deref(),
             m,
             app_cursor,
@@ -367,19 +359,19 @@ pub(super) fn describe_key(key: &Key, m: keymap::Mods, bytes: Option<&[u8]>) -> 
 }
 
 /// Remember that Litty handled this key press itself.
-pub(super) fn consume_key(s: &mut State, ev: &KeyEvent) {
-    if !s.consumed_keys.contains(&ev.physical_key) {
+pub(super) fn consume_key(s: &mut State, ev: &KeyInput) {
+    if !s.consumed_keys.contains(&ev.physical) {
         // A release can be lost (e.g. focus moved away mid-press); never grow unbounded.
         if s.consumed_keys.len() >= 16 {
             s.consumed_keys.clear();
         }
-        s.consumed_keys.push(ev.physical_key);
+        s.consumed_keys.push(ev.physical);
     }
 }
 
 /// Key releases only matter to applications that asked for Kitty event reporting.
-pub(super) fn handle_key_release(s: &mut State, ev: &KeyEvent, m: keymap::Mods) {
-    if let Some(i) = s.consumed_keys.iter().position(|k| *k == ev.physical_key) {
+pub(super) fn handle_key_release(s: &mut State, ev: &KeyInput, m: keymap::Mods) {
+    if let Some(i) = s.consumed_keys.iter().position(|k| *k == ev.physical) {
         s.consumed_keys.swap_remove(i);
         return;
     }
@@ -395,25 +387,21 @@ pub(super) fn handle_key_release(s: &mut State, ev: &KeyEvent, m: keymap::Mods) 
     if kitty_flags & keymap::KITTY_REPORT_EVENTS == 0 {
         return;
     }
-    let unshifted = ev.key_without_modifiers();
-    let key = kitty_key(ev, &unshifted, keymap::KeyKind::Release, s.locks);
+    let key = kitty_key(ev, keymap::KeyKind::Release, s.locks);
     if let Some(bytes) = keymap::encode_kitty(keymap::PLATFORM, &key, m, kitty_flags, app_cursor) {
         write_pty(pane, &bytes);
     }
 }
 
-pub(super) fn kitty_key<'a>(ev: &'a KeyEvent, unshifted: &'a Key, kind: keymap::KeyKind, inferred: u8) -> keymap::KittyKey<'a> {
+pub(super) fn kitty_key<'a>(ev: &'a KeyInput, kind: keymap::KeyKind, inferred: u8) -> keymap::KittyKey<'a> {
     keymap::KittyKey {
-        key: &ev.logical_key,
-        unshifted,
-        physical: match ev.physical_key {
-            PhysicalKey::Code(code) => Some(code),
-            PhysicalKey::Unidentified(_) => None,
-        },
+        key: &ev.logical,
+        unshifted: &ev.unshifted,
+        physical: ev.physical.code(),
         location: ev.location,
         text: ev.text.as_deref(),
         kind,
-        // winit has no lock state: macOS reads Caps Lock from AppKit (and has no
+        // Key events carry no lock state: macOS reads Caps Lock from AppKit (and has no
         // Num Lock), elsewhere it is inferred from the keys typed.
         locks: if cfg!(target_os = "macos") {
             if platform::caps_lock() { keymap::KITTY_CAPS_LOCK } else { 0 }
