@@ -64,6 +64,9 @@ pub(super) static SHARED_PIPES: parking_lot::Mutex<Option<(TextureFormat, Render
 
 impl VulkanCore {
     #[allow(non_snake_case)]
+    // `load_fn!` transmutes to the fn-pointer type of the struct field it initialises; spelling out
+    // each of those signatures a second time at the call site would only duplicate `VulkanFns`.
+    #[allow(clippy::missing_transmute_annotations)]
     unsafe fn try_init() -> Option<Arc<Self>> {
         unsafe {
             let handle = libc::dlopen(c"libvulkan.so.1".as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
@@ -517,10 +520,7 @@ unsafe fn create_shader_module(lib: &VkLib, device: VkDevice, spv: &[u8]) -> VkS
             code_size: usize,
             p_code: *const u32,
         }
-        let aligned: Vec<u32> = spv
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
+        let aligned: Vec<u32> = spv.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
         let info = ModInfo {
             s_type: VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
             p_next: std::ptr::null(),

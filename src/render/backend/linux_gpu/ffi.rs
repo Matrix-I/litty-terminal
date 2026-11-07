@@ -235,23 +235,12 @@ pub(super) struct VkMemoryHeap {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub(super) struct VkPhysicalDeviceMemoryProperties {
     pub memory_type_count: u32,
     pub memory_types: [VkMemoryType; 32],
     pub memory_heap_count: u32,
     pub memory_heaps: [VkMemoryHeap; 16],
-}
-
-impl Default for VkPhysicalDeviceMemoryProperties {
-    fn default() -> Self {
-        Self {
-            memory_type_count: 0,
-            memory_types: [VkMemoryType::default(); 32],
-            memory_heap_count: 0,
-            memory_heaps: [VkMemoryHeap::default(); 16],
-        }
-    }
 }
 
 #[repr(C)]
