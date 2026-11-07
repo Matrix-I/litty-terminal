@@ -14,6 +14,15 @@ use super::view::ensure_litty_view_class;
 static DELEGATE_CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
 static mut SHARED_DELEGATE: Id = std::ptr::null_mut();
 
+/// What a window reports when it becomes or stops being the key window. Losing
+/// key first releases every modifier: a modifier let go while no window of ours
+/// is key (e.g. Cmd after Cmd+W hid the window) never reaches us, and would
+/// otherwise stay held when the window comes back (`d` acting as Cmd+D).
+fn focus_events(focused: bool) -> impl Iterator<Item = WindowEvent> {
+    let released = (!focused).then(|| WindowEvent::ModifiersChanged(Default::default()));
+    released.into_iter().chain(std::iter::once(WindowEvent::Focused(focused)))
+}
+
 pub fn ensure_window_delegate_class() {
     if DELEGATE_CLASS_REGISTERED.swap(true, Ordering::SeqCst) {
         return;
@@ -33,7 +42,7 @@ pub fn ensure_window_delegate_class() {
                         let tag = msg_send!(view, c"tag"; -> usize);
                         if tag != 0 {
                             let id = WindowId::from_raw(tag as u64);
-                            super::view::emit_event(id, WindowEvent::Focused(true));
+                            focus_events(true).for_each(|ev| super::view::emit_event(id, ev));
                         }
                     }
                 }
@@ -51,7 +60,7 @@ pub fn ensure_window_delegate_class() {
                         let tag = msg_send!(view, c"tag"; -> usize);
                         if tag != 0 {
                             let id = WindowId::from_raw(tag as u64);
-                            super::view::emit_event(id, WindowEvent::Focused(false));
+                            focus_events(false).for_each(|ev| super::view::emit_event(id, ev));
                         }
                     }
                 }
@@ -509,6 +518,23 @@ pub fn allocate_window_id() -> WindowId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn losing_key_releases_held_modifiers() {
+        // Cmd+W hides the window before Cmd is released; that release reaches no
+        // window of ours, so the app must not keep treating Cmd as held.
+        let events: Vec<_> = focus_events(false).collect();
+        assert!(
+            matches!(events.as_slice(), [WindowEvent::ModifiersChanged(m), WindowEvent::Focused(false)] if *m == crate::platform::input::Mods::default()),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn gaining_key_only_reports_focus() {
+        let events: Vec<_> = focus_events(true).collect();
+        assert!(matches!(events.as_slice(), [WindowEvent::Focused(true)]), "{events:?}");
+    }
 
     #[test]
     fn positions_are_measured_from_the_top_left_of_the_primary_screen() {
