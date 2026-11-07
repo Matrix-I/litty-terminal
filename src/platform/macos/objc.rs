@@ -38,6 +38,8 @@ unsafe extern "C" {
     pub(super) fn method_getImplementation(m: Id) -> *const ();
     pub(super) fn objc_allocateClassPair(superclass: Id, name: *const std::ffi::c_char, extra: usize) -> Id;
     pub(super) fn objc_registerClassPair(cls: Id);
+    pub(super) fn objc_setAssociatedObject(object: Id, key: *const c_void, value: Id, policy: usize);
+    pub(super) fn objc_getAssociatedObject(object: Id, key: *const c_void) -> Id;
 }
 
 pub(super) fn sel(name: &CStr) -> Id {

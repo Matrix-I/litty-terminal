@@ -3,6 +3,7 @@
 pub mod app;
 pub mod events;
 pub mod window;
+pub mod x11;
 
 #[allow(unused_imports)]
 pub use app::run_native;

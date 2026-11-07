@@ -10,7 +10,6 @@ name = "litty"
 path = "src/main.rs"
 
 [dependencies]
-winit = "0.30"
 # Grid bounds OSC streams before feeding VTE; std storage preserves complete
 # supported payloads instead of the default 1,024-byte no_std truncation.
 vte = { version = "0.13", default-features = false }
