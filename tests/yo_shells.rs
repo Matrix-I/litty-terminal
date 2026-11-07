@@ -132,10 +132,14 @@ impl Session {
     }
 
     /// A following shell command is an ordered barrier: any prompt redraws
-    /// from the AI action must precede its execution marker.
+    /// from the AI action must precede its execution marker. Submit the
+    /// barrier with Line Feed (`\n`) rather than Carriage Return (`\r`):
+    /// on Bash 4+ `\r` is macro-bound to a `bind -x` handler which forces
+    /// Readline to redraw the prompt before accepting the line, inserting
+    /// a false duplicate `133;B` mark into the barrier capture.
     fn read_ai_query(&mut self) -> Vec<u8> {
         let mut output = self.read_until("complete AI payload", ai_query_ready);
-        self.write(b":\r");
+        self.write(b":\n");
         let barrier = self.read_command();
         let execution = barrier.windows(5).position(|w| w == b"133;C").expect("barrier execution");
         output.extend_from_slice(&barrier[..execution]);
