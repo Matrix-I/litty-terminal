@@ -727,6 +727,29 @@ pub fn run_critical_features_benchmark() -> FeatureMetrics {
         regex_dur_ms = regex_dur_ms.min(t_regex.elapsed().as_secs_f64() * 1000.0);
     }
     println!("      • Regex scan time   : {bold}{:>6.3} ms{reset} across 5,000 lines ({} matches)", regex_dur_ms, regex_matches);
+    // One pattern per engine path, so a fast `ERR_\d{4}` cannot hide a slow one:
+    // (pattern, case-insensitive, regex mode).
+    let shapes: [(&str, bool, bool); 7] = [
+        ("error_code", true, false),
+        (r"ERR_\d{2,4}", false, true),
+        (r"\d{4}-\d{2}", false, true),
+        (r"status=\w+", false, true),
+        ("ERR|WARN", false, true),
+        (r"\w+", false, true),
+        ("[^z]*z", false, true),
+    ];
+    for (pattern, case_insensitive, regex_mode) in shapes {
+        let re = crate::terminal::regex_lite::Regex::with_options(pattern, case_insensitive, regex_mode).expect("regex");
+        let mut matches = 0usize;
+        let mut best_ms = f64::MAX;
+        for _ in 0..BEST_OF_PASSES {
+            let t = Instant::now();
+            matches = re.find_iter(&search_data.text).count();
+            best_ms = best_ms.min(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        let label = format!("{pattern}{}", if case_insensitive { " (ci)" } else { "" });
+        println!("        {label:<18}: {best_ms:>6.3} ms ({matches} matches)");
+    }
 
     // 3. Split Pane Layout Stress
     println!("\n  [3] Split Panes Tree Stress (1,000 operations)...");
