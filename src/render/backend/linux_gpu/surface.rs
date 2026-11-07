@@ -33,8 +33,6 @@ pub struct SurfaceFrame {
     pub render_done_sem: VkSemaphore,
     pub image_avail_sem: VkSemaphore,
     pub fence: VkFence,
-    pub width: u32,
-    pub height: u32,
 }
 
 impl SurfaceFrame {
@@ -340,8 +338,6 @@ impl Surface {
                 render_done_sem: self.render_done_sem,
                 image_avail_sem: self.image_avail_sem,
                 fence: self.fence,
-                width: self.width,
-                height: self.height,
             })
         }
     }

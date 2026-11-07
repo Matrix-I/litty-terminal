@@ -18,21 +18,12 @@ mod linux_gpu;
 pub use linux_gpu::*;
 
 /// Supported 2D texture and surface pixel formats.
+#[allow(clippy::enum_variant_names)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum TextureFormat {
     Bgra8Unorm,
     Rgba8Unorm,
     R8Unorm,
-}
-
-impl TextureFormat {
-    #[inline]
-    pub const fn bytes_per_pixel(self) -> u32 {
-        match self {
-            Self::Bgra8Unorm | Self::Rgba8Unorm => 4,
-            Self::R8Unorm => 1,
-        }
-    }
 }
 
 /// Surface configuration applied on creation, resize, or transparency toggle.

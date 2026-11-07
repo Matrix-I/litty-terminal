@@ -50,6 +50,7 @@ impl<T: bytemuck::Pod> HostBuffer<T> {
         }
     }
 
+    #[cfg(test)]
     pub fn from_slice(device: &Device, data: &[T]) -> Self {
         let mut buf = Self::new(device, data.len().max(1));
         buf.len = data.len();
@@ -62,11 +63,6 @@ impl<T: bytemuck::Pod> HostBuffer<T> {
     #[inline]
     pub fn len(&self) -> usize {
         self.len
-    }
-
-    #[inline]
-    pub fn capacity(&self) -> usize {
-        self.cap
     }
 
     /// Resize logical length in place, or reallocate the shared `MTLBuffer` when capacity is exceeded
@@ -130,9 +126,10 @@ impl<T: bytemuck::Pod> HostBuffer<T> {
 #[derive(Clone)]
 pub struct Texture {
     raw: ObjPtr,
+    #[cfg(test)]
     pub width: u32,
+    #[cfg(test)]
     pub height: u32,
-    pub format: TextureFormat,
 }
 
 impl Texture {
@@ -160,14 +157,16 @@ impl Texture {
             assert!(!raw.is_null(), "newTextureWithDescriptor failed ({w}x{h})");
             Self {
                 raw: ObjPtr(raw),
+                #[cfg(test)]
                 width: w as u32,
+                #[cfg(test)]
                 height: h as u32,
-                format,
             }
         }
     }
 
     /// Upload pixel bytes directly into a sub-rectangle of the texture.
+    #[allow(clippy::too_many_arguments)]
     pub fn write_rect(&self, _queue: &Queue, x: u32, y: u32, width: u32, height: u32, data: &[u8], bytes_per_row: u32) {
         if width == 0 || height == 0 || data.is_empty() {
             return;
@@ -189,6 +188,7 @@ impl Texture {
     }
 
     /// Read back RGBA8/BGRA8 pixels from a shared texture into `dst` (`bytes_per_row * height`).
+    #[cfg(test)]
     pub fn read_pixels(&self, dst: &mut [u8], bytes_per_row: u32) {
         let region = MTLRegion {
             origin: MTLOrigin { x: 0, y: 0, z: 0 },

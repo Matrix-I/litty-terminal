@@ -36,7 +36,15 @@ pub(super) struct RowScratch {
 impl Renderer {
     /// The cell instances and the row scratch, borrowed together.
     pub(super) fn row_target(&mut self, cols: usize) -> (Cells<'_>, &mut RowScratch) {
-        (Cells { atlas: &mut self.atlas, queue: &self.queue, instances: &mut self.instances, cols }, &mut self.row_scratch)
+        (
+            Cells {
+                atlas: &mut self.atlas,
+                queue: &self.queue,
+                instances: self.instances.as_mut_slice(),
+                cols,
+            },
+            &mut self.row_scratch,
+        )
     }
 }
 

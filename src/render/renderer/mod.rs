@@ -1,4 +1,4 @@
-//! wgpu setup and the single-draw-call instanced renderer.
+//! Direct Metal / Vulkan setup and the single-draw-call instanced renderer.
 //!
 //! Each frame: lock the grid briefly, rebuild instances only for dirty rows,
 //! upload that contiguous range, then issue `draw(0..4, 0..cols*rows)`.
@@ -13,11 +13,14 @@ mod gpu;
 mod pane_row;
 use pane_row::RowScratch;
 mod ui;
-use gpu::{make_bind_group, make_instance_buf, make_viewport_buffer};
+use gpu::{make_instance_buf, make_viewport_buffer};
 pub use ui::scrollbar::{scrollbar_thumb, SCROLLBAR_WIDTH};
 pub use ui::tab_bar::{slot_at as tab_slot_at, span as tab_span, TabBarView, WindowControl, MAX_SHIFTED_TABS};
 
 use crate::render::atlas::{Atlas, FontSet};
+use crate::render::backend::{
+    Device, HostBuffer, Queue, RenderPipelines, Surface, SurfaceConfig,
+};
 use crate::terminal::grid::{Grid, Hyperlink};
 use crate::render::HistoryView;
 use crate::render::PaneRect;
@@ -123,23 +126,13 @@ struct Viewport {
 
 pub struct Renderer {
     frame_capture: Option<crate::render::frame_metrics::Capture>,
-    surface: wgpu::Surface<'static>,
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
-    config: wgpu::SurfaceConfiguration,
-    caps_alpha_modes: Vec<wgpu::CompositeAlphaMode>,
-    pipeline: wgpu::RenderPipeline,
-    bgl: wgpu::BindGroupLayout,
-    bind_group: wgpu::BindGroup,
-    uniform_buf: wgpu::Buffer,
-    /// Same as `bind_group` / `uniform_buf` for the text layer drawn over images with `z < 0`.
-    text_bind_group: wgpu::BindGroup,
-    text_uniform_buf: wgpu::Buffer,
-    sampler: wgpu::Sampler,
-    instance_buf: wgpu::Buffer,
-    instances: Vec<Instance>,
-    viewport_buf: wgpu::Buffer,
-    viewports: Vec<Viewport>,
+    surface: Surface,
+    device: Arc<Device>,
+    queue: Arc<Queue>,
+    config: SurfaceConfig,
+    pipelines: RenderPipelines,
+    instances: HostBuffer<Instance>,
+    viewports: HostBuffer<Viewport>,
     atlas: Atlas,
     /// Window padding in physical pixels `(x, y)`, from `window-padding-x/y` points.
     pad: (u32, u32),
@@ -152,7 +145,6 @@ pub struct Renderer {
     corner_radius: f32,
     /// The surface composites with alpha, so cleared corners show what is behind the window.
     transparent_surface: bool,
-    corner_pipeline: Option<wgpu::RenderPipeline>,
     scale_factor: f64,
     bg_opacity: f32,
     cursor_style: u32,
@@ -219,62 +211,23 @@ impl Renderer {
         cursor_style: u32,
     ) -> Self {
         let size = window.inner_size();
-
-        let instance = gpu::global_instance();
-        let surface = instance.create_surface(window.clone()).expect("create surface");
-        let (adapter, device, queue) = gpu::shared_device(&surface);
-
-        // Prefer a non-sRGB format so packed colors pass straight through.
-        let caps = surface.get_capabilities(&adapter);
-        let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
-        let caps_alpha_modes = caps.alpha_modes.clone();
-        let alpha_mode = if bg_opacity < 1.0 {
-            caps_alpha_modes
-                .iter()
-                .copied()
-                .find(|&m| m == wgpu::CompositeAlphaMode::PreMultiplied || m == wgpu::CompositeAlphaMode::PostMultiplied)
-                .unwrap_or(caps_alpha_modes[0])
-        } else {
-            caps_alpha_modes[0]
-        };
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
+        let (device, queue) = gpu::shared_device();
+        let mut surface = Surface::new(&window, &device);
+        let format = surface.default_format();
+        let transparent = bg_opacity < 1.0;
+        let config = SurfaceConfig {
             width: size.width.max(1),
             height: size.height.max(1),
-            present_mode: wgpu::PresentMode::Fifo,
-            desired_maximum_frame_latency: 1,
-            alpha_mode,
-            view_formats: vec![],
+            format,
+            transparent,
         };
         surface.configure(&device, &config);
         crate::platform::configure_layer_drawables(&window);
 
         let atlas = Atlas::new(&device, &queue, font, font_px);
-
-        let (bgl, pipeline) = gpu::shared_pipeline(&device, format);
-
-        let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("uniforms"),
-            size: std::mem::size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
-        let viewport_buf = make_viewport_buffer(&device, 1);
-        let bind_group = make_bind_group(&device, &bgl, &uniform_buf, &atlas, &sampler, &viewport_buf);
-        let text_uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("text uniforms"),
-            size: std::mem::size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let text_bind_group = make_bind_group(&device, &bgl, &text_uniform_buf, &atlas, &sampler, &viewport_buf);
-        let instance_buf = make_instance_buf(&device, 1);
+        let pipelines = gpu::shared_pipeline(&device, format);
+        let viewports = make_viewport_buffer(&device, 1);
+        let instances = make_instance_buf(&device, 1);
         let scale_factor = window.scale_factor();
         let pad_px = (scale_factor * 4.0).round() as u32;
 
@@ -285,26 +238,16 @@ impl Renderer {
             device,
             queue,
             config,
-            caps_alpha_modes,
-            pipeline,
-            bgl,
-            bind_group,
-            uniform_buf,
-            text_bind_group,
-            text_uniform_buf,
-            sampler,
-            instance_buf,
-            instances: Vec::new(),
-            viewport_buf,
-            viewports: Vec::new(),
+            pipelines,
+            instances,
+            viewports,
             atlas,
             pad: (pad_px, pad_px),
             pad_pt: (4.0, 4.0),
             pad_balance: false,
             titlebar: false,
             corner_radius: 0.0,
-            transparent_surface: bg_opacity < 1.0 && alpha_mode != wgpu::CompositeAlphaMode::Opaque,
-            corner_pipeline: None,
+            transparent_surface: transparent,
             scale_factor,
             bg_opacity: bg_opacity.clamp(0.0, 1.0),
             cursor_style,
@@ -399,19 +342,10 @@ impl Renderer {
     /// Pick the surface alpha mode: transparent when the background is translucent or
     /// the window has rounded corners, when the platform offers one.
     fn reconfigure_alpha(&mut self) {
-        let wanted = self.bg_opacity < 1.0 || self.titlebar;
-        let alpha_mode = if wanted {
-            self.caps_alpha_modes
-                .iter()
-                .copied()
-                .find(|&m| m == wgpu::CompositeAlphaMode::PreMultiplied || m == wgpu::CompositeAlphaMode::PostMultiplied)
-                .unwrap_or(self.caps_alpha_modes[0])
-        } else {
-            self.caps_alpha_modes[0]
-        };
-        self.transparent_surface = wanted && alpha_mode != wgpu::CompositeAlphaMode::Opaque;
-        if self.config.alpha_mode != alpha_mode {
-            self.config.alpha_mode = alpha_mode;
+        let transparent = self.bg_opacity < 1.0 || self.titlebar;
+        self.transparent_surface = transparent;
+        if self.config.transparent != transparent {
+            self.config.transparent = transparent;
             self.surface.configure(&self.device, &self.config);
         }
     }
@@ -531,9 +465,7 @@ impl Renderer {
         self.images.prune_idle(now)
     }
 
-    /// Present a few 1×1 frames before the window is hidden or closed. macOS keeps the
-    /// last drawables of a layer alive (about 30 MB for a Retina window),
-    /// so leave it holding tiny ones instead.
+    /// Release swapchain drawables and offscreen textures when the window is hidden or closed.
     pub fn shrink_drawables(&mut self) {
         self.images.clear();
         self.placed.clear();
@@ -543,29 +475,7 @@ impl Renderer {
         }
         self.config.width = 1;
         self.config.height = 1;
-        self.surface.configure(&self.device, &self.config);
-        for _ in 0..3 {
-            let Ok(frame) = self.surface.get_current_texture() else { break };
-            let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("shrink_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            self.queue.submit([encoder.finish()]);
-            frame.present();
-        }
-        let _ = self.device.poll(wgpu::Maintain::Wait);
+        self.surface.shrink_drawables(&self.device, &self.queue);
     }
 
     #[allow(dead_code)]
@@ -589,21 +499,13 @@ impl Renderer {
         }
     }
 
-    fn rebind_atlas(&mut self) {
-        self.bind_group = make_bind_group(&self.device, &self.bgl, &self.uniform_buf, &self.atlas, &self.sampler, &self.viewport_buf);
-        self.text_bind_group =
-            make_bind_group(&self.device, &self.bgl, &self.text_uniform_buf, &self.atlas, &self.sampler, &self.viewport_buf);
-    }
-
     pub fn set_fonts(&mut self, fonts: Arc<FontSet>, px: f32) {
         self.atlas.set_fonts(&self.device, &self.queue, fonts, px);
-        self.rebind_atlas();
         self.force_full = true;
     }
 
     pub fn set_font_px(&mut self, px: f32, scale_factor: f64) {
         self.atlas.set_px(&self.device, &self.queue, px);
-        self.rebind_atlas();
         self.scale_factor = scale_factor;
         self.update_pad();
     }

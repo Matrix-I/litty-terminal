@@ -16,7 +16,7 @@ pub(super) mod tab_bar;
 /// The window's cell instances and the glyph atlas they index.
 pub(in crate::render::renderer) struct Cells<'a> {
     pub(in crate::render::renderer) atlas: &'a mut Atlas,
-    pub(in crate::render::renderer) queue: &'a wgpu::Queue,
+    pub(in crate::render::renderer) queue: &'a crate::render::backend::Queue,
     pub(in crate::render::renderer) instances: &'a mut [Instance],
     /// Window width in cells: the row stride of `instances`.
     pub(in crate::render::renderer) cols: usize,
@@ -44,7 +44,12 @@ impl DirtyRows {
 impl Renderer {
     /// Disjoint borrows of the fields every overlay writes through.
     pub(in crate::render::renderer) fn cells(&mut self, cols: usize) -> Cells<'_> {
-        Cells { atlas: &mut self.atlas, queue: &self.queue, instances: &mut self.instances, cols }
+        Cells {
+            atlas: &mut self.atlas,
+            queue: &self.queue,
+            instances: self.instances.as_mut_slice(),
+            cols,
+        }
     }
 }
 
@@ -69,9 +74,7 @@ mod tests {
 fn warm_overlay_builders_do_not_allocate() {
     use crate::render::atlas::{Atlas,load_font};
     use crate::terminal::{search::SearchBar,history::{SortMode,MatchResult}};
-    let gpu=wgpu::Instance::default();
-    let adapter=pollster::block_on(gpu.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("GPU adapter");
-    let (device,queue)=pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(),None)).unwrap();
+    let (device, queue) = crate::render::backend::shared_device_and_queue();
     let mut atlas=Atlas::new(&device,&queue,load_font(&[]),16.0);
     let mut instances=vec![Instance::default();160*40];
     let mut dirty=DirtyRows::NONE;

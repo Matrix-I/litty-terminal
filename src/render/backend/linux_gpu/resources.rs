@@ -140,6 +140,7 @@ impl<T: bytemuck::Pod> HostBuffer<T> {
         }
     }
 
+    #[cfg(test)]
     pub fn from_slice(device: &Device, data: &[T]) -> Self {
         let mut b = Self::new(device, data.len().max(1));
         b.len = data.len();
@@ -152,11 +153,6 @@ impl<T: bytemuck::Pod> HostBuffer<T> {
     #[inline]
     pub fn len(&self) -> usize {
         self.len
-    }
-
-    #[inline]
-    pub fn capacity(&self) -> usize {
-        self.cap
     }
 
     pub fn resize(&mut self, device: &Device, new_len: usize) -> bool {
@@ -258,9 +254,10 @@ impl Drop for TextureInner {
 #[derive(Clone)]
 pub struct Texture {
     inner: Arc<TextureInner>,
+    #[cfg(test)]
     pub width: u32,
+    #[cfg(test)]
     pub height: u32,
-    pub format: TextureFormat,
 }
 
 impl Texture {
@@ -361,9 +358,10 @@ impl Texture {
                         mem,
                         view,
                     }),
+                    #[cfg(test)]
                     width: w,
+                    #[cfg(test)]
                     height: h,
-                    format,
                 };
             }
         }
@@ -374,12 +372,14 @@ impl Texture {
                 mem: 0,
                 view: 0,
             }),
+            #[cfg(test)]
             width: w,
+            #[cfg(test)]
             height: h,
-            format,
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn write_rect(&self, _queue: &Queue, x: u32, y: u32, width: u32, height: u32, data: &[u8], _bytes_per_row: u32) {
         if width == 0 || height == 0 || data.is_empty() {
             return;
@@ -531,6 +531,7 @@ impl Texture {
         }
     }
 
+    #[cfg(test)]
     pub fn read_pixels(&self, _dst: &mut [u8], _bytes_per_row: u32) {}
 
     #[inline]

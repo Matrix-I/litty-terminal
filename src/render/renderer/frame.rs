@@ -1,10 +1,10 @@
 //! One frame: decide whether anything changed, rebuild dirty instance rows,
 //! draw overlays, upload, and submit the cell / image / custom-shader passes.
 
-use super::gpu::{self, make_instance_buf, make_viewport_buffer};
 use super::pane_row::{build_pane_row, PaneRowCtx};
 use super::ui::{self, DirtyRows};
-use super::{scrollbar_thumb, Instance, RenderPane, Renderer, TabBarView, Uniforms, Viewport, MAX_SHIFTED_TABS};
+use super::{scrollbar_thumb, RenderPane, Renderer, TabBarView, Uniforms, Viewport, MAX_SHIFTED_TABS};
+use crate::render::backend::{CommandEncoder, SurfaceFrame};
 use crate::terminal::grid::Hyperlink;
 use crate::render::HistoryView;
 use crate::terminal::search::SearchBar;
@@ -113,7 +113,6 @@ impl Renderer {
         let acquire_ms = acquire_start.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
 
         self.ensure_buffers(layout.instance_count, panes.len());
-        self.viewports.clear();
         self.atlas.begin_frame();
         let full = self.force_full;
         let mut dirty = DirtyRows::NONE;
@@ -235,41 +234,23 @@ impl Renderer {
     }
 
     /// The next swapchain texture, or `None` when the surface needs reconfiguring or failed.
-    fn acquire_frame(&mut self) -> Option<wgpu::SurfaceTexture> {
-        match self.surface.get_current_texture() {
-            Ok(f) => Some(f),
-            Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
-                self.surface.configure(&self.device, &self.config);
-                self.force_full = true;
-                None
-            }
-            Err(e) => {
-                eprintln!("litty: surface error: {e}");
-                None
-            }
+    fn acquire_frame(&mut self) -> Option<SurfaceFrame> {
+        if let Some(frame) = self.surface.acquire_frame() {
+            return Some(frame);
         }
+        self.surface.configure(&self.device, &self.config);
+        self.force_full = true;
+        self.surface.acquire_frame()
     }
 
     /// Resize the instance and viewport buffers to this frame's layout.
     fn ensure_buffers(&mut self, instance_count: usize, pane_count: usize) {
         if self.instances.len() != instance_count {
-            self.instances.clear();
-            self.instances.resize(instance_count, Instance::default());
-            if self.instances.capacity() > instance_count.saturating_mul(2) && self.instances.capacity() > 4096 {
-                self.instances.shrink_to_fit();
-            }
-            let needed_bytes = (instance_count * std::mem::size_of::<Instance>()) as u64;
-            if self.instance_buf.size() < needed_bytes
-                || (self.instance_buf.size() > needed_bytes.saturating_mul(2) && self.instance_buf.size() > 65536)
-            {
-                self.instance_buf = make_instance_buf(&self.device, instance_count);
-            }
+            self.instances.resize(&self.device, instance_count);
             self.force_full = true;
         }
-
-        if self.viewport_buf.size() < (pane_count * std::mem::size_of::<Viewport>()) as u64 {
-            self.viewport_buf = make_viewport_buffer(&self.device, pane_count);
-            self.rebind_atlas();
+        if self.viewports.len() != pane_count {
+            self.viewports.resize(&self.device, pane_count);
         }
     }
 
@@ -295,7 +276,7 @@ impl Renderer {
             let track_height = (bottom - top).max(0.0);
             let (thumb_y, height) = scrollbar_thumb(track_height, g.rows, history, offset);
             let y = top + thumb_y + (track_height - height).max(0.0) * g.scroll_fraction / history.max(1) as f64;
-            self.viewports.push(Viewport {
+            self.viewports.as_mut_slice()[pane_index] = Viewport {
                 col: pane.rect.col as u32,
                 row: (pane.rect.row + top_rows) as u32,
                 cols: pane.rect.cols as u32,
@@ -308,8 +289,8 @@ impl Renderer {
                     ar.row == pane.rect.row + pane.rect.rows && ar.col < pane.rect.col + pane.rect.cols && ar.col + ar.cols > pane.rect.col
                 })) << 1),
                 _pad: 0,
-            });
-            self.instances[scrollbar_start + pane_index] = ui::scrollbar::instance(right, y, height, offset);
+            };
+            self.instances.as_mut_slice()[scrollbar_start + pane_index] = ui::scrollbar::instance(right, y, height, offset);
 
             // Collect visible images while g is locked to eliminate redundant grid locking in subsequent passes.
             g.visible_images(&mut self.image_draws);
@@ -369,9 +350,7 @@ impl Renderer {
         let tab_bar = ctx.tab_bar;
         let active_rect = ctx.active_rect;
             for _ in 0..3 {
-                if self.atlas.grow_if_needed(&self.device, &self.queue) {
-                    self.rebind_atlas();
-                }
+                let _ = self.atlas.grow_if_needed(&self.device, &self.queue);
                 if let Some(view) = tab_bar {
                     ui::tab_bar::build(&mut self.cells(cols), view);
                 }
@@ -381,7 +360,7 @@ impl Renderer {
                     let pane_defaults = Some((g.fg_color(), g.bg_color())).filter(|&d| d != defaults);
                     let p_cols = pane.rect.cols.min(g.cols);
                     let p_rows = pane.rect.rows.min(g.rows);
-                    let extra = self.viewports[pane_index].extra_start as usize;
+                    let extra = self.viewports.as_slice()[pane_index].extra_start as usize;
                     let row_ctx = PaneRowCtx {
                         rect: &pane.rect,
                         is_active: pane.is_active,
@@ -460,18 +439,10 @@ impl Renderer {
             let a = dirty.lo * cols;
             let b = ((dirty.hi + 1) * cols).min(self.instances.len());
             if a < b {
-                self.queue.write_buffer(
-                    &self.instance_buf,
-                    (a * std::mem::size_of::<Instance>()) as u64,
-                    bytemuck::cast_slice(&self.instances[a..b]),
-                );
+                self.instances.flush_range(&self.queue, a, b);
             }
         }
-        self.queue.write_buffer(
-            &self.instance_buf,
-            (n * std::mem::size_of::<Instance>()) as u64,
-            bytemuck::cast_slice(&self.instances[n..]),
-        );
+        self.instances.flush_range(&self.queue, n, self.instances.len());
     }
 
     /// The shader uniforms for this frame (layer 0; `submit` adjusts the layer).
@@ -540,94 +511,83 @@ impl Renderer {
     }
 
     /// Upload viewports and uniforms, draw the cell / image passes and custom shaders, then present.
-    fn submit(&mut self, frame: wgpu::SurfaceTexture, u: Uniforms, clear_bg: u32, instance_count: usize) {
-        self.queue.write_buffer(&self.viewport_buf, 0, bytemuck::cast_slice(&self.viewports));
+    fn submit(&mut self, mut frame: SurfaceFrame, u: Uniforms, clear_bg: u32, instance_count: usize) {
+        self.viewports.flush_range(&self.queue, 0, self.viewports.len());
 
         // Lower z first; equal z keeps the placement order.
         self.placed.sort_by_key(|p| p.draw.z);
         // Images under the text split the cells into a background and a text layer.
         let layered = self.placed.first().is_some_and(|p| p.draw.z < 0);
-        if layered {
-            let text = Uniforms { layer: 2, ..u };
-            self.queue.write_buffer(&self.text_uniform_buf, 0, bytemuck::bytes_of(&text));
-        }
+        let text_u = Uniforms { layer: 2, ..u };
         let u = Uniforms { layer: layered as u32, ..u };
-        self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u));
         let flip = self.postfx.is_some();
         let target = (self.config.width, self.config.height);
         self.images.prepare(&self.device, &self.queue, &self.placed, target, flip);
 
-        let screen = frame.texture.create_view(&Default::default());
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let mut encoder = CommandEncoder::new(&self.queue);
         // With custom shaders the cells go to a texture the shaders read.
         let (width, height) = (self.config.width, self.config.height);
-        let view = match &mut self.postfx {
-            Some(fx) => fx.cell_target(&self.device, width, height).clone(),
-            None => screen.clone(),
+        let cell_target_ptr = match &mut self.postfx {
+            Some(fx) => fx.cell_target(&self.device, width, height).raw_ptr(),
+            None => frame.texture_ptr(),
         };
+        let sampler = self.device.nearest_sampler();
         {
             let bg = clear_bg;
             let c = |s: u32| ((bg >> s) & 0xFF) as f64 / 255.0;
             let clear_a = if self.bg_opacity < 1.0 { self.bg_opacity as f64 } else { 1.0 };
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("cells"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: c(24), g: c(16), b: c(8), a: clear_a }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            let instances = 0..instance_count as u32;
+            let mut pass = encoder.begin_render_pass(
+                cell_target_ptr,
+                Some([c(24), c(16), c(8), clear_a]),
+            );
+            let instances = instance_count as u32;
             if layered {
                 // Kitty z order: below cell backgrounds, below the text, above it.
                 use crate::terminal::graphics::Z_BELOW_BG;
-                self.images.draw(&mut pass, flip, target.1, i32::MIN..Z_BELOW_BG);
-                pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
-                pass.set_vertex_buffer(0, self.instance_buf.slice(..));
-                pass.draw(0..4, instances.clone());
-                self.images.draw(&mut pass, flip, target.1, Z_BELOW_BG..0);
-                pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &self.text_bind_group, &[]);
-                pass.set_vertex_buffer(0, self.instance_buf.slice(..));
-                pass.draw(0..4, instances);
-                self.images.draw(&mut pass, flip, target.1, 0..i32::MAX);
+                self.images.draw(&mut pass, &self.device, flip, target, i32::MIN..Z_BELOW_BG);
+                pass.draw_cells(
+                    &self.pipelines.cells,
+                    &self.instances,
+                    &u,
+                    &self.viewports,
+                    &self.atlas.texture,
+                    &self.atlas.color_texture,
+                    sampler,
+                    instances,
+                );
+                self.images.draw(&mut pass, &self.device, flip, target, Z_BELOW_BG..0);
+                pass.draw_cells(
+                    &self.pipelines.cells,
+                    &self.instances,
+                    &text_u,
+                    &self.viewports,
+                    &self.atlas.texture,
+                    &self.atlas.color_texture,
+                    sampler,
+                    instances,
+                );
+                self.images.draw(&mut pass, &self.device, flip, target, 0..i32::MAX);
             } else {
-                pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
-                pass.set_vertex_buffer(0, self.instance_buf.slice(..));
-                pass.draw(0..4, instances);
-                self.images.draw(&mut pass, flip, target.1, i32::MIN..i32::MAX);
+                pass.draw_cells(
+                    &self.pipelines.cells,
+                    &self.instances,
+                    &u,
+                    &self.viewports,
+                    &self.atlas.texture,
+                    &self.atlas.color_texture,
+                    sampler,
+                    instances,
+                );
+                self.images.draw(&mut pass, &self.device, flip, target, i32::MIN..i32::MAX);
             }
         }
         if let Some(fx) = &mut self.postfx {
-            fx.run(&self.device, &self.queue, &mut encoder, &screen, self.mouse_px);
+            frame = fx.run(&self.device, &self.queue, &mut encoder, frame, self.mouse_px);
         }
         if self.corner_radius > 0.0 && self.transparent_surface {
-            let format = self.config.format;
-            let pipeline = self.corner_pipeline.get_or_insert_with(|| gpu::create_corner_pipeline(&self.device, format, &self.bgl));
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("corners"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &screen,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.draw(0..4, 0..1);
+            let mut pass = encoder.begin_render_pass(frame.texture_ptr(), None);
+            pass.draw_corners(&self.pipelines.corner, &u);
         }
-        self.queue.submit(Some(encoder.finish()));
-        frame.present();
+        encoder.present_and_submit(frame);
     }
 }

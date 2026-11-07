@@ -139,7 +139,7 @@ pub(super) unsafe fn build_pipeline(
                 msg_send!(att0, c"setBlendingEnabled:", true => bool);
                 msg_send!(att0, c"setSourceRGBBlendFactor:", MTL_BLEND_FACTOR_SRC_ALPHA => usize);
                 msg_send!(att0, c"setDestinationRGBBlendFactor:", MTL_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA => usize);
-                msg_send!(att0, c"setRGBBlendOperation:", MTL_BLEND_OPERATION_ADD => usize);
+                msg_send!(att0, c"setRgbBlendOperation:", MTL_BLEND_OPERATION_ADD => usize);
                 msg_send!(att0, c"setSourceAlphaBlendFactor:", MTL_BLEND_FACTOR_ONE => usize);
                 msg_send!(att0, c"setDestinationAlphaBlendFactor:", MTL_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA => usize);
                 msg_send!(att0, c"setAlphaBlendOperation:", MTL_BLEND_OPERATION_ADD => usize);
@@ -148,7 +148,7 @@ pub(super) unsafe fn build_pipeline(
                 msg_send!(att0, c"setBlendingEnabled:", true => bool);
                 msg_send!(att0, c"setSourceRGBBlendFactor:", MTL_BLEND_FACTOR_ZERO => usize);
                 msg_send!(att0, c"setDestinationRGBBlendFactor:", MTL_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA => usize);
-                msg_send!(att0, c"setRGBBlendOperation:", MTL_BLEND_OPERATION_ADD => usize);
+                msg_send!(att0, c"setRgbBlendOperation:", MTL_BLEND_OPERATION_ADD => usize);
                 msg_send!(att0, c"setSourceAlphaBlendFactor:", MTL_BLEND_FACTOR_ZERO => usize);
                 msg_send!(att0, c"setDestinationAlphaBlendFactor:", MTL_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA => usize);
                 msg_send!(att0, c"setAlphaBlendOperation:", MTL_BLEND_OPERATION_ADD => usize);

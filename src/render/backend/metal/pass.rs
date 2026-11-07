@@ -68,6 +68,7 @@ impl CommandEncoder {
         }
     }
 
+    #[cfg(test)]
     pub fn submit_and_wait(self) {
         unsafe {
             msg_send!(self.cmd_buf.as_ptr(), c"commit");
