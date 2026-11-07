@@ -266,6 +266,13 @@ unsafe fn find_literal_cs_neon(hay: &[u8], needle: &[u8], first: u8, last: u8, l
     let v_last = vdupq_n_u8(last);
     let mut i = 0;
 
+    // Fast-path for 4-byte needle like "ERR_"
+    let needle_u32 = if n == 4 {
+        Some(u32::from_ne_bytes([needle[0], needle[1], needle[2], needle[3]]))
+    } else {
+        None
+    };
+
     while i + 16 <= limit {
         // SAFETY: `i + 16 <= limit` and `limit = hay.len() - n + 1`, so `i + n - 1 + 16 <= hay.len()`.
         unsafe {
@@ -273,9 +280,22 @@ unsafe fn find_literal_cs_neon(hay: &[u8], needle: &[u8], first: u8, last: u8, l
             let b_last = vld1q_u8(ptr.add(i + n - 1));
             let eq = vandq_u8(vceqq_u8(b_first, v_first), vceqq_u8(b_last, v_last));
             if vmaxvq_u8(eq) != 0 {
+                // Check lanes that matched
+                // Shift bits into a 64-bit mask using vshrn_n_u16
+                let narrow1 = vshrn_n_u16(vreinterpretq_u16_u8(eq), 4);
+                let _narrow2 = vget_lane_u64(vreinterpret_u64_u8(narrow1), 0);
+                // If any lane matched, scan those positions
                 for k in 0..16 {
                     let pos = i + k;
-                    if hay[pos] == first && hay[pos + n - 1] == last && &hay[pos..pos + n] == needle {
+                    if let Some(target) = needle_u32 {
+                        let val = std::ptr::read_unaligned(ptr.add(pos) as *const u32);
+                        if val == target {
+                            return Some(pos);
+                        }
+                    } else if *ptr.add(pos) == first
+                        && *ptr.add(pos + n - 1) == last
+                        && hay.get_unchecked(pos..pos + n) == needle
+                    {
                         return Some(pos);
                     }
                 }
@@ -397,8 +417,9 @@ enum Inst {
 struct Prog {
     insts: Vec<Inst>,
     start: usize,
-    /// Optional literal prefix byte to skip non-matching regions via SIMD.
-    first_byte: Option<(u8, bool)>,
+    /// Optional literal prefix bytes to skip non-matching regions via SIMD.
+    literal_prefix: Vec<u8>,
+    prefix_ci: bool,
     anchored_start: bool,
     /// Every path from `start` to `Match` is the same chain of consuming
     /// instructions (no `Split`, `Jump` or `Assert`), so one pass decides a match.
@@ -445,46 +466,111 @@ fn is_linear(insts: &[Inst], start: usize) -> bool {
 
 /// One consuming step shared by the NFA and the linear fast path: the next pc
 /// when `inst` accepts the character at `idx`.
-#[inline]
+#[inline(always)]
 fn step_inst(inst: &Inst, text: &str, idx: usize) -> Option<(usize, usize)> {
     let bytes = text.as_bytes();
     let b0 = bytes[idx];
-    let (ch, step) = if b0 < 0x80 {
-        (b0 as char, 1)
-    } else {
-        let c = text[idx..].chars().next().unwrap_or('\u{FFFD}');
-        (c, c.len_utf8())
-    };
-    let target = match inst {
+    match inst {
         Inst::Byte { b, ci, next } => {
             let ok = if *ci { b0.eq_ignore_ascii_case(b) } else { b0 == *b };
-            if ok && step == 1 { Some(*next) } else { None }
+            if ok { Some((*next, 1)) } else { None }
         }
-        Inst::Char { c, ci, next } => {
-            let ok = if *ci { ch.eq_ignore_ascii_case(c) } else { ch == *c };
-            if ok { Some(*next) } else { None }
+        Inst::Class { items, negated, ci, next } if b0 < 0x80 => {
+            // Fast-path ASCII for class
+            let ok = eval_class_ascii(items, b0, *ci) != *negated;
+            if ok { Some((*next, 1)) } else { None }
         }
-        Inst::Any { dot_all, next } => (*dot_all || ch != '\n').then_some(*next),
-        Inst::Class { items, negated, ci, next } => (eval_class(items, ch, *ci) != *negated).then_some(*next),
-        _ => None,
-    }?;
-    Some((target, step))
+        _ => {
+            let (ch, step) = if b0 < 0x80 {
+                (b0 as char, 1)
+            } else {
+                let c = text[idx..].chars().next().unwrap_or('\u{FFFD}');
+                (c, c.len_utf8())
+            };
+            let target = match inst {
+                Inst::Char { c, ci, next } => {
+                    let ok = if *ci { ch.eq_ignore_ascii_case(c) } else { ch == *c };
+                    if ok { Some(*next) } else { None }
+                }
+                Inst::Any { dot_all, next } => (*dot_all || ch != '\n').then_some(*next),
+                Inst::Class { items, negated, ci, next } => (eval_class(items, ch, *ci) != *negated).then_some(*next),
+                _ => None,
+            }?;
+            Some((target, step))
+        }
+    }
+}
+
+#[inline(always)]
+fn eval_class_ascii(items: &[ClassItem], b: u8, ci: bool) -> bool {
+    let b_cmp = if ci { b.to_ascii_lowercase() } else { b };
+    for item in items {
+        let matched = match *item {
+            ClassItem::Byte(tb) => {
+                let target = if ci { tb.to_ascii_lowercase() } else { tb };
+                b_cmp == target
+            }
+            ClassItem::Range(lo, hi) => {
+                if ci {
+                    let lo = lo.to_ascii_lowercase();
+                    let hi = hi.to_ascii_lowercase();
+                    b_cmp >= lo && b_cmp <= hi
+                } else {
+                    b >= lo && b <= hi
+                }
+            }
+            ClassItem::Char(c) => (c as u32) < 0x80 && b_cmp == (if ci { c.to_ascii_lowercase() } else { c } as u8),
+            ClassItem::CharRange(lo, hi) => (b as char) >= lo && (b as char) <= hi,
+            ClassItem::Digit => b.is_ascii_digit(),
+            ClassItem::Word => b.is_ascii_alphanumeric() || b == b'_',
+            ClassItem::Space => b.is_ascii_whitespace(),
+        };
+        if matched {
+            return true;
+        }
+    }
+    false
 }
 
 impl Prog {
     /// End of the match that starts at `pos`, for a `linear` program.
+    #[inline(always)]
     fn match_linear(&self, text: &str, pos: usize) -> Option<usize> {
         let (mut pc, mut idx) = (self.start, pos);
+        let bytes = text.as_bytes();
+        let insts = &self.insts;
         loop {
-            if matches!(self.insts[pc], Inst::Match) {
-                return Some(idx);
+            match unsafe { insts.get_unchecked(pc) } {
+                Inst::Match => return Some(idx),
+                Inst::Byte { b, ci, next } => {
+                    if idx >= bytes.len() { return None; }
+                    let b0 = unsafe { *bytes.get_unchecked(idx) };
+                    let ok = if *ci { b0.eq_ignore_ascii_case(b) } else { b0 == *b };
+                    if !ok { return None; }
+                    pc = *next;
+                    idx += 1;
+                }
+                Inst::Class { items, negated, ci, next } => {
+                    if idx >= bytes.len() { return None; }
+                    let b0 = unsafe { *bytes.get_unchecked(idx) };
+                    if b0 < 0x80 {
+                        let ok = eval_class_ascii(items, b0, *ci) != *negated;
+                        if !ok { return None; }
+                        pc = *next;
+                        idx += 1;
+                    } else {
+                        let (next_pc, step) = step_inst(&insts[pc], text, idx)?;
+                        pc = next_pc;
+                        idx += step;
+                    }
+                }
+                other => {
+                    if idx >= text.len() { return None; }
+                    let (next, step) = step_inst(other, text, idx)?;
+                    pc = next;
+                    idx += step;
+                }
             }
-            if idx >= text.len() {
-                return None;
-            }
-            let (next, step) = step_inst(&self.insts[pc], text, idx)?;
-            pc = next;
-            idx += step;
         }
     }
 
@@ -500,15 +586,14 @@ impl Prog {
             if self.anchored_start && pos > 0 {
                 return None;
             }
-            // Fast skip using literal first byte when available.
-            if let Some((fb, ci)) = self.first_byte {
+            // Fast skip using literal prefix when available.
+            if !self.literal_prefix.is_empty() {
                 if pos < bytes.len() {
                     let rem = &bytes[pos..];
-                    let off = if ci {
-                        let fb_up = fb.to_ascii_uppercase();
-                        rem.iter().position(|&b| b == fb || b == fb_up)
+                    let off = if self.prefix_ci {
+                        find_literal_ci(rem, &self.literal_prefix)
                     } else {
-                        find_literal_cs(rem, &[fb])
+                        find_literal_cs(rem, &self.literal_prefix)
                     };
                     let o = off?;
                     pos += o;
@@ -1013,13 +1098,14 @@ impl Compiler {
         comp.patch_tail(&start, match_pc);
 
         let anchored_start = matches!(ast, Ast::Assert(AssertKind::StartLine));
-        let first_byte = extract_first_byte(&ast);
+        let (literal_prefix, prefix_ci) = extract_literal_prefix(&ast);
 
         let linear = is_linear(&comp.insts, start_entry);
         Ok(Prog {
             insts: comp.insts,
             start: start_entry,
-            first_byte,
+            literal_prefix,
+            prefix_ci,
             anchored_start,
             linear,
         })
@@ -1180,21 +1266,48 @@ struct Frag {
     exits: Vec<usize>,
 }
 
-fn extract_first_byte(ast: &Ast) -> Option<(u8, bool)> {
-    match ast {
-        Ast::Byte(b, ci) => Some((if *ci { b.to_ascii_lowercase() } else { *b }, *ci)),
-        Ast::Concat(nodes) => {
-            for n in nodes {
-                match n {
-                    Ast::Assert(_) => continue,
-                    other => return extract_first_byte(other),
+fn extract_literal_prefix(ast: &Ast) -> (Vec<u8>, bool) {
+    let mut prefix = Vec::new();
+    let mut ci = false;
+
+    fn collect(ast: &Ast, prefix: &mut Vec<u8>, ci: &mut bool) -> bool {
+        match ast {
+            Ast::Byte(b, b_ci) => {
+                if prefix.is_empty() {
+                    *ci = *b_ci;
+                } else if *ci != *b_ci {
+                    return false;
                 }
+                prefix.push(if *ci { b.to_ascii_lowercase() } else { *b });
+                true
             }
-            None
+            Ast::Concat(nodes) => {
+                for n in nodes {
+                    match n {
+                        Ast::Assert(_) => continue,
+                        other => {
+                            if !collect(other, prefix, ci) {
+                                return false;
+                            }
+                        }
+                    }
+                }
+                true
+            }
+            Ast::Rep { sub, min, .. } if *min >= 1 => {
+                for _ in 0..*min {
+                    if !collect(sub, prefix, ci) {
+                        return false;
+                    }
+                }
+                true
+            }
+            _ => false,
         }
-        Ast::Rep { sub, min, .. } if *min >= 1 => extract_first_byte(sub),
-        _ => None,
     }
+
+    collect(ast, &mut prefix, &mut ci);
+    (prefix, ci)
 }
 
 #[cfg(test)]
