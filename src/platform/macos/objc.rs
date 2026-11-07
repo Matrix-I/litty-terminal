@@ -40,6 +40,8 @@ unsafe extern "C" {
     pub(super) fn objc_registerClassPair(cls: Id);
     pub(super) fn objc_setAssociatedObject(object: Id, key: *const c_void, value: Id, policy: usize);
     pub(super) fn objc_getAssociatedObject(object: Id, key: *const c_void) -> Id;
+    pub(super) fn objc_getProtocol(name: *const std::ffi::c_char) -> Id;
+    pub(super) fn class_addProtocol(cls: Id, protocol: Id) -> bool;
 }
 
 pub(super) fn sel(name: &CStr) -> Id {

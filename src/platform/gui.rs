@@ -334,7 +334,7 @@ impl Window {
     pub fn inner_position(&self) -> Result<PhysicalPosition<i32>, Unsupported> {
         match &self.0 {
             #[cfg(target_os = "macos")]
-            WindowInner::Native(w) => w.outer_position(),
+            WindowInner::Native(w) => w.inner_position(),
             #[cfg(target_os = "linux")]
             WindowInner::NativeLinux(w) => w.outer_position(),
         }

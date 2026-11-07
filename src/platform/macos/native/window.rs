@@ -1,15 +1,129 @@
 //! Native AppKit window & view types for macOS (replaces winit on macOS).
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::platform::macos::objc::*;
 use crate::platform::gui::{
     CursorIcon, LogicalPosition, Monitor, PhysicalPosition, PhysicalSize,
-    RawHandle, ResizeDirection, Theme, Unsupported, WindowId, WindowSpec,
+    RawHandle, ResizeDirection, Theme, Unsupported, WindowEvent, WindowId, WindowSpec,
 };
 use super::view::ensure_litty_view_class;
+
+static DELEGATE_CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
+static mut SHARED_DELEGATE: Id = std::ptr::null_mut();
+
+pub fn ensure_window_delegate_class() {
+    if DELEGATE_CLASS_REGISTERED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    unsafe {
+        let superclass = class(c"NSObject").expect("NSObject class exists");
+        let cls = objc_allocateClassPair(superclass, c"LittyWindowDelegate".as_ptr(), 0);
+        assert!(!cls.is_null(), "failed to allocate LittyWindowDelegate class");
+
+        // windowDidBecomeKey:
+        extern "C" fn window_did_become_key(_this: Id, _cmd: Id, notification: Id) {
+            unsafe {
+                let win = msg_send!(notification, c"object"; -> Id);
+                if !win.is_null() {
+                    let view = msg_send!(win, c"contentView"; -> Id);
+                    if !view.is_null() {
+                        let tag = msg_send!(view, c"tag"; -> usize);
+                        if tag != 0 {
+                            let id = WindowId::from_raw(tag as u64);
+                            super::view::emit_event(id, WindowEvent::Focused(true));
+                        }
+                    }
+                }
+            }
+        }
+        class_addMethod(cls, sel(c"windowDidBecomeKey:"), window_did_become_key as *const (), c"v@:@".as_ptr() as *const _);
+
+        // windowDidResignKey:
+        extern "C" fn window_did_resign_key(_this: Id, _cmd: Id, notification: Id) {
+            unsafe {
+                let win = msg_send!(notification, c"object"; -> Id);
+                if !win.is_null() {
+                    let view = msg_send!(win, c"contentView"; -> Id);
+                    if !view.is_null() {
+                        let tag = msg_send!(view, c"tag"; -> usize);
+                        if tag != 0 {
+                            let id = WindowId::from_raw(tag as u64);
+                            super::view::emit_event(id, WindowEvent::Focused(false));
+                        }
+                    }
+                }
+            }
+        }
+        class_addMethod(cls, sel(c"windowDidResignKey:"), window_did_resign_key as *const (), c"v@:@".as_ptr() as *const _);
+
+        // windowDidResize:
+        extern "C" fn window_did_resize(_this: Id, _cmd: Id, notification: Id) {
+            unsafe {
+                let win = msg_send!(notification, c"object"; -> Id);
+                if !win.is_null() {
+                    let view = msg_send!(win, c"contentView"; -> Id);
+                    if !view.is_null() {
+                        let tag = msg_send!(view, c"tag"; -> usize);
+                        if tag != 0 {
+                            let id = WindowId::from_raw(tag as u64);
+                            let frame = msg_send!(view, c"frame"; -> NSRect);
+                            let scale = msg_send!(win, c"backingScaleFactor"; -> f64);
+                            let w = (frame.w * scale).round() as u32;
+                            let h = (frame.h * scale).round() as u32;
+                            if w > 0 && h > 0 {
+                                super::view::emit_event(id, WindowEvent::Resized(PhysicalSize::new(w, h)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        class_addMethod(cls, sel(c"windowDidResize:"), window_did_resize as *const (), c"v@:@".as_ptr() as *const _);
+
+        // windowDidChangeBackingProperties:
+        extern "C" fn window_did_change_backing_properties(_this: Id, _cmd: Id, notification: Id) {
+            unsafe {
+                let win = msg_send!(notification, c"object"; -> Id);
+                if !win.is_null() {
+                    let view = msg_send!(win, c"contentView"; -> Id);
+                    if !view.is_null() {
+                        let tag = msg_send!(view, c"tag"; -> usize);
+                        if tag != 0 {
+                            let id = WindowId::from_raw(tag as u64);
+                            let scale = msg_send!(win, c"backingScaleFactor"; -> f64);
+                            super::view::emit_event(id, WindowEvent::ScaleFactorChanged(scale));
+                        }
+                    }
+                }
+            }
+        }
+        class_addMethod(cls, sel(c"windowDidChangeBackingProperties:"), window_did_change_backing_properties as *const (), c"v@:@".as_ptr() as *const _);
+
+        // windowShouldClose:
+        extern "C" fn window_should_close(_this: Id, _cmd: Id, sender: Id) -> bool {
+            unsafe {
+                let view = msg_send!(sender, c"contentView"; -> Id);
+                if !view.is_null() {
+                    let tag = msg_send!(view, c"tag"; -> usize);
+                    if tag != 0 {
+                        let id = WindowId::from_raw(tag as u64);
+                        super::view::emit_event(id, WindowEvent::CloseRequested);
+                    }
+                }
+                false
+            }
+        }
+        class_addMethod(cls, sel(c"windowShouldClose:"), window_should_close as *const (), c"B@:@".as_ptr() as *const _);
+
+        objc_registerClassPair(cls);
+
+        let instance = msg_send!(cls, c"new"; -> Id);
+        SHARED_DELEGATE = instance;
+    }
+}
 
 static NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -69,6 +183,7 @@ impl NativeWindow {
     /// Create an NSWindow and embed our custom LittyView.
     pub fn create(spec: &WindowSpec) -> Result<Self, std::io::Error> {
         ensure_litty_view_class();
+        ensure_window_delegate_class();
 
         let id = allocate_window_id();
 
@@ -131,6 +246,32 @@ impl NativeWindow {
             msg_send!(ns_window, c"setContentView:", ns_view => Id);
             msg_send!(ns_view, c"release");
 
+            // Attach window delegate for focus, resize, close notifications
+            if !SHARED_DELEGATE.is_null() {
+                msg_send!(ns_window, c"setDelegate:", SHARED_DELEGATE => Id);
+            }
+
+            // Add tracking area for mouse move, hover, and enter/leave tracking
+            if let Some(tracking_cls) = class(c"NSTrackingArea") {
+                // NSTrackingMouseEnteredAndExited (0x01) | NSTrackingMouseMoved (0x02) | NSTrackingActiveAlways (0x80) | NSTrackingInVisibleRect (0x200)
+                let opts: usize = 0x01 | 0x02 | 0x80 | 0x200;
+                let zero_rect = NSRect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
+                let area = msg_send!(tracking_cls, c"alloc"; -> Id);
+                let area = msg_send!(
+                    area,
+                    c"initWithRect:options:owner:userInfo:",
+                    zero_rect => NSRect,
+                    opts => usize,
+                    ns_view => Id,
+                    std::ptr::null_mut::<c_void>() => Id
+                    ; -> Id
+                );
+                if !area.is_null() {
+                    msg_send!(ns_view, c"addTrackingArea:", area => Id);
+                    msg_send!(area, c"release");
+                }
+            }
+
             // Title
             if let Some(ns_title) = ns_string(spec.title) {
                 msg_send!(ns_window, c"setTitle:", ns_title => Id);
@@ -185,10 +326,17 @@ impl NativeWindow {
     pub fn outer_position(&self) -> Result<PhysicalPosition<i32>, Unsupported> {
         unsafe {
             let frame = msg_send!(self.inner.ns_window, c"frame"; -> NSRect);
-            let screen_h = primary_screen_height();
-            let top_left_y = screen_h - (frame.y + frame.h);
-            let scale = self.scale_factor();
-            Ok(PhysicalPosition::new((frame.x * scale).round() as i32, (top_left_y * scale).round() as i32))
+            Ok(top_left_on_screen(frame, primary_screen_height(), self.scale_factor()))
+        }
+    }
+
+    /// Top-left corner of the content view (below the title bar) on the screen,
+    /// the origin pointer positions are relative to.
+    pub fn inner_position(&self) -> Result<PhysicalPosition<i32>, Unsupported> {
+        unsafe {
+            let frame = msg_send!(self.inner.ns_window, c"frame"; -> NSRect);
+            let content = msg_send!(self.inner.ns_window, c"contentRectForFrameRect:", frame => NSRect; -> NSRect);
+            Ok(top_left_on_screen(content, primary_screen_height(), self.scale_factor()))
         }
     }
 
@@ -345,7 +493,38 @@ impl NativeWindow {
     }
 }
 
+/// Top-left corner of `rect` (Cocoa screen coordinates: points, origin at the
+/// bottom-left of the primary screen of height `screen_h`) in physical pixels
+/// from the top-left of the primary screen.
+fn top_left_on_screen(rect: NSRect, screen_h: f64, scale: f64) -> PhysicalPosition<i32> {
+    let top = screen_h - (rect.y + rect.h);
+    PhysicalPosition::new((rect.x * scale).round() as i32, (top * scale).round() as i32)
+}
+
 pub fn allocate_window_id() -> WindowId {
     let val = NEXT_WINDOW_ID.fetch_add(1, Ordering::Relaxed);
     unsafe { std::mem::transmute(val) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn positions_are_measured_from_the_top_left_of_the_primary_screen() {
+        let frame = NSRect { x: 100.0, y: 323.0, w: 1295.0, h: 778.0 };
+        let at = top_left_on_screen(frame, 1117.0, 2.0);
+        assert_eq!((at.x, at.y), (200, 32));
+    }
+
+    #[test]
+    fn the_content_area_starts_below_the_title_bar() {
+        // Same window as above with a 28 pt title bar: the content rect is 28 pt shorter.
+        let frame = NSRect { x: 100.0, y: 323.0, w: 1295.0, h: 778.0 };
+        let content = NSRect { h: 750.0, ..frame };
+        let outer = top_left_on_screen(frame, 1117.0, 2.0);
+        let inner = top_left_on_screen(content, 1117.0, 2.0);
+        assert_eq!(inner.x, outer.x);
+        assert_eq!(inner.y - outer.y, 56, "28 pt at scale 2");
+    }
 }

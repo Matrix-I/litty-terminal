@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 
 use crate::platform::gui::{EventHandler, EventProxy, Flow, LoopCtx, WindowEvent, WindowId};
 use crate::platform::macos::objc::*;
-use super::events::process_ns_event;
+use super::events::{convert_key_event, process_ns_event, MODIFIER_COMMAND};
 use super::view::{ensure_litty_view_class, set_event_callback};
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -102,6 +102,102 @@ impl NativeLoopCtx {
     }
 }
 
+/// NSEventType values used by the loop.
+const NS_EVENT_LEFT_MOUSE_DOWN: usize = 1;
+const NS_EVENT_RIGHT_MOUSE_DRAGGED: usize = 7;
+const NS_EVENT_OTHER_MOUSE_DRAGGED: usize = 27;
+const NS_EVENT_KEY_DOWN: usize = 10;
+const NS_EVENT_KEY_UP: usize = 11;
+const NS_EVENT_APPLICATION_DEFINED: usize = 15;
+
+/// Hand `WindowEvent`s queued by view and window-delegate callbacks to `handler`,
+/// keeping the queue's buffer so steady input does not allocate.
+fn deliver_pending_events<T: 'static, H: EventHandler<T>>(handler: &mut H, loop_ctx: &LoopCtx) {
+    let mut batch = std::mem::take(&mut *PENDING_EVENTS.lock());
+    if batch.is_empty() {
+        return;
+    }
+    for (id, ev) in batch.drain(..) {
+        handler.window_event(loop_ctx, id, ev);
+    }
+    let mut queue = PENDING_EVENTS.lock();
+    if queue.is_empty() {
+        *queue = batch;
+    }
+}
+
+/// The window an event belongs to: its own, or for a pointer event generated over
+/// no window of ours (e.g. `mouseMoved` outside the key window), the window under it.
+unsafe fn event_window(app: Id, event: Id, event_type: usize) -> Id {
+    unsafe {
+        let win = msg_send!(event, c"window"; -> Id);
+        // LeftMouseDown (1) through RightMouseDragged (7) include MouseMoved (5).
+        let is_pointer = (NS_EVENT_LEFT_MOUSE_DOWN..=NS_EVENT_RIGHT_MOUSE_DRAGGED).contains(&event_type)
+            || event_type == NS_EVENT_OTHER_MOUSE_DRAGGED;
+        if !win.is_null() || !is_pointer {
+            return win;
+        }
+        let Some(win_cls) = class(c"NSWindow") else { return win };
+        // Windowless events carry screen coordinates in `locationInWindow`.
+        let loc = msg_send!(event, c"locationInWindow"; -> NSPoint);
+        let number = msg_send!(win_cls, c"windowNumberAtPoint:belowWindowWithWindowNumber:", loc => NSPoint, 0isize => isize; -> isize);
+        if number <= 0 {
+            return win;
+        }
+        msg_send!(app, c"windowWithWindowNumber:", number => isize; -> Id)
+    }
+}
+
+/// The id of `win` when it is one of ours (its content view is a tagged `LittyView`).
+unsafe fn litty_window_id(win: Id) -> Option<WindowId> {
+    unsafe {
+        if win.is_null() {
+            return None;
+        }
+        let view = msg_send!(win, c"contentView"; -> Id);
+        if view.is_null() {
+            return None;
+        }
+        let tag = msg_send!(view, c"tag"; -> usize);
+        (tag != 0).then(|| WindowId::from_raw(tag as u64))
+    }
+}
+
+/// Deliver one `NSEvent`: pointer and modifier events go straight to `handler`;
+/// every event then goes through AppKit, which runs key events through the menu's
+/// key equivalents and `LittyView`'s input method. Whatever the view and delegate
+/// queued is delivered before the next event, so input keeps its order.
+unsafe fn dispatch_event<T: 'static, H: EventHandler<T>>(app: Id, event: Id, handler: &mut H, loop_ctx: &LoopCtx) {
+    unsafe {
+        let event_type = msg_send!(event, c"type"; -> usize);
+        if event_type == NS_EVENT_APPLICATION_DEFINED {
+            // Wake-up only: the loop then delivers redraws and user events.
+            return;
+        }
+        if event_type == NS_EVENT_KEY_UP && msg_send!(event, c"modifierFlags"; -> usize) & MODIFIER_COMMAND != 0 {
+            // NSApplication never forwards a Cmd key-up to the key window.
+            let win = msg_send!(event, c"window"; -> Id);
+            if let Some(id) = litty_window_id(win) {
+                handler.window_event(loop_ctx, id, WindowEvent::Key(convert_key_event(event, false)));
+            }
+            return;
+        }
+        if event_type != NS_EVENT_KEY_DOWN && event_type != NS_EVENT_KEY_UP {
+            let win = event_window(app, event, event_type);
+            if let Some(id) = litty_window_id(win) {
+                let view = msg_send!(win, c"contentView"; -> Id);
+                let scale = msg_send!(win, c"backingScaleFactor"; -> f64);
+                process_ns_event(event, win, view, scale, |wev| {
+                    handler.window_event(loop_ctx, id, wev);
+                });
+            }
+        }
+        msg_send!(app, c"sendEvent:", event => Id);
+        msg_send!(app, c"updateWindows");
+        deliver_pending_events(handler, loop_ctx);
+    }
+}
+
 pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T>) -> H) {
     ensure_litty_view_class();
 
@@ -122,6 +218,9 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         let native_ctx = NativeLoopCtx::new();
         let loop_ctx = LoopCtx::from_native(&native_ctx);
         handler.resumed(&loop_ctx);
+        // Bring the first window to the front with keyboard focus, as winit did:
+        // launched from a shell, the app is otherwise left behind it.
+        crate::platform::macos::app::activate_app();
 
         let date_cls = class(c"NSDate").expect("NSDate");
         let default_run_loop_mode = ns_string("kCFRunLoopDefaultMode").expect("NSDefaultRunLoopMode");
@@ -135,13 +234,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
             }
 
             // 2. Deliver pending view/window events
-            let events: Vec<(WindowId, WindowEvent)> = {
-                let mut guard = PENDING_EVENTS.lock();
-                guard.drain(..).collect()
-            };
-            for (id, ev) in events {
-                handler.window_event(&loop_ctx, id, ev);
-            }
+            deliver_pending_events(&mut handler, &loop_ctx);
 
             handler.cycle_started(false);
 
@@ -184,97 +277,23 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
                 }
             };
 
-            // Fetch first event with until_date
-            let event = msg_send!(
-                app,
-                c"nextEventMatchingMask:untilDate:inMode:dequeue:",
-                usize::MAX => usize,
-                until_date => Id,
-                default_run_loop_mode => Id,
-                true => bool
-                ; -> Id
-            );
-
-            if !event.is_null() {
-                let event_type = msg_send!(event, c"type"; -> usize);
-                if event_type == 15 {
-                    // Application-defined wakeup event: continue to process redrawing and user events
-                    msg_send!(pool, c"drain");
-                    continue;
+            // Block (per the flow mode) for the first event, then drain the queue.
+            let mut until = until_date;
+            loop {
+                let event = msg_send!(
+                    app,
+                    c"nextEventMatchingMask:untilDate:inMode:dequeue:",
+                    usize::MAX => usize,
+                    until => Id,
+                    default_run_loop_mode => Id,
+                    true => bool
+                    ; -> Id
+                );
+                if event.is_null() {
+                    break;
                 }
-
-                // Dispatch event
-                let win = msg_send!(event, c"window"; -> Id);
-                if !win.is_null() {
-                    let view = msg_send!(win, c"contentView"; -> Id);
-                    if !view.is_null() {
-                        let tag = msg_send!(view, c"tag"; -> usize);
-                        if tag != 0 {
-                            let id = WindowId::from_raw(tag as u64);
-                            let scale = msg_send!(win, c"backingScaleFactor"; -> f64);
-                            process_ns_event(event, view, scale, |wev| {
-                                handler.window_event(&loop_ctx, id, wev);
-                            });
-                        }
-                    }
-                }
-
-                if event_type == 10 || event_type == 11 {
-                    // KeyDown (10) or KeyUp (11): only forward Cmd shortcuts to AppKit main menu
-                    let flags = msg_send!(event, c"modifierFlags"; -> usize);
-                    if (flags & (1 << 20)) != 0 {
-                        msg_send!(app, c"sendEvent:", event => Id);
-                    }
-                } else {
-                    msg_send!(app, c"sendEvent:", event => Id);
-                }
-                msg_send!(app, c"updateWindows");
-
-                // Drain remaining queued events without blocking
-                loop {
-                    let next = msg_send!(
-                        app,
-                        c"nextEventMatchingMask:untilDate:inMode:dequeue:",
-                        usize::MAX => usize,
-                        std::ptr::null_mut::<c_void>() => Id,
-                        default_run_loop_mode => Id,
-                        true => bool
-                        ; -> Id
-                    );
-                    if next.is_null() {
-                        break;
-                    }
-
-                    let next_type = msg_send!(next, c"type"; -> usize);
-                    if next_type == 15 {
-                        continue;
-                    }
-
-                    let win = msg_send!(next, c"window"; -> Id);
-                    if !win.is_null() {
-                        let view = msg_send!(win, c"contentView"; -> Id);
-                        if !view.is_null() {
-                            let tag = msg_send!(view, c"tag"; -> usize);
-                            if tag != 0 {
-                                let id = WindowId::from_raw(tag as u64);
-                                let scale = msg_send!(win, c"backingScaleFactor"; -> f64);
-                                process_ns_event(next, view, scale, |wev| {
-                                    handler.window_event(&loop_ctx, id, wev);
-                                });
-                            }
-                        }
-                    }
-
-                    if next_type == 10 || next_type == 11 {
-                        let flags = msg_send!(next, c"modifierFlags"; -> usize);
-                        if (flags & (1 << 20)) != 0 {
-                            msg_send!(app, c"sendEvent:", next => Id);
-                        }
-                    } else {
-                        msg_send!(app, c"sendEvent:", next => Id);
-                    }
-                    msg_send!(app, c"updateWindows");
-                }
+                until = std::ptr::null_mut();
+                dispatch_event(app, event, &mut handler, &loop_ctx);
             }
 
             msg_send!(pool, c"drain");

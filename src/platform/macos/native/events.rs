@@ -6,13 +6,34 @@ use crate::platform::gui::{ButtonState, MouseButton, PhysicalPosition, ScrollDel
 use crate::platform::input::{Key, KeyCode, KeyInput, KeyLocation, Mods, NamedKey, PhysicalKey};
 use crate::platform::macos::objc::*;
 
-/// Process an `NSEvent`, converting it to one or more `WindowEvent`s and invoking `emit`.
+/// Where `event` happened, in the coordinates of `view` (flipped: (0, 0) is its
+/// top-left corner), so it lines up with the terminal grid, tab bar and scrollbars.
 ///
-/// Mouse positions are converted from window coordinates into view coordinates
-/// (`LittyView` is flipped, placing (0, 0) at the top-left corner), ensuring
-/// pixel-perfect alignment with the terminal grid, tab bar, and scrollbars.
+/// An event without a window (the pointer was over no window of ours when it was
+/// generated) carries screen coordinates in `locationInWindow`; it is first moved
+/// into `win`, the window it is being delivered to.
+unsafe fn location_in_view(event: Id, win: Id, view: Id) -> NSPoint {
+    unsafe {
+        let mut loc = msg_send!(event, c"locationInWindow"; -> NSPoint);
+        if view.is_null() {
+            return loc;
+        }
+        let event_window = msg_send!(event, c"window"; -> Id);
+        if event_window.is_null() && !win.is_null() {
+            loc = msg_send!(win, c"convertPointFromScreen:", loc => NSPoint; -> NSPoint);
+        }
+        msg_send!(view, c"convertPoint:fromView:", loc => NSPoint, std::ptr::null_mut::<c_void>() => Id; -> NSPoint)
+    }
+}
+
+/// Process a pointer or modifier `NSEvent` delivered to `win`, converting it to
+/// one or more `WindowEvent`s and invoking `emit`.
+///
+/// Key events are not handled here: they go through AppKit to `LittyView`, which
+/// runs them through the input method first (see `view.rs`).
 pub unsafe fn process_ns_event<F: FnMut(WindowEvent)>(
     event: Id,
+    win: Id,
     view: Id,
     scale: f64,
     mut emit: F,
@@ -22,12 +43,7 @@ pub unsafe fn process_ns_event<F: FnMut(WindowEvent)>(
         match event_type {
             // NSLeftMouseDown = 1, NSRightMouseDown = 3, NSOtherMouseDown = 25
             1 | 3 | 25 => {
-                let loc = msg_send!(event, c"locationInWindow"; -> NSPoint);
-                let pt = if !view.is_null() {
-                    msg_send!(view, c"convertPoint:fromView:", loc => NSPoint, std::ptr::null_mut::<c_void>() => Id; -> NSPoint)
-                } else {
-                    loc
-                };
+                let pt = location_in_view(event, win, view);
                 let pos = PhysicalPosition::new(pt.x * scale, pt.y * scale);
                 emit(WindowEvent::CursorMoved(pos));
 
@@ -40,12 +56,7 @@ pub unsafe fn process_ns_event<F: FnMut(WindowEvent)>(
             }
             // NSLeftMouseUp = 2, NSRightMouseUp = 4, NSOtherMouseUp = 26
             2 | 4 | 26 => {
-                let loc = msg_send!(event, c"locationInWindow"; -> NSPoint);
-                let pt = if !view.is_null() {
-                    msg_send!(view, c"convertPoint:fromView:", loc => NSPoint, std::ptr::null_mut::<c_void>() => Id; -> NSPoint)
-                } else {
-                    loc
-                };
+                let pt = location_in_view(event, win, view);
                 let pos = PhysicalPosition::new(pt.x * scale, pt.y * scale);
                 emit(WindowEvent::CursorMoved(pos));
 
@@ -58,23 +69,13 @@ pub unsafe fn process_ns_event<F: FnMut(WindowEvent)>(
             }
             // NSMouseMoved = 5, NSLeftMouseDragged = 6, NSRightMouseDragged = 7, NSOtherMouseDragged = 27
             5 | 6 | 7 | 27 => {
-                let loc = msg_send!(event, c"locationInWindow"; -> NSPoint);
-                let pt = if !view.is_null() {
-                    msg_send!(view, c"convertPoint:fromView:", loc => NSPoint, std::ptr::null_mut::<c_void>() => Id; -> NSPoint)
-                } else {
-                    loc
-                };
+                let pt = location_in_view(event, win, view);
                 let pos = PhysicalPosition::new(pt.x * scale, pt.y * scale);
                 emit(WindowEvent::CursorMoved(pos));
             }
             // NSScrollWheel = 22
             22 => {
-                let loc = msg_send!(event, c"locationInWindow"; -> NSPoint);
-                let pt = if !view.is_null() {
-                    msg_send!(view, c"convertPoint:fromView:", loc => NSPoint, std::ptr::null_mut::<c_void>() => Id; -> NSPoint)
-                } else {
-                    loc
-                };
+                let pt = location_in_view(event, win, view);
                 let pos = PhysicalPosition::new(pt.x * scale, pt.y * scale);
                 emit(WindowEvent::CursorMoved(pos));
 
@@ -86,12 +87,6 @@ pub unsafe fn process_ns_event<F: FnMut(WindowEvent)>(
                     ScrollDelta::Lines { y: dy as f32 }
                 };
                 emit(WindowEvent::MouseWheel { delta, phase: TouchPhase::Moved });
-            }
-            // NSKeyDown = 10, NSKeyUp = 11
-            10 | 11 => {
-                let pressed = event_type == 10;
-                let key_input = convert_key_event(event, pressed);
-                emit(WindowEvent::Key(key_input));
             }
             // NSFlagsChanged = 12
             12 => {
@@ -108,11 +103,54 @@ pub unsafe fn process_ns_event<F: FnMut(WindowEvent)>(
 pub unsafe fn convert_ns_event(event: Id, _id: WindowId, scale: f64) -> Option<WindowEvent> {
     let mut result = None;
     unsafe {
-        process_ns_event(event, std::ptr::null_mut(), scale, |ev| {
+        process_ns_event(event, std::ptr::null_mut(), std::ptr::null_mut(), scale, |ev| {
             result = Some(ev);
         });
     }
     result
+}
+
+/// `NSEventModifierFlagCommand`.
+pub(super) const MODIFIER_COMMAND: usize = 1 << 20;
+
+/// What a key press becomes once the input method has seen it.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum KeyDownOutcome {
+    /// An ordinary key: deliver it as `WindowEvent::Key`.
+    Key,
+    /// The input method replaced the key with other text, without composing.
+    Commit(String),
+    /// The input method used the key (composition started, went on or was committed).
+    Nothing,
+}
+
+/// Decide what a key press turns into after `interpretKeyEvents:`.
+///
+/// `composing_before` / `composing_after`: whether there was marked (preedit) text
+/// before and after the input method handled the key. `inserted`: text inserted
+/// while nothing was being composed. `characters`: the key event's own text.
+/// `command`: the input method asked for an editing command (`insertNewline:`,
+/// `deleteBackward:`, `moveLeft:` ...), meaning the key is not text.
+pub(super) fn key_down_outcome(
+    composing_before: bool,
+    composing_after: bool,
+    inserted: Option<String>,
+    characters: Option<&str>,
+    command: bool,
+) -> KeyDownOutcome {
+    if composing_after {
+        return KeyDownOutcome::Nothing;
+    }
+    if composing_before {
+        // The composition was committed (or cancelled) by this key; its text
+        // already went out as `Ime::Commit`. A key the input method passes on
+        // after committing (Enter in some layouts) still reaches the terminal.
+        return if command { KeyDownOutcome::Key } else { KeyDownOutcome::Nothing };
+    }
+    match inserted {
+        Some(text) if Some(text.as_str()) != characters => KeyDownOutcome::Commit(text),
+        _ => KeyDownOutcome::Key,
+    }
 }
 
 pub fn convert_modifier_flags(flags: usize) -> Mods {
@@ -128,7 +166,7 @@ pub fn convert_modifier_flags(flags: usize) -> Mods {
     }
 }
 
-unsafe fn convert_key_event(event: Id, pressed: bool) -> KeyInput {
+pub(super) unsafe fn convert_key_event(event: Id, pressed: bool) -> KeyInput {
     unsafe {
         let key_code = msg_send!(event, c"keyCode"; -> u16);
         let is_repeat = if pressed {
@@ -251,6 +289,38 @@ unsafe fn convert_key_event(event: Id, pressed: bool) -> KeyInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plain_key_is_delivered_as_a_key() {
+        assert_eq!(key_down_outcome(false, false, Some("a".into()), Some("a"), false), KeyDownOutcome::Key);
+        assert_eq!(key_down_outcome(false, false, None, Some("\r"), true), KeyDownOutcome::Key, "Enter: insertNewline:");
+        assert_eq!(key_down_outcome(false, false, None, Some("\u{f702}"), true), KeyDownOutcome::Key, "arrow: moveLeft:");
+        assert_eq!(key_down_outcome(false, false, None, None, false), KeyDownOutcome::Key, "nothing asked for");
+    }
+
+    #[test]
+    fn a_key_used_by_the_input_method_is_not_delivered() {
+        // Telex: "a" starts a composition, "a" again turns it into "â".
+        assert_eq!(key_down_outcome(false, true, None, Some("a"), false), KeyDownOutcome::Nothing);
+        assert_eq!(key_down_outcome(true, true, None, Some("a"), false), KeyDownOutcome::Nothing);
+        // Space commits "â" (sent as `Ime::Commit` by `insertText:`).
+        assert_eq!(key_down_outcome(true, false, None, Some(" "), false), KeyDownOutcome::Nothing);
+        // Backspace removing the last composed letter.
+        assert_eq!(key_down_outcome(true, false, None, Some("\u{7f}"), false), KeyDownOutcome::Nothing);
+    }
+
+    #[test]
+    fn a_command_after_a_commit_still_reaches_the_terminal() {
+        assert_eq!(key_down_outcome(true, false, None, Some("\r"), true), KeyDownOutcome::Key);
+    }
+
+    #[test]
+    fn text_replaced_without_composing_is_committed() {
+        assert_eq!(
+            key_down_outcome(false, false, Some("ê".into()), Some("e"), false),
+            KeyDownOutcome::Commit("ê".into())
+        );
+    }
 
     #[test]
     fn test_convert_modifier_flags() {

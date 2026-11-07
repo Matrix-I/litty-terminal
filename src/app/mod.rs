@@ -117,10 +117,16 @@ impl App {
                 Ok(s) => {
                     // A drag still in progress moves the new window with the pointer.
                     let id = s.window.id();
-                    self.windows.push(s);
-                    if let Some(drag) = self.window_mut(from).and_then(|origin| origin.pointer.tab_drag.as_mut()) {
-                        drag.follow(id);
+                    s.window.request_redraw();
+                    let dragging = self.window_mut(from)
+                        .and_then(|origin| origin.pointer.tab_drag.as_mut())
+                        .map(|drag| { drag.follow(id); true })
+                        .unwrap_or(false);
+                    if !dragging {
+                        s.window.focus_window();
+                        platform::activate_app();
                     }
+                    self.windows.push(s);
                 }
                 Err(e) => {
                     eprintln!("litty: failed to open window for the dragged tab: {e}");
@@ -221,6 +227,9 @@ impl App {
         for holder in holders {
             if let Some(h) = self.window_mut(holder) {
                 end_tab_drag(h);
+                h.window.focus_window();
+                platform::activate_app();
+                h.window.request_redraw();
             }
         }
     }
