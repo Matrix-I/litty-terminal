@@ -253,13 +253,18 @@ impl App {
                 }
             }
             if btn_state == ButtonState::Released {
+                let follower = s.pointer.tab_drag.as_ref().and_then(|drag| drag.follower());
                 if let Some(holder) = s.pointer.drag_holder.take() {
                     s.requests.drag_release = Some(holder);
                     return;
                 }
                 // The tab must still be marked as dragged to be torn off.
                 let torn_off = tear_off_if_dragged_out(s);
-                if end_tab_drag(s) || torn_off {
+                let ended = end_tab_drag(s);
+                if let Some(target) = follower {
+                    s.requests.drag_release = Some(target);
+                }
+                if ended || torn_off {
                     return;
                 }
             }
