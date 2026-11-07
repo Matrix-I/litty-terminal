@@ -7,7 +7,7 @@ use crate::{ai, config, mouse, scroll};
 use crate::platform;
 use crate::{HoveredPaneLink, Tab};
 
-use winit::keyboard::{ModifiersState, PhysicalKey};
+use crate::input::PhysicalKey;
 use winit::window::{CursorIcon, Window};
 
 use super::history_ui::HistorySearch;
@@ -26,7 +26,7 @@ pub(super) struct State {
     pub(super) pane_rects: Vec<PaneRect>,
     pub(super) render_panes: Vec<renderer::RenderPane>,
     pub(super) active: usize,
-    pub(super) mods: ModifiersState,
+    pub(super) mods: crate::keymap::Mods,
     pub(super) font_pt: f32,
     pub(super) pointer: PointerState,
     /// Last desktop notification shown, to rate-limit OSC 9 / 777 floods.

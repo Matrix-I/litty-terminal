@@ -63,7 +63,7 @@ impl App {
             }
 
             WindowEvent::ModifiersChanged(m) => {
-                s.mods = m.state();
+                s.mods = super::winit_input::mods(m.state());
                 update_hovered_link(s);
             }
 
@@ -88,7 +88,8 @@ impl App {
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed && s.renderer.set_bell_border(false) {
+                let event = super::winit_input::key_input(&event);
+                if event.pressed && s.renderer.set_bell_border(false) {
                     s.window.request_redraw();
                 }
                 if s.ime.preedit.is_empty() {
@@ -348,9 +349,9 @@ impl App {
                     return;
                 }
                 #[cfg(target_os = "macos")]
-                let cmd_pressed = s.mods.super_key();
+                let cmd_pressed = s.mods.sup;
                 #[cfg(not(target_os = "macos"))]
-                let cmd_pressed = s.mods.control_key() || s.mods.super_key();
+                let cmd_pressed = s.mods.ctrl || s.mods.sup;
 
                 if cmd_pressed
                     && let Some((pane_id, url, is_path)) = s.pointer.hovered_link.as_ref().map(|l| (l.pane_id, l.link.url.clone(), l.link.is_path)) {
@@ -406,7 +407,7 @@ impl App {
 
                         // Shift+Click extends the pane's selection to the mouse;
                         // dragging on keeps moving its end.
-                        let extended = s.mods.shift_key()
+                        let extended = s.mods.shift
                             && tab.pane(clicked_id).is_some_and(|p| p.grid.lock().extend_selection(pane_row, pane_col));
                         s.pointer.extend_drag = extended;
                         if extended {
@@ -540,7 +541,7 @@ impl App {
         if precise && !s.history_search.is_open && !s.search.is_open && !s.inspector.shown
             && let Some(pane) = s.tabs[s.active].pane(target_id) {
                 let mut g = pane.grid.lock();
-                let local = g.modes.mouse_tracking == grid::MouseTracking::Off || s.mods.shift_key() || s.mods.super_key();
+                let local = g.modes.mouse_tracking == grid::MouseTracking::Off || s.mods.shift || s.mods.sup;
                 if local && !g.alt_active {
                     let changed = g.scroll_pixels(amount, unit);
                     drop(g);

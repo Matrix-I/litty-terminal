@@ -72,7 +72,7 @@ pub(super) fn pane_cell_at_mouse(s: &State) -> Option<(u64, usize, usize)> {
 /// Shift bypasses reporting, as in other terminals; Cmd/Super stays free for links.
 pub(super) fn report_mouse(s: &mut State, button: mouse::Button, action: mouse::Action) -> bool {
     use crate::terminal::grid::MouseTracking;
-    if s.mods.shift_key() || s.mods.super_key() {
+    if s.mods.shift || s.mods.sup {
         return false;
     }
     let Some((pane_id, row, col)) = pane_cell_at_mouse(s) else { return false };
@@ -105,7 +105,7 @@ pub(super) fn report_mouse(s: &mut State, button: mouse::Button, action: mouse::
         }
     };
     if wanted {
-        let mods = mouse::Mods { shift: false, alt: s.mods.alt_key(), ctrl: s.mods.control_key() };
+        let mods = mouse::Mods { shift: false, alt: s.mods.alt, ctrl: s.mods.ctrl };
         if let Some((bytes, len)) = mouse::encode(button, action, mods, row, col, sgr || pixels) {
             write_pty(pane, &bytes[..len]);
         }
@@ -175,9 +175,9 @@ pub(super) fn matches_cached_hover_candidate(
 
 pub(super) fn update_hovered_link(s: &mut State) {
     #[cfg(target_os = "macos")]
-    let cmd_pressed = s.mods.super_key();
+    let cmd_pressed = s.mods.sup;
     #[cfg(not(target_os = "macos"))]
-    let cmd_pressed = s.mods.control_key() || s.mods.super_key();
+    let cmd_pressed = s.mods.ctrl || s.mods.sup;
 
     if !cmd_pressed && s.pointer.hovered_link.is_none() {
         return;
