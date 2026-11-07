@@ -108,6 +108,11 @@ impl Regex {
 
     /// Find the first match in `text` starting at or after `pos`.
     pub fn find_at<'t>(&self, text: &'t str, pos: usize) -> Option<Match<'t>> {
+        self.find_at_with(text, pos, &mut None)
+    }
+
+    /// `find_at` reusing `scratch`, which is filled on first use by an NFA program.
+    fn find_at_with<'t>(&self, text: &'t str, pos: usize, scratch: &mut Option<Scratch>) -> Option<Match<'t>> {
         if pos > text.len() {
             return None;
         }
@@ -129,7 +134,7 @@ impl Regex {
                     end: start + needle.len(),
                 })
             }
-            Engine::Nfa(prog) => prog.find_at(text, pos),
+            Engine::Nfa(prog) => prog.find_at(text, pos, scratch.get_or_insert_with(|| Scratch::new(prog.insts.len()))),
         }
     }
 
@@ -140,6 +145,7 @@ impl Regex {
             text,
             last_end: 0,
             last_match_end: None,
+            scratch: None,
         }
     }
 }
@@ -149,6 +155,7 @@ pub struct Matches<'r, 't> {
     text: &'t str,
     last_end: usize,
     last_match_end: Option<usize>,
+    scratch: Option<Scratch>,
 }
 
 impl<'r, 't> Iterator for Matches<'r, 't> {
@@ -159,7 +166,7 @@ impl<'r, 't> Iterator for Matches<'r, 't> {
             if self.last_end > self.text.len() {
                 return None;
             }
-            let m = self.re.find_at(self.text, self.last_end)?;
+            let m = self.re.find_at_with(self.text, self.last_end, &mut self.scratch)?;
             if m.start == m.end {
                 // Empty match: advance by one UTF-8 character if it duplicates the end of the previous non-empty match.
                 if self.last_match_end == Some(m.end) {
@@ -393,18 +400,98 @@ struct Prog {
     /// Optional literal prefix byte to skip non-matching regions via SIMD.
     first_byte: Option<(u8, bool)>,
     anchored_start: bool,
+    /// Every path from `start` to `Match` is the same chain of consuming
+    /// instructions (no `Split`, `Jump` or `Assert`), so one pass decides a match.
+    linear: bool,
+}
+
+/// Per-scan NFA working memory, sized once for a program and reused across
+/// every `find_at` of that scan.
+struct Scratch {
+    curr: Vec<bool>,
+    next: Vec<bool>,
+    curr_list: Vec<usize>,
+    next_list: Vec<usize>,
+    /// Epsilon-closure work stack; each instruction is visited once and pushes
+    /// at most two successors, so `2 * n_insts + 1` never reallocates.
+    stack: Vec<usize>,
+}
+
+impl Scratch {
+    fn new(n_insts: usize) -> Self {
+        Scratch {
+            curr: vec![false; n_insts],
+            next: vec![false; n_insts],
+            curr_list: Vec::with_capacity(n_insts),
+            next_list: Vec::with_capacity(n_insts),
+            stack: Vec::with_capacity(2 * n_insts + 1),
+        }
+    }
+}
+
+/// `true` when following `next` links from `start` only meets consuming
+/// instructions until `Match`.
+fn is_linear(insts: &[Inst], start: usize) -> bool {
+    let mut pc = start;
+    for _ in 0..=insts.len() {
+        pc = match &insts[pc] {
+            Inst::Byte { next, .. } | Inst::Char { next, .. } | Inst::Any { next, .. } | Inst::Class { next, .. } => *next,
+            Inst::Match => return true,
+            Inst::Split { .. } | Inst::Jump { .. } | Inst::Assert { .. } => return false,
+        };
+    }
+    false
+}
+
+/// One consuming step shared by the NFA and the linear fast path: the next pc
+/// when `inst` accepts the character at `idx`.
+#[inline]
+fn step_inst(inst: &Inst, text: &str, idx: usize) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let b0 = bytes[idx];
+    let (ch, step) = if b0 < 0x80 {
+        (b0 as char, 1)
+    } else {
+        let c = text[idx..].chars().next().unwrap_or('\u{FFFD}');
+        (c, c.len_utf8())
+    };
+    let target = match inst {
+        Inst::Byte { b, ci, next } => {
+            let ok = if *ci { b0.eq_ignore_ascii_case(b) } else { b0 == *b };
+            if ok && step == 1 { Some(*next) } else { None }
+        }
+        Inst::Char { c, ci, next } => {
+            let ok = if *ci { ch.eq_ignore_ascii_case(c) } else { ch == *c };
+            if ok { Some(*next) } else { None }
+        }
+        Inst::Any { dot_all, next } => (*dot_all || ch != '\n').then_some(*next),
+        Inst::Class { items, negated, ci, next } => (eval_class(items, ch, *ci) != *negated).then_some(*next),
+        _ => None,
+    }?;
+    Some((target, step))
 }
 
 impl Prog {
-    fn find_at<'t>(&self, text: &'t str, start_pos: usize) -> Option<Match<'t>> {
-        let bytes = text.as_bytes();
-        let n_insts = self.insts.len();
-        let mut pos = start_pos;
+    /// End of the match that starts at `pos`, for a `linear` program.
+    fn match_linear(&self, text: &str, pos: usize) -> Option<usize> {
+        let (mut pc, mut idx) = (self.start, pos);
+        loop {
+            if matches!(self.insts[pc], Inst::Match) {
+                return Some(idx);
+            }
+            if idx >= text.len() {
+                return None;
+            }
+            let (next, step) = step_inst(&self.insts[pc], text, idx)?;
+            pc = next;
+            idx += step;
+        }
+    }
 
-        let mut curr = vec![false; n_insts];
-        let mut next = vec![false; n_insts];
-        let mut curr_list = Vec::with_capacity(n_insts);
-        let mut next_list = Vec::with_capacity(n_insts);
+    fn find_at<'t>(&self, text: &'t str, start_pos: usize, scratch: &mut Scratch) -> Option<Match<'t>> {
+        let bytes = text.as_bytes();
+        let Scratch { curr, next, curr_list, next_list, stack } = scratch;
+        let mut pos = start_pos;
 
         loop {
             if pos > bytes.len() {
@@ -434,63 +521,37 @@ impl Prog {
                 }
             }
 
+            if self.linear {
+                if let Some(end) = self.match_linear(text, pos) {
+                    return Some(Match { text, start: pos, end });
+                }
+                if pos >= bytes.len() {
+                    return None;
+                }
+                pos += text[pos..].chars().next().map_or(1, char::len_utf8);
+                continue;
+            }
+
             curr.fill(false);
             curr_list.clear();
             let mut best_end: Option<usize> = None;
 
-            if self.add_state(self.start, text, pos, &mut curr, &mut curr_list) {
+            if self.add_state(self.start, text, pos, curr, curr_list, stack) {
                 best_end = Some(pos);
             }
 
             let mut idx = pos;
             while idx < bytes.len() && !curr_list.is_empty() {
-                // Decode current character and its byte length.
-                let b0 = bytes[idx];
-                let (ch, step) = if b0 < 0x80 {
-                    (b0 as char, 1)
-                } else {
-                    let c = text[idx..].chars().next().unwrap_or('\u{FFFD}');
-                    (c, c.len_utf8())
-                };
+                let step = if bytes[idx] < 0x80 { 1 } else { text[idx..].chars().next().map_or(1, char::len_utf8) };
                 let next_idx = idx + step;
 
                 next.fill(false);
                 next_list.clear();
                 let mut matched_here = false;
 
-                for &pc in &curr_list {
-                    let target = match &self.insts[pc] {
-                        Inst::Byte { b, ci, next } => {
-                            let ok = if *ci {
-                                b0.eq_ignore_ascii_case(b)
-                            } else {
-                                b0 == *b
-                            };
-                            if ok && step == 1 { Some(*next) } else { None }
-                        }
-                        Inst::Char { c, ci, next } => {
-                            let ok = if *ci {
-                                ch.eq_ignore_ascii_case(c)
-                            } else {
-                                ch == *c
-                            };
-                            if ok { Some(*next) } else { None }
-                        }
-                        Inst::Any { dot_all, next } => {
-                            if *dot_all || ch != '\n' {
-                                Some(*next)
-                            } else {
-                                None
-                            }
-                        }
-                        Inst::Class { items, negated, ci, next } => {
-                            let hit = eval_class(items, ch, *ci);
-                            if hit != *negated { Some(*next) } else { None }
-                        }
-                        _ => None,
-                    };
-                    if let Some(t) = target
-                        && self.add_state(t, text, next_idx, &mut next, &mut next_list)
+                for &pc in curr_list.iter() {
+                    if let Some((target, _)) = step_inst(&self.insts[pc], text, idx)
+                        && self.add_state(target, text, next_idx, next, next_list, stack)
                     {
                         matched_here = true;
                     }
@@ -500,8 +561,8 @@ impl Prog {
                     best_end = Some(next_idx);
                 }
 
-                std::mem::swap(&mut curr, &mut next);
-                std::mem::swap(&mut curr_list, &mut next_list);
+                std::mem::swap(curr, next);
+                std::mem::swap(curr_list, next_list);
                 idx = next_idx;
             }
 
@@ -518,16 +579,12 @@ impl Prog {
     }
 
     /// Epsilon-closure from `pc` at byte offset `idx` in `text`. Returns `true` if `Inst::Match` is reached.
-    fn add_state(&self, pc: usize, text: &str, idx: usize, visited: &mut [bool], list: &mut Vec<usize>) -> bool {
-        let mut stack = [0usize; 64];
-        let mut sp = 0;
-        stack[sp] = pc;
-        sp += 1;
+    fn add_state(&self, pc: usize, text: &str, idx: usize, visited: &mut [bool], list: &mut Vec<usize>, stack: &mut Vec<usize>) -> bool {
+        stack.clear();
+        stack.push(pc);
         let mut reached_match = false;
 
-        while sp > 0 {
-            sp -= 1;
-            let cur = stack[sp];
+        while let Some(cur) = stack.pop() {
             if visited[cur] {
                 continue;
             }
@@ -536,23 +593,14 @@ impl Prog {
                 Inst::Match => {
                     reached_match = true;
                 }
-                Inst::Jump { target } => {
-                    if sp < stack.len() {
-                        stack[sp] = *target;
-                        sp += 1;
-                    }
-                }
+                Inst::Jump { target } => stack.push(*target),
                 Inst::Split { out1, out2 } => {
-                    if sp + 1 < stack.len() {
-                        stack[sp] = *out2;
-                        stack[sp + 1] = *out1;
-                        sp += 2;
-                    }
+                    stack.push(*out2);
+                    stack.push(*out1);
                 }
                 Inst::Assert { kind, next } => {
-                    if eval_assert(kind, text.as_bytes(), idx) && sp < stack.len() {
-                        stack[sp] = *next;
-                        sp += 1;
+                    if eval_assert(kind, text.as_bytes(), idx) {
+                        stack.push(*next);
                     }
                 }
                 _ => {
@@ -967,11 +1015,13 @@ impl Compiler {
         let anchored_start = matches!(ast, Ast::Assert(AssertKind::StartLine));
         let first_byte = extract_first_byte(&ast);
 
+        let linear = is_linear(&comp.insts, start_entry);
         Ok(Prog {
             insts: comp.insts,
             start: start_entry,
             first_byte,
             anchored_start,
+            linear,
         })
     }
 
@@ -1174,6 +1224,73 @@ mod tests {
         let re = Regex::new(r"^foo\b.*bar$").unwrap();
         assert!(re.find_at("foo_1 bar", 0).is_none());
         assert_eq!(re.find_at("foo 123 bar", 0).map(|m| m.as_str()), Some("foo 123 bar"));
+    }
+
+    #[test]
+    fn nfa_scan_allocates_once_not_per_match() {
+        let re = Regex::new(r"ERR_\d{4}").unwrap();
+        let text = "ERR_0001 ok ".repeat(500);
+        let mut count = 0;
+        let allocations = crate::test_alloc::allocations(|| count = re.find_iter(&text).count());
+        assert_eq!(count, 500);
+        // Scratch buffers are built once per scan, never once per match.
+        assert!(allocations <= 8, "{allocations} allocations for 500 matches");
+    }
+
+    #[test]
+    fn find_iter_matches_agree_with_find_at() {
+        let re = Regex::new(r"ERR_\d{2,4}|WARN_[A-Z]+").unwrap();
+        let text = "ok ERR_1 bad ERR_4200 and WARN_DISK! ERR_77 end";
+        let via_iter: Vec<_> = re.find_iter(text).map(|m| m.range()).collect();
+        let mut via_at = Vec::new();
+        let mut pos = 0;
+        while let Some(m) = re.find_at(text, pos) {
+            via_at.push(m.range());
+            pos = m.end();
+        }
+        assert_eq!(via_iter, via_at);
+        assert_eq!(via_iter.len(), 3);
+    }
+
+    fn all_matches(prog: &Prog, text: &str) -> Vec<(usize, usize)> {
+        let mut scratch = Scratch::new(prog.insts.len());
+        let (mut pos, mut out) = (0, Vec::new());
+        while let Some(m) = prog.find_at(text, pos, &mut scratch) {
+            out.push((m.start(), m.end()));
+            pos = if m.end() > m.start() { m.end() } else { m.end() + 1 };
+            if pos > text.len() {
+                break;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn linear_fast_path_agrees_with_the_full_nfa() {
+        let texts = [
+            "ERR_0001 ERR_12 ERR_1234 xERR_9999 ERR_ERR_0042",
+            "héllo wörld 日本語 ERR_5678 naïve",
+            "foo.bar fooXbar FOO.BAR foo\nbar",
+            "",
+            "ERR_",
+        ];
+        for (pattern, ci) in [(r"ERR_\d{4}", false), (r"foo.bar", true), (r"w.rld", false), (r"\w\w\s", false), (r"é.l", false)] {
+            let Engine::Nfa(prog) = Regex::with_options(pattern, ci, true).unwrap().engine else { continue };
+            assert!(prog.linear, "{pattern} should be linear");
+            let mut full = prog.clone();
+            full.linear = false;
+            for text in texts {
+                assert_eq!(all_matches(&prog, text), all_matches(&full, text), "{pattern:?} on {text:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn branching_programs_are_not_linear() {
+        for pattern in [r"ERR_\d{2,4}", r"a|b", r"^foo", r"a*b", r"x\b"] {
+            let Engine::Nfa(prog) = Regex::new(pattern).unwrap().engine else { panic!("{pattern}") };
+            assert!(!prog.linear, "{pattern}");
+        }
     }
 
     #[test]
