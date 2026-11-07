@@ -9,6 +9,27 @@ use super::device::{shared_pipelines, Device, Queue, VulkanCore};
 use super::ffi::*;
 use crate::render::backend::{SurfaceConfig, TextureFormat};
 
+/// Pixel size of every live swapchain framebuffer. A render pass only gets
+/// the framebuffer handle, and Vulkan needs its extent for the render area,
+/// viewport and scissor (all dynamic in our pipelines). A handful of entries
+/// at most, so a linear scan without allocation on the render path.
+static FB_EXTENTS: parking_lot::Mutex<Vec<(VkFramebuffer, u32, u32)>> = parking_lot::Mutex::new(Vec::new());
+
+fn register_framebuffer(fb: VkFramebuffer, width: u32, height: u32) {
+    let mut guard = FB_EXTENTS.lock();
+    guard.retain(|e| e.0 != fb);
+    guard.push((fb, width, height));
+}
+
+fn forget_framebuffer(fb: VkFramebuffer) {
+    FB_EXTENTS.lock().retain(|e| e.0 != fb);
+}
+
+/// Extent of a swapchain framebuffer, or `None` for an unknown handle.
+pub(super) fn framebuffer_extent(fb: VkFramebuffer) -> Option<(u32, u32)> {
+    FB_EXTENTS.lock().iter().find(|e| e.0 == fb).map(|e| (e.1, e.2))
+}
+
 pub struct Surface {
     vk: Option<Arc<VulkanCore>>,
     surface_khr: VkSurfaceKHR,
@@ -166,6 +187,7 @@ impl Surface {
         unsafe {
             (vk.lib.vkDeviceWaitIdle)(vk.device);
             for &fb in &self.framebuffers {
+                forget_framebuffer(fb);
                 (vk.lib.vkDestroyFramebuffer)(vk.device, fb, std::ptr::null());
             }
             self.framebuffers.clear();
@@ -305,6 +327,7 @@ impl Surface {
                 };
                 let mut fb = 0u64;
                 (vk.lib.vkCreateFramebuffer)(vk.device, &fb_info as *const _ as *const c_void, std::ptr::null(), &mut fb);
+                register_framebuffer(fb, self.width, self.height);
                 self.framebuffers.push(fb);
             }
         }
@@ -346,6 +369,7 @@ impl Surface {
         unsafe {
             (vk.lib.vkDeviceWaitIdle)(vk.device);
             for &fb in &self.framebuffers {
+                forget_framebuffer(fb);
                 (vk.lib.vkDestroyFramebuffer)(vk.device, fb, std::ptr::null());
             }
             self.framebuffers.clear();
@@ -358,5 +382,23 @@ impl Surface {
                 self.swapchain = 0;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn framebuffer_extent_tracks_register_and_forget() {
+        // Handles unlikely to collide with a real framebuffer in other tests.
+        let fb = 0xDEAD_0001;
+        assert_eq!(framebuffer_extent(fb), None);
+        register_framebuffer(fb, 968, 620);
+        assert_eq!(framebuffer_extent(fb), Some((968, 620)));
+        register_framebuffer(fb, 1200, 800);
+        assert_eq!(framebuffer_extent(fb), Some((1200, 800)));
+        forget_framebuffer(fb);
+        assert_eq!(framebuffer_extent(fb), None);
     }
 }
