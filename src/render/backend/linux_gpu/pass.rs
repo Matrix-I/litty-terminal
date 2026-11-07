@@ -59,6 +59,11 @@ impl CommandEncoder {
                         clear_value_count: u32,
                         p_clear_values: *const VkClearColorValue,
                     }
+                    if let Some((w, h)) = super::surface::framebuffer_extent(target_fb) {
+                        self.width = w;
+                        self.height = h;
+                    }
+                    let (width, height) = (self.width.max(1), self.height.max(1));
                     let [r, g, b, a] = clear_rgba.unwrap_or([0.0, 0.0, 0.0, 1.0]);
                     let cv = VkClearColorValue {
                         float32: [r as f32, g as f32, b as f32, a as f32],
@@ -71,12 +76,24 @@ impl CommandEncoder {
                         framebuffer: target_fb,
                         render_area: VkRect2D {
                             offset: VkOffset2D { x: 0, y: 0 },
-                            extent: VkExtent2D { width: self.width.max(1), height: self.height.max(1) },
+                            extent: VkExtent2D { width, height },
                         },
                         clear_value_count: 1,
                         p_clear_values: &cv,
                     };
                     (vk.lib.vkCmdBeginRenderPass)(vk.upload_cmd, &begin as *const _ as *const c_void, 0);
+                    // Viewport and scissor are dynamic state: without them
+                    // nothing outside the render area's first pixel is drawn.
+                    let viewport = VkViewport {
+                        x: 0.0,
+                        y: 0.0,
+                        width: width as f32,
+                        height: height as f32,
+                        min_depth: 0.0,
+                        max_depth: 1.0,
+                    };
+                    (vk.lib.vkCmdSetViewport)(vk.upload_cmd, 0, 1, &viewport);
+                    (vk.lib.vkCmdSetScissor)(vk.upload_cmd, 0, 1, &begin.render_area);
                 }
             }
         }
