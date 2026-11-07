@@ -9,7 +9,9 @@ use winit::application::ApplicationHandler;
 use winit::dpi as wdpi;
 use winit::event as ww_event;
 use winit::event::{KeyEvent, StartCause};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
+#[cfg(not(target_os = "macos"))]
+use winit::event_loop::EventLoop;
 use winit::keyboard::{
     Key as WKey, KeyCode as WKeyCode, KeyLocation as WKeyLocation, ModifiersState,
     NamedKey as WNamedKey, PhysicalKey as WPhysicalKey,
@@ -22,6 +24,18 @@ use super::input::{Key, KeyCode, KeyInput, KeyLocation, Mods, NamedKey, Physical
 /// Stable identity of a window for the lifetime of the process.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct WindowId(u64);
+
+impl WindowId {
+    #[allow(dead_code)]
+    pub const fn from_raw(id: u64) -> Self {
+        WindowId(id)
+    }
+
+    #[allow(dead_code)]
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
 
 impl From<ww::WindowId> for WindowId {
     fn from(id: ww::WindowId) -> Self {
@@ -299,187 +313,365 @@ pub enum RawHandle {
     Xcb { connection: *mut c_void, window: u32 },
 }
 
+pub enum EventProxyInner<T: 'static> {
+    Winit(winit::event_loop::EventLoopProxy<T>),
+    #[cfg(target_os = "macos")]
+    Native(std::sync::mpsc::Sender<T>),
+}
+
 /// Posts events from any thread to the thread that runs the event loop.
-pub struct EventProxy<T: 'static>(winit::event_loop::EventLoopProxy<T>);
+pub struct EventProxy<T: 'static>(pub(crate) EventProxyInner<T>);
 
 impl<T: 'static> EventProxy<T> {
     pub fn new(proxy: winit::event_loop::EventLoopProxy<T>) -> Self {
-        EventProxy(proxy)
+        EventProxy(EventProxyInner::Winit(proxy))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn from_native(sender: std::sync::mpsc::Sender<T>) -> Self {
+        EventProxy(EventProxyInner::Native(sender))
     }
 
     /// Fails only once the event loop has exited, when nobody is left to handle `event`.
     pub fn send_event(&self, event: T) -> Result<(), T> {
-        self.0.send_event(event).map_err(|e| e.0)
+        match &self.0 {
+            EventProxyInner::Winit(proxy) => proxy.send_event(event).map_err(|e| e.0),
+            #[cfg(target_os = "macos")]
+            EventProxyInner::Native(sender) => {
+                let res = sender.send(event).map_err(|e| e.0);
+                crate::platform::macos::native::app::wakeup_main_loop();
+                res
+            }
+        }
     }
 }
 
 impl<T: 'static> Clone for EventProxy<T> {
     fn clone(&self) -> Self {
-        EventProxy(self.0.clone())
+        EventProxy(match &self.0 {
+            EventProxyInner::Winit(p) => EventProxyInner::Winit(p.clone()),
+            #[cfg(target_os = "macos")]
+            EventProxyInner::Native(s) => EventProxyInner::Native(s.clone()),
+        })
     }
 }
 
-pub struct Window(ww::Window);
+pub enum WindowInner {
+    Winit(ww::Window),
+    #[cfg(target_os = "macos")]
+    Native(crate::platform::macos::native::window::NativeWindow),
+}
+
+pub struct Window(pub WindowInner);
 
 impl Window {
     fn from_winit(window: ww::Window) -> Self {
-        Window(window)
+        Window(WindowInner::Winit(window))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn from_native(window: crate::platform::macos::native::window::NativeWindow) -> Self {
+        Window(WindowInner::Native(window))
     }
 
     /// Escape hatch for backend-specific code that has no equivalent yet (macOS native tabs).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) fn winit(&self) -> &ww::Window {
-        &self.0
+        match &self.0 {
+            WindowInner::Winit(w) => w,
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(_) => panic!("winit requested on native window"),
+        }
     }
 
     pub fn id(&self) -> WindowId {
-        self.0.id().into()
+        match &self.0 {
+            WindowInner::Winit(w) => w.id().into(),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.id(),
+        }
     }
 
     pub fn request_redraw(&self) {
-        self.0.request_redraw();
+        match &self.0 {
+            WindowInner::Winit(w) => w.request_redraw(),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.request_redraw(),
+        }
     }
 
     pub fn scale_factor(&self) -> f64 {
-        self.0.scale_factor()
+        match &self.0 {
+            WindowInner::Winit(w) => w.scale_factor(),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.scale_factor(),
+        }
     }
 
     pub fn inner_size(&self) -> PhysicalSize<u32> {
-        let s = self.0.inner_size();
-        PhysicalSize::new(s.width, s.height)
+        match &self.0 {
+            WindowInner::Winit(w) => {
+                let s = w.inner_size();
+                PhysicalSize::new(s.width, s.height)
+            }
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.inner_size(),
+        }
     }
 
     pub fn request_inner_size(&self, size: PhysicalSize<u32>) {
-        let _ = self.0.request_inner_size(wdpi::PhysicalSize::new(size.width, size.height));
+        match &self.0 {
+            WindowInner::Winit(w) => {
+                let _ = w.request_inner_size(wdpi::PhysicalSize::new(size.width, size.height));
+            }
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(_) => {}
+        }
     }
 
     pub fn inner_position(&self) -> Result<PhysicalPosition<i32>, Unsupported> {
-        let p = self.0.inner_position().map_err(|_| Unsupported)?;
-        Ok(PhysicalPosition::new(p.x, p.y))
+        match &self.0 {
+            WindowInner::Winit(w) => {
+                let p = w.inner_position().map_err(|_| Unsupported)?;
+                Ok(PhysicalPosition::new(p.x, p.y))
+            }
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.outer_position(),
+        }
     }
 
     pub fn outer_position(&self) -> Result<PhysicalPosition<i32>, Unsupported> {
-        let p = self.0.outer_position().map_err(|_| Unsupported)?;
-        Ok(PhysicalPosition::new(p.x, p.y))
+        match &self.0 {
+            WindowInner::Winit(w) => {
+                let p = w.outer_position().map_err(|_| Unsupported)?;
+                Ok(PhysicalPosition::new(p.x, p.y))
+            }
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.outer_position(),
+        }
     }
 
     pub fn set_outer_position(&self, position: PhysicalPosition<i32>) {
-        self.0.set_outer_position(wdpi::PhysicalPosition::new(position.x, position.y));
+        match &self.0 {
+            WindowInner::Winit(w) => {
+                w.set_outer_position(wdpi::PhysicalPosition::new(position.x, position.y));
+            }
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => {
+                w.set_outer_position(LogicalPosition::new(position.x as f64, position.y as f64));
+            }
+        }
     }
 
     pub fn set_outer_position_logical(&self, position: LogicalPosition<f64>) {
-        self.0.set_outer_position(wdpi::LogicalPosition::new(position.x, position.y));
+        match &self.0 {
+            WindowInner::Winit(w) => {
+                w.set_outer_position(wdpi::LogicalPosition::new(position.x, position.y));
+            }
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => {
+                w.set_outer_position(position);
+            }
+        }
     }
 
     pub fn set_visible(&self, visible: bool) {
-        self.0.set_visible(visible);
+        match &self.0 {
+            WindowInner::Winit(w) => w.set_visible(visible),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => {
+                if visible {
+                    w.focus_window();
+                }
+            }
+        }
     }
 
     pub fn is_visible(&self) -> Option<bool> {
-        self.0.is_visible()
+        match &self.0 {
+            WindowInner::Winit(w) => w.is_visible(),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(_) => Some(true),
+        }
     }
 
     pub fn is_minimized(&self) -> Option<bool> {
-        self.0.is_minimized()
+        match &self.0 {
+            WindowInner::Winit(w) => w.is_minimized(),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.is_minimized(),
+        }
     }
 
     pub fn set_minimized(&self, minimized: bool) {
-        self.0.set_minimized(minimized);
+        match &self.0 {
+            WindowInner::Winit(w) => w.set_minimized(minimized),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.set_minimized(minimized),
+        }
     }
 
     pub fn is_maximized(&self) -> bool {
-        self.0.is_maximized()
+        match &self.0 {
+            WindowInner::Winit(w) => w.is_maximized(),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.is_maximized(),
+        }
     }
 
     pub fn set_maximized(&self, maximized: bool) {
-        self.0.set_maximized(maximized);
+        match &self.0 {
+            WindowInner::Winit(w) => w.set_maximized(maximized),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.set_maximized(maximized),
+        }
     }
 
     pub fn is_fullscreen(&self) -> bool {
-        self.0.fullscreen().is_some()
+        match &self.0 {
+            WindowInner::Winit(w) => w.fullscreen().is_some(),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.is_fullscreen(),
+        }
     }
 
     pub fn set_title(&self, title: &str) {
-        self.0.set_title(title);
+        match &self.0 {
+            WindowInner::Winit(w) => w.set_title(title),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.set_title(title),
+        }
     }
 
     pub fn focus_window(&self) {
-        self.0.focus_window();
+        match &self.0 {
+            WindowInner::Winit(w) => w.focus_window(),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.focus_window(),
+        }
     }
 
     pub fn set_cursor(&self, icon: CursorIcon) {
-        self.0.set_cursor(ww::CursorIcon::from(icon));
+        match &self.0 {
+            WindowInner::Winit(w) => w.set_cursor(ww::CursorIcon::from(icon)),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.set_cursor(icon),
+        }
     }
 
     pub fn set_cursor_visible(&self, visible: bool) {
-        self.0.set_cursor_visible(visible);
+        match &self.0 {
+            WindowInner::Winit(w) => w.set_cursor_visible(visible),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.set_cursor_visible(visible),
+        }
     }
 
     pub fn theme(&self) -> Option<Theme> {
-        self.0.theme().map(Theme::from)
+        match &self.0 {
+            WindowInner::Winit(w) => w.theme().map(Theme::from),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.theme(),
+        }
     }
 
     pub fn set_ime_allowed(&self, allowed: bool) {
-        self.0.set_ime_allowed(allowed);
+        match &self.0 {
+            WindowInner::Winit(w) => w.set_ime_allowed(allowed),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.set_ime_allowed(allowed),
+        }
     }
 
     pub fn set_ime_cursor_area(&self, position: PhysicalPosition<f64>, size: PhysicalSize<f64>) {
-        self.0.set_ime_cursor_area(
-            wdpi::PhysicalPosition::new(position.x, position.y),
-            wdpi::PhysicalSize::new(size.width, size.height),
-        );
+        match &self.0 {
+            WindowInner::Winit(w) => {
+                w.set_ime_cursor_area(
+                    wdpi::PhysicalPosition::new(position.x, position.y),
+                    wdpi::PhysicalSize::new(size.width, size.height),
+                );
+            }
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.set_ime_cursor_area(position, size),
+        }
     }
 
     pub fn request_attention(&self, requested: bool) {
-        self.0.request_user_attention(requested.then_some(ww::UserAttentionType::Informational));
+        match &self.0 {
+            WindowInner::Winit(w) => {
+                w.request_user_attention(requested.then_some(ww::UserAttentionType::Informational));
+            }
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.request_attention(requested),
+        }
     }
 
     pub fn drag_window(&self) -> Result<(), Unsupported> {
-        self.0.drag_window().map_err(|_| Unsupported)
+        match &self.0 {
+            WindowInner::Winit(w) => w.drag_window().map_err(|_| Unsupported),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.drag_window(),
+        }
     }
 
     pub fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), Unsupported> {
-        self.0.drag_resize_window(direction.into()).map_err(|_| Unsupported)
+        match &self.0 {
+            WindowInner::Winit(w) => w.drag_resize_window(direction.into()).map_err(|_| Unsupported),
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.drag_resize_window(direction),
+        }
     }
 
     pub fn current_monitor(&self) -> Option<Monitor> {
-        let m = self.0.current_monitor()?;
-        let (p, s) = (m.position(), m.size());
-        Some(Monitor {
-            position: PhysicalPosition::new(p.x, p.y),
-            size: PhysicalSize::new(s.width, s.height),
-            refresh_rate_millihertz: m.refresh_rate_millihertz(),
-        })
+        match &self.0 {
+            WindowInner::Winit(w) => {
+                let m = w.current_monitor()?;
+                let (p, s) = (m.position(), m.size());
+                Some(Monitor {
+                    position: PhysicalPosition::new(p.x, p.y),
+                    size: PhysicalSize::new(s.width, s.height),
+                    refresh_rate_millihertz: m.refresh_rate_millihertz(),
+                })
+            }
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.current_monitor(),
+        }
     }
 
-    /// The native view or surface handles, `None` for an unsupported window system.
     pub fn raw_handle(&self) -> Option<RawHandle> {
-        use winit::raw_window_handle::{
-            HasDisplayHandle, HasWindowHandle, RawDisplayHandle as D, RawWindowHandle as W,
-        };
-        let window = self.0.window_handle().ok()?.as_raw();
-        let display = self.0.display_handle().ok()?.as_raw();
-        let null = std::ptr::null_mut();
-        Some(match (window, display) {
-            (W::AppKit(w), _) => RawHandle::AppKit { ns_view: w.ns_view.as_ptr() },
-            (W::Wayland(w), D::Wayland(d)) => {
-                RawHandle::Wayland { display: d.display.as_ptr(), surface: w.surface.as_ptr() }
+        match &self.0 {
+            WindowInner::Winit(w) => {
+                use winit::raw_window_handle::{
+                    HasDisplayHandle, HasWindowHandle, RawDisplayHandle as D, RawWindowHandle as W,
+                };
+                let window = w.window_handle().ok()?.as_raw();
+                let display = w.display_handle().ok()?.as_raw();
+                let null = std::ptr::null_mut();
+                Some(match (window, display) {
+                    (W::AppKit(w), _) => RawHandle::AppKit { ns_view: w.ns_view.as_ptr() },
+                    (W::Wayland(w), D::Wayland(d)) => {
+                        RawHandle::Wayland { display: d.display.as_ptr(), surface: w.surface.as_ptr() }
+                    }
+                    (W::Xlib(w), D::Xlib(d)) => RawHandle::Xlib {
+                        display: d.display.map_or(null, |p| p.as_ptr()),
+                        window: w.window,
+                    },
+                    (W::Xcb(w), D::Xcb(d)) => RawHandle::Xcb {
+                        connection: d.connection.map_or(null, |p| p.as_ptr()),
+                        window: w.window.get(),
+                    },
+                    _ => return None,
+                })
             }
-            (W::Xlib(w), D::Xlib(d)) => RawHandle::Xlib {
-                display: d.display.map_or(null, |p| p.as_ptr()),
-                window: w.window,
-            },
-            (W::Xcb(w), D::Xcb(d)) => RawHandle::Xcb {
-                connection: d.connection.map_or(null, |p| p.as_ptr()),
-                window: w.window.get(),
-            },
-            _ => return None,
-        })
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.raw_handle(),
+        }
     }
 }
 
 // ---- Events -----------------------------------------------------------------
 
+#[allow(dead_code)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum MouseButton {
     Left,
@@ -501,6 +693,7 @@ pub enum ScrollDelta {
     Pixels(PhysicalPosition<f64>),
 }
 
+#[allow(dead_code)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum TouchPhase {
     Started,
@@ -510,6 +703,7 @@ pub enum TouchPhase {
 }
 
 /// Composed text input (Vietnamese Telex/VNI, CJK).
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ime {
     Enabled,
@@ -518,6 +712,7 @@ pub enum Ime {
     Disabled,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum WindowEvent {
     CloseRequested,
@@ -536,6 +731,7 @@ pub enum WindowEvent {
     RedrawRequested,
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn convert_event(event: ww_event::WindowEvent) -> Option<WindowEvent> {
     use ww_event::WindowEvent as E;
     Some(match event {
@@ -584,6 +780,7 @@ fn convert_event(event: ww_event::WindowEvent) -> Option<WindowEvent> {
     })
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn convert_mods(state: ModifiersState) -> Mods {
     Mods {
         ctrl: state.control_key(),
@@ -593,6 +790,7 @@ fn convert_mods(state: ModifiersState) -> Mods {
     }
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn convert_key_event(ev: &KeyEvent) -> KeyInput {
     KeyInput {
         logical: convert_key(&ev.logical_key),
@@ -605,6 +803,7 @@ fn convert_key_event(ev: &KeyEvent) -> KeyInput {
     }
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn convert_key(k: &WKey) -> Key {
     match k {
         WKey::Character(c) => Key::Character(c.to_string()),
@@ -613,6 +812,7 @@ fn convert_key(k: &WKey) -> Key {
     }
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn named(k: WNamedKey) -> Option<NamedKey> {
     Some(match k {
         WNamedKey::Enter => NamedKey::Enter,
@@ -679,6 +879,7 @@ fn named(k: WNamedKey) -> Option<NamedKey> {
     })
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn physical(k: WPhysicalKey) -> PhysicalKey {
     match k {
         WPhysicalKey::Code(c) => PhysicalKey::Code(code(c)),
@@ -688,6 +889,7 @@ fn physical(k: WPhysicalKey) -> PhysicalKey {
     }
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn code(c: WKeyCode) -> KeyCode {
     match c {
         WKeyCode::KeyA => KeyCode::KeyA,
@@ -743,6 +945,7 @@ fn code(c: WKeyCode) -> KeyCode {
     }
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn location(l: WKeyLocation) -> KeyLocation {
     match l {
         WKeyLocation::Standard => KeyLocation::Standard,
@@ -773,50 +976,85 @@ pub struct WindowSpec {
     pub position: Option<LogicalPosition<f64>>,
 }
 
-/// The running event loop, as seen from a handler callback.
-pub struct LoopCtx<'a>(&'a ActiveEventLoop);
+pub enum LoopCtxInner<'a> {
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    Winit(&'a ActiveEventLoop),
+    #[cfg(target_os = "macos")]
+    Native(&'a crate::platform::macos::native::app::NativeLoopCtx),
+}
 
-impl LoopCtx<'_> {
+/// The running event loop, as seen from a handler callback.
+pub struct LoopCtx<'a>(pub(crate) LoopCtxInner<'a>);
+
+impl<'a> LoopCtx<'a> {
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub fn from_winit(w: &'a ActiveEventLoop) -> Self {
+        LoopCtx(LoopCtxInner::Winit(w))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn from_native(n: &'a crate::platform::macos::native::app::NativeLoopCtx) -> Self {
+        LoopCtx(LoopCtxInner::Native(n))
+    }
+
     pub fn exit(&self) {
-        self.0.exit();
+        match &self.0 {
+            LoopCtxInner::Winit(w) => w.exit(),
+            #[cfg(target_os = "macos")]
+            LoopCtxInner::Native(n) => n.exit(),
+        }
     }
 
     pub fn set_flow(&self, flow: Flow) {
-        self.0.set_control_flow(match flow {
-            Flow::Wait => ControlFlow::Wait,
-            Flow::Poll => ControlFlow::Poll,
-            Flow::WaitUntil(t) => ControlFlow::WaitUntil(t),
-        });
+        match &self.0 {
+            LoopCtxInner::Winit(w) => {
+                w.set_control_flow(match flow {
+                    Flow::Wait => ControlFlow::Wait,
+                    Flow::Poll => ControlFlow::Poll,
+                    Flow::WaitUntil(t) => ControlFlow::WaitUntil(t),
+                });
+            }
+            #[cfg(target_os = "macos")]
+            LoopCtxInner::Native(n) => n.set_flow(flow),
+        }
     }
 
     pub fn create_window(&self, spec: &WindowSpec) -> std::io::Result<Window> {
-        let attrs = ww::Window::default_attributes()
-            .with_title(spec.title)
-            .with_decorations(spec.decorations)
-            .with_window_level(if spec.always_on_top { ww::WindowLevel::AlwaysOnTop } else { ww::WindowLevel::Normal })
-            .with_visible(spec.visible)
-            .with_transparent(spec.transparent)
-            .with_inner_size(wdpi::LogicalSize::new(spec.inner_size.width, spec.inner_size.height));
-        let attrs = match spec.position {
-            Some(p) => attrs.with_position(wdpi::LogicalPosition::new(p.x, p.y)),
-            None => attrs,
-        };
-        // Wayland app_id / X11 WM_CLASS must match `litty.desktop` and the
-        // hicolor icon name, or the shell shows a generic icon.
-        #[cfg(target_os = "linux")]
-        let attrs = {
-            use winit::platform::wayland::WindowAttributesExtWayland;
-            attrs.with_name("litty", "litty")
-        };
-        // Native tabs group under one identifier. Created hidden so AppKit
-        // cannot merge a New Window into a tab of the focused one before
-        // tabbing is turned off for it; the caller shows it afterwards.
-        #[cfg(target_os = "macos")]
-        let attrs = {
-            use winit::platform::macos::WindowAttributesExtMacOS;
-            attrs.with_tabbing_identifier("litty").with_visible(false)
-        };
-        self.0.create_window(attrs).map(Window::from_winit).map_err(std::io::Error::other)
+        match &self.0 {
+            LoopCtxInner::Winit(w) => {
+                let attrs = ww::Window::default_attributes()
+                    .with_title(spec.title)
+                    .with_decorations(spec.decorations)
+                    .with_window_level(if spec.always_on_top { ww::WindowLevel::AlwaysOnTop } else { ww::WindowLevel::Normal })
+                    .with_visible(spec.visible)
+                    .with_transparent(spec.transparent)
+                    .with_inner_size(wdpi::LogicalSize::new(spec.inner_size.width, spec.inner_size.height));
+                let attrs = match spec.position {
+                    Some(p) => attrs.with_position(wdpi::LogicalPosition::new(p.x, p.y)),
+                    None => attrs,
+                };
+                // Wayland app_id / X11 WM_CLASS must match `litty.desktop` and the
+                // hicolor icon name, or the shell shows a generic icon.
+                #[cfg(target_os = "linux")]
+                let attrs = {
+                    use winit::platform::wayland::WindowAttributesExtWayland;
+                    attrs.with_name("litty", "litty")
+                };
+                // Native tabs group under one identifier. Created hidden so AppKit
+                // cannot merge a New Window into a tab of the focused one before
+                // tabbing is turned off for it; the caller shows it afterwards.
+                #[cfg(target_os = "macos")]
+                let attrs = {
+                    use winit::platform::macos::WindowAttributesExtMacOS;
+                    attrs.with_tabbing_identifier("litty").with_visible(false)
+                };
+                w.create_window(attrs).map(Window::from_winit).map_err(std::io::Error::other)
+            }
+            #[cfg(target_os = "macos")]
+            LoopCtxInner::Native(_) => {
+                crate::platform::macos::native::window::NativeWindow::create(spec).map(Window::from_native)
+            }
+        }
     }
 }
 
@@ -830,6 +1068,7 @@ pub trait EventHandler<T: 'static> {
     fn about_to_wait(&mut self, ctx: &LoopCtx);
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 struct Driver<H>(H);
 
 impl<T: 'static, H: EventHandler<T>> ApplicationHandler<T> for Driver<H> {
@@ -838,31 +1077,38 @@ impl<T: 'static, H: EventHandler<T>> ApplicationHandler<T> for Driver<H> {
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        self.0.resumed(&LoopCtx(event_loop));
+        self.0.resumed(&LoopCtx::from_winit(event_loop));
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: T) {
-        self.0.user_event(&LoopCtx(event_loop), event);
+        self.0.user_event(&LoopCtx::from_winit(event_loop), event);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: ww::WindowId, event: ww_event::WindowEvent) {
         if let Some(event) = convert_event(event) {
-            self.0.window_event(&LoopCtx(event_loop), id.into(), event);
+            self.0.window_event(&LoopCtx::from_winit(event_loop), id.into(), event);
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        self.0.about_to_wait(&LoopCtx(event_loop));
+        self.0.about_to_wait(&LoopCtx::from_winit(event_loop));
     }
 }
 
 /// Run the event loop until the handler exits it. `make` receives the proxy
 /// other threads use to post events.
 pub fn run<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T>) -> H) {
-    let event_loop = EventLoop::<T>::with_user_event().build().expect("event loop");
-    event_loop.set_control_flow(ControlFlow::Wait);
-    let mut driver = Driver(make(EventProxy::new(event_loop.create_proxy())));
-    event_loop.run_app(&mut driver).expect("run app");
+    #[cfg(target_os = "macos")]
+    {
+        crate::platform::macos::native::app::run_native(make);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let event_loop = EventLoop::<T>::with_user_event().build().expect("event loop");
+        event_loop.set_control_flow(ControlFlow::Wait);
+        let mut driver = Driver(make(EventProxy::new(event_loop.create_proxy())));
+        event_loop.run_app(&mut driver).expect("run app");
+    }
 }
 
 #[cfg(test)]

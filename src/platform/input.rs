@@ -23,6 +23,7 @@ pub enum Key {
 }
 
 /// Non-text keys the terminal acts on.
+#[allow(dead_code)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum NamedKey {
     Enter,
@@ -88,6 +89,7 @@ pub enum NamedKey {
 }
 
 /// Where a key sits on the keyboard, independent of the layout.
+#[allow(dead_code)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum KeyCode {
     KeyA,
@@ -145,6 +147,7 @@ pub enum KeyCode {
 }
 
 /// A physical key, or the backend's scancode when the key has no `KeyCode`.
+#[allow(dead_code)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum PhysicalKey {
     Code(KeyCode),
@@ -161,6 +164,7 @@ impl PhysicalKey {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum KeyLocation {
     Standard,

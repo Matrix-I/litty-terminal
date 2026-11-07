@@ -9,7 +9,7 @@ pub(crate) mod process;
 mod types;
 
 #[cfg(target_os = "macos")]
-mod macos;
+pub(crate) mod macos;
 #[cfg(target_os = "macos")]
 use macos as imp;
 
