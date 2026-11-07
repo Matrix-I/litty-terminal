@@ -23,6 +23,8 @@ pub(super) fn open_fresh_tab(
     s: &mut State,
     waker: &Waker,
 ) {
+    s.occluded = false;
+    s.focused = true;
     let sz = s.window.inner_size();
     s.renderer.resize(sz.width, sz.height);
     let (cols, rows) = s.renderer.grid_size_for_tabs(s.bands_for(s.tabs.len() + 1));

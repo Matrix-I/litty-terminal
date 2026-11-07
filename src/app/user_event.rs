@@ -95,6 +95,8 @@ impl App {
         // Bring the windows back; with none left, reopen the hidden one.
         let visible = self.windows.iter().position(|s| !s.tabs.is_empty());
         if let Some(s) = self.windows.get_mut(visible.unwrap_or(0)) {
+            s.occluded = false;
+            s.focused = true;
             if s.tabs.is_empty() {
                 open_fresh_tab(s, &self.waker);
             } else {

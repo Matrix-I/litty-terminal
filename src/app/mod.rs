@@ -269,6 +269,9 @@ impl App {
                         let step = (28.0 * scale).round() as i32;
                         s.window.set_outer_position(PhysicalPosition::new(pos.x + step, pos.y + step));
                     }
+                    s.window.focus_window();
+                    platform::activate_app();
+                    s.window.request_redraw();
                     self.drop_tabless_windows();
                     self.windows.push(s);
                 }
