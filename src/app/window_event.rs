@@ -86,6 +86,14 @@ impl App {
             }
 
             WindowEvent::Key(event) => {
+                if s.occluded {
+                    s.occluded = false;
+                    let sz = s.window.inner_size();
+                    if sz.width > 0 && sz.height > 0 {
+                        s.renderer.resize(sz.width, sz.height);
+                    }
+                    s.renderer.invalidate();
+                }
                 if event.pressed && s.renderer.set_bell_border(false) {
                     s.window.request_redraw();
                 }
@@ -588,6 +596,7 @@ impl App {
         let holds_forwarded_drag = self.windows.iter().any(|w| w.pointer.drag_holder == Some(id));
         let Some(s) = self.window_mut(id) else { return };
         if !focused {
+            s.ime.preedit.clear();
             // The new window of a torn-off tab takes focus, but the button is still
             // down here and this window keeps receiving the drag.
             if !holds_forwarded_drag && !s.pointer.tab_drag.as_ref().is_some_and(|drag| drag.is_detached()) {
@@ -596,25 +605,21 @@ impl App {
             s.pointer.wheel_scroll.reset();
         }
         let was_focused = std::mem::replace(&mut s.focused, focused);
-        if focused && s.occluded {
+        if focused {
             s.occluded = false;
             let sz = s.window.inner_size();
             if sz.width > 0 && sz.height > 0 {
                 s.renderer.resize(sz.width, sz.height);
             }
             s.renderer.invalidate();
-        }
-        if focused {
             s.renderer.set_bell_border(false);
+            s.quick_autohide_at = None;
+            platform::set_secure_input_menu_state(s.secure_input);
         }
-        // Secure input is system-wide; release it while another app is in front.
         if s.secure_input {
             platform::set_secure_input(focused);
         }
-        if focused {
-            s.quick_autohide_at = None;
-            platform::set_secure_input_menu_state(s.secure_input);
-        } else if was_focused && s.quick && s.config.quick_terminal_autohide {
+        if !focused && was_focused && s.quick && s.config.quick_terminal_autohide {
             // A passive X11 keyboard grab emits FocusOut/FocusIn even
             // while the panel remains the active application window.
             s.quick_autohide_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(50));

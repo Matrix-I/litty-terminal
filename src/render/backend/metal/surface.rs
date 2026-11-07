@@ -67,9 +67,10 @@ impl Surface {
     pub fn configure(&mut self, _device: &Device, config: &SurfaceConfig) {
         unsafe {
             let layer = self.layer.as_ptr();
-            // Re-attach layer to ns_view if `shrink_drawables` previously detached it.
             let current_layer = msg_send!(self.ns_view, c"layer"; -> Id);
-            if current_layer != layer {
+            let superlayer = msg_send!(layer, c"superlayer"; -> Id);
+            if current_layer != layer || superlayer.is_null() {
+                msg_send!(self.ns_view, c"setLayer:", std::ptr::null_mut::<std::ffi::c_void>() => Id);
                 msg_send!(self.ns_view, c"setWantsLayer:", true => bool);
                 msg_send!(self.ns_view, c"setLayer:", layer => Id);
             }
@@ -87,7 +88,9 @@ impl Surface {
         unsafe {
             let layer = self.layer.as_ptr();
             let current_layer = msg_send!(self.ns_view, c"layer"; -> Id);
-            if current_layer != layer {
+            let superlayer = msg_send!(layer, c"superlayer"; -> Id);
+            if current_layer != layer || superlayer.is_null() {
+                msg_send!(self.ns_view, c"setLayer:", std::ptr::null_mut::<std::ffi::c_void>() => Id);
                 msg_send!(self.ns_view, c"setWantsLayer:", true => bool);
                 msg_send!(self.ns_view, c"setLayer:", layer => Id);
             }
@@ -109,7 +112,7 @@ impl Surface {
         }
     }
 
-    /// Shrink swapchain drawables to 1×1, flush the pool, and detach the layer when idle/hidden/closed
+    /// Shrink swapchain drawables to 1×1 and flush the pool when idle/hidden/closed
     /// so macOS releases the ~30MB Retina IOSurface backing buffers immediately.
     pub fn shrink_drawables(&mut self, device: &Device, queue: &Queue) {
         let cfg = SurfaceConfig {
@@ -119,17 +122,13 @@ impl Surface {
             transparent: true,
         };
         self.configure(device, &cfg);
-        unsafe {
-            for _ in 0..2 {
-                let Some(frame) = self.acquire_frame() else { break };
-                let mut cmd = CommandEncoder::new(queue);
-                {
-                    let _pass = cmd.begin_render_pass(frame.texture_ptr(), Some([0.0, 0.0, 0.0, 0.0]));
-                }
-                cmd.present_and_submit_wait(frame);
+        for _ in 0..2 {
+            let Some(frame) = self.acquire_frame() else { break };
+            let mut cmd = CommandEncoder::new(queue);
+            {
+                let _pass = cmd.begin_render_pass(frame.texture_ptr(), Some([0.0, 0.0, 0.0, 0.0]));
             }
-            // Detach layer from superlayer so CoreAnimation drops cached IOSurfaces while hidden/closed.
-            msg_send!(self.layer.as_ptr(), c"removeFromSuperlayer");
+            cmd.present_and_submit_wait(frame);
         }
     }
 }
