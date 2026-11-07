@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 
 use crate::platform::gui::{EventHandler, EventProxy, Flow, LoopCtx, WindowEvent, WindowId};
 use crate::platform::macos::objc::*;
-use super::events::convert_ns_event;
+use super::events::process_ns_event;
 use super::view::{ensure_litty_view_class, set_event_callback};
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -212,9 +212,9 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
                         if tag != 0 {
                             let id = WindowId::from_raw(tag as u64);
                             let scale = msg_send!(win, c"backingScaleFactor"; -> f64);
-                            if let Some(wev) = convert_ns_event(event, id, scale) {
+                            process_ns_event(event, view, scale, |wev| {
                                 handler.window_event(&loop_ctx, id, wev);
-                            }
+                            });
                         }
                     }
                 }
@@ -258,9 +258,9 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
                             if tag != 0 {
                                 let id = WindowId::from_raw(tag as u64);
                                 let scale = msg_send!(win, c"backingScaleFactor"; -> f64);
-                                if let Some(wev) = convert_ns_event(next, id, scale) {
+                                process_ns_event(next, view, scale, |wev| {
                                     handler.window_event(&loop_ctx, id, wev);
-                                }
+                                });
                             }
                         }
                     }
