@@ -1,4 +1,4 @@
-//! `custom-shader`: Ghostty / Shadertoy-style GLSL post-processing passes.
+//! `custom-shader`: Ghostty / Shadertoy-style post-processing passes.
 //!
 //! The cell pass renders into an offscreen texture instead of the window; each
 //! shader then runs as a full-screen pass that samples the previous result as
@@ -9,12 +9,15 @@
 //! Animation (`iTime`) means a redraw per frame; it only runs while a shader
 //! uses `iTime` / `iFrame` and `custom-shader-animation` allows it.
 
+use std::collections::HashSet;
 use std::path::Path;
 
-/// Uniforms every pass sees (std140, matches `PRELUDE`).
+use crate::render::backend::{CommandEncoder, Device, ObjPtr, Queue, Texture, TextureFormat};
+
+/// Uniforms every pass sees (64 bytes, matches `MSL_PRELUDE`).
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
-struct Globals {
+pub struct Globals {
     resolution: [f32; 4],
     mouse: [f32; 4],
     date: [f32; 4],
@@ -27,68 +30,234 @@ struct Globals {
 
 const _: () = assert!(std::mem::size_of::<Globals>() == 64);
 
-/// Declarations Shadertoy shaders expect, then the user's code, then `main`.
-const PRELUDE: &str = "#version 450
-layout(set = 0, binding = 0, std140) uniform LittyGlobals {
-    vec4 _litty_resolution;
-    vec4 iMouse;
-    vec4 iDate;
+const MSL_PRELUDE: &str = r#"#include <metal_stdlib>
+using namespace metal;
+
+typedef float2 vec2;
+typedef float3 vec3;
+typedef float4 vec4;
+typedef int2 ivec2;
+typedef int3 ivec3;
+typedef int4 ivec4;
+typedef uint2 uvec2;
+typedef uint3 uvec3;
+typedef uint4 uvec4;
+typedef float2x2 mat2;
+typedef float3x3 mat3;
+typedef float4x4 mat4;
+
+struct LittyGlobals {
+    float4 _litty_resolution;
+    float4 iMouse;
+    float4 iDate;
     float iTime;
     float iTimeDelta;
     int iFrame;
     uint _litty_to_screen;
 };
-layout(set = 0, binding = 1) uniform texture2D _litty_tex;
-layout(set = 0, binding = 2) uniform sampler _litty_smp;
-#define iResolution (_litty_resolution.xyz)
-#define iChannel0 sampler2D(_litty_tex, _litty_smp)
-#define iChannelResolution (vec3[4](_litty_resolution.xyz, vec3(0.0), vec3(0.0), vec3(0.0)))
-layout(location = 0) out vec4 _litty_out;
-#line 1
-";
 
-const MAIN: &str = "
-void main() {
-    vec2 fc = gl_FragCoord.xy;
-    // Texture rows are stored bottom first; only the window wants top first.
-    if (_litty_to_screen != 0u) {
-        fc.y = _litty_resolution.y - fc.y;
-    }
-    vec4 color = vec4(0.0);
-    mainImage(color, fc);
-    _litty_out = color;
+struct LittyChannel {
+    texture2d<float> tex;
+    sampler smp;
+};
+
+static inline float4 texture(LittyChannel ch, float2 uv) {
+    return ch.tex.sample(ch.smp, uv);
 }
-";
 
-const VERTEX: &str = "
-@vertex
-fn main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-    // One triangle covering the whole target.
-    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
-    return vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0);
+static inline float4 textureLod(LittyChannel ch, float2 uv, float lod) {
+    return ch.tex.sample(ch.smp, uv, level(lod));
 }
-";
 
-/// Full GLSL source for one user shader.
+struct PostFxVsOut {
+    float4 pos [[position]];
+};
+
+vertex PostFxVsOut vs_postfx(uint i [[vertex_id]]) {
+    float2 p = float2(float((i << 1u) & 2u), float(i & 2u));
+    PostFxVsOut out;
+    out.pos = float4(p * 2.0f - 1.0f, 0.0f, 1.0f);
+    return out;
+}
+"#;
+
+/// Wrap a user Shadertoy GLSL snippet into a self-contained MSL shader source,
+/// preserving the user snippet between markers for zero-dependency validation.
 fn wrap(user: &str) -> String {
-    let mut src = String::with_capacity(PRELUDE.len() + user.len() + MAIN.len());
-    src.push_str(PRELUDE);
-    src.push_str(user);
-    src.push_str(MAIN);
-    src
+    // Transform `out vec4 name` / `in vec2 name` parameter qualifiers for MSL compatibility.
+    let msl_body = user
+        .replace("out vec4 ", "thread vec4& ")
+        .replace("inout vec4 ", "thread vec4& ")
+        .replace("in vec2 ", "vec2 ");
+
+    // Inject Shadertoy uniform bindings into `mainImage` scope via macros.
+    format!(
+        "{MSL_PRELUDE}
+/*__LITTY_USER_START__*/
+{user}
+/*__LITTY_USER_END__*/
+#define iResolution (_litty_g._litty_resolution.xyz)
+#define iTime (_litty_g.iTime)
+#define iTimeDelta (_litty_g.iTimeDelta)
+#define iFrame (_litty_g.iFrame)
+#define iMouse (_litty_g.iMouse)
+#define iDate (_litty_g.iDate)
+
+static LittyGlobals _litty_unused_globals = {{}};
+"
+    ) + &msl_body.replace(
+        "void mainImage(",
+        "static inline void _litty_user_mainImage(constant LittyGlobals& _litty_g, LittyChannel iChannel0, ",
+    ) + r#"
+fragment float4 fs_postfx(
+    PostFxVsOut v [[stage_in]],
+    constant LittyGlobals& _litty_g [[buffer(0)]],
+    texture2d<float> _litty_tex [[texture(0)]],
+    sampler _litty_smp [[sampler(0)]]
+) {
+    float2 fc = v.pos.xy;
+    if (_litty_g._litty_to_screen != 0u) {
+        fc.y = _litty_g._litty_resolution.y - fc.y;
+    }
+    float4 color = float4(0.0f);
+    LittyChannel ch = { _litty_tex, _litty_smp };
+    _litty_user_mainImage(_litty_g, ch, color, fc);
+    return color;
+}
+"#
 }
 
-/// Parse and validate a wrapped shader, so a broken file is reported (and
-/// skipped) instead of failing inside wgpu.
+/// Validate a wrapped Shadertoy shader without linking `naga`.
+/// Checks balanced braces/parens, `mainImage` entrypoint presence, and Undeclared identifiers.
 fn check(src: &str) -> Result<(), String> {
-    use wgpu::naga;
-    let mut frontend = naga::front::glsl::Frontend::default();
-    let options = naga::front::glsl::Options::from(naga::ShaderStage::Fragment);
-    let module = frontend.parse(&options, src).map_err(|e| e.emit_to_string(src))?;
-    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
-        .validate(&module)
-        .map(|_| ())
-        .map_err(|e| format!("{e:?}"))
+    let user = src
+        .split_once("/*__LITTY_USER_START__*/")
+        .and_then(|(_, rest)| rest.split_once("/*__LITTY_USER_END__*/"))
+        .map_or(src, |(u, _)| u);
+
+    if !user.contains("mainImage") {
+        return Err("missing `mainImage` entry point".to_string());
+    }
+
+    let mut braces = 0i32;
+    let mut parens = 0i32;
+    for ch in user.chars() {
+        match ch {
+            '{' => braces += 1,
+            '}' => {
+                braces -= 1;
+                if braces < 0 {
+                    return Err("unmatched `}`".to_string());
+                }
+            }
+            '(' => parens += 1,
+            ')' => {
+                parens -= 1;
+                if parens < 0 {
+                    return Err("unmatched `)`".to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    if braces != 0 || parens != 0 {
+        return Err("unbalanced braces or parentheses".to_string());
+    }
+
+    let mut known: HashSet<&str> = [
+        // Types & qualifiers
+        "void", "bool", "int", "uint", "float", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4",
+        "uvec2", "uvec3", "uvec4", "bvec2", "bvec3", "bvec4", "mat2", "mat3", "mat4", "in", "out",
+        "inout", "const", "struct", "return", "if", "else", "for", "while", "do", "break",
+        "continue", "discard", "true", "false", "precision", "highp", "mediump", "lowp",
+        // Shadertoy uniforms & entry point
+        "mainImage", "iResolution", "iTime", "iTimeDelta", "iFrame", "iMouse", "iDate",
+        "iChannel0", "iChannel1", "iChannel2", "iChannel3", "iChannelResolution", "gl_FragCoord",
+        // GLSL built-in functions
+        "texture", "textureLod", "texelFetch", "textureSize", "sin", "cos", "tan", "asin", "acos",
+        "atan", "sinh", "cosh", "tanh", "pow", "exp", "log", "exp2", "log2", "sqrt", "inversesqrt",
+        "abs", "sign", "floor", "trunc", "round", "ceil", "fract", "mod", "min", "max", "clamp",
+        "mix", "step", "smoothstep", "length", "distance", "dot", "cross", "normalize", "faceforward",
+        "reflect", "refract", "matrixCompMult", "lessThan", "lessThanEqual", "greaterThan",
+        "greaterThanEqual", "equal", "notEqual", "any", "all", "not", "dFdx", "dFdy", "fwidth",
+        "radians", "degrees",
+    ]
+    .into_iter()
+    .collect();
+
+    // Collect identifiers declared after a type name or `#define`.
+    let tokens: Vec<(usize, &str)> = scan_ident_tokens(user);
+    for (idx, (_, tok)) in tokens.iter().enumerate() {
+        if matches!(
+            *tok,
+            "void" | "bool" | "int" | "uint" | "float" | "vec2" | "vec3" | "vec4"
+                | "ivec2" | "ivec3" | "ivec4" | "uvec2" | "uvec3" | "uvec4"
+                | "mat2" | "mat3" | "mat4" | "struct"
+        ) && let Some((_, next)) = tokens.get(idx + 1)
+        {
+            known.insert(next);
+        }
+    }
+
+    // Verify all non-member identifiers are declared.
+    let bytes = user.as_bytes();
+    for (byte_pos, ident) in tokens {
+        // Skip swizzles / struct fields (`c.rgb`, `uv.y`).
+        if byte_pos > 0 && bytes[byte_pos - 1] == b'.' {
+            continue;
+        }
+        // Skip float exponent suffixes (`1e-3`, `2.0f`).
+        if byte_pos > 0 && (bytes[byte_pos - 1].is_ascii_digit() || bytes[byte_pos - 1] == b'.') {
+            continue;
+        }
+        if !known.contains(ident) {
+            return Err(format!("undeclared identifier `{ident}`"));
+        }
+    }
+
+    Ok(())
+}
+
+fn scan_ident_tokens(s: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Skip line comments
+        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // Skip block comments
+        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        // Skip preprocessor lines
+        if bytes[i] == b'#' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            out.push((start, &s[start..i]));
+        } else {
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Whether the shader changes over time.
@@ -124,16 +293,10 @@ fn display(path: &Path) -> String {
 }
 
 pub struct PostFx {
-    pipelines: Vec<wgpu::RenderPipeline>,
-    bgl: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
-    /// One uniform buffer per pass (`to_screen` differs).
-    uniforms: Vec<wgpu::Buffer>,
+    pipelines: Vec<ObjPtr>,
     /// Ping-pong targets; `targets[0]` receives the cell pass.
-    targets: Vec<wgpu::TextureView>,
-    /// Cached bind groups per pass, created alongside targets when size changes.
-    bind_groups: Vec<wgpu::BindGroup>,
-    format: wgpu::TextureFormat,
+    targets: Vec<Texture>,
+    format: TextureFormat,
     size: (u32, u32),
     start: std::time::Instant,
     last_frame: std::time::Instant,
@@ -143,111 +306,24 @@ pub struct PostFx {
 impl PostFx {
     /// Build the passes for already checked `sources` (see [`load`]); `None`
     /// when there are none.
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, sources: &[String]) -> Option<Self> {
+    pub fn new(device: &Device, format: TextureFormat, sources: &[String]) -> Option<Self> {
         if sources.is_empty() {
             return None;
         }
-        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("postfx"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("postfx"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
-        });
-        let vertex = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("postfx vertex"),
-            source: wgpu::ShaderSource::Wgsl(VERTEX.into()),
-        });
-        let pipelines = sources
-            .iter()
-            .map(|src| {
-                let fragment = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("custom-shader"),
-                    source: wgpu::ShaderSource::Glsl {
-                        shader: src.as_str().into(),
-                        stage: wgpu::naga::ShaderStage::Fragment,
-                        defines: Default::default(),
-                    },
-                });
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("custom-shader"),
-                    layout: Some(&layout),
-                    vertex: wgpu::VertexState {
-                        module: &vertex,
-                        entry_point: Some("main"),
-                        compilation_options: Default::default(),
-                        buffers: &[],
-                    },
-                    primitive: Default::default(),
-                    depth_stencil: None,
-                    multisample: Default::default(),
-                    fragment: Some(wgpu::FragmentState {
-                        module: &fragment,
-                        entry_point: Some("main"),
-                        compilation_options: Default::default(),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format,
-                            blend: None,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                    }),
-                    multiview: None,
-                    cache: None,
-                })
-            })
-            .collect::<Vec<_>>();
-        let uniforms = (0..pipelines.len())
-            .map(|_| {
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("postfx globals"),
-                    size: std::mem::size_of::<Globals>() as u64,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                })
-            })
-            .collect();
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
+        let mut pipelines = Vec::with_capacity(sources.len());
+        for src in sources {
+            match device.create_postfx_pipeline(src, format) {
+                Ok(p) => pipelines.push(p),
+                Err(e) => eprintln!("litty: custom-shader compile error: {e}"),
+            }
+        }
+        if pipelines.is_empty() {
+            return None;
+        }
         let now = std::time::Instant::now();
         Some(PostFx {
             pipelines,
-            bgl,
-            sampler,
-            uniforms,
             targets: Vec::new(),
-            bind_groups: Vec::new(),
             format,
             size: (0, 0),
             start: now,
@@ -256,61 +332,33 @@ impl PostFx {
         })
     }
 
-    /// Discard offscreen ping-pong render targets and cached bind groups to release VRAM when window shrinks.
+    /// Discard offscreen ping-pong render targets to release VRAM when window shrinks.
     pub fn shrink(&mut self) {
         self.targets.clear();
-        self.bind_groups.clear();
         self.size = (0, 0);
     }
 
     /// The texture the cell pass draws into, (re)created at the window size.
-    pub fn cell_target(&mut self, device: &wgpu::Device, width: u32, height: u32) -> &wgpu::TextureView {
-        // The last pass draws to the window, so N passes need N targets at most 2.
+    pub fn cell_target(&mut self, device: &Device, width: u32, height: u32) -> &Texture {
         let wanted = self.pipelines.len().min(2);
         if self.size != (width, height) || self.targets.len() != wanted {
             self.size = (width, height);
             self.targets = (0..wanted)
-                .map(|_| {
-                    let texture = device.create_texture(&wgpu::TextureDescriptor {
-                        label: Some("postfx target"),
-                        size: wgpu::Extent3d { width: width.max(1), height: height.max(1), depth_or_array_layers: 1 },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: self.format,
-                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                        view_formats: &[],
-                    });
-                    texture.create_view(&Default::default())
-                })
-                .collect();
-            self.bind_groups = (0..self.pipelines.len())
-                .map(|i| {
-                    let source = &self.targets[i % 2];
-                    device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("postfx"),
-                        layout: &self.bgl,
-                        entries: &[
-                            wgpu::BindGroupEntry { binding: 0, resource: self.uniforms[i].as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(source) },
-                            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                        ],
-                    })
-                })
+                .map(|_| Texture::new(device, width.max(1), height.max(1), self.format, true))
                 .collect();
         }
         &self.targets[0]
     }
 
-    /// Run every pass after the cell pass, ending on `screen`.
+    /// Run every pass after the cell pass, ending on `screen_target`.
     pub fn run(
         &mut self,
-        _device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        screen: &wgpu::TextureView,
+        device: &Device,
+        _queue: &Queue,
+        encoder: &mut CommandEncoder,
+        screen_target: crate::render::backend::SurfaceFrame,
         mouse: (f32, f32),
-    ) {
+    ) -> crate::render::backend::SurfaceFrame {
         let now = std::time::Instant::now();
         let (w, h) = self.size;
         let date = date_now();
@@ -326,26 +374,20 @@ impl PostFx {
         self.last_frame = now;
         self.frame = self.frame.wrapping_add(1);
 
+        let sampler = device.linear_sampler();
         let last = self.pipelines.len() - 1;
         for (i, pipeline) in self.pipelines.iter().enumerate() {
             globals.to_screen = (i == last) as u32;
-            queue.write_buffer(&self.uniforms[i], 0, bytemuck::bytes_of(&globals));
-            let dest = if i == last { screen } else { &self.targets[(i + 1) % 2] };
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("custom-shader"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: dest,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &self.bind_groups[i], &[]);
-            pass.draw(0..3, 0..1);
+            let dest_ptr = if i == last {
+                screen_target.texture_ptr()
+            } else {
+                self.targets[(i + 1) % 2].raw_ptr()
+            };
+            let source = &self.targets[i % 2];
+            let mut pass = encoder.begin_render_pass(dest_ptr, Some([0.0, 0.0, 0.0, 1.0]));
+            pass.draw_postfx(pipeline, &globals, source, sampler);
         }
+        screen_target
     }
 }
 

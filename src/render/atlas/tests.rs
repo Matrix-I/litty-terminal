@@ -163,13 +163,7 @@ fn loads_sfmono_nerd_font_successfully() {
 
 #[test]
 fn test_dynamic_atlas_growth_and_shaper_cap() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let Some(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) else {
-        return;
-    };
-    let Ok((device, queue)) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None)) else {
-        return;
-    };
+    let (device, queue) = crate::render::backend::shared_device_and_queue();
 
     let fonts = load_font(&[]);
     let mut atlas = Atlas::new(&device, &queue, fonts, 28.0);
