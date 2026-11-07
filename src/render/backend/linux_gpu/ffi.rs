@@ -10,13 +10,6 @@ pub type SamplerHandle = u64;
 #[derive(Clone, Default)]
 pub struct ObjPtr(pub u64);
 
-impl ObjPtr {
-    #[inline]
-    pub const fn as_ptr(&self) -> u64 {
-        self.0
-    }
-}
-
 pub(super) type VkFlags = u32;
 pub(super) type VkBool32 = u32;
 pub(super) type VkDeviceSize = u64;
@@ -277,7 +270,7 @@ pub(super) struct VkSurfaceCapabilitiesKHR {
 }
 
 /// Dynamically loaded Vulkan function table (`libvulkan.so.1`).
-#[allow(non_snake_case)]
+#[allow(non_snake_case, dead_code)]
 pub(super) struct VkLib {
     pub _handle: *mut c_void,
     pub vkGetInstanceProcAddr: unsafe extern "C" fn(VkInstance, *const c_char) -> *const c_void,

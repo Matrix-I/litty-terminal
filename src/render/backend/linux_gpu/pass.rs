@@ -141,6 +141,7 @@ impl CommandEncoder {
         }
     }
 
+    #[cfg(test)]
     pub fn submit_and_wait(self) {
         let Some(vk) = &self.vk else { return };
         unsafe {

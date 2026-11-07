@@ -63,6 +63,7 @@ pub(super) static SHARED_PIPES: parking_lot::Mutex<Option<(TextureFormat, Render
     parking_lot::const_mutex(None);
 
 impl VulkanCore {
+    #[allow(non_snake_case)]
     unsafe fn try_init() -> Option<Arc<Self>> {
         unsafe {
             let handle = libc::dlopen(c"libvulkan.so.1".as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);

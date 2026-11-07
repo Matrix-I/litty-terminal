@@ -17,17 +17,13 @@ vte = { version = "0.13", default-features = false }
 libc = "0.2"
 parking_lot = "0.12"
 bytemuck = { version = "1", features = ["derive", "extern_crate_alloc"] }
-pollster = "0.4"
 unicode-width = "0.1"
 unicode-normalization = "0.1"
 
-# Phase 5: only compile the one GPU backend each platform needs (no DX12 / GL / WebGPU).
 [target.'cfg(target_os = "macos")'.dependencies]
 mimalloc = { version = "0.1", default-features = false }
-wgpu = { version = "24", default-features = false, features = ["wgsl", "glsl", "metal"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-wgpu = { version = "24", default-features = false, features = ["wgsl", "glsl"] }
 # Already built for winit's X11 backend; used for the Quick Terminal key grab.
 x11rb = "0.13"
 # Wayland clipboard on the app's own connection (no wl-copy window flash on GNOME).
@@ -51,6 +47,3 @@ strip = true
 inherits = "release"
 lto = "thin"
 codegen-units = 16
-
-[patch.crates-io]
-block = { path = "patches/block" }
