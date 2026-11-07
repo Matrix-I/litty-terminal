@@ -29,8 +29,7 @@ use crate::terminal::grid;
 use crate::{config, mouse, scroll};
 use crate::platform;
 
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
-use crate::platform::gui::{PhysicalPosition, WindowId};
+use crate::platform::gui::{ButtonState, MouseButton, PhysicalPosition, ScrollDelta, Theme, TouchPhase, WindowEvent, WindowId};
 
 use crate::terminal::grid::Selection;
 use crate::paste::{history_insert_payload, paste_payload, shell_quote};
@@ -43,9 +42,9 @@ use super::csd::{update_corner_radius, begin_edge_resize, run_control, toggle_ma
 impl App {
     pub(super) fn handle_window_event(&mut self, id: WindowId, event: WindowEvent) {
         let event = match event {
-            WindowEvent::CursorMoved { position, .. } => return self.on_cursor_moved(id, position.into()),
-            WindowEvent::MouseInput { state: btn_state, button, .. } => return self.on_mouse_input(id, btn_state, button),
-            WindowEvent::MouseWheel { delta, phase, .. } => return self.on_mouse_wheel(id, delta, phase),
+            WindowEvent::CursorMoved(position) => return self.on_cursor_moved(id, position),
+            WindowEvent::MouseInput { state: btn_state, button } => return self.on_mouse_input(id, btn_state, button),
+            WindowEvent::MouseWheel { delta, phase } => return self.on_mouse_wheel(id, delta, phase),
             WindowEvent::Focused(focused) => return self.on_focused(id, focused),
             WindowEvent::RedrawRequested => return self.on_redraw_requested(id),
             other => other,
@@ -62,7 +61,7 @@ impl App {
             }
 
             WindowEvent::ModifiersChanged(m) => {
-                s.mods = super::winit_input::mods(m.state());
+                s.mods = m;
                 update_hovered_link(s);
             }
 
@@ -75,7 +74,7 @@ impl App {
                 }
             }
 
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+            WindowEvent::ScaleFactorChanged(scale_factor) => {
                 let px = (s.font_pt * scale_factor as f32).round();
                 s.renderer.set_font_px(px, scale_factor);
                 let sz = s.window.inner_size();
@@ -86,8 +85,7 @@ impl App {
                 s.window.request_redraw();
             }
 
-            WindowEvent::KeyboardInput { event, .. } => {
-                let event = super::winit_input::key_input(&event);
+            WindowEvent::Key(event) => {
                 if event.pressed && s.renderer.set_bell_border(false) {
                     s.window.request_redraw();
                 }
@@ -109,7 +107,7 @@ impl App {
             }
 
             WindowEvent::ThemeChanged(theme) => {
-                let dark = theme == winit::window::Theme::Dark;
+                let dark = theme == Theme::Dark;
                 if dark != grid::color_scheme_is_dark() {
                     grid::set_color_scheme_dark(dark);
                     apply_system_appearance(s);
@@ -224,7 +222,7 @@ impl App {
         }
     }
 
-    pub(super) fn on_mouse_input(&mut self, id: WindowId, btn_state: ElementState, button: MouseButton) {
+    pub(super) fn on_mouse_input(&mut self, id: WindowId, btn_state: ButtonState, button: MouseButton) {
         let waker = self.waker.clone();
         let Some(s) = self.window_mut(id) else { return };
         if s.tabs.is_empty() {
@@ -239,14 +237,14 @@ impl App {
         if button == MouseButton::Left {
             // A release that never arrived (the new window grabbed the pointer) must not
             // leave the torn-off window following the pointer: a new press ends that drag.
-            if btn_state == ElementState::Pressed {
+            if btn_state == ButtonState::Pressed {
                 if let Some(holder) = s.pointer.drag_holder.take() {
                     s.requests.drag_release = Some(holder);
                 } else if s.pointer.tab_drag.as_ref().is_some_and(|drag| drag.is_detached()) {
                     end_tab_drag(s);
                 }
             }
-            if btn_state == ElementState::Released {
+            if btn_state == ButtonState::Released {
                 if let Some(holder) = s.pointer.drag_holder.take() {
                     s.requests.drag_release = Some(holder);
                     return;
@@ -257,10 +255,10 @@ impl App {
                     return;
                 }
             }
-            if btn_state == ElementState::Released && s.pointer.scrollbar_drag.take().is_some() {
+            if btn_state == ButtonState::Released && s.pointer.scrollbar_drag.take().is_some() {
                 return;
             }
-            if btn_state == ElementState::Pressed && !s.history_search.is_open
+            if btn_state == ButtonState::Pressed && !s.history_search.is_open
                 && let Some(pane_id) = scrollbar_at_mouse(s) {
                     s.pointer.scrollbar_drag = Some(pane_id);
                     drag_scrollbar(s, pane_id);
@@ -268,17 +266,17 @@ impl App {
                 }
         }
         if let (Some(b), false) = (reported, s.history_search.is_open || s.pointer.selecting) {
-            let action = if btn_state == ElementState::Pressed { mouse::Action::Press } else { mouse::Action::Release };
+            let action = if btn_state == ButtonState::Pressed { mouse::Action::Press } else { mouse::Action::Release };
             if report_mouse(s, b, action) {
                 s.pointer.mouse_button_down = (action == mouse::Action::Press).then_some(b);
                 return;
             }
         }
-        if btn_state == ElementState::Released {
+        if btn_state == ButtonState::Released {
             s.pointer.mouse_button_down = None;
         }
         if button == MouseButton::Middle
-            && btn_state == ElementState::Pressed
+            && btn_state == ButtonState::Pressed
             && !s.history_search.is_open
             && !s.search.is_open
             && let Some(text) = paste_from_primary().filter(|t| !t.is_empty())
@@ -290,7 +288,7 @@ impl App {
             return;
         }
         if s.history_search.is_open {
-            if btn_state == ElementState::Pressed
+            if btn_state == ButtonState::Pressed
                 && let Some((x0, y0, popup_w, popup_h, visible_rows)) =
                     s.renderer.history_popup_geometry(&s.history_search.view())
                 {
@@ -343,7 +341,7 @@ impl App {
             return;
         }
         match btn_state {
-            ElementState::Pressed => {
+            ButtonState::Pressed => {
                 if begin_edge_resize(s) {
                     return;
                 }
@@ -482,7 +480,7 @@ impl App {
                     s.renderer.invalidate();
                 }
             }
-            ElementState::Released => {
+            ButtonState::Released => {
                 if s.pointer.selecting {
                     s.pointer.selecting = false;
                     if s.pointer.drag_moved {
@@ -514,7 +512,7 @@ impl App {
         }
     }
 
-    pub(super) fn on_mouse_wheel(&mut self, id: WindowId, delta: MouseScrollDelta, phase: TouchPhase) {
+    pub(super) fn on_mouse_wheel(&mut self, id: WindowId, delta: ScrollDelta, phase: TouchPhase) {
         let Some(s) = self.window_mut(id) else { return };
         if s.tabs.is_empty() {
             return;
@@ -528,11 +526,11 @@ impl App {
         let target_id = pane_cell_at_mouse(s).map_or(s.tabs[s.active].active_pane_id, |(id, _, _)| id);
         let target = if s.history_search.is_open { scroll::Target::History } else { scroll::Target::Pane(target_id) };
         let (amount, unit, precise) = match delta {
-            MouseScrollDelta::LineDelta(_, y) => {
+            ScrollDelta::Lines { y } => {
                 let multiplier = if s.history_search.is_open { 1.0 } else { s.config.mouse_scroll_discrete };
                 (y as f64 * multiplier, 1.0, false)
             }
-            MouseScrollDelta::PixelDelta(p) => {
+            ScrollDelta::Pixels(p) => {
                 let multiplier = if s.history_search.is_open { 1.0 } else { s.config.mouse_scroll_precision };
                 (p.y * multiplier, s.renderer.cell_size().1.max(1) as f64, true)
             }

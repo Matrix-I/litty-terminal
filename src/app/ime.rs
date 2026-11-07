@@ -4,11 +4,11 @@ use super::search_ui::refresh_search;
 use super::state::State;
 use super::terminal_io::write_pane_input;
 
-use winit::event::Ime;
+use crate::platform::gui::Ime;
 
 pub(super) fn handle_ime(s: &mut State, ime: Ime) {
     match ime {
-        Ime::Preedit(text, _) => {
+        Ime::Preedit(text) => {
             if s.ime.preedit != text {
                 s.ime.preedit = text;
                 s.cursor_blink_epoch = std::time::Instant::now();

@@ -15,8 +15,7 @@ use crate::platform;
 use crate::{next_id, AppEvent, Pane, Tab, Waker};
 
 use parking_lot::Mutex;
-use crate::platform::gui::{LogicalSize, PhysicalPosition, PhysicalSize, Theme, Window};
-use winit::event_loop::ActiveEventLoop;
+use crate::platform::gui::{LogicalSize, LoopCtx, PhysicalPosition, PhysicalSize, Theme, WindowSpec};
 use crate::platform::gui::CursorIcon;
 
 use crate::terminal::grid::Grid;
@@ -44,18 +43,18 @@ pub(super) fn font_features(cfg: &config::Config) -> Vec<atlas::FontFeature> {
 }
 
 /// Create a window with one tab whose shell starts in `cwd`.
-pub(super) fn create_window(event_loop: &ActiveEventLoop, waker: &Waker, cwd: Option<&str>, quick: bool) -> std::io::Result<State> {
+pub(super) fn create_window(event_loop: &LoopCtx, waker: &Waker, cwd: Option<&str>, quick: bool) -> std::io::Result<State> {
     build_window(event_loop, waker, cwd, quick, &mut None)
 }
 
 /// Open a window around a tab torn off another one. `torn` is emptied only once
 /// the window exists, so on failure the caller can still put the tab back.
-pub(super) fn create_window_for_tab(event_loop: &ActiveEventLoop, waker: &Waker, torn: &mut Option<TornTab>) -> std::io::Result<State> {
+pub(super) fn create_window_for_tab(event_loop: &LoopCtx, waker: &Waker, torn: &mut Option<TornTab>) -> std::io::Result<State> {
     build_window(event_loop, waker, None, false, torn)
 }
 
 fn build_window(
-    event_loop: &ActiveEventLoop,
+    event_loop: &LoopCtx,
     waker: &Waker,
     cwd: Option<&str>,
     quick: bool,
@@ -88,41 +87,23 @@ fn build_window(
     // Linux draws its own title bar in the terminal's colors (the native frame
     // cannot be recolored); macOS makes its native title bar transparent instead.
     let csd = cfg!(target_os = "linux") && !quick;
-    let attrs = winit::window::Window::default_attributes()
-        .with_title("Litty")
+    let (inner_size, position) = match adopt.as_ref() {
+        // A torn-off tab keeps the size of its old window, so its grids do not reflow.
+        Some(torn) => (torn.size, torn.position),
+        None => (initial_inner_size, None),
+    };
+    let spec = WindowSpec {
+        title: "Litty",
         // Build Quick Terminal in its final mode while hidden. Changing X11
         // decorations on an already mapped window causes spurious focus loss.
-        .with_decorations(!quick && !csd)
-        .with_window_level(if quick { winit::window::WindowLevel::AlwaysOnTop } else { winit::window::WindowLevel::Normal })
-        .with_visible(!quick)
-        .with_transparent(cfg.background_opacity < 1.0 || csd);
-    // A torn-off tab keeps the size of its old window, so its grids do not reflow.
-    let attrs = match adopt.as_ref() {
-        Some(torn) => {
-            let attrs = attrs.with_inner_size(winit::dpi::LogicalSize::from(torn.size));
-            match torn.position {
-                Some(position) => attrs.with_position(winit::dpi::LogicalPosition::from(position)),
-                None => attrs,
-            }
-        }
-        None => attrs.with_inner_size(winit::dpi::LogicalSize::from(initial_inner_size)),
+        decorations: !quick && !csd,
+        always_on_top: quick,
+        visible: !quick,
+        transparent: cfg.background_opacity < 1.0 || csd,
+        inner_size,
+        position,
     };
-    // Wayland app_id / X11 WM_CLASS must match `litty.desktop` and the
-    // hicolor icon name, or the shell shows a generic icon.
-    #[cfg(target_os = "linux")]
-    let attrs = {
-        use winit::platform::wayland::WindowAttributesExtWayland;
-        attrs.with_name("litty", "litty")
-    };
-    // Native tabs (`macos-native-tabs`) group under one identifier. Created
-    // hidden so AppKit cannot merge a New Window into a tab of the focused one
-    // before tabbing is turned off for it; native tabs re-enable it.
-    #[cfg(target_os = "macos")]
-    let attrs = {
-        use winit::platform::macos::WindowAttributesExtMacOS;
-        attrs.with_tabbing_identifier("litty").with_visible(false)
-    };
-    let window = Arc::new(Window::from_winit(event_loop.create_window(attrs).map_err(std::io::Error::other)?));
+    let window = Arc::new(event_loop.create_window(&spec)?);
     platform::init_clipboard(&window);
     platform::set_tabbing_allowed(&window, false);
     if !quick { window.set_visible(true); }

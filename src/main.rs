@@ -9,7 +9,6 @@ mod cli;
 mod config;
 mod curl_config;
 mod event;
-mod input;
 mod json;
 mod keymap;
 mod mouse;
@@ -26,6 +25,7 @@ mod tab;
 mod terminal;
 mod update;
 
+pub(crate) use platform::input;
 pub use event::{AppEvent, Waker};
 pub use tab::{HoveredPaneLink, next_id, Pane, Tab};
 
