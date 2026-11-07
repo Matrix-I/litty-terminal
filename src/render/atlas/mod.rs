@@ -155,11 +155,9 @@ pub struct Atlas {
     scratch: Vec<u8>,
     shaper: Shaper,
 
-    pub texture: wgpu::Texture,
-    pub view: wgpu::TextureView,
+    pub texture: crate::render::backend::Texture,
     /// Color glyphs (emoji), premultiplied RGBA in the same slot layout as `texture`.
-    color_texture: wgpu::Texture,
-    pub color_view: wgpu::TextureView,
+    pub color_texture: crate::render::backend::Texture,
     slot_color: Vec<bool>,
     color_scratch: Vec<u8>,
     wide_r8_scratch: Vec<u8>,
@@ -205,7 +203,12 @@ impl Atlas {
         (adjust_w.apply(natural_w) as f64, adjust_h.apply(natural_h) as f64)
     }
 
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, fonts: Arc<FontSet>, px: f32) -> Self {
+    pub fn new(
+        device: &crate::render::backend::Device,
+        queue: &crate::render::backend::Queue,
+        fonts: Arc<FontSet>,
+        px: f32,
+    ) -> Self {
         let font = &fonts.primary;
         let lm = line_metrics(font, px);
         let natural_w = font.advance_width('M', px).round().max(1.0) as u32;
@@ -224,8 +227,8 @@ impl Atlas {
         let slots_per_row = size / cell_w;
         let n_slots = (slots_per_row * (size / cell_h)).min(u16::MAX as u32);
 
-        let (texture, view) = Self::make_texture(device, size, wgpu::TextureFormat::R8Unorm);
-        let (color_texture, color_view) = Self::make_texture(device, size, wgpu::TextureFormat::Rgba8Unorm);
+        let texture = Self::make_texture(device, size, crate::render::backend::TextureFormat::R8Unorm);
+        let color_texture = Self::make_texture(device, size, crate::render::backend::TextureFormat::Rgba8Unorm);
 
         let mut atlas = Atlas {
             fonts,
@@ -251,9 +254,7 @@ impl Atlas {
             scratch: vec![0; (cell_w * cell_h) as usize],
             shaper: Shaper::new(FONT_FEATURES.lock().clone()),
             texture,
-            view,
             color_texture,
-            color_view,
             slot_color: vec![false; n_slots as usize],
             color_scratch: vec![0; (cell_w * cell_h * 4) as usize],
             wide_r8_scratch: vec![0; (2 * cell_w * cell_h) as usize],
@@ -269,7 +270,11 @@ impl Atlas {
     /// all slots were active in the same frame, avoiding 512×512 slot thrashing on
     /// CJK/emoji screens. Returns `true` if the texture was recreated (bind groups
     /// must be rebound).
-    pub fn grow_if_needed(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
+    pub fn grow_if_needed(
+        &mut self,
+        device: &crate::render::backend::Device,
+        queue: &crate::render::backend::Queue,
+    ) -> bool {
         if !std::mem::take(&mut self.grow_needed) || self.size >= 4096 {
             return false;
         }
@@ -280,8 +285,8 @@ impl Atlas {
             return false;
         }
 
-        let (texture, view) = Self::make_texture(device, new_size, wgpu::TextureFormat::R8Unorm);
-        let (color_texture, color_view) = Self::make_texture(device, new_size, wgpu::TextureFormat::Rgba8Unorm);
+        let texture = Self::make_texture(device, new_size, crate::render::backend::TextureFormat::R8Unorm);
+        let color_texture = Self::make_texture(device, new_size, crate::render::backend::TextureFormat::Rgba8Unorm);
 
         self.size = new_size;
         self.slots_per_row = slots_per_row;
@@ -303,9 +308,7 @@ impl Atlas {
         self.slot_color.clear();
         self.slot_color.resize(n_slots as usize, false);
         self.texture = texture;
-        self.view = view;
         self.color_texture = color_texture;
-        self.color_view = color_view;
         self.preload_ascii(queue);
         true
     }
@@ -367,7 +370,7 @@ impl Atlas {
         }
     }
 
-    fn preload_ascii(&mut self, queue: &wgpu::Queue) {
+    fn preload_ascii(&mut self, queue: &crate::render::backend::Queue) {
         let total_slots = 95u32.min(self.n_slots);
         let rows_needed = total_slots.div_ceil(self.slots_per_row);
         let upload_height = (rows_needed * self.cell_h).min(self.size);
@@ -403,46 +406,31 @@ impl Atlas {
             self.slot_used[s as usize] = self.frame;
         }
 
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d { x: 0, y: 0, z: 0 },
-                aspect: wgpu::TextureAspect::All,
-            },
-            &staging,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(bytes_per_row),
-                rows_per_image: Some(upload_height),
-            },
-            wgpu::Extent3d { width: self.size, height: upload_height, depth_or_array_layers: 1 },
-        );
+        self.texture.write_rect(queue, 0, 0, self.size, upload_height, &staging, bytes_per_row);
     }
 
     /// Rebuild the atlas in place for a new pixel size (DPI or zoom change).
-    pub fn set_px(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, px: f32) {
+    pub fn set_px(&mut self, device: &crate::render::backend::Device, queue: &crate::render::backend::Queue, px: f32) {
         *self = Atlas::new(device, queue, self.fonts.clone(), px);
     }
 
     /// Rebuild the atlas with a different font set (config reload).
-    pub fn set_fonts(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, fonts: Arc<FontSet>, px: f32) {
+    pub fn set_fonts(
+        &mut self,
+        device: &crate::render::backend::Device,
+        queue: &crate::render::backend::Queue,
+        fonts: Arc<FontSet>,
+        px: f32,
+    ) {
         *self = Atlas::new(device, queue, fonts, px);
     }
 
-    fn make_texture(device: &wgpu::Device, size: u32, format: wgpu::TextureFormat) -> (wgpu::Texture, wgpu::TextureView) {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("glyph atlas"),
-            size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&Default::default());
-        (texture, view)
+    fn make_texture(
+        device: &crate::render::backend::Device,
+        size: u32,
+        format: crate::render::backend::TextureFormat,
+    ) -> crate::render::backend::Texture {
+        crate::render::backend::Texture::new(device, size, size, format, false)
     }
 
     pub fn begin_frame(&mut self) {
@@ -457,7 +445,13 @@ impl Atlas {
     /// Atlas slots for a glyph of display width `width`. Double-width glyphs are
     /// rasterized across two cells in a single pass and split into a left and a
     /// right slot; for narrow glyphs the right slot is blank.
-    pub fn glyph_slots(&mut self, queue: &wgpu::Queue, cp: u32, width: usize, style: GlyphStyle) -> (u16, u16) {
+    pub fn glyph_slots(
+        &mut self,
+        queue: &crate::render::backend::Queue,
+        cp: u32,
+        width: usize,
+        style: GlyphStyle,
+    ) -> (u16, u16) {
         let mut key = cp;
         // Cell-exact sprites (box drawing, Powerline...) must keep connecting seamlessly.
         if !is_builtin_sprite(cp) {
@@ -515,7 +509,7 @@ impl Atlas {
 
     /// Resolve both `WIDE_LEFT` and `WIDE_RIGHT` slots for a double-width key,
     /// rasterizing `2 * cell_w` only once when either half misses in the cache.
-    fn wide_slots(&mut self, queue: &wgpu::Queue, base_key: u32) -> (u16, u16) {
+    fn wide_slots(&mut self, queue: &crate::render::backend::Queue, base_key: u32) -> (u16, u16) {
         let k_left = base_key | WIDE_LEFT;
         let k_right = base_key | WIDE_RIGHT;
         let cached_left = self.map.get(&k_left).copied();
@@ -604,7 +598,7 @@ impl Atlas {
 
     /// Atlas slot for `cp` (optionally tagged with `WIDE_LEFT` / `WIDE_RIGHT`),
     /// rasterizing and uploading it on a cache miss.
-    pub fn slot(&mut self, queue: &wgpu::Queue, cp: u32) -> u16 {
+    pub fn slot(&mut self, queue: &crate::render::backend::Queue, cp: u32) -> u16 {
         if cp == 0 || cp == 32 {
             return BLANK_SLOT;
         }
@@ -638,7 +632,13 @@ impl Atlas {
     }
 
     /// Atlas slots for a grapheme cluster (see [`Atlas::glyph_slots`]).
-    pub fn cluster_slots(&mut self, queue: &wgpu::Queue, text: &str, width: usize, style: GlyphStyle) -> (u16, u16) {
+    pub fn cluster_slots(
+        &mut self,
+        queue: &crate::render::backend::Queue,
+        text: &str,
+        width: usize,
+        style: GlyphStyle,
+    ) -> (u16, u16) {
         if self.clusters.len() >= 4096 {
             self.clusters.clear();
             self.cluster_ids.clear();

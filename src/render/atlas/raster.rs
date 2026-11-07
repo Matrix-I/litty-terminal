@@ -234,49 +234,33 @@ impl Atlas {
         }
     }
 
-    pub(super) fn upload_color(&self, queue: &wgpu::Queue, slot: u16) {
+    pub(super) fn upload_color(&self, queue: &crate::render::backend::Queue, slot: u16) {
         let s = slot as u32;
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.color_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: (s % self.slots_per_row) * self.cell_w,
-                    y: (s / self.slots_per_row) * self.cell_h,
-                    z: 0,
-                },
-                aspect: wgpu::TextureAspect::All,
-            },
+        let x = (s % self.slots_per_row) * self.cell_w;
+        let y = (s / self.slots_per_row) * self.cell_h;
+        self.color_texture.write_rect(
+            queue,
+            x,
+            y,
+            self.cell_w,
+            self.cell_h,
             &self.color_scratch,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * self.cell_w),
-                rows_per_image: Some(self.cell_h),
-            },
-            wgpu::Extent3d { width: self.cell_w, height: self.cell_h, depth_or_array_layers: 1 },
+            4 * self.cell_w,
         );
     }
 
-    pub(super) fn upload(&self, queue: &wgpu::Queue, slot: u16) {
+    pub(super) fn upload(&self, queue: &crate::render::backend::Queue, slot: u16) {
         let s = slot as u32;
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: (s % self.slots_per_row) * self.cell_w,
-                    y: (s / self.slots_per_row) * self.cell_h,
-                    z: 0,
-                },
-                aspect: wgpu::TextureAspect::All,
-            },
+        let x = (s % self.slots_per_row) * self.cell_w;
+        let y = (s / self.slots_per_row) * self.cell_h;
+        self.texture.write_rect(
+            queue,
+            x,
+            y,
+            self.cell_w,
+            self.cell_h,
             &self.scratch,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(self.cell_w),
-                rows_per_image: Some(self.cell_h),
-            },
-            wgpu::Extent3d { width: self.cell_w, height: self.cell_h, depth_or_array_layers: 1 },
+            self.cell_w,
         );
     }
 }
