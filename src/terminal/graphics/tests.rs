@@ -425,26 +425,12 @@ fn explicit_high_image_ids_survive_pruning() {
 fn decode_png_bounds_check() {
     // Build a minimal PNG header that declares dimensions exceeding STORE_LIMIT
     // 8192 x 8192 x 4 = 256MB > STORE_LIMIT (64MB)
-    let mut png_data = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut png_data, 1, 1);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().unwrap();
-        writer.write_image_data(&[0, 0, 0, 255]).unwrap();
-    }
+    let mut png_data = super::png::encode_test_png(1, 1, 6, &[0, 0, 0, 255]);
     // Patch width and height in IHDR (offsets 16..20 and 20..24) to 8192
     png_data[16..20].copy_from_slice(&8192u32.to_be_bytes());
     png_data[20..24].copy_from_slice(&8192u32.to_be_bytes());
     // Recompute IHDR CRC (chunk type + data: bytes 12..29)
-    let mut crc = 0xffff_ffffu32;
-    for &b in &png_data[12..29] {
-        crc ^= b as u32;
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
-        }
-    }
-    let crc = !crc;
+    let crc = super::png::crc32(&png_data[12..29]);
     png_data[29..33].copy_from_slice(&crc.to_be_bytes());
 
     let res = decode_png(&png_data);
@@ -455,16 +441,28 @@ fn decode_png_bounds_check() {
 /// 4x4 canvas whose default image (first frame) is only 2x2: the decoder
 /// reports the frame size, not the canvas size (CWE-125, CWE-754).
 fn sub_frame_apng() -> Vec<u8> {
-    let mut out = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut out, 4, 4);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder.set_animated(1, 0).unwrap();
-        let mut writer = encoder.write_header().unwrap();
-        writer.set_frame_dimension(2, 2).unwrap();
-        writer.write_image_data(&[255; 2 * 2 * 4]).unwrap();
+    let mut out = Vec::from(&b"\x89PNG\r\n\x1a\n"[..]);
+    let mut ihdr = [0u8; 13];
+    ihdr[0..4].copy_from_slice(&4u32.to_be_bytes());
+    ihdr[4..8].copy_from_slice(&4u32.to_be_bytes());
+    ihdr[8] = 8;
+    ihdr[9] = 6; // RGBA
+    super::png::write_png_chunk(&mut out, b"IHDR", &ihdr);
+    let mut actl = [0u8; 8];
+    actl[0..4].copy_from_slice(&1u32.to_be_bytes());
+    super::png::write_png_chunk(&mut out, b"acTL", &actl);
+    let mut fctl = [0u8; 26];
+    fctl[4..8].copy_from_slice(&2u32.to_be_bytes());
+    fctl[8..12].copy_from_slice(&2u32.to_be_bytes());
+    super::png::write_png_chunk(&mut out, b"fcTL", &fctl);
+    let mut raw = Vec::new();
+    for _ in 0..2 {
+        raw.push(0);
+        raw.extend_from_slice(&[255; 2 * 4]);
     }
+    let z = super::png::zlib_store(&raw);
+    super::png::write_png_chunk(&mut out, b"IDAT", &z);
+    super::png::write_png_chunk(&mut out, b"IEND", &[]);
     out
 }
 
@@ -478,14 +476,7 @@ fn decode_png_never_returns_a_buffer_smaller_than_the_canvas() {
 
 #[test]
 fn decode_png_full_frame_roundtrips() {
-    let mut out = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut out, 2, 1);
-        encoder.set_color(png::ColorType::Rgb);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().unwrap();
-        writer.write_image_data(&[1, 2, 3, 4, 5, 6]).unwrap();
-    }
+    let out = super::png::encode_test_png(2, 1, 2, &[1, 2, 3, 4, 5, 6]);
     assert_eq!(decode_png(&out).unwrap(), (2, 1, vec![1, 2, 3, 255, 4, 5, 6, 255]));
 }
 

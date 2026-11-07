@@ -11,7 +11,6 @@ path = "src/main.rs"
 
 [dependencies]
 winit = "0.30"
-fontdue = "0.9"
 # Grid bounds OSC streams before feeding VTE; std storage preserves complete
 # supported payloads instead of the default 1,024-byte no_std truncation.
 vte = { version = "0.13", default-features = false }
@@ -19,12 +18,8 @@ libc = "0.2"
 parking_lot = "0.12"
 bytemuck = { version = "1", features = ["derive", "extern_crate_alloc"] }
 pollster = "0.4"
-memmap2 = "0.9"
 unicode-width = "0.1"
 unicode-normalization = "0.1"
-rustybuzz = "0.20.1"
-png = "0.18.1"
-miniz_oxide = "0.8"
 
 # Phase 5: only compile the one GPU backend each platform needs (no DX12 / GL / WebGPU).
 [target.'cfg(target_os = "macos")'.dependencies]

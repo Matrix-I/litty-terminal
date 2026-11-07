@@ -40,7 +40,7 @@ pub(super) fn place_quick_terminal(s: &State) {
 }
 
 /// `font-feature` values as shaper features (validated when the config was parsed).
-pub(super) fn font_features(cfg: &config::Config) -> Vec<rustybuzz::Feature> {
+pub(super) fn font_features(cfg: &config::Config) -> Vec<atlas::FontFeature> {
     cfg.font_features.iter().filter_map(|f| atlas::parse_font_feature(f).ok()).collect()
 }
 

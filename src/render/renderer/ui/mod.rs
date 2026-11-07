@@ -103,16 +103,22 @@ fn warm_overlay_builders_do_not_allocate() {
         assert_eq!(crate::test_alloc::allocations(||search_box::build(&mut cells,2,40,&search,&mut dirty)), 0);
         assert_eq!(crate::test_alloc::allocations(||history_popup::build(&mut cells,geometry,40,&history,&mut dirty)), 0);
     }
+    let inspector_lines: Vec<String> = vec!["Terminal Inspector".into(), "Grid      80x24".into(), "Cursor    row 0 col 0".into()];
+    for _ in 0..3 { inspector::build(&mut cells, 2, 40, &inspector_lines, &mut dirty); }
+    assert_eq!(crate::test_alloc::allocations(|| inspector::build(&mut cells, 2, 40, &inspector_lines, &mut dirty)), 0);
+    let link = crate::terminal::grid::Hyperlink { url: "https://example.com/".to_string() + &"a/very/long/path/".repeat(12), row: 0, start_col: 0, end_col: 10, is_path: false };
+    for _ in 0..3 { link_preview::build(&mut cells, 40, &link, &mut dirty); }
+    assert_eq!(crate::test_alloc::allocations(|| link_preview::build(&mut cells, 40, &link, &mut dirty)), 0);
 }
 
 /// Bounded decimal counters and static labels used by overlay builders.
-struct Label {
-    bytes: [u8; 64],
+pub(super) struct Label {
+    bytes: [u8; 128],
     len: usize,
 }
 impl Label {
-    fn new() -> Self { Self { bytes: [0; 64], len: 0 } }
-    fn as_str(&self) -> &str { std::str::from_utf8(&self.bytes[..self.len]).expect("formatted UTF-8") }
+    pub(super) fn new() -> Self { Self { bytes: [0; 128], len: 0 } }
+    pub(super) fn as_str(&self) -> &str { std::str::from_utf8(&self.bytes[..self.len]).expect("formatted UTF-8") }
 }
 impl std::fmt::Write for Label {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
@@ -123,7 +129,7 @@ impl std::fmt::Write for Label {
 }
 
 /// Borrow at most `count` Unicode scalar values, without collecting them.
-fn prefix(text: &str, count: usize) -> &str {
+pub(super) fn prefix(text: &str, count: usize) -> &str {
     &text[..text.char_indices().nth(count).map_or(text.len(), |(i,_)| i)]
 }
 

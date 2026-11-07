@@ -64,9 +64,11 @@ pub(in crate::render::renderer) fn build(
             put(row, c, ch, BORDER_FG);
         }
     }
-    for (i, ch) in format!(" {title} ").chars().enumerate() {
-        put(0, 2 + i, ch, TITLE_FG);
+    put(0, 2, ' ', TITLE_FG);
+    for (i, ch) in title.chars().enumerate() {
+        put(0, 3 + i, ch, TITLE_FG);
     }
+    put(0, 3 + title.chars().count(), ' ', TITLE_FG);
     for (r, line) in body.iter().enumerate() {
         let mut col = 2;
         for (i, ch) in line.chars().enumerate() {
