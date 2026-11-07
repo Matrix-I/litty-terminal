@@ -1,8 +1,7 @@
 //! Dragging a tab out of the tab bar: dropped far enough away, it moves to a
 //! window of its own.
 
-use winit::dpi::{LogicalPosition, LogicalSize};
-use winit::window::WindowId;
+use crate::platform::gui::{LogicalPosition, LogicalSize, WindowId};
 
 use super::state::State;
 use crate::render::renderer::{tab_slot_at, tab_span};
@@ -65,7 +64,7 @@ fn pointer_on_screen(s: &State) -> Option<(i32, i32)> {
 /// different scales can be compared; `None` where the platform gives no window positions.
 fn pointer_logical(s: &State) -> Option<LogicalPosition<f64>> {
     let scale = s.window.scale_factor();
-    let origin = s.window.inner_position().ok()?.to_logical::<f64>(scale);
+    let origin = s.window.inner_position().ok()?.to_logical(scale);
     Some(LogicalPosition::new(origin.x + s.pointer.mouse_pos.0 / scale, origin.y + s.pointer.mouse_pos.1 / scale))
 }
 
@@ -80,7 +79,7 @@ pub(super) fn ping_drag(s: &mut State) {
 pub(super) fn set_pointer_from_screen(s: &mut State, at: LogicalPosition<f64>) {
     let scale = s.window.scale_factor();
     if let Ok(origin) = s.window.inner_position() {
-        let origin = origin.to_logical::<f64>(scale);
+        let origin = origin.to_logical(scale);
         s.pointer.mouse_pos = ((at.x - origin.x) * scale, (at.y - origin.y) * scale);
     }
 }
@@ -98,7 +97,7 @@ pub(super) fn tab_bar_hit_x(s: &State, at: LogicalPosition<f64>) -> Option<f64> 
         return None;
     }
     let scale = s.window.scale_factor();
-    let origin = s.window.inner_position().ok()?.to_logical::<f64>(scale);
+    let origin = s.window.inner_position().ok()?.to_logical(scale);
     let local = (at.x - origin.x, at.y - origin.y);
     let width = f64::from(s.window.inner_size().width) / scale;
     in_tab_bar(local, width, s.renderer.chrome_height() / scale).then_some(local.0 * scale)

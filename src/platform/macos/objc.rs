@@ -2,8 +2,7 @@
 
 use std::ffi::{c_void, CStr};
 
-use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use winit::window::Window;
+use crate::platform::gui::{RawHandle, Window};
 
 pub(super) type Id = *mut c_void;
 
@@ -138,9 +137,8 @@ pub(super) unsafe fn for_each_in_array(array: Id, mut f: impl FnMut(Id)) { unsaf
 }}
 
 pub(super) fn ns_window_of(window: &Window) -> Option<(Id, Id)> {
-    let handle = window.window_handle().ok()?;
-    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else { return None };
-    let ns_view = appkit.ns_view.as_ptr() as Id;
+    let RawHandle::AppKit { ns_view } = window.raw_handle()? else { return None };
+    let ns_view = ns_view as Id;
     // SAFETY: `ns_view` is the live NSView backing this winit window.
     let ns_window = unsafe { send_id(ns_view, c"window")? };
     Some((ns_view, ns_window))

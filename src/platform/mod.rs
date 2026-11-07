@@ -3,6 +3,7 @@
 
 pub(crate) mod clipboard;
 pub(crate) mod control_socket;
+pub(crate) mod gui;
 pub(crate) mod process;
 mod types;
 

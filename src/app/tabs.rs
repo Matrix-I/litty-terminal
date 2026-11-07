@@ -8,7 +8,7 @@ use super::window::sync_size;
 use super::window::tab_title;
 use super::tab_tearoff::{follow_torn_window, tear_off_while_dragging};
 use crate::render::renderer::tab_span;
-use winit::window::WindowId;
+use crate::platform::gui::WindowId;
 
 use crate::platform;
 #[cfg(target_os = "linux")]

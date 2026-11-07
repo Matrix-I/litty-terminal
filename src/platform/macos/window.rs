@@ -3,7 +3,7 @@
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
-use winit::window::Window;
+use crate::platform::gui::Window;
 
 use crate::platform::{ColorSpace, WindowLook};
 

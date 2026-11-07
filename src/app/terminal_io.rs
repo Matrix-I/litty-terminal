@@ -7,7 +7,7 @@ use crate::{ai};
 use crate::platform;
 use crate::Pane;
 
-use winit::window::CursorIcon;
+use crate::platform::gui::CursorIcon;
 
 use crate::platform::clipboard::copy_to_clipboard;
 use crate::platform::process::{play_sound, show_notification};
@@ -78,7 +78,7 @@ pub(super) fn handle_terminal_requests(s: &mut State) {
         }
     }
     if attention {
-        s.window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
+        s.window.request_attention(true);
     }
     if ring {
         platform::beep();

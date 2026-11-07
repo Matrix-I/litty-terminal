@@ -29,9 +29,8 @@ use crate::terminal::grid;
 use crate::{config, mouse, scroll};
 use crate::platform;
 
-use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
-use winit::window::WindowId;
+use crate::platform::gui::{PhysicalPosition, WindowId};
 
 use crate::terminal::grid::Selection;
 use crate::paste::{history_insert_payload, paste_payload, shell_quote};
@@ -44,7 +43,7 @@ use super::csd::{update_corner_radius, begin_edge_resize, run_control, toggle_ma
 impl App {
     pub(super) fn handle_window_event(&mut self, id: WindowId, event: WindowEvent) {
         let event = match event {
-            WindowEvent::CursorMoved { position, .. } => return self.on_cursor_moved(id, position),
+            WindowEvent::CursorMoved { position, .. } => return self.on_cursor_moved(id, position.into()),
             WindowEvent::MouseInput { state: btn_state, button, .. } => return self.on_mouse_input(id, btn_state, button),
             WindowEvent::MouseWheel { delta, phase, .. } => return self.on_mouse_wheel(id, delta, phase),
             WindowEvent::Focused(focused) => return self.on_focused(id, focused),

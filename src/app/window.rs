@@ -15,9 +15,9 @@ use crate::platform;
 use crate::{next_id, AppEvent, Pane, Tab, Waker};
 
 use parking_lot::Mutex;
-use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
+use crate::platform::gui::{LogicalSize, PhysicalPosition, PhysicalSize, Theme, Window};
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{CursorIcon, Window};
+use crate::platform::gui::CursorIcon;
 
 use crate::terminal::grid::Grid;
 use super::history_ui::HistorySearch;
@@ -29,9 +29,9 @@ use crate::terminal::search::SearchBar;
 /// then bring it to the front.
 pub(super) fn place_quick_terminal(s: &State) {
     if let Some(m) = s.window.current_monitor() {
-        let (pos, size) = (m.position(), m.size());
+        let (pos, size) = (m.position, m.size);
         s.window.set_outer_position(pos);
-        let _ = s.window.request_inner_size(PhysicalSize::new(size.width, size.height * 2 / 5));
+        s.window.request_inner_size(PhysicalSize::new(size.width, size.height * 2 / 5));
     }
     s.window.set_visible(true);
     s.window.focus_window();
@@ -88,7 +88,7 @@ fn build_window(
     // Linux draws its own title bar in the terminal's colors (the native frame
     // cannot be recolored); macOS makes its native title bar transparent instead.
     let csd = cfg!(target_os = "linux") && !quick;
-    let attrs = Window::default_attributes()
+    let attrs = winit::window::Window::default_attributes()
         .with_title("Litty")
         // Build Quick Terminal in its final mode while hidden. Changing X11
         // decorations on an already mapped window causes spurious focus loss.
@@ -99,13 +99,13 @@ fn build_window(
     // A torn-off tab keeps the size of its old window, so its grids do not reflow.
     let attrs = match adopt.as_ref() {
         Some(torn) => {
-            let attrs = attrs.with_inner_size(torn.size);
+            let attrs = attrs.with_inner_size(winit::dpi::LogicalSize::from(torn.size));
             match torn.position {
-                Some(position) => attrs.with_position(position),
+                Some(position) => attrs.with_position(winit::dpi::LogicalPosition::from(position)),
                 None => attrs,
             }
         }
-        None => attrs.with_inner_size(initial_inner_size),
+        None => attrs.with_inner_size(winit::dpi::LogicalSize::from(initial_inner_size)),
     };
     // Wayland app_id / X11 WM_CLASS must match `litty.desktop` and the
     // hicolor icon name, or the shell shows a generic icon.
@@ -122,13 +122,13 @@ fn build_window(
         use winit::platform::macos::WindowAttributesExtMacOS;
         attrs.with_tabbing_identifier("litty").with_visible(false)
     };
-    let window = Arc::new(event_loop.create_window(attrs).map_err(std::io::Error::other)?);
+    let window = Arc::new(Window::from_winit(event_loop.create_window(attrs).map_err(std::io::Error::other)?));
     platform::init_clipboard(&window);
     platform::set_tabbing_allowed(&window, false);
     if !quick { window.set_visible(true); }
     // Composed input (Vietnamese Telex/VNI, CJK) arrives as `WindowEvent::Ime`.
     window.set_ime_allowed(true);
-    let dark = window.theme() != Some(winit::window::Theme::Light);
+    let dark = window.theme() != Some(Theme::Light);
     grid::set_color_scheme_dark(dark);
     // `theme = light:X,dark:Y` was parsed before the appearance was known.
     let cfg = if !dark && cfg.theme.as_deref().is_some_and(config::theme_is_conditional) {
@@ -603,7 +603,7 @@ pub(super) fn render_active(s: &mut State) {
         if let Some((row, col)) = cursor_cell {
             let (x, y) = s.renderer.cell_origin_px(row, col, bands);
             let (cw, ch) = s.renderer.cell_size();
-            s.window.set_ime_cursor_area(PhysicalPosition::new(x, y), PhysicalSize::new(cw, ch));
+            s.window.set_ime_cursor_area(PhysicalPosition::new(x, y), PhysicalSize::new(cw as f64, ch as f64));
         }
     }
 

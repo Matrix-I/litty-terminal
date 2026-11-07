@@ -1,6 +1,6 @@
 //! Native window tabs.
 
-use winit::window::Window;
+use crate::platform::gui::Window;
 
 use super::objc::*;
 
@@ -28,6 +28,7 @@ pub fn set_tabbing_allowed(window: &Window, allowed: bool) {
 /// `n` (8 = last). Returns `false` when the window has no other tabs.
 pub fn select_native_tab(window: &Window, step: isize, index: Option<usize>) -> bool {
     use winit::platform::macos::WindowExtMacOS;
+    let window = window.winit();
     let n = window.num_tabs();
     if n < 2 {
         return false;

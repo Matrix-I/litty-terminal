@@ -9,7 +9,7 @@ use crate::render::renderer;
 use crate::mouse;
 use crate::HoveredPaneLink;
 
-use winit::window::CursorIcon;
+use crate::platform::gui::CursorIcon;
 
 /// Pane under the mouse pointer and the pane-relative `(row, col)` cell.
 /// Pane whose visible scrollbar (shown while scrolled back) is under the mouse.
