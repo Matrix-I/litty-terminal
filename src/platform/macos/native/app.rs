@@ -20,6 +20,26 @@ unsafe extern "C" {
 
 pub fn wakeup_main_loop() {
     unsafe {
+        if let Some(app) = shared_application()
+            && let Some(event_cls) = class(c"NSEvent") {
+            let dummy = msg_send!(
+                event_cls,
+                c"otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:",
+                15usize => usize, // NSEventTypeApplicationDefined
+                NSPoint { x: 0.0, y: 0.0 } => NSPoint,
+                0usize => usize,
+                0.0f64 => f64,
+                0isize => isize,
+                std::ptr::null_mut::<c_void>() => Id,
+                0isize => isize,
+                0isize => isize,
+                0isize => isize
+                ; -> Id
+            );
+            if !dummy.is_null() {
+                msg_send!(app, c"postEvent:atStart:", dummy => Id, false => bool);
+            }
+        }
         let main_loop = CFRunLoopGetMain();
         if !main_loop.is_null() {
             CFRunLoopWakeUp(main_loop);
@@ -176,6 +196,13 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
             );
 
             if !event.is_null() {
+                let event_type = msg_send!(event, c"type"; -> usize);
+                if event_type == 15 {
+                    // Application-defined wakeup event: continue to process redrawing and user events
+                    msg_send!(pool, c"drain");
+                    continue;
+                }
+
                 // Dispatch event
                 let win = msg_send!(event, c"window"; -> Id);
                 if !win.is_null() {
@@ -192,7 +219,15 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
                     }
                 }
 
-                msg_send!(app, c"sendEvent:", event => Id);
+                if event_type == 10 || event_type == 11 {
+                    // KeyDown (10) or KeyUp (11): only forward Cmd shortcuts to AppKit main menu
+                    let flags = msg_send!(event, c"modifierFlags"; -> usize);
+                    if (flags & (1 << 20)) != 0 {
+                        msg_send!(app, c"sendEvent:", event => Id);
+                    }
+                } else {
+                    msg_send!(app, c"sendEvent:", event => Id);
+                }
                 msg_send!(app, c"updateWindows");
 
                 // Drain remaining queued events without blocking
@@ -210,6 +245,11 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
                         break;
                     }
 
+                    let next_type = msg_send!(next, c"type"; -> usize);
+                    if next_type == 15 {
+                        continue;
+                    }
+
                     let win = msg_send!(next, c"window"; -> Id);
                     if !win.is_null() {
                         let view = msg_send!(win, c"contentView"; -> Id);
@@ -225,7 +265,14 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
                         }
                     }
 
-                    msg_send!(app, c"sendEvent:", next => Id);
+                    if next_type == 10 || next_type == 11 {
+                        let flags = msg_send!(next, c"modifierFlags"; -> usize);
+                        if (flags & (1 << 20)) != 0 {
+                            msg_send!(app, c"sendEvent:", next => Id);
+                        }
+                    } else {
+                        msg_send!(app, c"sendEvent:", next => Id);
+                    }
                     msg_send!(app, c"updateWindows");
                 }
             }

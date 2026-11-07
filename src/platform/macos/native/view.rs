@@ -67,6 +67,13 @@ pub fn ensure_litty_view_class() {
         }
         class_addMethod(cls, sel(c"isFlipped"), is_flipped as *const (), c"B@:".as_ptr() as *const _);
 
+        // keyDown: and keyUp: consume key events silently so NSResponder does not NSBeep()
+        extern "C" fn key_down(_this: Id, _cmd: Id, _event: Id) {}
+        class_addMethod(cls, sel(c"keyDown:"), key_down as *const (), c"v@:@".as_ptr() as *const _);
+
+        extern "C" fn key_up(_this: Id, _cmd: Id, _event: Id) {}
+        class_addMethod(cls, sel(c"keyUp:"), key_up as *const (), c"v@:@".as_ptr() as *const _);
+
         // tag and setTag:
         extern "C" fn view_tag(this: Id, _cmd: Id) -> usize {
             unsafe {
