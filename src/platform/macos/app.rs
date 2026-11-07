@@ -41,7 +41,7 @@ pub fn register_reopen_handler(sink: crate::platform::EventSink) {
 
     // SAFETY: the method implementations match the type encodings given.
     unsafe {
-        let Some(delegate) = shared_application().and_then(|app| send_id(app, c"delegate")) else { return };
+        let Some(delegate) = shared_application().and_then(|app| app_delegate(app)) else { return };
         let Some(delegate_cls) = send_id(delegate, c"class") else { return };
         let methods: [(&CStr, *const (), &CStr); 2] = [
             (c"applicationShouldHandleReopen:hasVisibleWindows:", on_reopen as *const (), c"B@:@B"),
@@ -58,6 +58,30 @@ pub fn register_reopen_handler(sink: crate::platform::EventSink) {
         }
     }
     observe_system_appearance();
+}
+
+/// NSApp's delegate, installing an empty `LittyAppDelegate` when there is none:
+/// the native event loop never sets one, and without it AppKit has nowhere to
+/// deliver Dock clicks (`applicationShouldHandleReopen:`) or activation.
+unsafe fn app_delegate(app: Id) -> Option<Id> {
+    unsafe {
+        if let Some(delegate) = send_id(app, c"delegate") {
+            return Some(delegate);
+        }
+        let name = c"LittyAppDelegate";
+        let mut cls = objc_getClass(name.as_ptr());
+        if cls.is_null() {
+            cls = objc_allocateClassPair(class(c"NSObject")?, name.as_ptr(), 0);
+            if cls.is_null() {
+                return None;
+            }
+            objc_registerClassPair(cls);
+        }
+        // NSApp holds its delegate weakly: this +1 instance lives for the process.
+        let delegate = send_id(cls, c"alloc").and_then(|d| send_id(d, c"init"))?;
+        msg_send!(app, c"setDelegate:", delegate => Id);
+        Some(delegate)
+    }
 }
 
 /// Windows carry their own NSAppearance (matching the terminal background),
@@ -169,5 +193,35 @@ pub fn activate_app() {
         if let Some(app) = shared_application() {
             msg_send!(app, c"activateIgnoringOtherApps:", true => bool);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn dock_reopen_reaches_the_sink_without_a_preexisting_app_delegate() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        register_reopen_handler(Arc::new(move |e| log.lock().unwrap().push(e)));
+
+        // SAFETY: NSApp is live; the delegate method has the signature called here.
+        unsafe {
+            let app = shared_application().expect("NSApplication");
+            let delegate = send_id(app, c"delegate").expect("NSApp has a delegate after registration");
+            assert!(responds_to(delegate, c"applicationShouldHandleReopen:hasVisibleWindows:"));
+            assert!(responds_to(delegate, c"applicationDidBecomeActive:"));
+            let handled = msg_send!(
+                delegate,
+                c"applicationShouldHandleReopen:hasVisibleWindows:",
+                app => Id,
+                false => bool
+                ; -> bool
+            );
+            assert!(handled);
+        }
+        assert!(seen.lock().unwrap().contains(&crate::platform::PlatformEvent::Reopen));
     }
 }
