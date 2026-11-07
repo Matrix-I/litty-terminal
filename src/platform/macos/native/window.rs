@@ -47,8 +47,12 @@ impl NativeWindow {
             let height = spec.inner_size.height;
             let rect = NSRect { x: 100.0, y: 100.0, w: width, h: height };
 
-            // NSWindowStyleMask: Titled (1) | Closable (2) | Miniaturizable (4) | Resizable (8) | FullSizeContentView (32768)
-            let style_mask: usize = 1 | 2 | 4 | 8 | (1 << 15);
+            // NSWindowStyleMask: Titled (1) | Closable (2) | Miniaturizable (4) | Resizable (8)
+            let style_mask: usize = if spec.decorations {
+                1 | 2 | 4 | 8
+            } else {
+                0
+            };
 
             let win_cls = class(c"NSWindow").ok_or_else(|| std::io::Error::other("no NSWindow class"))?;
             let ns_window = msg_send!(
@@ -67,6 +71,11 @@ impl NativeWindow {
 
             if ns_window.is_null() {
                 return Err(std::io::Error::other("failed to create NSWindow"));
+            }
+
+            // Tabbing identifier for native tabs grouping
+            if let Some(tab_id) = ns_string("litty") {
+                msg_send!(ns_window, c"setTabbingIdentifier:", tab_id => Id);
             }
 
             // Create LittyView
@@ -90,7 +99,6 @@ impl NativeWindow {
             }
 
             // Window configuration
-            msg_send!(ns_window, c"setTitlebarAppearsTransparent:", true => bool);
             msg_send!(ns_window, c"setAcceptsMouseMovedEvents:", true => bool);
 
             if spec.visible {
