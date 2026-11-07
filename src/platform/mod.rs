@@ -14,7 +14,7 @@ pub(crate) mod macos;
 use macos as imp;
 
 #[cfg(not(target_os = "macos"))]
-mod linux;
+pub(crate) mod linux;
 #[cfg(not(target_os = "macos"))]
 use linux as imp;
 

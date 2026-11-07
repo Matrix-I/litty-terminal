@@ -10,7 +10,7 @@ use winit::dpi as wdpi;
 use winit::event as ww_event;
 use winit::event::{KeyEvent, StartCause};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use winit::event_loop::EventLoop;
 use winit::keyboard::{
     Key as WKey, KeyCode as WKeyCode, KeyLocation as WKeyLocation, ModifiersState,
@@ -302,6 +302,7 @@ pub struct Monitor {
 
 /// Native handles a GPU backend creates its surface from. Each variant is
 /// read by one platform's backend only.
+#[derive(Copy, Clone)]
 pub enum RawHandle {
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     AppKit { ns_view: *mut c_void },
@@ -314,15 +315,22 @@ pub enum RawHandle {
 }
 
 pub enum EventProxyInner<T: 'static> {
+    #[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
     Winit(winit::event_loop::EventLoopProxy<T>),
     #[cfg(target_os = "macos")]
     Native(std::sync::mpsc::Sender<T>),
+    #[cfg(target_os = "linux")]
+    NativeLinux {
+        sender: std::sync::mpsc::Sender<T>,
+        eventfd: std::os::fd::RawFd,
+    },
 }
 
 /// Posts events from any thread to the thread that runs the event loop.
 pub struct EventProxy<T: 'static>(pub(crate) EventProxyInner<T>);
 
 impl<T: 'static> EventProxy<T> {
+    #[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
     pub fn new(proxy: winit::event_loop::EventLoopProxy<T>) -> Self {
         EventProxy(EventProxyInner::Winit(proxy))
     }
@@ -330,6 +338,11 @@ impl<T: 'static> EventProxy<T> {
     #[cfg(target_os = "macos")]
     pub fn from_native(sender: std::sync::mpsc::Sender<T>) -> Self {
         EventProxy(EventProxyInner::Native(sender))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn from_native_linux(sender: std::sync::mpsc::Sender<T>, eventfd: std::os::fd::RawFd) -> Self {
+        EventProxy(EventProxyInner::NativeLinux { sender, eventfd })
     }
 
     /// Fails only once the event loop has exited, when nobody is left to handle `event`.
@@ -342,6 +355,15 @@ impl<T: 'static> EventProxy<T> {
                 crate::platform::macos::native::app::wakeup_main_loop();
                 res
             }
+            #[cfg(target_os = "linux")]
+            EventProxyInner::NativeLinux { sender, eventfd } => {
+                let res = sender.send(event).map_err(|e| e.0);
+                let val: u64 = 1;
+                unsafe {
+                    libc::write(*eventfd, &val as *const _ as *const std::ffi::c_void, 8);
+                }
+                res
+            }
         }
     }
 }
@@ -352,19 +374,28 @@ impl<T: 'static> Clone for EventProxy<T> {
             EventProxyInner::Winit(p) => EventProxyInner::Winit(p.clone()),
             #[cfg(target_os = "macos")]
             EventProxyInner::Native(s) => EventProxyInner::Native(s.clone()),
+            #[cfg(target_os = "linux")]
+            EventProxyInner::NativeLinux { sender, eventfd } => EventProxyInner::NativeLinux {
+                sender: sender.clone(),
+                eventfd: *eventfd,
+            },
         })
     }
 }
 
 pub enum WindowInner {
+    #[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
     Winit(ww::Window),
     #[cfg(target_os = "macos")]
     Native(crate::platform::macos::native::window::NativeWindow),
+    #[cfg(target_os = "linux")]
+    NativeLinux(crate::platform::linux::native::window::NativeWindow),
 }
 
 pub struct Window(pub WindowInner);
 
 impl Window {
+    #[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
     fn from_winit(window: ww::Window) -> Self {
         Window(WindowInner::Winit(window))
     }
@@ -374,6 +405,11 @@ impl Window {
         Window(WindowInner::Native(window))
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn from_native_linux(window: crate::platform::linux::native::window::NativeWindow) -> Self {
+        Window(WindowInner::NativeLinux(window))
+    }
+
     /// Escape hatch for backend-specific code that has no equivalent yet (macOS native tabs).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) fn winit(&self) -> &ww::Window {
@@ -381,6 +417,8 @@ impl Window {
             WindowInner::Winit(w) => w,
             #[cfg(target_os = "macos")]
             WindowInner::Native(_) => panic!("winit requested on native window"),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(_) => panic!("winit requested on native window"),
         }
     }
 
@@ -389,6 +427,8 @@ impl Window {
             WindowInner::Winit(w) => w.id().into(),
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.id(),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.id(),
         }
     }
 
@@ -397,6 +437,8 @@ impl Window {
             WindowInner::Winit(w) => w.request_redraw(),
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.request_redraw(),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.request_redraw(),
         }
     }
 
@@ -405,6 +447,8 @@ impl Window {
             WindowInner::Winit(w) => w.scale_factor(),
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.scale_factor(),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.scale_factor(),
         }
     }
 
@@ -416,6 +460,8 @@ impl Window {
             }
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.inner_size(),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.inner_size(),
         }
     }
 
@@ -426,6 +472,8 @@ impl Window {
             }
             #[cfg(target_os = "macos")]
             WindowInner::Native(_) => {}
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(_) => {}
         }
     }
 
@@ -437,6 +485,8 @@ impl Window {
             }
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.outer_position(),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.outer_position(),
         }
     }
 
@@ -448,6 +498,8 @@ impl Window {
             }
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.outer_position(),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.outer_position(),
         }
     }
 
@@ -458,6 +510,10 @@ impl Window {
             }
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => {
+                w.set_outer_position(LogicalPosition::new(position.x as f64, position.y as f64));
+            }
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => {
                 w.set_outer_position(LogicalPosition::new(position.x as f64, position.y as f64));
             }
         }
@@ -472,6 +528,10 @@ impl Window {
             WindowInner::Native(w) => {
                 w.set_outer_position(position);
             }
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => {
+                w.set_outer_position(position);
+            }
         }
     }
 
@@ -484,6 +544,8 @@ impl Window {
                     w.focus_window();
                 }
             }
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(_) => {}
         }
     }
 
@@ -492,6 +554,8 @@ impl Window {
             WindowInner::Winit(w) => w.is_visible(),
             #[cfg(target_os = "macos")]
             WindowInner::Native(_) => Some(true),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(_) => Some(true),
         }
     }
 
@@ -500,6 +564,8 @@ impl Window {
             WindowInner::Winit(w) => w.is_minimized(),
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.is_minimized(),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.is_minimized(),
         }
     }
 
@@ -508,6 +574,8 @@ impl Window {
             WindowInner::Winit(w) => w.set_minimized(minimized),
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.set_minimized(minimized),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.set_minimized(minimized),
         }
     }
 
@@ -516,6 +584,8 @@ impl Window {
             WindowInner::Winit(w) => w.is_maximized(),
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.is_maximized(),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.is_maximized(),
         }
     }
 
@@ -524,6 +594,8 @@ impl Window {
             WindowInner::Winit(w) => w.set_maximized(maximized),
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.set_maximized(maximized),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.set_maximized(maximized),
         }
     }
 
@@ -532,6 +604,8 @@ impl Window {
             WindowInner::Winit(w) => w.fullscreen().is_some(),
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.is_fullscreen(),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.is_fullscreen(),
         }
     }
 
@@ -540,6 +614,8 @@ impl Window {
             WindowInner::Winit(w) => w.set_title(title),
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.set_title(title),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.set_title(title),
         }
     }
 
@@ -548,6 +624,8 @@ impl Window {
             WindowInner::Winit(w) => w.focus_window(),
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.focus_window(),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(_) => {}
         }
     }
 
@@ -556,6 +634,8 @@ impl Window {
             WindowInner::Winit(w) => w.set_cursor(ww::CursorIcon::from(icon)),
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.set_cursor(icon),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.set_cursor_icon(icon),
         }
     }
 
@@ -564,6 +644,8 @@ impl Window {
             WindowInner::Winit(w) => w.set_cursor_visible(visible),
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.set_cursor_visible(visible),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.set_cursor_visible(visible),
         }
     }
 
@@ -572,6 +654,8 @@ impl Window {
             WindowInner::Winit(w) => w.theme().map(Theme::from),
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.theme(),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.theme(),
         }
     }
 
@@ -580,6 +664,8 @@ impl Window {
             WindowInner::Winit(w) => w.set_ime_allowed(allowed),
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.set_ime_allowed(allowed),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.set_ime_allowed(allowed),
         }
     }
 
@@ -593,6 +679,8 @@ impl Window {
             }
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.set_ime_cursor_area(position, size),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.set_ime_cursor_area(position, size),
         }
     }
 
@@ -603,6 +691,8 @@ impl Window {
             }
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.request_attention(requested),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.request_attention(requested),
         }
     }
 
@@ -611,6 +701,8 @@ impl Window {
             WindowInner::Winit(w) => w.drag_window().map_err(|_| Unsupported),
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.drag_window(),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.drag_window(),
         }
     }
 
@@ -619,6 +711,8 @@ impl Window {
             WindowInner::Winit(w) => w.drag_resize_window(direction.into()).map_err(|_| Unsupported),
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.drag_resize_window(direction),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.drag_resize_window(direction),
         }
     }
 
@@ -635,6 +729,8 @@ impl Window {
             }
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.current_monitor(),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.current_monitor(),
         }
     }
 
@@ -665,6 +761,8 @@ impl Window {
             }
             #[cfg(target_os = "macos")]
             WindowInner::Native(w) => w.raw_handle(),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.raw_handle(),
         }
     }
 }
@@ -731,7 +829,7 @@ pub enum WindowEvent {
     RedrawRequested,
 }
 
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
 fn convert_event(event: ww_event::WindowEvent) -> Option<WindowEvent> {
     use ww_event::WindowEvent as E;
     Some(match event {
@@ -780,7 +878,7 @@ fn convert_event(event: ww_event::WindowEvent) -> Option<WindowEvent> {
     })
 }
 
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
 fn convert_mods(state: ModifiersState) -> Mods {
     Mods {
         ctrl: state.control_key(),
@@ -790,7 +888,7 @@ fn convert_mods(state: ModifiersState) -> Mods {
     }
 }
 
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
 fn convert_key_event(ev: &KeyEvent) -> KeyInput {
     KeyInput {
         logical: convert_key(&ev.logical_key),
@@ -803,7 +901,7 @@ fn convert_key_event(ev: &KeyEvent) -> KeyInput {
     }
 }
 
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
 fn convert_key(k: &WKey) -> Key {
     match k {
         WKey::Character(c) => Key::Character(c.to_string()),
@@ -812,7 +910,7 @@ fn convert_key(k: &WKey) -> Key {
     }
 }
 
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
 fn named(k: WNamedKey) -> Option<NamedKey> {
     Some(match k {
         WNamedKey::Enter => NamedKey::Enter,
@@ -879,7 +977,7 @@ fn named(k: WNamedKey) -> Option<NamedKey> {
     })
 }
 
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
 fn physical(k: WPhysicalKey) -> PhysicalKey {
     match k {
         WPhysicalKey::Code(c) => PhysicalKey::Code(code(c)),
@@ -889,7 +987,7 @@ fn physical(k: WPhysicalKey) -> PhysicalKey {
     }
 }
 
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
 fn code(c: WKeyCode) -> KeyCode {
     match c {
         WKeyCode::KeyA => KeyCode::KeyA,
@@ -945,7 +1043,7 @@ fn code(c: WKeyCode) -> KeyCode {
     }
 }
 
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
 fn location(l: WKeyLocation) -> KeyLocation {
     match l {
         WKeyLocation::Standard => KeyLocation::Standard,
@@ -977,17 +1075,19 @@ pub struct WindowSpec {
 }
 
 pub enum LoopCtxInner<'a> {
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
     Winit(&'a ActiveEventLoop),
     #[cfg(target_os = "macos")]
     Native(&'a crate::platform::macos::native::app::NativeLoopCtx),
+    #[cfg(target_os = "linux")]
+    NativeLinux(&'a crate::platform::linux::native::app::NativeLoopCtx),
 }
 
 /// The running event loop, as seen from a handler callback.
 pub struct LoopCtx<'a>(pub(crate) LoopCtxInner<'a>);
 
 impl<'a> LoopCtx<'a> {
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
     pub fn from_winit(w: &'a ActiveEventLoop) -> Self {
         LoopCtx(LoopCtxInner::Winit(w))
     }
@@ -997,11 +1097,18 @@ impl<'a> LoopCtx<'a> {
         LoopCtx(LoopCtxInner::Native(n))
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn from_native_linux(n: &'a crate::platform::linux::native::app::NativeLoopCtx) -> Self {
+        LoopCtx(LoopCtxInner::NativeLinux(n))
+    }
+
     pub fn exit(&self) {
         match &self.0 {
             LoopCtxInner::Winit(w) => w.exit(),
             #[cfg(target_os = "macos")]
             LoopCtxInner::Native(n) => n.exit(),
+            #[cfg(target_os = "linux")]
+            LoopCtxInner::NativeLinux(n) => n.exit(),
         }
     }
 
@@ -1016,6 +1123,8 @@ impl<'a> LoopCtx<'a> {
             }
             #[cfg(target_os = "macos")]
             LoopCtxInner::Native(n) => n.set_flow(flow),
+            #[cfg(target_os = "linux")]
+            LoopCtxInner::NativeLinux(n) => n.set_flow(flow),
         }
     }
 
@@ -1033,16 +1142,11 @@ impl<'a> LoopCtx<'a> {
                     Some(p) => attrs.with_position(wdpi::LogicalPosition::new(p.x, p.y)),
                     None => attrs,
                 };
-                // Wayland app_id / X11 WM_CLASS must match `litty.desktop` and the
-                // hicolor icon name, or the shell shows a generic icon.
                 #[cfg(target_os = "linux")]
                 let attrs = {
                     use winit::platform::wayland::WindowAttributesExtWayland;
                     attrs.with_name("litty", "litty")
                 };
-                // Native tabs group under one identifier. Created hidden so AppKit
-                // cannot merge a New Window into a tab of the focused one before
-                // tabbing is turned off for it; the caller shows it afterwards.
                 #[cfg(target_os = "macos")]
                 let attrs = {
                     use winit::platform::macos::WindowAttributesExtMacOS;
@@ -1053,6 +1157,10 @@ impl<'a> LoopCtx<'a> {
             #[cfg(target_os = "macos")]
             LoopCtxInner::Native(_) => {
                 crate::platform::macos::native::window::NativeWindow::create(spec).map(Window::from_native)
+            }
+            #[cfg(target_os = "linux")]
+            LoopCtxInner::NativeLinux(_) => {
+                crate::platform::linux::native::window::NativeWindow::create(spec).map(Window::from_native_linux)
             }
         }
     }
@@ -1068,7 +1176,7 @@ pub trait EventHandler<T: 'static> {
     fn about_to_wait(&mut self, ctx: &LoopCtx);
 }
 
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
 struct Driver<H>(H);
 
 impl<T: 'static, H: EventHandler<T>> ApplicationHandler<T> for Driver<H> {
@@ -1102,7 +1210,11 @@ pub fn run<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T>) -> H
     {
         crate::platform::macos::native::app::run_native(make);
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        crate::platform::linux::native::app::run_native(make);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let event_loop = EventLoop::<T>::with_user_event().build().expect("event loop");
         event_loop.set_control_flow(ControlFlow::Wait);
