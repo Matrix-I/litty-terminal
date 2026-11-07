@@ -1,38 +1,83 @@
 //! Event translation from NSEvent to WindowEvent and KeyInput.
 
+use std::ffi::c_void;
+
 use crate::platform::gui::{ButtonState, MouseButton, PhysicalPosition, ScrollDelta, TouchPhase, WindowEvent, WindowId};
 use crate::platform::input::{Key, KeyCode, KeyInput, KeyLocation, Mods, NamedKey, PhysicalKey};
 use crate::platform::macos::objc::*;
 
-pub unsafe fn convert_ns_event(event: Id, _id: WindowId, scale: f64) -> Option<WindowEvent> {
+/// Process an `NSEvent`, converting it to one or more `WindowEvent`s and invoking `emit`.
+///
+/// Mouse positions are converted from window coordinates into view coordinates
+/// (`LittyView` is flipped, placing (0, 0) at the top-left corner), ensuring
+/// pixel-perfect alignment with the terminal grid, tab bar, and scrollbars.
+pub unsafe fn process_ns_event<F: FnMut(WindowEvent)>(
+    event: Id,
+    view: Id,
+    scale: f64,
+    mut emit: F,
+) {
     unsafe {
         let event_type = msg_send!(event, c"type"; -> usize);
         match event_type {
             // NSLeftMouseDown = 1, NSRightMouseDown = 3, NSOtherMouseDown = 25
             1 | 3 | 25 => {
+                let loc = msg_send!(event, c"locationInWindow"; -> NSPoint);
+                let pt = if !view.is_null() {
+                    msg_send!(view, c"convertPoint:fromView:", loc => NSPoint, std::ptr::null_mut::<c_void>() => Id; -> NSPoint)
+                } else {
+                    loc
+                };
+                let pos = PhysicalPosition::new(pt.x * scale, pt.y * scale);
+                emit(WindowEvent::CursorMoved(pos));
+
                 let button = match event_type {
                     1 => MouseButton::Left,
                     3 => MouseButton::Right,
                     _ => MouseButton::Middle,
                 };
-                Some(WindowEvent::MouseInput { state: ButtonState::Pressed, button })
+                emit(WindowEvent::MouseInput { state: ButtonState::Pressed, button });
             }
             // NSLeftMouseUp = 2, NSRightMouseUp = 4, NSOtherMouseUp = 26
             2 | 4 | 26 => {
+                let loc = msg_send!(event, c"locationInWindow"; -> NSPoint);
+                let pt = if !view.is_null() {
+                    msg_send!(view, c"convertPoint:fromView:", loc => NSPoint, std::ptr::null_mut::<c_void>() => Id; -> NSPoint)
+                } else {
+                    loc
+                };
+                let pos = PhysicalPosition::new(pt.x * scale, pt.y * scale);
+                emit(WindowEvent::CursorMoved(pos));
+
                 let button = match event_type {
                     2 => MouseButton::Left,
-                    3 => MouseButton::Right,
+                    4 => MouseButton::Right,
                     _ => MouseButton::Middle,
                 };
-                Some(WindowEvent::MouseInput { state: ButtonState::Released, button })
+                emit(WindowEvent::MouseInput { state: ButtonState::Released, button });
             }
             // NSMouseMoved = 5, NSLeftMouseDragged = 6, NSRightMouseDragged = 7, NSOtherMouseDragged = 27
             5 | 6 | 7 | 27 => {
                 let loc = msg_send!(event, c"locationInWindow"; -> NSPoint);
-                Some(WindowEvent::CursorMoved(PhysicalPosition::new(loc.x * scale, loc.y * scale)))
+                let pt = if !view.is_null() {
+                    msg_send!(view, c"convertPoint:fromView:", loc => NSPoint, std::ptr::null_mut::<c_void>() => Id; -> NSPoint)
+                } else {
+                    loc
+                };
+                let pos = PhysicalPosition::new(pt.x * scale, pt.y * scale);
+                emit(WindowEvent::CursorMoved(pos));
             }
             // NSScrollWheel = 22
             22 => {
+                let loc = msg_send!(event, c"locationInWindow"; -> NSPoint);
+                let pt = if !view.is_null() {
+                    msg_send!(view, c"convertPoint:fromView:", loc => NSPoint, std::ptr::null_mut::<c_void>() => Id; -> NSPoint)
+                } else {
+                    loc
+                };
+                let pos = PhysicalPosition::new(pt.x * scale, pt.y * scale);
+                emit(WindowEvent::CursorMoved(pos));
+
                 let dy = msg_send!(event, c"scrollingDeltaY"; -> f64);
                 let has_prec = msg_send!(event, c"hasPreciseScrollingDeltas"; -> bool);
                 let delta = if has_prec {
@@ -40,23 +85,34 @@ pub unsafe fn convert_ns_event(event: Id, _id: WindowId, scale: f64) -> Option<W
                 } else {
                     ScrollDelta::Lines { y: dy as f32 }
                 };
-                Some(WindowEvent::MouseWheel { delta, phase: TouchPhase::Moved })
+                emit(WindowEvent::MouseWheel { delta, phase: TouchPhase::Moved });
             }
             // NSKeyDown = 10, NSKeyUp = 11
             10 | 11 => {
                 let pressed = event_type == 10;
                 let key_input = convert_key_event(event, pressed);
-                Some(WindowEvent::Key(key_input))
+                emit(WindowEvent::Key(key_input));
             }
             // NSFlagsChanged = 12
             12 => {
                 let flags = msg_send!(event, c"modifierFlags"; -> usize);
                 let mods = convert_modifier_flags(flags);
-                Some(WindowEvent::ModifiersChanged(mods))
+                emit(WindowEvent::ModifiersChanged(mods));
             }
-            _ => None,
+            _ => {}
         }
     }
+}
+
+#[allow(dead_code)]
+pub unsafe fn convert_ns_event(event: Id, _id: WindowId, scale: f64) -> Option<WindowEvent> {
+    let mut result = None;
+    unsafe {
+        process_ns_event(event, std::ptr::null_mut(), scale, |ev| {
+            result = Some(ev);
+        });
+    }
+    result
 }
 
 pub fn convert_modifier_flags(flags: usize) -> Mods {
@@ -189,5 +245,29 @@ unsafe fn convert_key_event(event: Id, pressed: bool) -> KeyInput {
             pressed,
             repeat: is_repeat,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_convert_modifier_flags() {
+        // NSEventModifierFlagControl = 1 << 18
+        // NSEventModifierFlagOption = 1 << 19
+        // NSEventModifierFlagShift = 1 << 17
+        // NSEventModifierFlagCommand = 1 << 20
+        let mods_none = convert_modifier_flags(0);
+        assert!(!mods_none.ctrl && !mods_none.alt && !mods_none.shift && !mods_none.sup);
+
+        let mods_cmd_shift = convert_modifier_flags((1 << 20) | (1 << 17));
+        assert!(mods_cmd_shift.sup);
+        assert!(mods_cmd_shift.shift);
+        assert!(!mods_cmd_shift.ctrl);
+        assert!(!mods_cmd_shift.alt);
+
+        let mods_all = convert_modifier_flags((1 << 18) | (1 << 19) | (1 << 17) | (1 << 20));
+        assert!(mods_all.ctrl && mods_all.alt && mods_all.shift && mods_all.sup);
     }
 }

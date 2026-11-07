@@ -67,12 +67,36 @@ pub fn ensure_litty_view_class() {
         }
         class_addMethod(cls, sel(c"isFlipped"), is_flipped as *const (), c"B@:".as_ptr() as *const _);
 
+        // acceptsFirstMouse: -> YES (click-through on inactive window)
+        extern "C" fn accepts_first_mouse(_this: Id, _cmd: Id, _event: Id) -> bool {
+            true
+        }
+        class_addMethod(cls, sel(c"acceptsFirstMouse:"), accepts_first_mouse as *const (), c"B@:@".as_ptr() as *const _);
+
         // keyDown: and keyUp: consume key events silently so NSResponder does not NSBeep()
         extern "C" fn key_down(_this: Id, _cmd: Id, _event: Id) {}
         class_addMethod(cls, sel(c"keyDown:"), key_down as *const (), c"v@:@".as_ptr() as *const _);
 
         extern "C" fn key_up(_this: Id, _cmd: Id, _event: Id) {}
         class_addMethod(cls, sel(c"keyUp:"), key_up as *const (), c"v@:@".as_ptr() as *const _);
+
+        // Mouse responder stubs so AppKit delivers drags and clicks without beeping
+        extern "C" fn mouse_event_stub(_this: Id, _cmd: Id, _event: Id) {}
+        for sel_name in &[
+            c"mouseDown:",
+            c"mouseUp:",
+            c"mouseMoved:",
+            c"mouseDragged:",
+            c"rightMouseDown:",
+            c"rightMouseUp:",
+            c"rightMouseDragged:",
+            c"otherMouseDown:",
+            c"otherMouseUp:",
+            c"otherMouseDragged:",
+            c"scrollWheel:",
+        ] {
+            class_addMethod(cls, sel(sel_name), mouse_event_stub as *const (), c"v@:@".as_ptr() as *const _);
+        }
 
         // tag and setTag:
         extern "C" fn view_tag(this: Id, _cmd: Id) -> usize {
