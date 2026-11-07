@@ -222,14 +222,13 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
                 handler.user_event(&loop_ctx, user_ev);
             }
 
-            // 2. Poll native X11 window events if present
-            if let Some(x11) = super::x11::get_active_x11() {
-                let wins = WINDOWS.lock().clone();
-                for win in wins {
-                    let evs = x11.poll_events(win.id());
-                    for ev in evs {
-                        handler.window_event(&loop_ctx, win.id(), ev);
-                    }
+            // 2. Poll each window's own X11 connection
+            let wins = WINDOWS.lock().clone();
+            for win in wins {
+                let Some(x11) = win.x11() else { continue };
+                for ev in x11.poll_events(win.id()) {
+                    win.observe(&ev);
+                    handler.window_event(&loop_ctx, win.id(), ev);
                 }
             }
 
@@ -258,7 +257,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
 
             // 5. Determine epoll_wait timeout
             let flow_mode = native_ctx.flow_mode.load(Ordering::SeqCst);
-            let has_x11_pending = super::x11::get_active_x11().is_some_and(|x| x.pending());
+            let has_x11_pending = WINDOWS.lock().iter().any(|w| w.x11().is_some_and(|x| x.pending()));
             let timeout = if has_x11_pending || flow_mode == 1 {
                 0 // Non-blocking poll if events are pending or poll requested
             } else {
