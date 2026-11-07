@@ -164,7 +164,7 @@ static INSTALLING: AtomicBool = AtomicBool::new(false);
 /// Trigger an interactive check for updates (e.g. from macOS menu or keybinding).
 /// Runs the network check on a background thread and posts the result back to the main thread.
 pub fn start_interactive_check(
-    proxy: winit::event_loop::EventLoopProxy<crate::AppEvent>,
+    proxy: crate::platform::gui::EventProxy<crate::AppEvent>,
     channel: AutoUpdateChannel,
 ) {
     if CHECKING.swap(true, Ordering::SeqCst) {
@@ -181,7 +181,7 @@ pub fn start_interactive_check(
 /// Returns `false` (and does nothing) when an install is already running in this process.
 pub fn start_install_update(
     release: ReleaseInfo,
-    proxy: winit::event_loop::EventLoopProxy<crate::AppEvent>,
+    proxy: crate::platform::gui::EventProxy<crate::AppEvent>,
 ) -> bool {
     if INSTALLING.swap(true, Ordering::SeqCst) {
         return false;

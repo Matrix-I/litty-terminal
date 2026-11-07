@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use winit::event_loop::EventLoopProxy;
+use crate::platform::gui::EventProxy;
 
 use crate::keymap;
 use crate::update;
@@ -55,7 +55,7 @@ impl From<crate::platform::PlatformEvent> for AppEvent {
 }
 
 /// The sink platform callbacks use to post their events to the event loop.
-pub fn platform_sink(proxy: EventLoopProxy<AppEvent>) -> crate::platform::EventSink {
+pub fn platform_sink(proxy: EventProxy<AppEvent>) -> crate::platform::EventSink {
     Arc::new(move |event| {
         let _ = proxy.send_event(event.into());
     })
@@ -65,12 +65,12 @@ pub fn platform_sink(proxy: EventLoopProxy<AppEvent>) -> crate::platform::EventS
 /// into a single pending `WakeUp`.
 #[derive(Clone)]
 pub struct Waker {
-    pub proxy: EventLoopProxy<AppEvent>,
+    pub proxy: EventProxy<AppEvent>,
     pub queued: Arc<AtomicBool>,
 }
 
 impl Waker {
-    pub fn new(proxy: EventLoopProxy<AppEvent>) -> Self {
+    pub fn new(proxy: EventProxy<AppEvent>) -> Self {
         Waker {
             proxy,
             queued: Arc::new(AtomicBool::new(false)),

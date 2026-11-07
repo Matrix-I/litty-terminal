@@ -17,7 +17,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use winit::event_loop::EventLoopProxy;
+use crate::platform::gui::EventProxy;
 
 const MAX_QUEUED_INPUT: usize = 64 * 1024;
 #[derive(Default, Debug, Clone)]
@@ -193,7 +193,7 @@ pub struct Task {
     pub context: (String, String),
     pub grid: Arc<Mutex<Grid>>,
     pub cancel: Arc<AtomicBool>,
-    pub proxy: EventLoopProxy<AppEvent>,
+    pub proxy: EventProxy<AppEvent>,
 }
 pub fn spawn(task: Task) {
     let Task {
