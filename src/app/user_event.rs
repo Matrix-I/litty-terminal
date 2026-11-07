@@ -11,14 +11,13 @@ use crate::terminal::grid;
 use crate::{bench, update};
 use crate::platform;
 
-use winit::event_loop::ActiveEventLoop;
 
 use crate::platform::process::spawn_detached;
 #[cfg(target_os = "linux")]
 use crate::platform::process::linux_open_command;
 
 impl App {
-    pub(super) fn on_child_exit(&mut self, event_loop: &ActiveEventLoop, exited_id: u64) {
+    pub(super) fn on_child_exit(&mut self, event_loop: &crate::platform::gui::LoopCtx, exited_id: u64) {
         // A pane of a window that was already closed: nothing to do.
         let Some(s) = self
             .windows
@@ -154,7 +153,7 @@ impl App {
         }
     }
 
-    pub(super) fn on_bench_action(&mut self, event_loop: &ActiveEventLoop, cmd: crate::bench::BenchCommand) {
+    pub(super) fn on_bench_action(&mut self, event_loop: &crate::platform::gui::LoopCtx, cmd: crate::bench::BenchCommand) {
         match cmd {
             bench::BenchCommand::OpenTabInLastWindow => {
                 if let Some(s) = self.windows.last_mut() {

@@ -18,7 +18,6 @@ mod terminal_io;
 mod user_event;
 mod window;
 mod window_event;
-mod winit_input;
 
 use actions::run_action;
 use ai_bridge::handle_ai_requests;
@@ -47,10 +46,7 @@ use crate::{bench, update};
 use crate::platform;
 use crate::{AppEvent, Waker};
 
-use winit::application::ApplicationHandler;
-use crate::platform::gui::{LogicalPosition, PhysicalPosition, WindowId};
-use winit::event::{StartCause, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use crate::platform::gui::{EventHandler, Flow, LogicalPosition, LoopCtx, PhysicalPosition, WindowEvent, WindowId};
 
 
 struct App {
@@ -81,7 +77,7 @@ impl App {
 
     /// Show the Quick Terminal (creating it on first use) or hide it when it is
     /// already in front.
-    fn toggle_quick_terminal(&mut self, event_loop: &ActiveEventLoop) {
+    fn toggle_quick_terminal(&mut self, event_loop: &LoopCtx) {
         let waker = self.waker.clone();
         if let Some(i) = self.windows.iter().position(|s| s.quick) {
             let s = &mut self.windows[i];
@@ -112,7 +108,7 @@ impl App {
 
     /// Open each tab dragged out of a tab bar in a window of its own. If the window
     /// cannot be created the tab goes back to the window it came from.
-    fn open_torn_off_tabs(&mut self, event_loop: &ActiveEventLoop) {
+    fn open_torn_off_tabs(&mut self, event_loop: &LoopCtx) {
         let torn: Vec<_> = self.windows.iter_mut().filter_map(|s| s.requests.tear_off.take()).collect();
         for torn in torn {
             let from = torn.from;
@@ -230,7 +226,7 @@ impl App {
     }
 
     /// Apply what event handlers asked for: quit, open new windows, close emptied ones.
-    fn process_window_requests(&mut self, event_loop: &ActiveEventLoop) {
+    fn process_window_requests(&mut self, event_loop: &LoopCtx) {
         if self.windows.iter_mut().any(|s| std::mem::take(&mut s.requests.reload_config)) {
             for s in &mut self.windows {
                 reload_config(s);
@@ -299,16 +295,16 @@ impl App {
     }
 }
 
-impl ApplicationHandler<AppEvent> for App {
-    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
-        if let StartCause::ResumeTimeReached { .. } = cause {
+impl EventHandler<AppEvent> for App {
+    fn cycle_started(&mut self, timer_fired: bool) {
+        if timer_fired {
             for s in self.windows.iter().filter(|s| !s.tabs.is_empty() && !s.occluded) {
                 s.window.request_redraw();
             }
         }
     }
 
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+    fn resumed(&mut self, event_loop: &LoopCtx) {
         if !self.windows.is_empty() {
             return;
         }
@@ -355,7 +351,7 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+    fn user_event(&mut self, event_loop: &LoopCtx, event: AppEvent) {
         match event {
             AppEvent::AiStatus {pane_id,generation,text} => {
                 for s in &mut self.windows {
@@ -430,12 +426,12 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: winit::window::WindowId, event: WindowEvent) {
-        self.handle_window_event(id.into(), event);
+    fn window_event(&mut self, event_loop: &LoopCtx, id: WindowId, event: WindowEvent) {
+        self.handle_window_event(id, event);
         self.process_window_requests(event_loop);
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &LoopCtx) {
         if let Some(run) = &mut self.scroll_fps_run {
             let now = std::time::Instant::now();
             let Some(s) = self.windows.first_mut() else { event_loop.exit(); return };
@@ -460,11 +456,11 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 s.window.request_redraw();
             }
-            event_loop.set_control_flow(ControlFlow::WaitUntil(run.next));
+            event_loop.set_flow(Flow::WaitUntil(run.next));
             return;
         }
         if self.waker.is_queued() {
-            event_loop.set_control_flow(ControlFlow::Poll);
+            event_loop.set_flow(Flow::Poll);
             return;
         }
         let mut deadline: Option<std::time::Instant> = None;
@@ -507,20 +503,17 @@ impl ApplicationHandler<AppEvent> for App {
                 deadline = Some(deadline.map_or(blink, |d| d.min(blink)));
             }
         }
-        event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
+        event_loop.set_flow(deadline.map_or(Flow::Wait, Flow::WaitUntil));
     }
 }
 
 pub(crate) fn run(bench_ram_mode: bool, scroll_fps: bool) {
-    let event_loop = EventLoop::<AppEvent>::with_user_event().build().expect("event loop");
-    event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = App {
-        waker: Waker { proxy: crate::platform::gui::EventProxy::new(event_loop.create_proxy()), queued: Arc::new(AtomicBool::new(false)) },
+    crate::platform::gui::run(|proxy| App {
+        waker: Waker { proxy, queued: Arc::new(AtomicBool::new(false)) },
         windows: Vec::new(),
         bench_ram_mode,
         scroll_fps_run: scroll_fps.then(frame_metrics::ScrollRun::new),
-    };
-    event_loop.run_app(&mut app).expect("run app");
+    });
 }
 
 #[cfg(test)]

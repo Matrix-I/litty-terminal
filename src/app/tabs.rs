@@ -16,7 +16,6 @@ use crate::platform::process::system_bin;
 use crate::{config, split};
 use crate::{next_id, Pane, Tab, Waker};
 
-use winit::event_loop::ActiveEventLoop;
 
 use crate::split::{Direction, PaneRect, SplitDirection};
 
@@ -133,7 +132,7 @@ pub(super) fn close_last_window(s: &mut State) {
     s.requests.close = true;
 }
 
-pub(super) fn hide_or_exit_last_window(s: &mut State, event_loop: &ActiveEventLoop) {
+pub(super) fn hide_or_exit_last_window(s: &mut State, event_loop: &crate::platform::gui::LoopCtx) {
     if cfg!(target_os = "macos") {
         if s.secure_input && s.focused {
             platform::set_secure_input(false);

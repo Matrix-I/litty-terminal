@@ -3,6 +3,15 @@
 //! resolves shortcuts or encodes bytes for the shell, so `keymap` stays a pure
 //! function of this module's types.
 
+/// Modifier keys held with a key press (`sup` = Cmd on macOS, Super on Linux).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Mods {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub sup: bool,
+}
+
 /// Logical key produced by the layout, as opposed to its physical position.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Key {

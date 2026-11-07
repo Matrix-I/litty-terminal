@@ -3,9 +3,21 @@
 //! single thing the native AppKit / Wayland / X11 backends replace.
 
 use std::ffi::c_void;
+use std::time::Instant;
 
+use winit::application::ApplicationHandler;
 use winit::dpi as wdpi;
+use winit::event as ww_event;
+use winit::event::{KeyEvent, StartCause};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{
+    Key as WKey, KeyCode as WKeyCode, KeyLocation as WKeyLocation, ModifiersState,
+    NamedKey as WNamedKey, PhysicalKey as WPhysicalKey,
+};
+use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window as ww;
+
+use super::input::{Key, KeyCode, KeyInput, KeyLocation, Mods, NamedKey, PhysicalKey};
 
 /// Stable identity of a window for the lifetime of the process.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -310,7 +322,7 @@ impl<T: 'static> Clone for EventProxy<T> {
 pub struct Window(ww::Window);
 
 impl Window {
-    pub fn from_winit(window: ww::Window) -> Self {
+    fn from_winit(window: ww::Window) -> Self {
         Window(window)
     }
 
@@ -466,6 +478,393 @@ impl Window {
     }
 }
 
+// ---- Events -----------------------------------------------------------------
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+    Other,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ButtonState {
+    Pressed,
+    Released,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum ScrollDelta {
+    /// Wheel notches (positive `y` scrolls up).
+    Lines { y: f32 },
+    Pixels(PhysicalPosition<f64>),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TouchPhase {
+    Started,
+    Moved,
+    Ended,
+    Cancelled,
+}
+
+/// Composed text input (Vietnamese Telex/VNI, CJK).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ime {
+    Enabled,
+    Preedit(String),
+    Commit(String),
+    Disabled,
+}
+
+#[derive(Clone, Debug)]
+pub enum WindowEvent {
+    CloseRequested,
+    ModifiersChanged(Mods),
+    Resized(PhysicalSize<u32>),
+    ScaleFactorChanged(f64),
+    Key(KeyInput),
+    Ime(Ime),
+    DroppedFile(std::path::PathBuf),
+    ThemeChanged(Theme),
+    Occluded(bool),
+    CursorMoved(PhysicalPosition<f64>),
+    MouseInput { state: ButtonState, button: MouseButton },
+    MouseWheel { delta: ScrollDelta, phase: TouchPhase },
+    Focused(bool),
+    RedrawRequested,
+}
+
+fn convert_event(event: ww_event::WindowEvent) -> Option<WindowEvent> {
+    use ww_event::WindowEvent as E;
+    Some(match event {
+        E::CloseRequested => WindowEvent::CloseRequested,
+        E::ModifiersChanged(m) => WindowEvent::ModifiersChanged(convert_mods(m.state())),
+        E::Resized(s) => WindowEvent::Resized(PhysicalSize::new(s.width, s.height)),
+        E::ScaleFactorChanged { scale_factor, .. } => WindowEvent::ScaleFactorChanged(scale_factor),
+        E::KeyboardInput { event, .. } => WindowEvent::Key(convert_key_event(&event)),
+        E::Ime(ime) => WindowEvent::Ime(match ime {
+            ww_event::Ime::Enabled => Ime::Enabled,
+            ww_event::Ime::Preedit(text, _) => Ime::Preedit(text),
+            ww_event::Ime::Commit(text) => Ime::Commit(text),
+            ww_event::Ime::Disabled => Ime::Disabled,
+        }),
+        E::DroppedFile(path) => WindowEvent::DroppedFile(path),
+        E::ThemeChanged(t) => WindowEvent::ThemeChanged(t.into()),
+        E::Occluded(o) => WindowEvent::Occluded(o),
+        E::CursorMoved { position, .. } => WindowEvent::CursorMoved(position.into()),
+        E::MouseInput { state, button, .. } => WindowEvent::MouseInput {
+            state: match state {
+                ww_event::ElementState::Pressed => ButtonState::Pressed,
+                ww_event::ElementState::Released => ButtonState::Released,
+            },
+            button: match button {
+                ww_event::MouseButton::Left => MouseButton::Left,
+                ww_event::MouseButton::Right => MouseButton::Right,
+                ww_event::MouseButton::Middle => MouseButton::Middle,
+                _ => MouseButton::Other,
+            },
+        },
+        E::MouseWheel { delta, phase, .. } => WindowEvent::MouseWheel {
+            delta: match delta {
+                ww_event::MouseScrollDelta::LineDelta(_, y) => ScrollDelta::Lines { y },
+                ww_event::MouseScrollDelta::PixelDelta(p) => ScrollDelta::Pixels(p.into()),
+            },
+            phase: match phase {
+                ww_event::TouchPhase::Started => TouchPhase::Started,
+                ww_event::TouchPhase::Moved => TouchPhase::Moved,
+                ww_event::TouchPhase::Ended => TouchPhase::Ended,
+                ww_event::TouchPhase::Cancelled => TouchPhase::Cancelled,
+            },
+        },
+        E::Focused(f) => WindowEvent::Focused(f),
+        E::RedrawRequested => WindowEvent::RedrawRequested,
+        _ => return None,
+    })
+}
+
+fn convert_mods(state: ModifiersState) -> Mods {
+    Mods {
+        ctrl: state.control_key(),
+        alt: state.alt_key(),
+        shift: state.shift_key(),
+        sup: state.super_key(),
+    }
+}
+
+fn convert_key_event(ev: &KeyEvent) -> KeyInput {
+    KeyInput {
+        logical: convert_key(&ev.logical_key),
+        unshifted: convert_key(&ev.key_without_modifiers()),
+        physical: physical(ev.physical_key),
+        location: location(ev.location),
+        text: ev.text.as_ref().map(|t| t.to_string()),
+        pressed: ev.state == ww_event::ElementState::Pressed,
+        repeat: ev.repeat,
+    }
+}
+
+fn convert_key(k: &WKey) -> Key {
+    match k {
+        WKey::Character(c) => Key::Character(c.to_string()),
+        WKey::Named(n) => named(*n).map_or(Key::Unidentified, Key::Named),
+        _ => Key::Unidentified,
+    }
+}
+
+fn named(k: WNamedKey) -> Option<NamedKey> {
+    Some(match k {
+        WNamedKey::Enter => NamedKey::Enter,
+        WNamedKey::Tab => NamedKey::Tab,
+        WNamedKey::Space => NamedKey::Space,
+        WNamedKey::Backspace => NamedKey::Backspace,
+        WNamedKey::Escape => NamedKey::Escape,
+        WNamedKey::Delete => NamedKey::Delete,
+        WNamedKey::Insert => NamedKey::Insert,
+        WNamedKey::Home => NamedKey::Home,
+        WNamedKey::End => NamedKey::End,
+        WNamedKey::PageUp => NamedKey::PageUp,
+        WNamedKey::PageDown => NamedKey::PageDown,
+        WNamedKey::ArrowUp => NamedKey::ArrowUp,
+        WNamedKey::ArrowDown => NamedKey::ArrowDown,
+        WNamedKey::ArrowLeft => NamedKey::ArrowLeft,
+        WNamedKey::ArrowRight => NamedKey::ArrowRight,
+        WNamedKey::F1 => NamedKey::F1,
+        WNamedKey::F2 => NamedKey::F2,
+        WNamedKey::F3 => NamedKey::F3,
+        WNamedKey::F4 => NamedKey::F4,
+        WNamedKey::F5 => NamedKey::F5,
+        WNamedKey::F6 => NamedKey::F6,
+        WNamedKey::F7 => NamedKey::F7,
+        WNamedKey::F8 => NamedKey::F8,
+        WNamedKey::F9 => NamedKey::F9,
+        WNamedKey::F10 => NamedKey::F10,
+        WNamedKey::F11 => NamedKey::F11,
+        WNamedKey::F12 => NamedKey::F12,
+        WNamedKey::F13 => NamedKey::F13,
+        WNamedKey::F14 => NamedKey::F14,
+        WNamedKey::F15 => NamedKey::F15,
+        WNamedKey::F16 => NamedKey::F16,
+        WNamedKey::F17 => NamedKey::F17,
+        WNamedKey::F18 => NamedKey::F18,
+        WNamedKey::F19 => NamedKey::F19,
+        WNamedKey::F20 => NamedKey::F20,
+        WNamedKey::Shift => NamedKey::Shift,
+        WNamedKey::Control => NamedKey::Control,
+        WNamedKey::Alt => NamedKey::Alt,
+        WNamedKey::Super => NamedKey::Super,
+        WNamedKey::Meta => NamedKey::Meta,
+        WNamedKey::Hyper => NamedKey::Hyper,
+        WNamedKey::CapsLock => NamedKey::CapsLock,
+        WNamedKey::NumLock => NamedKey::NumLock,
+        WNamedKey::ScrollLock => NamedKey::ScrollLock,
+        WNamedKey::PrintScreen => NamedKey::PrintScreen,
+        WNamedKey::Pause => NamedKey::Pause,
+        WNamedKey::ContextMenu => NamedKey::ContextMenu,
+        WNamedKey::Clear => NamedKey::Clear,
+        WNamedKey::MediaPlay => NamedKey::MediaPlay,
+        WNamedKey::MediaPause => NamedKey::MediaPause,
+        WNamedKey::MediaPlayPause => NamedKey::MediaPlayPause,
+        WNamedKey::MediaStop => NamedKey::MediaStop,
+        WNamedKey::MediaRecord => NamedKey::MediaRecord,
+        WNamedKey::MediaFastForward => NamedKey::MediaFastForward,
+        WNamedKey::MediaRewind => NamedKey::MediaRewind,
+        WNamedKey::MediaTrackNext => NamedKey::MediaTrackNext,
+        WNamedKey::MediaTrackPrevious => NamedKey::MediaTrackPrevious,
+        WNamedKey::AudioVolumeDown => NamedKey::AudioVolumeDown,
+        WNamedKey::AudioVolumeUp => NamedKey::AudioVolumeUp,
+        WNamedKey::AudioVolumeMute => NamedKey::AudioVolumeMute,
+        _ => return None,
+    })
+}
+
+fn physical(k: WPhysicalKey) -> PhysicalKey {
+    match k {
+        WPhysicalKey::Code(c) => PhysicalKey::Code(code(c)),
+        // The native scancode is opaque; one shared value is enough because a
+        // release only needs to find its press among at most 16 consumed keys.
+        WPhysicalKey::Unidentified(_) => PhysicalKey::Unidentified(0),
+    }
+}
+
+fn code(c: WKeyCode) -> KeyCode {
+    match c {
+        WKeyCode::KeyA => KeyCode::KeyA,
+        WKeyCode::KeyB => KeyCode::KeyB,
+        WKeyCode::KeyC => KeyCode::KeyC,
+        WKeyCode::KeyD => KeyCode::KeyD,
+        WKeyCode::KeyE => KeyCode::KeyE,
+        WKeyCode::KeyF => KeyCode::KeyF,
+        WKeyCode::KeyG => KeyCode::KeyG,
+        WKeyCode::KeyH => KeyCode::KeyH,
+        WKeyCode::KeyI => KeyCode::KeyI,
+        WKeyCode::KeyJ => KeyCode::KeyJ,
+        WKeyCode::KeyK => KeyCode::KeyK,
+        WKeyCode::KeyL => KeyCode::KeyL,
+        WKeyCode::KeyM => KeyCode::KeyM,
+        WKeyCode::KeyN => KeyCode::KeyN,
+        WKeyCode::KeyO => KeyCode::KeyO,
+        WKeyCode::KeyP => KeyCode::KeyP,
+        WKeyCode::KeyQ => KeyCode::KeyQ,
+        WKeyCode::KeyR => KeyCode::KeyR,
+        WKeyCode::KeyS => KeyCode::KeyS,
+        WKeyCode::KeyT => KeyCode::KeyT,
+        WKeyCode::KeyU => KeyCode::KeyU,
+        WKeyCode::KeyV => KeyCode::KeyV,
+        WKeyCode::KeyW => KeyCode::KeyW,
+        WKeyCode::KeyX => KeyCode::KeyX,
+        WKeyCode::KeyY => KeyCode::KeyY,
+        WKeyCode::KeyZ => KeyCode::KeyZ,
+        WKeyCode::Digit0 => KeyCode::Digit0,
+        WKeyCode::Digit1 => KeyCode::Digit1,
+        WKeyCode::Digit2 => KeyCode::Digit2,
+        WKeyCode::Digit3 => KeyCode::Digit3,
+        WKeyCode::Digit4 => KeyCode::Digit4,
+        WKeyCode::Digit5 => KeyCode::Digit5,
+        WKeyCode::Digit6 => KeyCode::Digit6,
+        WKeyCode::Digit7 => KeyCode::Digit7,
+        WKeyCode::Digit8 => KeyCode::Digit8,
+        WKeyCode::Digit9 => KeyCode::Digit9,
+        WKeyCode::Backquote => KeyCode::Backquote,
+        WKeyCode::Minus => KeyCode::Minus,
+        WKeyCode::Equal => KeyCode::Equal,
+        WKeyCode::BracketLeft => KeyCode::BracketLeft,
+        WKeyCode::BracketRight => KeyCode::BracketRight,
+        WKeyCode::Backslash => KeyCode::Backslash,
+        WKeyCode::Semicolon => KeyCode::Semicolon,
+        WKeyCode::Quote => KeyCode::Quote,
+        WKeyCode::Comma => KeyCode::Comma,
+        WKeyCode::Period => KeyCode::Period,
+        WKeyCode::Slash => KeyCode::Slash,
+        WKeyCode::Space => KeyCode::Space,
+        WKeyCode::Numpad5 => KeyCode::Numpad5,
+        other => KeyCode::Other(other as u32),
+    }
+}
+
+fn location(l: WKeyLocation) -> KeyLocation {
+    match l {
+        WKeyLocation::Standard => KeyLocation::Standard,
+        WKeyLocation::Left => KeyLocation::Left,
+        WKeyLocation::Right => KeyLocation::Right,
+        WKeyLocation::Numpad => KeyLocation::Numpad,
+    }
+}
+
+// ---- Event loop -------------------------------------------------------------
+
+/// How long the loop may sleep before the next `about_to_wait`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Flow {
+    Wait,
+    Poll,
+    WaitUntil(Instant),
+}
+
+/// What a new window looks like.
+pub struct WindowSpec {
+    pub title: &'static str,
+    pub decorations: bool,
+    pub always_on_top: bool,
+    pub visible: bool,
+    pub transparent: bool,
+    pub inner_size: LogicalSize<f64>,
+    pub position: Option<LogicalPosition<f64>>,
+}
+
+/// The running event loop, as seen from a handler callback.
+pub struct LoopCtx<'a>(&'a ActiveEventLoop);
+
+impl LoopCtx<'_> {
+    pub fn exit(&self) {
+        self.0.exit();
+    }
+
+    pub fn set_flow(&self, flow: Flow) {
+        self.0.set_control_flow(match flow {
+            Flow::Wait => ControlFlow::Wait,
+            Flow::Poll => ControlFlow::Poll,
+            Flow::WaitUntil(t) => ControlFlow::WaitUntil(t),
+        });
+    }
+
+    pub fn create_window(&self, spec: &WindowSpec) -> std::io::Result<Window> {
+        let attrs = ww::Window::default_attributes()
+            .with_title(spec.title)
+            .with_decorations(spec.decorations)
+            .with_window_level(if spec.always_on_top { ww::WindowLevel::AlwaysOnTop } else { ww::WindowLevel::Normal })
+            .with_visible(spec.visible)
+            .with_transparent(spec.transparent)
+            .with_inner_size(wdpi::LogicalSize::new(spec.inner_size.width, spec.inner_size.height));
+        let attrs = match spec.position {
+            Some(p) => attrs.with_position(wdpi::LogicalPosition::new(p.x, p.y)),
+            None => attrs,
+        };
+        // Wayland app_id / X11 WM_CLASS must match `litty.desktop` and the
+        // hicolor icon name, or the shell shows a generic icon.
+        #[cfg(target_os = "linux")]
+        let attrs = {
+            use winit::platform::wayland::WindowAttributesExtWayland;
+            attrs.with_name("litty", "litty")
+        };
+        // Native tabs group under one identifier. Created hidden so AppKit
+        // cannot merge a New Window into a tab of the focused one before
+        // tabbing is turned off for it; the caller shows it afterwards.
+        #[cfg(target_os = "macos")]
+        let attrs = {
+            use winit::platform::macos::WindowAttributesExtMacOS;
+            attrs.with_tabbing_identifier("litty").with_visible(false)
+        };
+        self.0.create_window(attrs).map(Window::from_winit).map_err(std::io::Error::other)
+    }
+}
+
+/// Callbacks of the application, in the order the loop produces them.
+pub trait EventHandler<T: 'static> {
+    /// A loop iteration starts; `timer_fired` when it was woken by `Flow::WaitUntil`.
+    fn cycle_started(&mut self, timer_fired: bool);
+    fn resumed(&mut self, ctx: &LoopCtx);
+    fn user_event(&mut self, ctx: &LoopCtx, event: T);
+    fn window_event(&mut self, ctx: &LoopCtx, id: WindowId, event: WindowEvent);
+    fn about_to_wait(&mut self, ctx: &LoopCtx);
+}
+
+struct Driver<H>(H);
+
+impl<T: 'static, H: EventHandler<T>> ApplicationHandler<T> for Driver<H> {
+    fn new_events(&mut self, _: &ActiveEventLoop, cause: StartCause) {
+        self.0.cycle_started(matches!(cause, StartCause::ResumeTimeReached { .. }));
+    }
+
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        self.0.resumed(&LoopCtx(event_loop));
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: T) {
+        self.0.user_event(&LoopCtx(event_loop), event);
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: ww::WindowId, event: ww_event::WindowEvent) {
+        if let Some(event) = convert_event(event) {
+            self.0.window_event(&LoopCtx(event_loop), id.into(), event);
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.0.about_to_wait(&LoopCtx(event_loop));
+    }
+}
+
+/// Run the event loop until the handler exits it. `make` receives the proxy
+/// other threads use to post events.
+pub fn run<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T>) -> H) {
+    let event_loop = EventLoop::<T>::with_user_event().build().expect("event loop");
+    event_loop.set_control_flow(ControlFlow::Wait);
+    let mut driver = Driver(make(EventProxy::new(event_loop.create_proxy())));
+    event_loop.run_app(&mut driver).expect("run app");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,5 +898,34 @@ mod tests {
     fn theme_maps_both_ways() {
         assert_eq!(Theme::from(ww::Theme::Dark), Theme::Dark);
         assert_eq!(Theme::from(ww::Theme::Light), Theme::Light);
+    }
+
+
+    #[test]
+    fn named_keys_map_one_to_one() {
+        assert_eq!(named(WNamedKey::Enter), Some(NamedKey::Enter));
+        assert_eq!(named(WNamedKey::ArrowLeft), Some(NamedKey::ArrowLeft));
+        assert_eq!(named(WNamedKey::F20), Some(NamedKey::F20));
+        assert_eq!(named(WNamedKey::BrowserBack), None);
+    }
+
+    #[test]
+    fn unmapped_physical_keys_keep_distinct_codes() {
+        let a = physical(WPhysicalKey::Code(WKeyCode::F5));
+        let b = physical(WPhysicalKey::Code(WKeyCode::F6));
+        assert_ne!(a, b);
+        assert_eq!(physical(WPhysicalKey::Code(WKeyCode::KeyA)), PhysicalKey::Code(KeyCode::KeyA));
+    }
+
+    #[test]
+    fn modifiers_translate() {
+        let m = convert_mods(ModifiersState::CONTROL | ModifiersState::SHIFT);
+        assert_eq!(m, Mods { ctrl: true, shift: true, alt: false, sup: false });
+    }
+
+    #[test]
+    fn dead_and_unknown_keys_are_unidentified() {
+        assert_eq!(convert_key(&WKey::Dead(Some('`'))), Key::Unidentified);
+        assert_eq!(convert_key(&WKey::Character("a".into())), Key::Character("a".into()));
     }
 }

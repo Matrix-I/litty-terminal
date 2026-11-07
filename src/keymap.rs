@@ -16,14 +16,7 @@ pub enum Platform {
 /// The platform this binary was built for.
 pub const PLATFORM: Platform = if cfg!(target_os = "macos") { Platform::MacOs } else { Platform::Linux };
 
-/// Modifier keys held with a key press (`sup` = Cmd on macOS, Super on Linux).
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub struct Mods {
-    pub ctrl: bool,
-    pub alt: bool,
-    pub shift: bool,
-    pub sup: bool,
-}
+pub use crate::input::Mods;
 
 impl Mods {
     /// Exactly the given modifiers are held (`ctrl`, `alt`, `shift`, `sup`).
