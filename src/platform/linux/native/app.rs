@@ -14,9 +14,24 @@ static PENDING_REDRAWS: Mutex<Vec<WindowId>> = Mutex::new(Vec::new());
 static PENDING_EVENTS: Mutex<Vec<(WindowId, WindowEvent)>> = Mutex::new(Vec::new());
 static WINDOWS: Mutex<Vec<NativeWindow>> = Mutex::new(Vec::new());
 static WAKE_EVENTFD: Mutex<Option<RawFd>> = Mutex::new(None);
+static DISPLAY_FD: Mutex<Option<RawFd>> = Mutex::new(None);
+static EPOLL_FD: Mutex<Option<RawFd>> = Mutex::new(None);
 
 pub fn register_window(win: NativeWindow) {
     WINDOWS.lock().push(win);
+}
+
+pub fn register_display_fd(fd: RawFd) {
+    *DISPLAY_FD.lock() = Some(fd);
+    if let Some(epoll) = *EPOLL_FD.lock() {
+        let mut ev = libc::epoll_event {
+            events: (libc::EPOLLIN | libc::EPOLLERR | libc::EPOLLHUP) as u32,
+            u64: 3,
+        };
+        unsafe {
+            libc::epoll_ctl(epoll, libc::EPOLL_CTL_ADD, fd, &mut ev);
+        }
+    }
 }
 
 pub fn wakeup_main_loop() {
@@ -41,6 +56,37 @@ pub fn request_redraw(id: WindowId) {
 pub fn queue_event(id: WindowId, event: WindowEvent) {
     PENDING_EVENTS.lock().push((id, event));
     wakeup_main_loop();
+}
+
+pub struct LinuxProxy<T: 'static> {
+    sender: Sender<T>,
+    event_fd: RawFd,
+}
+
+impl<T: 'static> Clone for LinuxProxy<T> {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            event_fd: self.event_fd,
+        }
+    }
+}
+
+impl<T: 'static> LinuxProxy<T> {
+    pub fn new(sender: Sender<T>, event_fd: RawFd) -> Self {
+        Self { sender, event_fd }
+    }
+
+    pub fn send(&self, event: T) -> Result<(), T> {
+        let res = self.sender.send(event).map_err(|e| e.0);
+        if res.is_ok() {
+            let val: u64 = 1;
+            unsafe {
+                libc::write(self.event_fd, &val as *const _ as *const std::ffi::c_void, 8);
+            }
+        }
+        res
+    }
 }
 
 pub struct NativeLoopCtx {
@@ -119,6 +165,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         if epoll_fd < 0 {
             panic!("failed to create epoll instance");
         }
+        *EPOLL_FD.lock() = Some(epoll_fd);
 
         let event_fd = libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC);
         if event_fd < 0 {
@@ -147,6 +194,15 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         };
         libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, timer_fd, &mut ev_timerfd);
 
+        // If a display_fd was already registered, add it to epoll (display event 3)
+        if let Some(dfd) = *DISPLAY_FD.lock() {
+            let mut ev_display = libc::epoll_event {
+                events: (libc::EPOLLIN | libc::EPOLLERR | libc::EPOLLHUP) as u32,
+                u64: 3,
+            };
+            libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, dfd, &mut ev_display);
+        }
+
         *WAKE_EVENTFD.lock() = Some(event_fd);
 
         let (tx, rx): (Sender<T>, Receiver<T>) = channel();
@@ -166,7 +222,18 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
                 handler.user_event(&loop_ctx, user_ev);
             }
 
-            // 2. Deliver pending window events
+            // 2. Poll native X11 window events if present
+            if let Some(x11) = super::x11::get_active_x11() {
+                let wins = WINDOWS.lock().clone();
+                for win in wins {
+                    let evs = x11.poll_events(win.id());
+                    for ev in evs {
+                        handler.window_event(&loop_ctx, win.id(), ev);
+                    }
+                }
+            }
+
+            // 3. Deliver pending window events
             let pending: Vec<(WindowId, WindowEvent)> = {
                 let mut guard = PENDING_EVENTS.lock();
                 guard.drain(..).collect()
@@ -178,7 +245,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
             handler.cycle_started(timer_fired);
             timer_fired = false;
 
-            // 3. Deliver pending redraws
+            // 4. Deliver pending redraws
             let redraws: Vec<WindowId> = {
                 let mut guard = PENDING_REDRAWS.lock();
                 guard.drain(..).collect()
@@ -189,11 +256,13 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
 
             handler.about_to_wait(&loop_ctx);
 
-            // 4. Determine epoll_wait timeout
+            // 5. Determine epoll_wait timeout
             let flow_mode = native_ctx.flow_mode.load(Ordering::SeqCst);
-            let timeout = match flow_mode {
-                1 => 0,    // Poll
-                _ => -1,   // Wait or WaitUntil (handled via timerfd)
+            let has_x11_pending = super::x11::get_active_x11().is_some_and(|x| x.pending());
+            let timeout = if has_x11_pending || flow_mode == 1 {
+                0 // Non-blocking poll if events are pending or poll requested
+            } else {
+                -1 // Block on epoll (timerfd handles WaitUntil)
             };
 
             let n = libc::epoll_wait(epoll_fd, events.as_mut_ptr(), events.len() as i32, timeout);
@@ -209,6 +278,8 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
                         let mut buf: u64 = 0;
                         libc::read(timer_fd, &mut buf as *mut _ as *mut std::ffi::c_void, 8);
                         timer_fired = true;
+                    } else if tag == 3 {
+                        // X11 display socket readable: events will be drained on the next loop cycle
                     }
                 }
             }
@@ -216,6 +287,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
 
         // Cleanup
         *WAKE_EVENTFD.lock() = None;
+        *EPOLL_FD.lock() = None;
         libc::close(timer_fd);
         libc::close(event_fd);
         libc::close(epoll_fd);

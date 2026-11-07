@@ -104,7 +104,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         handler.resumed(&loop_ctx);
 
         let date_cls = class(c"NSDate").expect("NSDate");
-        let default_run_loop_mode = class(c"NSDefaultRunLoopMode").unwrap_or(std::ptr::null_mut());
+        let default_run_loop_mode = ns_string("kCFRunLoopDefaultMode").expect("NSDefaultRunLoopMode");
 
         while !native_ctx.exit_flag.load(Ordering::SeqCst) {
             let pool = msg_send!(class(c"NSAutoreleasePool").unwrap(), c"new"; -> Id);

@@ -1,12 +1,14 @@
 //! Native NSView subclass (`LittyView`) implementing `NSTextInputClient`
 //! for full Vietnamese Telex/VNI and CJK IME support.
 
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::platform::macos::objc::*;
 use crate::platform::gui::{Ime, WindowEvent, WindowId};
 
 static CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
+static TAG_KEY: u8 = 0;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -64,6 +66,21 @@ pub fn ensure_litty_view_class() {
             true
         }
         class_addMethod(cls, sel(c"isFlipped"), is_flipped as *const (), c"B@:".as_ptr() as *const _);
+
+        // tag and setTag:
+        extern "C" fn view_tag(this: Id, _cmd: Id) -> usize {
+            unsafe {
+                objc_getAssociatedObject(this, &TAG_KEY as *const u8 as *const std::ffi::c_void) as usize
+            }
+        }
+        class_addMethod(cls, sel(c"tag"), view_tag as *const (), c"q@:".as_ptr() as *const _);
+
+        extern "C" fn view_set_tag(this: Id, _cmd: Id, tag: usize) {
+            unsafe {
+                objc_setAssociatedObject(this, &TAG_KEY as *const u8 as *const std::ffi::c_void, tag as Id, 0);
+            }
+        }
+        class_addMethod(cls, sel(c"setTag:"), view_set_tag as *const (), c"v@:q".as_ptr() as *const _);
 
         // ---------------- NSTextInputClient protocol ----------------
 
@@ -130,6 +147,40 @@ pub fn ensure_litty_view_class() {
             }
         }
         class_addMethod(cls, sel(c"insertText:replacementRange:"), insert_text as *const (), c"v@:@{NSRange=QQ}".as_ptr() as *const _);
+
+        // - (NSArray *)validAttributesForMarkedText
+        extern "C" fn valid_attributes(_this: Id, _cmd: Id) -> Id {
+            unsafe {
+                let arr_cls = class(c"NSArray").unwrap();
+                msg_send!(arr_cls, c"array"; -> Id)
+            }
+        }
+        class_addMethod(cls, sel(c"validAttributesForMarkedText"), valid_attributes as *const (), c"@@:".as_ptr() as *const _);
+
+        // - (NSAttributedString *)attributedSubstringForProposedRange:(NSRange)range actualRange:(NSRangePointer)actualRange
+        extern "C" fn attributed_substring(_this: Id, _cmd: Id, _range: NSRange, _actual: *mut c_void) -> Id {
+            std::ptr::null_mut()
+        }
+        class_addMethod(cls, sel(c"attributedSubstringForProposedRange:actualRange:"), attributed_substring as *const (), c"@@:{NSRange=QQ}^v".as_ptr() as *const _);
+
+        // - (NSUInteger)characterIndexForPoint:(NSPoint)point
+        extern "C" fn character_index_for_point(_this: Id, _cmd: Id, _point: NSPoint) -> usize {
+            NS_NOT_FOUND
+        }
+        class_addMethod(cls, sel(c"characterIndexForPoint:"), character_index_for_point as *const (), c"Q@:{NSPoint=dd}".as_ptr() as *const _);
+
+        // - (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(NSRangePointer)actualRange
+        extern "C" fn first_rect_for_character_range(this: Id, _cmd: Id, _range: NSRange, _actual: *mut c_void) -> NSRect {
+            unsafe {
+                let win = msg_send!(this, c"window"; -> Id);
+                if !win.is_null() {
+                    msg_send!(win, c"frame"; -> NSRect)
+                } else {
+                    NSRect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 }
+                }
+            }
+        }
+        class_addMethod(cls, sel(c"firstRectForCharacterRange:actualRange:"), first_rect_for_character_range as *const (), c"{NSRect=dddd}@:{NSRange=QQ}^v".as_ptr() as *const _);
 
         objc_registerClassPair(cls);
     }

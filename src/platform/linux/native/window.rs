@@ -8,6 +8,7 @@ use crate::platform::gui::{
     CursorIcon, LogicalPosition, Monitor, PhysicalPosition, PhysicalSize,
     RawHandle, ResizeDirection, Theme, Unsupported, WindowId, WindowSpec,
 };
+use super::x11::X11Window;
 
 static NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -20,12 +21,14 @@ pub struct NativeWindowInner {
     pub inner_size: PhysicalSize<u32>,
     pub position: PhysicalPosition<i32>,
     pub scale_factor: f64,
+    pub visible: bool,
     pub minimized: bool,
     pub maximized: bool,
     pub fullscreen: bool,
     pub cursor_visible: bool,
     pub cursor_icon: CursorIcon,
     pub raw_handle: Option<RawHandle>,
+    pub x11_window: Option<X11Window>,
 }
 
 unsafe impl Send for NativeWindowInner {}
@@ -49,17 +52,26 @@ impl NativeWindow {
             PhysicalPosition::new(p.x.round() as i32, p.y.round() as i32)
         });
 
+        // Try creating native X11 window connection
+        let x11_win = X11Window::create(spec);
+        let raw_handle = x11_win.as_ref().map(|x| x.raw_handle());
+        if let Some(ref x) = x11_win {
+            super::app::register_display_fd(x.fd());
+        }
+
         let inner = Arc::new(Mutex::new(NativeWindowInner {
             title: spec.title.to_string(),
             inner_size,
             position,
             scale_factor: scale,
+            visible: spec.visible,
             minimized: false,
             maximized: false,
             fullscreen: false,
             cursor_visible: true,
             cursor_icon: CursorIcon::Default,
-            raw_handle: None,
+            raw_handle,
+            x11_window: x11_win,
         }));
 
         let win = Self { id, inner };
@@ -91,6 +103,16 @@ impl NativeWindow {
         let mut guard = self.inner.lock();
         guard.position = PhysicalPosition::new(position.x.round() as i32, position.y.round() as i32);
     }
+
+    pub fn set_visible(&self, visible: bool) {
+        self.inner.lock().visible = visible;
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.inner.lock().visible
+    }
+
+    pub fn focus_window(&self) {}
 
     pub fn is_minimized(&self) -> Option<bool> {
         Some(self.inner.lock().minimized)
@@ -127,7 +149,11 @@ impl NativeWindow {
     }
 
     pub fn set_title(&self, title: &str) {
-        self.inner.lock().title = title.to_string();
+        let mut guard = self.inner.lock();
+        guard.title = title.to_string();
+        if let Some(ref x11) = guard.x11_window {
+            x11.set_title(title);
+        }
     }
 
     pub fn set_cursor_icon(&self, icon: CursorIcon) {

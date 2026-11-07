@@ -24,21 +24,42 @@ pub fn set_tabbing_allowed(window: &Window, allowed: bool) {
     unsafe { msg_send!(w, c"setTabbingMode:", mode => isize) };
 }
 
+use std::ffi::c_void;
+
 /// Move between native tabs of `window`: -1 previous, 1 next, or index
 /// `n` (8 = last). Returns `false` when the window has no other tabs.
 pub fn select_native_tab(window: &Window, step: isize, index: Option<usize>) -> bool {
-    use winit::platform::macos::WindowExtMacOS;
-    let window = window.winit();
-    let n = window.num_tabs();
-    if n < 2 {
-        return false;
-    }
-    match (index, step) {
-        (Some(8), _) => window.select_tab_at_index(n - 1),
-        (Some(i), _) if i < n => window.select_tab_at_index(i),
-        (Some(_), _) => return false,
-        (None, s) if s < 0 => window.select_previous_tab(),
-        (None, _) => window.select_next_tab(),
+    let Some((_, w)) = ns_window_of(window) else { return false };
+    unsafe {
+        let tabs = msg_send!(w, c"tabbedWindows"; -> Id);
+        if tabs.is_null() {
+            return false;
+        }
+        let n = msg_send!(tabs, c"count"; -> usize);
+        if n < 2 {
+            return false;
+        }
+        match (index, step) {
+            (Some(8), _) => {
+                let tab = msg_send!(tabs, c"objectAtIndex:", n - 1 => usize ; -> Id);
+                if !tab.is_null() {
+                    msg_send!(tab, c"makeKeyAndOrderFront:", std::ptr::null_mut::<c_void>() => Id);
+                }
+            }
+            (Some(i), _) if i < n => {
+                let tab = msg_send!(tabs, c"objectAtIndex:", i => usize ; -> Id);
+                if !tab.is_null() {
+                    msg_send!(tab, c"makeKeyAndOrderFront:", std::ptr::null_mut::<c_void>() => Id);
+                }
+            }
+            (Some(_), _) => return false,
+            (None, s) if s < 0 => {
+                msg_send!(w, c"selectPreviousTab:", std::ptr::null_mut::<c_void>() => Id);
+            }
+            (None, _) => {
+                msg_send!(w, c"selectNextTab:", std::ptr::null_mut::<c_void>() => Id);
+            }
+        }
     }
     true
 }
