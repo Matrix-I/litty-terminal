@@ -57,6 +57,32 @@ pub fn convert_raw_event(ev: LinuxRawEvent, scale: f64) -> Option<WindowEvent> {
     }
 }
 
+/// Modifiers in an X11 core event `state` mask (Shift, Control, Mod1 = Alt,
+/// Mod4 = Super).
+pub fn mods_from_state(state: u32) -> Mods {
+    Mods {
+        shift: state & 1 != 0,
+        ctrl: state & 4 != 0,
+        alt: state & 8 != 0,
+        sup: state & 64 != 0,
+    }
+}
+
+/// Modifiers once a key event is applied. X11 reports `state` as it was
+/// before the event, so a modifier key's own press or release is folded in.
+pub fn mods_after_key(state: u32, evdev: u32, pressed: bool) -> Mods {
+    let mut m = mods_from_state(state);
+    let slot = match evdev {
+        29 | 97 => &mut m.ctrl,   // KEY_LEFTCTRL, KEY_RIGHTCTRL
+        42 | 54 => &mut m.shift,  // KEY_LEFTSHIFT, KEY_RIGHTSHIFT
+        56 | 100 => &mut m.alt,   // KEY_LEFTALT, KEY_RIGHTALT
+        125 | 126 => &mut m.sup,  // KEY_LEFTMETA, KEY_RIGHTMETA
+        _ => return m,
+    };
+    *slot = pressed;
+    m
+}
+
 #[allow(dead_code)]
 pub fn convert_linux_key(keycode: u32, pressed: bool, repeat: bool) -> KeyInput {
     let evdev = keycode;
@@ -213,5 +239,32 @@ pub fn convert_linux_key(keycode: u32, pressed: bool, repeat: bool) -> KeyInput 
         text,
         pressed,
         repeat,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SHIFT: u32 = 1;
+    const CTRL: u32 = 4;
+
+    #[test]
+    fn mods_come_from_x11_state() {
+        // T (evdev 20) pressed while Ctrl+Shift are held.
+        assert_eq!(mods_after_key(CTRL | SHIFT, 20, true), Mods { ctrl: true, shift: true, ..Mods::default() });
+        assert_eq!(mods_after_key(0, 20, true), Mods::default());
+        assert_eq!(mods_after_key(8, 20, true), Mods { alt: true, ..Mods::default() });
+        assert_eq!(mods_after_key(64, 20, true), Mods { sup: true, ..Mods::default() });
+    }
+
+    /// X11 `state` is the mask *before* the event, so a modifier key's own
+    /// press or release must be applied on top of it.
+    #[test]
+    fn modifier_key_press_and_release_apply_immediately() {
+        assert_eq!(mods_after_key(0, 29, true), Mods { ctrl: true, ..Mods::default() }); // LCtrl down
+        assert_eq!(mods_after_key(CTRL, 42, true), Mods { ctrl: true, shift: true, ..Mods::default() }); // LShift down
+        assert_eq!(mods_after_key(CTRL | SHIFT, 97, false), Mods { shift: true, ..Mods::default() }); // RCtrl up
+        assert_eq!(mods_after_key(SHIFT, 54, false), Mods::default()); // RShift up
     }
 }

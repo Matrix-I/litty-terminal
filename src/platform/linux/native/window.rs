@@ -5,7 +5,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::platform::gui::{
-    CursorIcon, LogicalPosition, Monitor, PhysicalPosition, PhysicalSize,
+    CursorIcon, LogicalPosition, WindowEvent, Monitor, PhysicalPosition, PhysicalSize,
     RawHandle, ResizeDirection, Theme, Unsupported, WindowId, WindowSpec,
 };
 use super::x11::X11Window;
@@ -43,21 +43,25 @@ pub struct NativeWindow {
 impl NativeWindow {
     pub fn create(spec: &WindowSpec) -> Result<Self, std::io::Error> {
         let id = allocate_window_id();
-        let scale = 1.0;
+
+        // Without an X11 window there is nothing to draw into: fail loudly
+        // instead of running a windowless process.
+        let x11_win = X11Window::create(spec).ok_or_else(|| {
+            std::io::Error::other("could not open an X11 window (is libX11 installed and DISPLAY set?)")
+        })?;
+        let raw_handle = Some(x11_win.raw_handle());
+        super::app::register_display_fd(x11_win.fd());
+
+        // Same physical size and position `X11Window::create` used.
+        let scale = x11_win.scale();
         let inner_size = PhysicalSize::new(
-            (spec.inner_size.width * scale).round() as u32,
-            (spec.inner_size.height * scale).round() as u32,
+            (spec.inner_size.width.max(100.0) * scale).round() as u32,
+            (spec.inner_size.height.max(100.0) * scale).round() as u32,
         );
         let position = spec.position.map_or(PhysicalPosition::new(100, 100), |p| {
-            PhysicalPosition::new(p.x.round() as i32, p.y.round() as i32)
+            PhysicalPosition::new((p.x * scale).round() as i32, (p.y * scale).round() as i32)
         });
-
-        // Try creating native X11 window connection
-        let x11_win = X11Window::create(spec);
-        let raw_handle = x11_win.as_ref().map(|x| x.raw_handle());
-        if let Some(ref x) = x11_win {
-            super::app::register_display_fd(x.fd());
-        }
+        let x11_win = Some(x11_win);
 
         let inner = Arc::new(Mutex::new(NativeWindowInner {
             title: spec.title.to_string(),
@@ -87,6 +91,18 @@ impl NativeWindow {
         super::app::request_redraw(self.id);
     }
 
+    /// This window's X11 connection.
+    pub fn x11(&self) -> Option<X11Window> {
+        self.inner.lock().x11_window.clone()
+    }
+
+    /// Keep cached window state in step with an event before the app sees it.
+    pub fn observe(&self, event: &WindowEvent) {
+        if let WindowEvent::Resized(size) = event {
+            self.inner.lock().inner_size = *size;
+        }
+    }
+
     pub fn scale_factor(&self) -> f64 {
         self.inner.lock().scale_factor
     }
@@ -101,7 +117,8 @@ impl NativeWindow {
 
     pub fn set_outer_position(&self, position: LogicalPosition<f64>) {
         let mut guard = self.inner.lock();
-        guard.position = PhysicalPosition::new(position.x.round() as i32, position.y.round() as i32);
+        let scale = guard.scale_factor;
+        guard.position = PhysicalPosition::new((position.x * scale).round() as i32, (position.y * scale).round() as i32);
     }
 
     pub fn set_visible(&self, visible: bool) {
@@ -119,7 +136,11 @@ impl NativeWindow {
     }
 
     pub fn set_minimized(&self, min: bool) {
-        self.inner.lock().minimized = min;
+        let mut guard = self.inner.lock();
+        guard.minimized = min;
+        if min && let Some(x11) = &guard.x11_window {
+            x11.iconify();
+        }
     }
 
     pub fn is_maximized(&self) -> bool {
@@ -127,7 +148,11 @@ impl NativeWindow {
     }
 
     pub fn set_maximized(&self, max: bool) {
-        self.inner.lock().maximized = max;
+        let mut guard = self.inner.lock();
+        guard.maximized = max;
+        if let Some(x11) = &guard.x11_window {
+            x11.set_maximized(max);
+        }
     }
 
     #[allow(dead_code)]
@@ -175,10 +200,16 @@ impl NativeWindow {
     pub fn request_attention(&self, _requested: bool) {}
 
     pub fn drag_window(&self) -> Result<(), Unsupported> {
+        let guard = self.inner.lock();
+        let x11 = guard.x11_window.as_ref().ok_or(Unsupported)?;
+        x11.begin_move_resize(8); // _NET_WM_MOVERESIZE_MOVE
         Ok(())
     }
 
-    pub fn drag_resize_window(&self, _direction: ResizeDirection) -> Result<(), Unsupported> {
+    pub fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), Unsupported> {
+        let guard = self.inner.lock();
+        let x11 = guard.x11_window.as_ref().ok_or(Unsupported)?;
+        x11.begin_move_resize(moveresize_direction(direction));
         Ok(())
     }
 
@@ -189,5 +220,54 @@ impl NativeWindow {
     #[allow(dead_code)]
     pub fn set_raw_handle(&self, handle: RawHandle) {
         self.inner.lock().raw_handle = Some(handle);
+    }
+}
+
+/// `_NET_WM_MOVERESIZE` edge codes.
+fn moveresize_direction(direction: ResizeDirection) -> std::ffi::c_long {
+    match direction {
+        ResizeDirection::NorthWest => 0,
+        ResizeDirection::North => 1,
+        ResizeDirection::NorthEast => 2,
+        ResizeDirection::East => 3,
+        ResizeDirection::SouthEast => 4,
+        ResizeDirection::South => 5,
+        ResizeDirection::SouthWest => 6,
+        ResizeDirection::West => 7,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::gui::WindowEvent;
+
+    fn detached(width: u32, height: u32) -> NativeWindow {
+        NativeWindow {
+            id: allocate_window_id(),
+            inner: Arc::new(Mutex::new(NativeWindowInner {
+                title: String::new(),
+                inner_size: PhysicalSize::new(width, height),
+                position: PhysicalPosition::new(0, 0),
+                scale_factor: 1.0,
+                visible: true,
+                minimized: false,
+                maximized: false,
+                fullscreen: false,
+                cursor_visible: true,
+                cursor_icon: CursorIcon::Default,
+                raw_handle: None,
+                x11_window: None,
+            })),
+        }
+    }
+
+    /// The app re-reads `inner_size()` on focus changes; a stale size makes
+    /// the renderer draw the old layout over the resized swapchain.
+    #[test]
+    fn resized_event_updates_inner_size() {
+        let win = detached(968, 620);
+        win.observe(&WindowEvent::Resized(PhysicalSize::new(1920, 1080)));
+        assert_eq!(win.inner_size(), PhysicalSize::new(1920, 1080));
     }
 }
