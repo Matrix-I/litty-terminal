@@ -680,7 +680,7 @@ pub(super) fn macos_coretext_rasterize(
         }
         (fc.charset_add_char)(cs, ch as u32);
         (fc.pattern_add_char_set)(pat, c"charset".as_ptr(), cs);
-        let _ = (fc.pattern_add_string)(pat, c"family".as_ptr(), c"monospace".as_ptr() as *const u8);
+        let _ = (fc.pattern_add_string)(pat, c"family".as_ptr(), c"monospace".as_ptr().cast());
         (fc.config_substitute)(ptr::null_mut(), pat, 0);
         (fc.default_substitute)(pat);
         let mut res = 0;
