@@ -124,17 +124,28 @@ impl NativeWindow {
         let mut guard = self.inner.lock();
         let scale = guard.scale_factor;
         guard.position = PhysicalPosition::new((position.x * scale).round() as i32, (position.y * scale).round() as i32);
+        if let Some(x11) = &guard.x11_window {
+            x11.move_to(guard.position.x, guard.position.y);
+        }
     }
 
     pub fn set_visible(&self, visible: bool) {
-        self.inner.lock().visible = visible;
+        let mut guard = self.inner.lock();
+        guard.visible = visible;
+        if let Some(x11) = &guard.x11_window {
+            x11.set_visible(visible);
+        }
     }
 
     pub fn is_visible(&self) -> bool {
         self.inner.lock().visible
     }
 
-    pub fn focus_window(&self) {}
+    pub fn focus_window(&self) {
+        if let Some(x11) = &self.inner.lock().x11_window {
+            x11.focus();
+        }
+    }
 
     pub fn is_minimized(&self) -> Option<bool> {
         Some(self.inner.lock().minimized)
@@ -202,7 +213,11 @@ impl NativeWindow {
 
     pub fn set_ime_cursor_area(&self, _position: PhysicalPosition<f64>, _size: PhysicalSize<f64>) {}
 
-    pub fn request_attention(&self, _requested: bool) {}
+    pub fn request_attention(&self, requested: bool) {
+        if let Some(x11) = &self.inner.lock().x11_window {
+            x11.request_attention(requested);
+        }
+    }
 
     pub fn drag_window(&self) -> Result<(), Unsupported> {
         let guard = self.inner.lock();

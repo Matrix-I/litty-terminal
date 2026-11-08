@@ -92,7 +92,7 @@ import json,os,tty
 fd=os.open(os.environ['LITTY_PROBE_EVENTS'],os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
 tty.setraw(0)
 os.write(fd,(json.dumps({'ready':os.getpid()})+'\\n').encode())
-os.write(1,b'\\x1b[2J\\x1b[H\\x1b[16t\\x1b[>9u\\x1b[6n')
+os.write(1,b'\\x1b[2J\\x1b[H\\x1b[?1000h\\x1b[?1006h\\x1b[16t\\x1b[>9u\\x1b[6n')
 while True:
     data=os.read(0,4096)
     if not data: break
@@ -138,6 +138,36 @@ while True:
                 assert found, (code, data)
                 return int(found[-1] or b'1') - 1
 
+            def since(start):
+                return b''.join(bytes.fromhex(x['hex']) for x in records()[start:] if 'hex' in x)
+
+            def ready_count():
+                return sum('ready' in x for x in records())
+
+            run('xdotool', 'mousemove', '--window', normal, '40', '40')
+            for button, code in [('4', b'64'), ('5', b'65')]:
+                start = len(records())
+                run('xdotool', 'click', button)
+                wait_for(lambda: since(start), lambda d: b'\x1b[<' + code + b';' in d, f'wheel button {button} report')
+            print('PASS X11 wheel buttons report as mouse wheel', flush=True)
+
+            # A non-Latin-1 keysym: Kitty reports its code point (U+0111).
+            start = len(records())
+            run('xdotool', 'type', '--delay', '100', 'đ')
+            wait_for(lambda: since(start), lambda d: b'\x1b[273u' in d, 'non-Latin-1 key text')
+            print('PASS X11 non-Latin-1 keysym text', flush=True)
+
+            shells = ready_count()
+            run('xdotool', 'key', 'ctrl+shift+n')
+            second = next(w for w in wait_for(visible, lambda v: len(v) == 2, 'second window') if w != normal)
+            wait_for(ready_count, lambda n: n == shells + 1, 'second window shell')
+            run('xdotool', 'windowactivate', '--sync', second)
+            run('xdotool', 'key', 'ctrl+shift+w')
+            wait_for(visible, lambda v: v == [normal], 'closed window is destroyed')
+            assert app.poll() is None, 'closing one window must not quit'
+            print('PASS X11 closed window is destroyed', flush=True)
+            run('xdotool', 'windowactivate', '--sync', normal)
+
             assert mods(press('ctrl+a'), 97) == 4
             press('Caps_Lock')
             assert mods(press('ctrl+a'), 97) == 4 + 64
@@ -156,6 +186,7 @@ while True:
             processes.append(external)
             other = wait_for(lambda: run('xdotool', 'search', '--onlyvisible', '--pid', str(external.pid), check=False).stdout.split(), bool, 'external window')[0]
             run('xdotool', 'windowactivate', '--sync', other)
+            shells = ready_count()
             keyboard.chord('Control_L', 'grave')
             shown = wait_for(visible, lambda v: len(v) == 2, 'global hotkey shows Quick Terminal')
             quick = next(w for w in shown if w != normal)
@@ -163,7 +194,7 @@ while True:
             values = dict(re.findall(r'^(\w+)=(\d+)$', geometry, re.M))
             assert int(values['WIDTH']) >= 1200 and 200 <= int(values['HEIGHT']) <= 500, geometry
             wait_for(lambda: run('xdotool', 'getactivewindow').stdout.strip(), lambda w: w == quick, 'Quick Terminal takes focus')
-            ready = [x['ready'] for x in wait_for(records, lambda r: sum('ready' in x for x in r) == 2, 'quick shell') if 'ready' in x]
+            ready = [x['ready'] for x in wait_for(records, lambda r: sum('ready' in x for x in r) == shells + 1, 'quick shell') if 'ready' in x]
             keyboard.chord('Control_L', 'grave')
             wait_for(visible, lambda v: v == [normal], 'global hotkey hides Quick Terminal')
             run(binary, '+toggle-quick-terminal', env=env)
