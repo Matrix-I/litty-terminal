@@ -4,12 +4,13 @@ use crate::platform::gui::{RawHandle, Window};
 
 use super::device::{Device, Queue};
 use super::ffi::*;
-use super::pass::CommandEncoder;
+use super::pass::{CommandEncoder, InFlight};
 use crate::render::backend::{SurfaceConfig, TextureFormat};
 
 pub struct Surface {
     ns_view: Id,
     layer: ObjPtr,
+    in_flight: InFlight,
 }
 
 // SAFETY: `Surface` is accessed on the main event-loop thread via `&mut Renderer`.
@@ -19,6 +20,7 @@ unsafe impl Sync for Surface {}
 pub struct SurfaceFrame {
     pub(super) drawable: ObjPtr,
     pub(super) texture: ObjPtr,
+    pub(super) in_flight: InFlight,
 }
 
 impl SurfaceFrame {
@@ -55,6 +57,7 @@ impl Surface {
             Self {
                 ns_view,
                 layer: ObjPtr(layer),
+                in_flight: InFlight::default(),
             }
         }
     }
@@ -105,9 +108,14 @@ impl Surface {
                 return None;
             }
             msg_send!(tex, c"retain"; -> Id);
+            // The caller writes instance buffers next: the previous frame's
+            // GPU work must have finished reading them (TD-5). Waiting after
+            // `nextDrawable` overlaps this with the vsync wait.
+            self.in_flight.wait();
             Some(SurfaceFrame {
                 drawable: ObjPtr(drawable),
                 texture: ObjPtr(tex),
+                in_flight: self.in_flight.clone(),
             })
         }
     }

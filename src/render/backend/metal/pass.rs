@@ -1,11 +1,35 @@
 //! Metal command buffer (`CommandEncoder`) and render pass (`RenderPass`) draw encoding.
 
 use std::ffi::c_void;
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use super::device::Queue;
 use super::ffi::*;
 use super::resources::{HostBuffer, Texture};
 use super::surface::SurfaceFrame;
+
+/// The last frame's committed command buffer. The renderer rewrites its
+/// shared instance buffers in place, so the next frame must not start
+/// writing until the GPU is done reading them (the Vulkan fence's role).
+#[derive(Clone, Default)]
+pub struct InFlight(Arc<Mutex<Option<ObjPtr>>>);
+
+impl InFlight {
+    /// Block until the recorded command buffer has completed, then forget it.
+    pub fn wait(&self) {
+        if let Some(cmd_buf) = self.0.lock().take() {
+            unsafe {
+                msg_send!(cmd_buf.as_ptr(), c"waitUntilCompleted");
+            }
+        }
+    }
+
+    fn record(&self, cmd_buf: ObjPtr) {
+        *self.0.lock() = Some(cmd_buf);
+    }
+}
 
 /// Command buffer wrapper (`MTLCommandBuffer`).
 pub struct CommandEncoder {
@@ -58,6 +82,7 @@ impl CommandEncoder {
             msg_send!(self.cmd_buf.as_ptr(), c"presentDrawable:", frame.drawable.as_ptr() => Id);
             msg_send!(self.cmd_buf.as_ptr(), c"commit");
         }
+        frame.in_flight.record(self.cmd_buf);
     }
 
     pub fn present_and_submit_wait(self, frame: SurfaceFrame) {
@@ -66,6 +91,15 @@ impl CommandEncoder {
             msg_send!(self.cmd_buf.as_ptr(), c"commit");
             msg_send!(self.cmd_buf.as_ptr(), c"waitUntilCompleted");
         }
+    }
+
+    /// Commit without presenting, recording the buffer in `in_flight`.
+    #[cfg(test)]
+    pub fn submit_in_flight(self, in_flight: &InFlight) {
+        unsafe {
+            msg_send!(self.cmd_buf.as_ptr(), c"commit");
+        }
+        in_flight.record(self.cmd_buf);
     }
 
     #[cfg(test)]
@@ -240,5 +274,31 @@ impl Drop for RenderPass {
         unsafe {
             msg_send!(self.encoder.as_ptr(), c"endEncoding");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::backend::shared_device_and_queue;
+
+    /// `MTLCommandBufferStatusCompleted`.
+    const COMPLETED: usize = 4;
+
+    #[test]
+    fn in_flight_wait_returns_after_the_gpu_finishes() {
+        let (_device, queue) = shared_device_and_queue();
+        let in_flight = InFlight::default();
+        let encoder = CommandEncoder::new(&queue);
+        let probe = ObjPtr(encoder.cmd_buf.as_ptr());
+        unsafe {
+            msg_send!(probe.as_ptr(), c"retain"; -> Id);
+        }
+        encoder.submit_in_flight(&in_flight);
+        in_flight.wait();
+        let status = unsafe { msg_send!(probe.as_ptr(), c"status"; -> usize) };
+        assert_eq!(status, COMPLETED);
+        assert!(in_flight.0.lock().is_none(), "a waited buffer is released");
+        in_flight.wait(); // nothing in flight: returns at once
     }
 }
