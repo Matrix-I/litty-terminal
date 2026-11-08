@@ -208,8 +208,13 @@ pub fn parse_font_feature(v: &str) -> Result<FontFeature, String> {
 
 pub fn set_font_features(features: &[FontFeature]) {
     let mut feat = FONT_FEATURES.lock();
-    if *feat != features {
-        *feat = features.to_vec();
-        *FONT_CACHE.lock() = None;
+    if *feat == features {
+        return;
     }
+    *feat = features.to_vec();
+    // `load_font` takes FONT_CACHE then FONT_FEATURES (in `parse_font`):
+    // release ours first so the two never wait on each other. A font cached
+    // before this point is dropped here; one cached after sees the new features.
+    drop(feat);
+    *FONT_CACHE.lock() = None;
 }

@@ -56,6 +56,7 @@ fn text_clusters_render_through_coretext() {
 #[test]
 fn ligatures_shape_into_glyph_pieces() {
     let Ok(path) = std::env::var("LITTY_LIGATURE_FONT") else { return };
+    let _features = FEATURES_LOCK.lock();
     set_font_features(&[]);
     let fonts = FontSet { primary: parse_font(&path, 0, true).unwrap(), fallbacks: Vec::new() };
     let row: Vec<crate::terminal::grid::Cell> =
@@ -75,6 +76,26 @@ fn ligatures_shape_into_glyph_pieces() {
     let fonts_off = FontSet { primary: parse_font(&path, 0, true).unwrap(), fallbacks: Vec::new() };
     assert!(!Shaper::new(off).shape_row(&fonts_off, 28.0, 17, &row, &mut out).0, "font-feature = -calt disables them");
     set_font_features(&[]);
+}
+
+/// `load_font` holds `FONT_CACHE` while `parse_font` reads `FONT_FEATURES`;
+/// `set_font_features` must not hold `FONT_FEATURES` while it waits for `FONT_CACHE`.
+#[test]
+fn set_font_features_does_not_deadlock_with_load_font() {
+    let _features = FEATURES_LOCK.lock();
+    let cache = super::fonts::FONT_CACHE.lock();
+    let setter = std::thread::spawn(|| set_font_features(&[parse_font_feature("-calt").unwrap()]));
+    // Give the setter the chance to take FONT_FEATURES and block on FONT_CACHE.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while !shaper::FONT_FEATURES.is_locked() && !setter.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    // What `parse_font` does inside `load_font`.
+    let read = shaper::FONT_FEATURES.try_lock_for(std::time::Duration::from_secs(2)).map(|f| f.clone());
+    drop(cache);
+    setter.join().unwrap();
+    set_font_features(&[]);
+    assert!(read.is_some(), "set_font_features held FONT_FEATURES while waiting for FONT_CACHE");
 }
 
 #[test]
@@ -223,3 +244,6 @@ fn line_metrics_prefers_the_font_when_it_has_them() {
     let real = fonts.primary.horizontal_line_metrics(16.0).expect("system font has hhea");
     assert_eq!(line_metrics(&fonts.primary, 16.0), real);
 }
+
+/// Tests that change or depend on the global `font-feature` list take this.
+static FEATURES_LOCK: parking_lot::Mutex<()> = parking_lot::const_mutex(());
