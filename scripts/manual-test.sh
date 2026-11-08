@@ -302,25 +302,20 @@ g18() { GROUP="Native macOS tabs"
     verdict "Cmd+T native tab in cwd"; verdict "Cmd+Shift+[ ] and Cmd+1/2 switch, Cmd+W closes one"; verdict "without option: own tab bar"
 }
 
-g19() { GROUP="Quick Terminal (macOS)"
-    echo 'keybind = global:ctrl+grave_accent=toggle_quick_terminal' | paste_box; pause
-    verdict "drops in from top with focus"; verdict "hides, focus returns, same shell when reopened"; verdict "autohide on click elsewhere"; verdict "exit closes, hotkey opens fresh"
-}
-
-g20() { GROUP="Custom shaders"
+g19() { GROUP="Custom shaders"
     echo "custom-shader = $REPO/examples/shaders/invert.glsl" | paste_box; pause; verdict "inverted, upright, mouse lines up"
     echo "custom-shader = $REPO/examples/shaders/scanlines.glsl" | paste_box; pause; verdict "scanlines animate only while focused"
     echo 'custom-shader-animation = false' | paste_box; pause; verdict "static"
     note "a shader with a typo: Litty still starts, error on stderr"; verdict "broken shader skipped"
 }
 
-g21() { GROUP="OSC 4 recolors existing text"
+g20() { GROUP="OSC 4 recolors existing text"
     run "printf '\e[31mred\e[0m\n'; ls -G /"; pause "then recolor"
     run "printf '\e]4;1;#00ff00\a'"; verdict "earlier red and ls colors turned green"
     run "printf '\e]104\a'"; verdict "red again"
 }
 
-g22() { GROUP="Ligatures and font-feature"
+g21() { GROUP="Ligatures and font-feature"
     note "needs a ligature font: font-family = JetBrains Mono (or Fira Code)"
     run "echo '-> => != === <= >= :: |> www 0xFF'"; verdict "ligatures, each over its own cells"
     run "printf '\e[1m-> !=\e[0m \e[3m-> !=\e[0m\n'"; verdict "bold and italic ligatures"
@@ -329,7 +324,7 @@ g22() { GROUP="Ligatures and font-feature"
     verdict "default font looks as before"
 }
 
-g23() { GROUP="Inline images (Kitty, Sixel)"
+g22() { GROUP="Inline images (Kitty, Sixel)"
     run "img png; echo"; verdict "gradient image at native size"
     run "img cells; echo"; verdict "sized to 20x10 cells"
     run "img sixel"; verdict "sixel stripes, prompt continues below"
@@ -338,7 +333,7 @@ g23() { GROUP="Inline images (Kitty, Sixel)"
     run "clear"; verdict "clear removes images"
 }
 
-g24() { GROUP="Color emoji and grapheme clusters"
+g23() { GROUP="Color emoji and grapheme clusters"
     local s='😀 👍🏽 👨‍👩‍👧 🇻🇳 ❤️ #️⃣ 🏳️‍🌈'
     run "echo '$s'"; verdict "all color, each cluster one glyph 2 cells, text after aligned"
     say "drag-select the emoji OUTPUT line (the one below the echo), then Cmd+C"; pause
@@ -348,40 +343,35 @@ g24() { GROUP="Color emoji and grapheme clusters"
     run "printf '\e[1m😀\e[0m \e[7m👍🏽\e[0m\n'"; verdict "bold / inverse emoji still in color"
 }
 
-g25() { GROUP="Kitty graphics: z-index, placeholders, animation, shm"
+g24() { GROUP="Kitty graphics: z-index, placeholders, animation, shm"
     run "img under; printf '\e[3A'; echo 'TEXT OVER THE IMAGE'; printf '\e[41m   red bg   \e[0m\n\n\n'"; verdict "image behind text, red cells cover it"
     run "img deep; printf '\e[3A'; printf '\e[41m   red bg   \e[0m\n\n\n\n'"; verdict "image behind colored cells too"
     run "img placeholder"; verdict "placeholder image 10x4 cells"
-    note "tmux: run 'tmux', then 'bash $REPO/scripts/manual-test.sh 25' inside it"
+    note "tmux: run 'tmux', then 'bash $REPO/scripts/manual-test.sh 24' inside it"
     run "img anim; echo"; verdict "red→blue→green animation, ~0% CPU when scrolled away"
     run "img shm; echo"; verdict "image via shared memory"
 }
 
-g26() { GROUP="Right-to-left text"
+g25() { GROUP="Right-to-left text"
     run "echo 'abc שלום עולם 123 def'"; verdict "Hebrew right to left, rest unchanged"
     run "echo 'سلام عليكم'"; verdict "Arabic letters joined, RTL order"
     verdict "click/drag in Hebrew selects cell under mouse, copy logical order"
     say "type Hebrew at a prompt in another tab"; verdict "cursor at the next letter's visual position"
 }
 
-g27() { GROUP="Kitty lock modifiers (Linux)"
+g26() { GROUP="Kitty lock modifiers (Linux)"
     [ "$OS" = Linux ] || { note "Linux only"; log skip "all" "not on Linux"; return; }
     printf '\e[>1u'; key "a with Caps Lock ON" 15 '*;65u*'; printf '\e[<u'
 }
 
-g28() { GROUP="Quick Terminal (Linux)"
-    [ "$OS" = Linux ] || { note "Linux only"; log skip "all" "not on Linux"; return; }
-    verdict "X11 global hotkey toggles"; verdict "litty +toggle-quick-terminal toggles"
-}
-
-g29() { GROUP="Debt: Kitty keys in the real app"
+g27() { GROUP="Debt: Kitty keys in the real app"
     printf '\e[>1u'
     key "a" 10 'a'; key "Ctrl+A" 10 '^\[\[97;5u'; key "Alt+A (Option)" 10 '^\[\[97;3u'
     key "Esc" 10 '^\[\[27u'; key "Tab" 10 $'\t'; key "Ctrl+I" 10 '^\[\[105;5u'
     printf '\e[<u'; verdict "key repeat (hold a key in vim/nvim) behaves"
 }
 
-g30() { GROUP="Debt: OSC 8 hover"
+g28() { GROUP="Debt: OSC 8 hover"
     run "printf '\e]8;;https://example.com\e\\\\example link\e]8;;\e\\\\\n'"
     verdict "Cmd + mouse move underlines it, preview pill shows the URL"; verdict "Cmd+Click opens it"
 }
@@ -389,18 +379,18 @@ g30() { GROUP="Debt: OSC 8 hover"
 NAMES=(x "OSC colors" "modifyOtherKeys" "Notifications/progress/pointer/bell" "XTGETTCAP/DECRQSS/mouse/scheme"
     "Config basics" "Shell integration" "Drag&drop/scrollbar/secure/bell" "Multiple windows" "Splits/contrast/scrollback"
     "Cell size/thicken/underline" "Scrollbar drag/progress bar/bell" "Shell integration additions" "Themes"
-    "confirm-close-surface" "Menu bar" "Kitty Caps Lock" "Inspector" "Native tabs" "Quick Terminal macOS"
+    "confirm-close-surface" "Menu bar" "Kitty Caps Lock" "Inspector" "Native tabs"
     "Custom shaders" "OSC 4 recolor" "Ligatures" "Inline images" "Emoji" "Kitty graphics extras" "RTL"
-    "Kitty lock (Linux)" "Quick Terminal (Linux)" "Debt: Kitty keys" "Debt: OSC 8 hover")
+    "Kitty lock (Linux)" "Debt: Kitty keys" "Debt: OSC 8 hover")
 
 if [ "$1" = -l ]; then
-    for i in $(seq 1 30); do printf '%2d  %s\n' "$i" "${NAMES[$i]}"; done; exit
+    for i in $(seq 1 28); do printf '%2d  %s\n' "$i" "${NAMES[$i]}"; done; exit
 fi
 [ -x "$BIN" ] || { echo "build first: cargo build --release"; exit 1; }
 [ -s "$LOG" ] || printf '# Manual test results\n' >"$LOG"
 printf '\n## %s (%s)\n\n| Group | Status | Item | Detail |\n|---|---|---|---|\n' "$(date '+%Y-%m-%d %H:%M')" "$(git -C "$REPO" rev-parse --short HEAD)" >>"$LOG"
 
-SEL=("$@"); [ $# -eq 0 ] && SEL=($(seq 1 30))
+SEL=("$@"); [ $# -eq 0 ] && SEL=($(seq 1 28))
 for i in "${SEL[@]}"; do
     printf '\n%s━━ %d. %s ━━%s\n' "$B" "$i" "${NAMES[$i]}" "$R"
     "g$i"

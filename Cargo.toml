@@ -23,8 +23,6 @@ unicode-normalization = "0.1"
 mimalloc = { version = "0.1", default-features = false }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-# Already built for winit's X11 backend; used for the Quick Terminal key grab.
-x11rb = "0.13"
 # Wayland clipboard on the app's own connection (no wl-copy window flash on GNOME).
 smithay-clipboard = "0.7"
 

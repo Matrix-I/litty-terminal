@@ -76,8 +76,6 @@ pub enum Action {
     ToggleInspector,
     /// Check for updates (Ghostty `check_for_updates`).
     CheckUpdate,
-    /// Show / hide the Quick Terminal (bound globally, `keybind = global:...`).
-    ToggleQuickTerminal,
 }
 
 /// Resolve a key press to a shortcut. `alt_screen` is true while a full-screen
@@ -247,103 +245,6 @@ pub enum Binding {
 }
 
 /// Parse a trigger such as `cmd+shift+t`, `ctrl+alt+left` or `super+comma`.
-/// macOS virtual key code (`kVK_*`) of a trigger key, for global hotkeys.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn mac_virtual_keycode(key: &TriggerKey) -> Option<u32> {
-    use NamedKey as N;
-    Some(match key {
-        TriggerKey::Char('`') => 0x32,
-        TriggerKey::Char(c) => {
-            // Indexed by key code; `\0` marks codes without a character.
-            const KEYS: &str = "asdfhgzxcv\0bqweryt123465=97-80]ou[ip\0lj'k;\\,/nm.";
-            let c = c.to_ascii_lowercase();
-            KEYS.chars().position(|k| k == c && k != '\0')? as u32
-        }
-        TriggerKey::Named(n) => match n {
-            N::Enter => 0x24,
-            N::Tab => 0x30,
-            N::Space => 0x31,
-            N::Backspace => 0x33,
-            N::Escape => 0x35,
-            N::Delete => 0x75,
-            N::Home => 0x73,
-            N::End => 0x77,
-            N::PageUp => 0x74,
-            N::PageDown => 0x79,
-            N::ArrowLeft => 0x7B,
-            N::ArrowRight => 0x7C,
-            N::ArrowDown => 0x7D,
-            N::ArrowUp => 0x7E,
-            N::F1 => 0x7A,
-            N::F2 => 0x78,
-            N::F3 => 0x63,
-            N::F4 => 0x76,
-            N::F5 => 0x60,
-            N::F6 => 0x61,
-            N::F7 => 0x62,
-            N::F8 => 0x64,
-            N::F9 => 0x65,
-            N::F10 => 0x6D,
-            N::F11 => 0x67,
-            N::F12 => 0x6F,
-            _ => return None,
-        },
-    })
-}
-
-/// `trigger` as the platform's global-hotkey API takes it: the native key code
-/// (macOS virtual key code, X11 keysym) and the modifiers. `None` for a key
-/// without a code on this platform.
-pub fn global_hotkey(trigger: &Trigger) -> Option<crate::platform::Hotkey> {
-    let code = if cfg!(target_os = "macos") { mac_virtual_keycode(&trigger.key) } else { x11_keysym(&trigger.key) }?;
-    let m = trigger.mods;
-    Some(crate::platform::Hotkey {
-        code,
-        mods: crate::platform::HotkeyMods { ctrl: m.ctrl, alt: m.alt, shift: m.shift, sup: m.sup },
-    })
-}
-
-/// X11 keysym of a trigger key, for global hotkeys on Linux.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-pub fn x11_keysym(key: &TriggerKey) -> Option<u32> {
-    use NamedKey as N;
-    Some(match key {
-        // Latin-1 keysyms are the characters themselves (lowercase for letters).
-        TriggerKey::Char(c) if (' '..='~').contains(c) => c.to_ascii_lowercase() as u32,
-        TriggerKey::Char(_) => return None,
-        TriggerKey::Named(n) => match n {
-            N::Space => 0x20,
-            N::Backspace => 0xFF08,
-            N::Tab => 0xFF09,
-            N::Enter => 0xFF0D,
-            N::Escape => 0xFF1B,
-            N::Home => 0xFF50,
-            N::ArrowLeft => 0xFF51,
-            N::ArrowUp => 0xFF52,
-            N::ArrowRight => 0xFF53,
-            N::ArrowDown => 0xFF54,
-            N::PageUp => 0xFF55,
-            N::PageDown => 0xFF56,
-            N::End => 0xFF57,
-            N::Insert => 0xFF63,
-            N::Delete => 0xFFFF,
-            N::F1 => 0xFFBE,
-            N::F2 => 0xFFBF,
-            N::F3 => 0xFFC0,
-            N::F4 => 0xFFC1,
-            N::F5 => 0xFFC2,
-            N::F6 => 0xFFC3,
-            N::F7 => 0xFFC4,
-            N::F8 => 0xFFC5,
-            N::F9 => 0xFFC6,
-            N::F10 => 0xFFC7,
-            N::F11 => 0xFFC8,
-            N::F12 => 0xFFC9,
-            _ => return None,
-        },
-    })
-}
-
 pub fn parse_trigger(s: &str) -> Result<Trigger, String> {
     let mut mods = Mods::default();
     let mut key = None;
@@ -420,6 +321,9 @@ fn parse_trigger_key(k: &str) -> Result<TriggerKey, String> {
     Ok(TriggerKey::Named(named))
 }
 
+/// Why an old config's Quick Terminal line no longer applies.
+pub const QUICK_TERMINAL_REMOVED: &str = "the Quick Terminal was removed in 0.10.0; this line is ignored";
+
 /// Parse a binding action: Ghostty action names (`new_tab`, `goto_tab:3`,
 /// `text:\x1b[A`, `unbind`, ...).
 pub fn parse_binding(s: &str) -> Result<Binding, String> {
@@ -437,7 +341,7 @@ pub fn parse_binding(s: &str) -> Result<Binding, String> {
         "new_tab" => Action::NewTab,
         "new_window" => Action::NewWindow,
         "inspector" => Action::ToggleInspector,
-        "toggle_quick_terminal" => Action::ToggleQuickTerminal,
+        "toggle_quick_terminal" => return Err(QUICK_TERMINAL_REMOVED.into()),
         "close_surface" | "close_tab" => Action::CloseTab,
         "quit" => Action::Quit,
         "copy_to_clipboard" => Action::Copy,
@@ -1213,40 +1117,6 @@ mod tests {
         assert_eq!(linux(&ch("O"), CTRL_SHIFT), Some(Action::SelectLastOutput));
         assert_eq!(linux(&ch("o"), CTRL), None, "bare Ctrl+O reaches bash");
         assert_eq!(parse_binding("jump_to_prompt:-1").unwrap(), Binding::Action(Action::JumpToPrompt(-1)));
-    }
-
-    #[test]
-    fn x11_keysyms() {
-        let sym = |s: &str| x11_keysym(&parse_trigger(s).unwrap().key);
-        assert_eq!(sym("ctrl+grave_accent"), Some(0x60));
-        assert_eq!(sym("super+A"), Some(0x61));
-        assert_eq!(sym("ctrl+f12"), Some(0xFFC9));
-        assert_eq!(sym("alt+space"), Some(0x20));
-    }
-
-    #[test]
-    fn mac_virtual_keycodes() {
-        let code = |s: &str| mac_virtual_keycode(&parse_trigger(s).unwrap().key);
-        assert_eq!(code("cmd+grave_accent"), Some(0x32));
-        assert_eq!(code("ctrl+a"), Some(0x00));
-        assert_eq!(code("ctrl+t"), Some(0x11));
-        assert_eq!(code("ctrl+5"), Some(0x17));
-        assert_eq!(code("ctrl+m"), Some(0x2E));
-        assert_eq!(code("ctrl+comma"), Some(0x2B));
-        assert_eq!(code("f12"), Some(0x6F));
-        assert_eq!(code("space"), Some(0x31));
-    }
-
-    #[test]
-    fn global_hotkey_carries_the_native_code_and_modifiers() {
-        let hotkey = |s: &str| global_hotkey(&parse_trigger(s).unwrap());
-        let h = hotkey("ctrl+alt+space").unwrap();
-        assert_eq!(h.code, if cfg!(target_os = "macos") { 0x31 } else { 0x20 });
-        assert_eq!(h.mods, crate::platform::HotkeyMods { ctrl: true, alt: true, shift: false, sup: false });
-        let h = hotkey("super+shift+f12").unwrap();
-        assert_eq!(h.code, if cfg!(target_os = "macos") { 0x6F } else { 0xFFC9 });
-        assert_eq!(h.mods, crate::platform::HotkeyMods { ctrl: false, alt: false, shift: true, sup: true });
-        assert_eq!(hotkey("ctrl+backspace").map(|h| h.mods.ctrl), Some(true));
     }
 
     #[test]

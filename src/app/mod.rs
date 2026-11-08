@@ -25,7 +25,6 @@ use state::State;
 use tabs::confirm_close;
 use tabs::end_tab_drag;
 use tabs::hide_or_exit_last_window;
-use tabs::open_fresh_tab;
 use terminal_io::handle_terminal_requests;
 use window::apply_system_appearance;
 use tab_tearoff::{adopt_dropped_tab, follow_torn_window, restore_tab, set_pointer_from_screen, tab_bar_hit_x};
@@ -33,7 +32,6 @@ use tabs::drag_tab;
 use window::create_window;
 use window::create_window_for_tab;
 use window::cursor_blinks;
-use window::place_quick_terminal;
 use window::reload_config;
 use window::render_active;
 
@@ -72,37 +70,6 @@ impl App {
         self.windows.retain(|w| !w.tabs.is_empty());
         if had_tabless {
             platform::release_free_memory();
-        }
-    }
-
-    /// Show the Quick Terminal (creating it on first use) or hide it when it is
-    /// already in front.
-    fn toggle_quick_terminal(&mut self, event_loop: &LoopCtx) {
-        let waker = self.waker.clone();
-        if let Some(i) = self.windows.iter().position(|s| s.quick) {
-            let s = &mut self.windows[i];
-            if s.tabs.is_empty() {
-                open_fresh_tab(s, &waker);
-            } else if s.window.is_visible().unwrap_or(true) && (s.focused || s.quick_autohide_at.is_some()) {
-                s.quick_autohide_at = None;
-                s.window.set_visible(false);
-                let others_visible = self.windows.iter().any(|w| !w.quick && !w.tabs.is_empty() && w.window.is_visible() != Some(false));
-                if !others_visible {
-                    platform::hide_app();
-                }
-                return;
-            }
-            s.quick_autohide_at = None;
-            place_quick_terminal(&self.windows[i]);
-            return;
-        }
-        match create_window(event_loop, &waker, None, true) {
-            Ok(s) => {
-                place_quick_terminal(&s);
-                self.drop_tabless_windows();
-                self.windows.push(s);
-            }
-            Err(e) => eprintln!("litty: failed to open the Quick Terminal: {e}"),
         }
     }
 
@@ -241,9 +208,6 @@ impl App {
                 reload_config(s);
             }
         }
-        if self.windows.iter_mut().any(|s| std::mem::take(&mut s.requests.quick_terminal)) {
-            self.toggle_quick_terminal(event_loop);
-        }
         if self.windows.iter_mut().any(|s| std::mem::take(&mut s.requests.quit)) {
             let config = &self.windows[0].config;
             let panes = self.windows.iter().flat_map(|s| s.tabs.iter().flat_map(|t| &t.panes));
@@ -266,7 +230,7 @@ impl App {
             }
         }
         for (cwd, parent, from) in requests {
-            match create_window(event_loop, &self.waker, cwd.as_deref(), false) {
+            match create_window(event_loop, &self.waker, cwd.as_deref()) {
                 // The hidden, tab-less window kept for the Dock is no longer needed.
                 Ok(s) => {
                     if let Some(p) = parent.and_then(|id| self.windows.iter().find(|w| w.window.id() == id)) {
@@ -320,7 +284,7 @@ impl EventHandler<AppEvent> for App {
         if !self.windows.is_empty() {
             return;
         }
-        let state = create_window(event_loop, &self.waker, None, false).expect("spawn initial PTY");
+        let state = create_window(event_loop, &self.waker, None).expect("spawn initial PTY");
         self.windows.push(state);
 
         if self.scroll_fps_run.is_some() {
@@ -347,11 +311,8 @@ impl EventHandler<AppEvent> for App {
             return;
         }
 
-        let sink = crate::event::platform_sink(self.waker.proxy.clone());
-        platform::register_reopen_handler(sink.clone());
+        platform::register_reopen_handler(crate::event::platform_sink(self.waker.proxy.clone()));
         platform::install_menu();
-        platform::listen_for_toggle(sink);
-        window::set_quick_terminal_hotkey(self.windows[0].config.quick_terminal_hotkey.as_ref());
 
         let cfg = &self.windows[0].config;
         update::check_on_startup(cfg.auto_update, cfg.auto_update_channel);
@@ -478,16 +439,6 @@ impl EventHandler<AppEvent> for App {
         let mut deadline: Option<std::time::Instant> = None;
         let now = std::time::Instant::now();
         for s in &mut self.windows {
-            if let Some(hide_at) = s.quick_autohide_at {
-                if now >= hide_at {
-                    s.quick_autohide_at = None;
-                    if !s.focused && s.config.quick_terminal_autohide {
-                        s.window.set_visible(false);
-                    }
-                } else {
-                    deadline = Some(deadline.map_or(hide_at, |d| d.min(hide_at)));
-                }
-            }
             if let Some(next_prune) = s.renderer.prune_idle_images(now) {
                 deadline = Some(deadline.map_or(next_prune, |d| d.min(next_prune)));
             }

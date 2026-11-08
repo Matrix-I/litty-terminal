@@ -93,7 +93,7 @@ fn in_tab_bar(local: (f64, f64), width: f64, bar_height: f64) -> bool {
 /// If the screen position `at` is over this window's tab bar (or, with a single tab and no
 /// bar yet, the band where it would be), the pointer's x in physical window pixels.
 pub(super) fn tab_bar_hit_x(s: &State, at: LogicalPosition<f64>) -> Option<f64> {
-    if s.quick || s.tabs.is_empty() || s.window.is_visible() == Some(false) || s.window.is_minimized() == Some(true) {
+    if s.tabs.is_empty() || s.window.is_visible() == Some(false) || s.window.is_minimized() == Some(true) {
         return None;
     }
     let scale = s.window.scale_factor();
@@ -170,7 +170,7 @@ pub(super) fn tear_off_if_dragged_out(s: &mut State) -> bool {
 /// Take the held tab out of this window if the pointer is far enough from the tab bar,
 /// and queue it for a new window.
 fn detach_held_tab(s: &mut State) -> bool {
-    if s.quick || s.tabs.len() < 2 {
+    if s.tabs.len() < 2 {
         return false;
     }
     let Some(held_id) = s.pointer.tab_drag.as_ref().map(|drag| drag.id()) else { return false };

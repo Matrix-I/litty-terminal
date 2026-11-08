@@ -322,15 +322,6 @@ impl Window {
         }
     }
 
-    pub fn request_inner_size(&self, _size: PhysicalSize<u32>) {
-        match &self.0 {
-            #[cfg(target_os = "macos")]
-            WindowInner::Native(_) => {}
-            #[cfg(target_os = "linux")]
-            WindowInner::NativeLinux(_) => {}
-        }
-    }
-
     pub fn inner_position(&self) -> Result<PhysicalPosition<i32>, Unsupported> {
         match &self.0 {
             #[cfg(target_os = "macos")]
@@ -627,7 +618,6 @@ pub enum Flow {
 pub struct WindowSpec {
     pub title: &'static str,
     pub decorations: bool,
-    pub always_on_top: bool,
     pub visible: bool,
     pub transparent: bool,
     pub inner_size: LogicalSize<f64>,

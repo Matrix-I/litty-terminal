@@ -30,7 +30,6 @@ impl From<crate::platform::PlatformEvent> for AppEvent {
         match event {
             P::Reopen => AppEvent::Reopen,
             P::SystemAppearance { dark } => AppEvent::SystemAppearance { dark },
-            P::ToggleQuickTerminal => AppEvent::Menu(A::ToggleQuickTerminal),
             P::Menu(command) => AppEvent::Menu(match command {
                 M::Quit => A::Quit,
                 M::ToggleSecureInput => A::ToggleSecureInput,
@@ -112,10 +111,6 @@ mod tests {
         assert!(matches!(
             app_event(PlatformEvent::SystemAppearance { dark: false }),
             AppEvent::SystemAppearance { dark: false }
-        ));
-        assert!(matches!(
-            app_event(PlatformEvent::ToggleQuickTerminal),
-            AppEvent::Menu(keymap::Action::ToggleQuickTerminal)
         ));
     }
 

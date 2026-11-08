@@ -20,7 +20,7 @@ pub fn release_free_memory() {
     }
 }
 
-/// Where Dock, menu, hotkey and appearance callbacks deliver their events.
+/// Where Dock, menu and appearance callbacks deliver their events.
 pub(super) static EVENTS: crate::platform::SinkSlot = crate::platform::SinkSlot::new();
 
 fn send_reopen() {
@@ -139,16 +139,6 @@ pub fn system_dark() -> bool {
             .map(|name| msg_send!(name, c"UTF8String"; -> *const std::ffi::c_char))
             .filter(|p| !p.is_null());
         name.is_none_or(|p| CStr::from_ptr(p).to_bytes().windows(4).any(|w| w == b"Dark"))
-    }
-}
-
-/// Hide the app, giving focus back to the previously active application.
-pub fn hide_app() {
-    // SAFETY: standard NSApplication call.
-    unsafe {
-        if let Some(app) = shared_application() {
-            msg_send!(app, c"hide:", std::ptr::null_mut::<c_void>() => Id);
-        }
     }
 }
 

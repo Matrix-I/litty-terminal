@@ -24,8 +24,7 @@ LITTY_TEST_CA_BUNDLE=/path/to/trusted-ca-bundle.pem bash scripts/linux/test.sh
 The optional build secret installs those public roots in the test image. TLS
 verification stays enabled. Do not put private keys or credentials in that file.
 
-The X11 probe uses Xvfb, Openbox and synthetic input to verify Kitty lock modifier
-encoding and Quick Terminal global-hotkey/socket show/hide, session reuse,
-geometry and autohide. It does not prove physical keyboard behavior, Wayland
+The X11 probe uses Xvfb, Openbox and synthetic input to verify mouse wheel and
+keysym input, window close, and Kitty lock modifier encoding. It does not prove physical keyboard behavior, Wayland
 compositor integration, real browser/file-manager dispatch, or hardware GPU
 latency/idle RAM limits. Keep those manual roadmap checks separate.

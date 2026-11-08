@@ -44,15 +44,9 @@ fn main() {
                 println!("{name}");
             }
         }
-        cli::Command::ToggleQuickTerminal => {
-            if cfg!(target_os = "macos") {
-                eprintln!("litty: on macOS, use `keybind = global:<trigger>=toggle_quick_terminal`");
-                std::process::exit(1);
-            }
-            if let Err(e) = platform::send_toggle() {
-                eprintln!("litty: no running Litty to toggle ({e})");
-                std::process::exit(1);
-            }
+        cli::Command::QuickTerminalRemoved => {
+            eprintln!("litty: the Quick Terminal was removed in 0.10.0");
+            std::process::exit(1);
         }
         cli::Command::CheckUpdate => update::cli_check_update(),
         cli::Command::Update { force } => update::cli_update(force),

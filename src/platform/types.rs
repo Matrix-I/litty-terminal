@@ -20,23 +20,6 @@ pub struct WindowLook {
     pub background_blur: u32,
 }
 
-/// Modifier keys of a global hotkey.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct HotkeyMods {
-    pub ctrl: bool,
-    pub alt: bool,
-    pub shift: bool,
-    pub sup: bool,
-}
-
-/// A system-wide hotkey in the platform's own terms: a macOS virtual key code
-/// or an X11 keysym.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Hotkey {
-    pub code: u32,
-    pub mods: HotkeyMods,
-}
-
 /// An entry of the macOS menu bar that Litty handles itself. The menu item's
 /// tag indexes [`MenuCommand::ALL`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,16 +73,16 @@ pub enum PlatformEvent {
     /// The system appearance changed.
     SystemAppearance { dark: bool },
     Menu(MenuCommand),
-    /// Quick Terminal hotkey or control-socket request.
-    ToggleQuickTerminal,
 }
 
 /// Where platform callbacks (any thread) deliver [`PlatformEvent`]s.
 pub type EventSink = Arc<dyn Fn(PlatformEvent) + Send + Sync>;
 
 /// A slot holding the process-wide sink, shared by a platform's modules.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub struct SinkSlot(parking_lot::Mutex<Option<EventSink>>);
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl SinkSlot {
     pub const fn new() -> Self {
         Self(parking_lot::const_mutex(None))

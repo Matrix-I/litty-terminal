@@ -3,11 +3,10 @@
 Custom shortcuts can be bound to any action below:
 
 ```ini
-# Syntax: keybind = [global:]<modifiers>+<key>=<action>
+# Syntax: keybind = <modifiers>+<key>=<action>
 # Example:
 keybind = cmd+t=new_split:right
 keybind = ctrl+shift+h=text:hello\n
-keybind = global:cmd+grave_accent=toggle_quick_terminal
 keybind = cmd+d=unbind
 ```
 
@@ -38,7 +37,6 @@ keybind = cmd+d=unbind
 | `check_for_updates` / `check_update` | Check for latest GitHub release |
 | `text:<string>` | Send verbatim string / keystrokes to shell |
 | `csi:<bytes>` / `esc:<bytes>` | Send raw CSI / Escape byte sequence |
-| `toggle_quick_terminal` | Drop-down global Quick Terminal (can use `global:` modifier) |
 | `unbind` / `ignore` | Disable default shortcut |
 | `clear` | Drop all custom keybindings and restore defaults |
 
