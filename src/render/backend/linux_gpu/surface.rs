@@ -364,6 +364,19 @@ impl Surface {
         }
     }
 
+    /// Block until the GPU has finished the last submitted frame (its fence is
+    /// signaled by the submit). Benchmarks only: the render loop never waits here.
+    pub fn wait_gpu_idle(&self) {
+        let Some(vk) = self.vk.as_ref() else { return };
+        if self.fence == 0 {
+            return;
+        }
+        // SAFETY: `fence` belongs to `vk.device` and lives as long as the surface.
+        unsafe {
+            (vk.lib.vkWaitForFences)(vk.device, 1, &self.fence, 1, u64::MAX);
+        }
+    }
+
     pub fn shrink_drawables(&mut self, _device: &Device, _queue: &Queue) {
         let Some(vk) = &self.vk else { return };
         unsafe {

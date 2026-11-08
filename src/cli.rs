@@ -13,6 +13,10 @@ pub(crate) enum Command {
     BenchDsr { iterations: usize },
     /// Internal: the child process of `BenchDsr`, which runs on a PTY.
     BenchDsrChild { out: String, warmup: usize, iterations: usize },
+    /// Keystroke → GPU-completed frame in a real window.
+    BenchInputLatency { samples: usize },
+    /// Internal: the echo program `BenchInputLatency` runs in its pane.
+    BenchEchoChild,
     Run { bench_ram: bool, bench_all: bool, scroll_fps: bool },
 }
 
@@ -37,6 +41,12 @@ pub(crate) fn parse(args: &[String]) -> Command {
         Command::BenchDsr {
             iterations: args.get(2).and_then(|s| s.parse().ok()).unwrap_or(crate::bench_dsr::ITERATIONS),
         }
+    } else if is(&["+bench-input-latency", "--bench-input-latency"]) {
+        Command::BenchInputLatency {
+            samples: args.get(2).and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(crate::bench_input::DEFAULT_SAMPLES),
+        }
+    } else if is(&[crate::bench_input::ECHO_CHILD_FLAG]) {
+        Command::BenchEchoChild
     } else if is(&[crate::bench_dsr::CHILD_FLAG]) {
         let num = |i: usize| args.get(i).and_then(|s| s.parse().ok()).unwrap_or(0);
         Command::BenchDsrChild { out: args.get(2).cloned().unwrap_or_default(), warmup: num(3), iterations: num(4) }
@@ -105,6 +115,14 @@ mod tests {
             parse(&argv(&["+bench-dsr-child", "/tmp/x", "10", "20"])),
             Command::BenchDsrChild { out: "/tmp/x".into(), warmup: 10, iterations: 20 }
         );
+    }
+
+    #[test]
+    fn bench_input_latency_parses_sample_count_and_child() {
+        assert_eq!(parse(&argv(&["+bench-input-latency"])), Command::BenchInputLatency { samples: 1000 });
+        assert_eq!(parse(&argv(&["--bench-input-latency", "200"])), Command::BenchInputLatency { samples: 200 });
+        assert_eq!(parse(&argv(&["+bench-input-latency", "0"])), Command::BenchInputLatency { samples: 1000 });
+        assert_eq!(parse(&argv(&["+bench-echo-child"])), Command::BenchEchoChild);
     }
 
     #[test]

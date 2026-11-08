@@ -28,6 +28,15 @@ Tested on macOS Sequoia / Sonoma (Apple Silicon M-series, empty idle shell):
 | **GPU Swapchain Passes** | Coalesced single-pass rendering per wake event | **1 pass** / WakeUp | **50% fewer** swapchain acquires & V-Sync waits |
 | **Grid Cell Packing** | Packed `Cell` (`codepoint`, packed `fg`, packed `bg`) | **12 bytes** / cell | Zero runtime heap allocation on scroll/output |
 
+## Benchmark commands
+
+Run them on a release build (`cargo build --release`). Each in-app benchmark
+opens a real window and prints one JSON line.
+
+| Command | Measures | Notes |
+| :--- | :--- | :--- |
+| `litty +bench-input-latency [samples]` | Synthetic key press → GPU-completed frame that shows the echo, split into `input` / `echo` / `render` / `gpu` stages (default 1,000 samples after 50 warmup) | The pane runs an echo child, not a shell. Excludes the OS input stack and display scanout; `render` includes waiting for a free drawable |
+
 ---
 
 Back to the [README](../../README.md).

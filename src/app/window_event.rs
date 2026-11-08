@@ -19,7 +19,6 @@ use super::terminal_io::write_pane_input;
 use super::terminal_io::write_pty;
 use super::window::apply_system_appearance;
 use super::window::refresh_tab_titles;
-use super::window::render_active;
 use super::window::sync_size;
 use super::App;
 use super::ime::handle_ime;
@@ -648,12 +647,12 @@ impl App {
 
     pub(super) fn on_redraw_requested(&mut self, id: WindowId) {
         let waker = self.waker.clone();
-        let Some(s) = self.window_mut(id) else { return };
+        let Some(s) = self.windows.iter_mut().find(|s| s.window.id() == id) else { return };
         if s.occluded {
             return;
         }
         // Re-arm before rendering so any PTY write during the draw schedules the next frame.
         waker.rearm();
-        render_active(s);
+        super::gui_bench::render_observed(s, &mut self.input_latency_run, &mut self.gui_bench_result);
     }
 }

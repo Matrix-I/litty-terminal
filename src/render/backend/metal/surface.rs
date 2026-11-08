@@ -120,6 +120,12 @@ impl Surface {
         }
     }
 
+    /// Block until the GPU has finished the last submitted frame. Benchmarks
+    /// only: the render loop itself never waits here.
+    pub fn wait_gpu_idle(&self) {
+        self.in_flight.wait();
+    }
+
     /// Shrink swapchain drawables to 1×1 and flush the pool when idle/hidden/closed
     /// so macOS releases the ~30MB Retina IOSurface backing buffers immediately.
     pub fn shrink_drawables(&mut self, device: &Device, queue: &Queue) {

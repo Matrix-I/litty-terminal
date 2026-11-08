@@ -4,6 +4,7 @@
 mod actions;
 mod ai_bridge;
 mod csd;
+mod gui_bench;
 mod history_ui;
 mod ime;
 mod inspector;
@@ -32,7 +33,6 @@ use window::create_window;
 use window::create_window_for_tab;
 use window::cursor_blinks;
 use window::reload_config;
-use window::render_active;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -53,6 +53,9 @@ struct App {
     windows: Vec<State>,
     bench_ram_mode: bool,
     scroll_fps_run: Option<frame_metrics::ScrollRun>,
+    input_latency_run: Option<gui_bench::InputLatencyRun>,
+    /// A finished in-app benchmark's report, printed when the loop next idles.
+    gui_bench_result: Option<Result<String, String>>,
 }
 
 impl App {
@@ -290,6 +293,15 @@ impl EventHandler<AppEvent> for App {
         let state = create_window(event_loop, &self.waker, None).expect("spawn initial PTY");
         self.windows.push(state);
 
+        if self.input_latency_run.is_some() {
+            let s = &mut self.windows[0];
+            s.window.set_title("Litty — input latency benchmark");
+            s.window.focus_window();
+            platform::activate_app();
+            s.window.request_redraw();
+            return;
+        }
+
         if self.scroll_fps_run.is_some() {
             let s = &mut self.windows[0];
             s.window.set_title("Litty — scroll FPS benchmark");
@@ -355,7 +367,7 @@ impl EventHandler<AppEvent> for App {
                     handle_terminal_requests(s);
                     handle_ai_requests(s, &self.waker);
                     if !s.tabs.is_empty() {
-                        render_active(s);
+                        gui_bench::render_observed(s, &mut self.input_latency_run, &mut self.gui_bench_result);
                     }
                 }
             }
@@ -404,6 +416,10 @@ impl EventHandler<AppEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &LoopCtx) {
+        if let Some(result) = self.gui_bench_result.take() {
+            finish_gui_bench(event_loop, result);
+            return;
+        }
         if let Some(run) = &mut self.scroll_fps_run {
             let now = std::time::Instant::now();
             let Some(s) = self.windows.first_mut() else { event_loop.exit(); return };
@@ -437,6 +453,16 @@ impl EventHandler<AppEvent> for App {
         }
         let mut deadline: Option<std::time::Instant> = None;
         let now = std::time::Instant::now();
+        if let Some(run) = &mut self.input_latency_run {
+            let Some(s) = self.windows.first_mut() else { event_loop.exit(); return };
+            match run.tick(s, &self.waker, now) {
+                gui_bench::Step::Continue(at) => deadline = at,
+                gui_bench::Step::Done(result) => {
+                    finish_gui_bench(event_loop, result);
+                    return;
+                }
+            }
+        }
         for s in &mut self.windows {
             if let Some(next_prune) = s.renderer.prune_idle_images(now) {
                 deadline = Some(deadline.map_or(next_prune, |d| d.min(next_prune)));
@@ -475,7 +501,36 @@ pub(crate) fn run(bench_ram_mode: bool, scroll_fps: bool) {
         windows: Vec::new(),
         bench_ram_mode,
         scroll_fps_run: scroll_fps.then(frame_metrics::ScrollRun::new),
+        input_latency_run: None,
+        gui_bench_result: None,
     });
+}
+
+/// `+bench-input-latency`: the first pane runs `echo_child` (argv) instead of a
+/// shell; the app types `samples` keys into it and prints one JSON report line.
+pub(crate) fn run_input_latency(samples: usize, echo_child: Vec<String>) {
+    gui_bench::set_pane_program(echo_child);
+    crate::platform::gui::run(|proxy| App {
+        waker: Waker { proxy, queued: Arc::new(AtomicBool::new(false)) },
+        windows: Vec::new(),
+        bench_ram_mode: false,
+        scroll_fps_run: None,
+        input_latency_run: Some(gui_bench::InputLatencyRun::new(samples)),
+        gui_bench_result: None,
+    });
+}
+
+/// Print a benchmark's report line and stop the event loop; a failed run
+/// prints why and exits with status 1 right away (dropping the PTY children).
+fn finish_gui_bench(event_loop: &LoopCtx, result: Result<String, String>) {
+    match result {
+        Ok(line) => println!("{line}"),
+        Err(e) => {
+            eprintln!("litty: benchmark failed: {e}");
+            std::process::exit(1);
+        }
+    }
+    event_loop.exit();
 }
 
 #[cfg(test)]

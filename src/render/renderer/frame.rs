@@ -589,5 +589,6 @@ impl Renderer {
             pass.draw_corners(&self.pipelines.corner, &u);
         }
         encoder.present_and_submit(frame);
+        self.frames_submitted += 1;
     }
 }

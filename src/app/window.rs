@@ -233,7 +233,13 @@ pub(super) fn spawn_pane(
     waker: &Waker,
 ) -> std::io::Result<Pane> {
     let grid = Arc::new(Mutex::new(Grid::new(cols, rows)));
-    let pty = Pty::spawn_in(cols as u16, rows as u16, cw, ch, cwd, shell)?;
+    let pty = match super::gui_bench::pane_program() {
+        Some(argv) => {
+            let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+            Pty::spawn_program(&argv[0], &args, &[], cols as u16, rows as u16)?
+        }
+        None => Pty::spawn_in(cols as u16, rows as u16, cw, ch, cwd, shell)?,
+    };
     let on_output = waker.clone();
     let proxy = waker.proxy.clone();
     pty.spawn_reader(grid.clone(), move || on_output.wake(), move || {

@@ -126,6 +126,8 @@ struct Viewport {
 
 pub struct Renderer {
     frame_capture: Option<crate::render::frame_metrics::Capture>,
+    /// Frames handed to the GPU so far; benchmarks compare it across a draw.
+    frames_submitted: u64,
     surface: Surface,
     device: Arc<Device>,
     queue: Arc<Queue>,
@@ -203,6 +205,16 @@ impl Renderer {
         }
     }
 
+    /// Number of frames submitted to the GPU since the renderer was created.
+    pub fn frames_submitted(&self) -> u64 {
+        self.frames_submitted
+    }
+
+    /// Block until the GPU has finished the last submitted frame (benchmarks only).
+    pub fn wait_gpu_idle(&self) {
+        self.surface.wait_gpu_idle();
+    }
+
     pub fn new(
         window: Arc<Window>,
         font: Arc<FontSet>,
@@ -234,6 +246,7 @@ impl Renderer {
         let images = crate::render::image_layer::ImageLayer::new(&device, format);
         Renderer {
             frame_capture: None,
+            frames_submitted: 0,
             surface,
             device,
             queue,

@@ -5,6 +5,7 @@ mod ai;
 mod app;
 pub mod bench;
 mod bench_dsr;
+mod bench_input;
 mod cli;
 mod config;
 mod curl_config;
@@ -71,6 +72,14 @@ fn main() {
         cli::Command::BenchDsrChild { out, warmup, iterations } => {
             std::process::exit(bench_dsr::run_child(std::path::Path::new(&out), warmup, iterations));
         }
+        cli::Command::BenchInputLatency { samples } => match bench_input::current_exe() {
+            Ok(exe) => app::run_input_latency(samples, vec![exe, bench_input::ECHO_CHILD_FLAG.into()]),
+            Err(e) => {
+                eprintln!("litty: {e}");
+                std::process::exit(1);
+            }
+        },
+        cli::Command::BenchEchoChild => std::process::exit(bench_input::run_echo_child()),
         cli::Command::BenchFeatures => {
             if !bench::run_critical_features_benchmark().passed {
                 std::process::exit(1);
