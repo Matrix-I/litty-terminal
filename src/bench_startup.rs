@@ -16,6 +16,7 @@
 
 use std::io::Read as _;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -24,7 +25,12 @@ use crate::json::Json;
 
 pub const CHILD_FLAG: &str = "+bench-first-frame-child";
 pub const DEFAULT_RUNS: usize = 10;
+pub const MAX_RUNS: usize = 1000;
+/// Time allowed to collect a child's stdout after it exited.
+const OUTPUT_DEADLINE: Duration = Duration::from_secs(2);
 const RUN_DEADLINE: Duration = Duration::from_secs(20);
+/// Longest wait for the GPU to complete the first frame.
+pub const GPU_DEADLINE: Duration = Duration::from_secs(5);
 
 /// `CLOCK_MONOTONIC` in nanoseconds (shared by every process on the host).
 pub fn mono_ns() -> u64 {
@@ -121,15 +127,22 @@ pub fn summary(runs: &[Stages]) -> String {
     let first = runs.first().map_or_else(|| "null".to_string(), Stages::report_line);
     let rest = runs.get(1..).unwrap_or_default();
     let stage = |f: fn(&Stages) -> f64| rest.iter().map(f).collect::<Vec<_>>();
+    // With a single run there is nothing to summarize: null, never all-zero stats.
+    let later = if rest.is_empty() {
+        "null".to_string()
+    } else {
+        format!(
+            "{{{},{},{},{},{}}}",
+            stats_json("total_ms", &stage(Stages::total_ms)),
+            stats_json("exec_ms", &stage(|s| s.exec_ms)),
+            stats_json("init_ms", &stage(|s| s.init_ms)),
+            stats_json("first_submit_ms", &stage(|s| s.first_submit_ms)),
+            stats_json("gpu_ms", &stage(|s| s.gpu_ms)),
+        )
+    };
     format!(
-        "{{\"benchmark\":\"first_frame\",\"endpoint\":\"gpu_complete\",\"runs\":{},\"first_run\":{},\"later_runs\":{{{},{},{},{},{}}}}}",
+        "{{\"benchmark\":\"first_frame\",\"endpoint\":\"gpu_complete\",\"runs\":{},\"first_run\":{first},\"later_runs\":{later}}}",
         runs.len(),
-        first,
-        stats_json("total_ms", &stage(Stages::total_ms)),
-        stats_json("exec_ms", &stage(|s| s.exec_ms)),
-        stats_json("init_ms", &stage(|s| s.init_ms)),
-        stats_json("first_submit_ms", &stage(|s| s.first_submit_ms)),
-        stats_json("gpu_ms", &stage(|s| s.gpu_ms)),
     )
 }
 
@@ -144,6 +157,15 @@ fn run_once(exe: &str) -> Result<Stages, String> {
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| format!("cannot start {exe}: {e}"))?;
+    // Drain stdout while the child runs, so a chatty child never blocks on a full pipe.
+    let (out_tx, out_rx) = mpsc::channel();
+    if let Some(mut stdout) = child.stdout.take() {
+        std::thread::spawn(move || {
+            let mut out = String::new();
+            let read = stdout.read_to_string(&mut out).map(|_| out);
+            let _ = out_tx.send(read);
+        });
+    }
     let deadline = Instant::now() + RUN_DEADLINE;
     let status = loop {
         match child.try_wait() {
@@ -161,10 +183,11 @@ fn run_once(exe: &str) -> Result<Stages, String> {
             }
         }
     };
-    let mut out = String::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        stdout.read_to_string(&mut out).map_err(|e| format!("reading the child report failed: {e}"))?;
-    }
+    let out = match out_rx.recv_timeout(OUTPUT_DEADLINE) {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return Err(format!("reading the child report failed: {e}")),
+        Err(_) => return Err("the child's output stayed open after it exited".into()),
+    };
     if !status.success() {
         return Err(format!("child exited with {status}"));
     }
@@ -223,6 +246,13 @@ mod tests {
         assert!(json.contains("\"runs\":3"));
         assert!(json.contains("\"first_run\":{\"exec_ms\":0.000,\"init_ms\":500.000"));
         assert!(json.contains("\"init_ms\":{\"min\":10.000,\"mean\":20.000,\"p50\":10.000,\"max\":30.000}"));
+        assert!(Json::parse(&json).is_ok(), "summary must be valid JSON: {json}");
+    }
+
+    #[test]
+    fn a_single_run_has_no_later_runs_summary() {
+        let json = summary(&[Stages { exec_ms: 1.0, init_ms: 2.0, first_submit_ms: 3.0, gpu_ms: 4.0 }]);
+        assert!(json.ends_with("\"later_runs\":null}"), "{json}");
         assert!(Json::parse(&json).is_ok(), "summary must be valid JSON: {json}");
     }
 

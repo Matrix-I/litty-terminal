@@ -7,26 +7,33 @@
 //! app reads, parses and draws it normally, so a slow reader or a long grid
 //! lock shows up as back-pressure on the child's writes. The child times the
 //! write and leaves `<bytes> <nanoseconds>` in the report file; the parent then
-//! closes the app.
+//! closes the app. The timer stops when the kernel accepts the last byte, so
+//! the last PTY buffer's worth (a few KB) is parsed and drawn after it: use
+//! streams of many MiB, where that tail is negligible.
 //!
 //! The parent also feeds the same bytes to a bare `Grid` (no PTY, no drawing)
 //! so each kind reports the in-app rate next to the parser-only rate.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::bench_dsr::write_all;
 use crate::terminal::grid::Grid;
 
 pub const CAT_CHILD_FLAG: &str = "+bench-cat-child";
 pub const GUI_FLAG: &str = "+bench-pty-throughput-gui";
 pub const DEFAULT_MIB: usize = 64;
+/// Upper bound for the stream size; the parent and the child each hold one copy.
+pub const MAX_MIB: usize = 4096;
 pub const KINDS: [&str; 6] = ["ascii", "sgr", "code", "unicode", "osc8", "region"];
 const RUN_DEADLINE: Duration = Duration::from_secs(180);
 const GRID_RUNS: usize = 3;
+/// How often the parent looks for the child's report.
+const REPORT_POLL: Duration = Duration::from_millis(20);
 
 /// Lines of one stream kind, repeated until the stream holds at least `bytes`.
 /// Lines end in `\r\n`, so the terminal driver's output processing has no
@@ -98,21 +105,6 @@ fn write_report(out: &Path, bytes: u64, ns: u64) -> std::io::Result<()> {
     std::fs::rename(&tmp, out)
 }
 
-fn write_all(fd: libc::c_int, mut data: &[u8]) -> bool {
-    while !data.is_empty() {
-        // SAFETY: `data` is a valid readable slice.
-        let n = unsafe { libc::write(fd, data.as_ptr().cast(), data.len()) };
-        if n < 0 {
-            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return false;
-        }
-        data = &data[n as usize..];
-    }
-    true
-}
-
 /// Child side, run on the pane's PTY. Returns the process exit code.
 pub fn run_cat_child(kind: &str, mib: usize, out: &Path) -> i32 {
     let Some(data) = generate(kind, mib * 1024 * 1024) else { return 2 };
@@ -141,15 +133,31 @@ fn grid_only_mb_per_s(data: &[u8]) -> f64 {
     mb_per_s(data.len() as u64, best)
 }
 
-fn report_path(kind: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("litty-bench-throughput-{}-{kind}.txt", std::process::id()))
+/// A fresh directory only this user can enter, for one run's report. Creating
+/// it fails if the name exists, so nobody can plant a report in advance.
+fn private_dir(kind: &str) -> Result<PathBuf, String> {
+    let dir = std::env::temp_dir().join(format!(
+        "litty-bench-throughput-{}-{kind}-{}",
+        std::process::id(),
+        crate::bench_startup::mono_ns()
+    ));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    Ok(dir)
 }
 
 /// Run the app on one stream kind and wait (bounded) for the child's report.
 fn run_kind(exe: &str, kind: &str, mib: usize) -> Result<(u64, u64), String> {
-    let out = report_path(kind);
-    let _ = std::fs::remove_file(&out);
-    let _ = std::fs::remove_file(out.with_extension("tmp"));
+    let dir = private_dir(kind)?;
+    let result = run_kind_in(exe, kind, mib, &dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+fn run_kind_in(exe: &str, kind: &str, mib: usize, dir: &Path) -> Result<(u64, u64), String> {
+    let out = dir.join("report.txt");
     let out_str = out.to_str().ok_or("report path is not UTF-8")?.to_string();
     let mut app = Command::new(exe)
         .args([GUI_FLAG, kind, &mib.to_string(), &out_str])
@@ -159,13 +167,18 @@ fn run_kind(exe: &str, kind: &str, mib: usize) -> Result<(u64, u64), String> {
         .spawn()
         .map_err(|e| format!("cannot start {exe}: {e}"))?;
     let deadline = Instant::now() + RUN_DEADLINE;
+    let read_report = || std::fs::read_to_string(&out).ok().map(|text| parse_report(&text));
     let result = loop {
-        if let Ok(text) = std::fs::read_to_string(&out) {
-            break parse_report(&text);
+        if let Some(report) = read_report() {
+            break report;
         }
         match app.try_wait() {
-            Ok(Some(status)) => break Err(format!("the app exited with {status} before the child reported")),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            // The child reports before it exits, and the app may exit with it
+            // (Linux closes the app with its last window): look once more.
+            Ok(Some(status)) => {
+                break read_report().unwrap_or_else(|| Err(format!("the app exited with {status} before the child reported")));
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(REPORT_POLL),
             Ok(None) => break Err(format!("no report within {}s", RUN_DEADLINE.as_secs())),
             Err(e) => break Err(format!("waiting for the app failed: {e}")),
         }
@@ -173,7 +186,6 @@ fn run_kind(exe: &str, kind: &str, mib: usize) -> Result<(u64, u64), String> {
     // Close the app on every path; its pane child has already exited or is hung up.
     let _ = app.kill();
     let _ = app.wait();
-    let _ = std::fs::remove_file(&out);
     result
 }
 

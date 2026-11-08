@@ -2,8 +2,9 @@
 //! and the `+bench-first-frame` child. The pure parts (stages, reports, child
 //! programs) live in `crate::bench_input` and `crate::bench_startup`.
 
-use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Instant;
+
+use parking_lot::Mutex;
 
 use super::keyboard::handle_key;
 use super::state::State;
@@ -13,17 +14,18 @@ use crate::bench_startup;
 use crate::input::{Key, KeyCode, KeyInput, KeyLocation, PhysicalKey};
 use crate::Waker;
 
-/// Program (argv\[0\] is the path) that new panes run instead of the shell.
-/// Set once, before the event loop starts, by a benchmark command only.
-static PANE_PROGRAM: OnceLock<Vec<String>> = OnceLock::new();
+/// Program (argv\[0\] is the path) the next new pane runs instead of the
+/// shell. Set before the event loop starts by a benchmark command only, and
+/// taken by the first pane, so later tabs and splits get a normal shell.
+static PANE_PROGRAM: Mutex<Option<Vec<String>>> = Mutex::new(None);
 
 pub(crate) fn set_pane_program(argv: Vec<String>) {
-    let _ = PANE_PROGRAM.set(argv);
+    *PANE_PROGRAM.lock() = Some(argv).filter(|argv| !argv.is_empty());
 }
 
-/// The benchmark program for new panes, if one was set.
-pub(super) fn pane_program() -> Option<&'static [String]> {
-    PANE_PROGRAM.get().map(Vec::as_slice).filter(|argv| !argv.is_empty())
+/// The benchmark program for this pane, if one is still waiting.
+pub(super) fn take_pane_program() -> Option<Vec<String>> {
+    PANE_PROGRAM.lock().take()
 }
 
 /// Keys typed by the benchmark, in order; consecutive keys always differ so a
@@ -101,11 +103,11 @@ impl InputLatencyRun {
             if top_left(s) == Some(bench_input::READY_MARK) {
                 self.ready = true;
                 // Let the first frames and glyph rasterization settle.
-                self.next_at = now + Duration::from_millis(500);
+                self.next_at = now + bench_input::SETTLE_DELAY;
             } else if now.duration_since(self.started) > bench_input::READY_DEADLINE {
                 return Step::Done(Err("the echo child never reported ready".into()));
             } else {
-                return Step::Continue(Some(now + Duration::from_millis(10)));
+                return Step::Continue(Some(now + bench_input::READY_POLL));
             }
         }
         if let Some(p) = &self.pending {
@@ -150,7 +152,10 @@ impl InputLatencyRun {
             return None;
         }
         let t_submit = Instant::now();
-        s.renderer.wait_gpu_idle();
+        if !s.renderer.wait_gpu_idle(bench_input::SAMPLE_DEADLINE) {
+            self.pending = None;
+            return Some(Err("the GPU did not complete a frame".into()));
+        }
         let t_done = Instant::now();
         let ms = |a: Instant, b: Instant| b.duration_since(a).as_secs_f64() * 1000.0;
         let sample = Sample {
@@ -200,7 +205,9 @@ impl FirstFrameRun {
             return None;
         }
         let first_submit = bench_startup::mono_ns();
-        s.renderer.wait_gpu_idle();
+        if !s.renderer.wait_gpu_idle(bench_startup::GPU_DEADLINE) {
+            return Some(Err("the GPU did not complete the first frame".into()));
+        }
         let gpu_done = bench_startup::mono_ns();
         let stamps = bench_startup::Stamps {
             spawn: self.spawn_ns,

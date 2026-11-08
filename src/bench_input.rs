@@ -17,10 +17,11 @@
 use std::os::fd::RawFd;
 use std::time::Duration;
 
-use crate::bench_dsr::summarize;
+use crate::bench_dsr::{make_raw, summarize, write_all};
 
 pub const ECHO_CHILD_FLAG: &str = "+bench-echo-child";
 pub const DEFAULT_SAMPLES: usize = 1000;
+pub const MAX_SAMPLES: usize = 100_000;
 pub const WARMUP: usize = 50;
 /// The echo child prints this at the top-left cell once its terminal is raw.
 pub const READY_MARK: u8 = b'#';
@@ -29,6 +30,11 @@ pub const READY_MARK: u8 = b'#';
 pub const MAX_GAP_MS: u64 = 16;
 /// A sample that takes longer than this aborts the benchmark.
 pub const SAMPLE_DEADLINE: Duration = Duration::from_secs(2);
+/// Pause after the echo child is ready, so the first frames and glyph
+/// rasterization are over before the first sample.
+pub const SETTLE_DELAY: Duration = Duration::from_millis(500);
+/// How often the app checks whether the echo child is ready.
+pub const READY_POLL: Duration = Duration::from_millis(10);
 /// Time allowed for the echo child to start and report ready.
 pub const READY_DEADLINE: Duration = Duration::from_secs(10);
 
@@ -100,36 +106,6 @@ pub fn report(samples: &[Sample], info: &RunInfo) -> String {
         stats_json("render_ms", &stage(|s| s.render_ms)),
         stats_json("gpu_ms", &stage(|s| s.gpu_ms)),
     )
-}
-
-fn write_all(fd: RawFd, mut data: &[u8]) -> bool {
-    while !data.is_empty() {
-        // SAFETY: `data` is a valid readable slice.
-        let n = unsafe { libc::write(fd, data.as_ptr().cast(), data.len()) };
-        if n < 0 {
-            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return false;
-        }
-        data = &data[n as usize..];
-    }
-    true
-}
-
-/// Put `fd` (a terminal) in raw mode: no kernel echo, byte-at-a-time reads.
-pub(crate) fn make_raw(fd: RawFd) -> bool {
-    // SAFETY: `tio` is a plain C struct filled in by `tcgetattr`.
-    unsafe {
-        let mut tio: libc::termios = std::mem::zeroed();
-        if libc::tcgetattr(fd, &mut tio) != 0 {
-            return false;
-        }
-        libc::cfmakeraw(&mut tio);
-        tio.c_cc[libc::VMIN] = 1;
-        tio.c_cc[libc::VTIME] = 0;
-        libc::tcsetattr(fd, libc::TCSANOW, &tio) == 0
-    }
 }
 
 /// Echo each input byte from `input` to the top-left cell on `output` until

@@ -120,10 +120,11 @@ impl Surface {
         }
     }
 
-    /// Block until the GPU has finished the last submitted frame. Benchmarks
-    /// only: the render loop itself never waits here.
-    pub fn wait_gpu_idle(&self) {
-        self.in_flight.wait();
+    /// Block until the GPU has finished the last submitted frame; `false` if it
+    /// failed. Benchmarks only: the render loop itself never waits here.
+    pub fn wait_gpu_idle(&self, _timeout: std::time::Duration) -> bool {
+        // Metal ends every command buffer (completed or failed), so no timeout is needed.
+        self.in_flight.wait_completed()
     }
 
     /// Shrink swapchain drawables to 1×1 and flush the pool when idle/hidden/closed

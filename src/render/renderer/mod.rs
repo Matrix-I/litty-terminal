@@ -210,9 +210,10 @@ impl Renderer {
         self.frames_submitted
     }
 
-    /// Block until the GPU has finished the last submitted frame (benchmarks only).
-    pub fn wait_gpu_idle(&self) {
-        self.surface.wait_gpu_idle();
+    /// Wait (bounded by `timeout`) until the GPU has finished the last submitted
+    /// frame; `false` if it failed or timed out. Benchmarks only.
+    pub fn wait_gpu_idle(&self, timeout: std::time::Duration) -> bool {
+        self.surface.wait_gpu_idle(timeout)
     }
 
     pub fn new(

@@ -10,6 +10,9 @@ use super::ffi::*;
 use super::resources::{HostBuffer, Texture};
 use super::surface::SurfaceFrame;
 
+/// `MTLCommandBufferStatusCompleted`.
+const MTL_COMMAND_BUFFER_STATUS_COMPLETED: usize = 4;
+
 /// The last frame's committed command buffer. The renderer rewrites its
 /// shared instance buffers in place, so the next frame must not start
 /// writing until the GPU is done reading them (the Vulkan fence's role).
@@ -23,6 +26,17 @@ impl InFlight {
             unsafe {
                 msg_send!(cmd_buf.as_ptr(), c"waitUntilCompleted");
             }
+        }
+    }
+
+    /// Like [`wait`](Self::wait), but reports whether the buffer completed
+    /// without error. Metal always ends a command buffer (completed or
+    /// failed, e.g. after a GPU timeout), so this returns in bounded time.
+    pub fn wait_completed(&self) -> bool {
+        let Some(cmd_buf) = self.0.lock().take() else { return true };
+        unsafe {
+            msg_send!(cmd_buf.as_ptr(), c"waitUntilCompleted");
+            msg_send!(cmd_buf.as_ptr(), c"status"; -> usize) == MTL_COMMAND_BUFFER_STATUS_COMPLETED
         }
     }
 
@@ -282,8 +296,6 @@ mod tests {
     use super::*;
     use crate::render::backend::shared_device_and_queue;
 
-    /// `MTLCommandBufferStatusCompleted`.
-    const COMPLETED: usize = 4;
 
     #[test]
     fn in_flight_wait_returns_after_the_gpu_finishes() {
@@ -297,8 +309,18 @@ mod tests {
         encoder.submit_in_flight(&in_flight);
         in_flight.wait();
         let status = unsafe { msg_send!(probe.as_ptr(), c"status"; -> usize) };
-        assert_eq!(status, COMPLETED);
+        assert_eq!(status, MTL_COMMAND_BUFFER_STATUS_COMPLETED);
         assert!(in_flight.0.lock().is_none(), "a waited buffer is released");
         in_flight.wait(); // nothing in flight: returns at once
+    }
+
+    #[test]
+    fn in_flight_wait_completed_reports_success() {
+        let (_device, queue) = shared_device_and_queue();
+        let in_flight = InFlight::default();
+        CommandEncoder::new(&queue).submit_in_flight(&in_flight);
+        assert!(in_flight.wait_completed());
+        assert!(in_flight.0.lock().is_none(), "a waited buffer is released");
+        assert!(in_flight.wait_completed(), "nothing in flight counts as done");
     }
 }

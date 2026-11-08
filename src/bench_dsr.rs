@@ -125,7 +125,8 @@ fn read_reply(fd: RawFd, deadline: Duration) -> Result<(), ReplyError> {
     if buf == *REPLY { Ok(()) } else { Err(ReplyError::Malformed) }
 }
 
-fn write_all(fd: RawFd, mut data: &[u8]) -> bool {
+/// Write all of `data` to `fd`, retrying on `EINTR`; `false` on any other error.
+pub(crate) fn write_all(fd: RawFd, mut data: &[u8]) -> bool {
     while !data.is_empty() {
         // SAFETY: `data` is a valid readable slice.
         let n = unsafe { libc::write(fd, data.as_ptr().cast(), data.len()) };
@@ -140,21 +141,26 @@ fn write_all(fd: RawFd, mut data: &[u8]) -> bool {
     true
 }
 
-/// Child side. Returns the process exit code: 0 on success, otherwise the
-/// [`ReplyError`] code (2 malformed, 3 timeout, 4 EOF, 5 I/O) or 6 for setup errors.
-pub fn run_child(out: &Path, warmup: usize, iterations: usize) -> i32 {
+/// Put `fd` (a terminal) in raw mode: no kernel echo, byte-at-a-time reads.
+pub(crate) fn make_raw(fd: RawFd) -> bool {
     // SAFETY: `tio` is a plain C struct filled in by `tcgetattr`.
     unsafe {
         let mut tio: libc::termios = std::mem::zeroed();
-        if libc::tcgetattr(0, &mut tio) != 0 {
-            return 6;
+        if libc::tcgetattr(fd, &mut tio) != 0 {
+            return false;
         }
         libc::cfmakeraw(&mut tio);
         tio.c_cc[libc::VMIN] = 1;
         tio.c_cc[libc::VTIME] = 0;
-        if libc::tcsetattr(0, libc::TCSANOW, &tio) != 0 {
-            return 6;
-        }
+        libc::tcsetattr(fd, libc::TCSANOW, &tio) == 0
+    }
+}
+
+/// Child side. Returns the process exit code: 0 on success, otherwise the
+/// [`ReplyError`] code (2 malformed, 3 timeout, 4 EOF, 5 I/O) or 6 for setup errors.
+pub fn run_child(out: &Path, warmup: usize, iterations: usize) -> i32 {
+    if !make_raw(0) {
+        return 6;
     }
     let mut report = String::with_capacity(iterations * 8);
     for i in 0..warmup + iterations {
@@ -212,7 +218,7 @@ fn run_parent(exe: &Path, out: &Path, iterations: usize) -> Result<Vec<f64>, Str
     let exe_str = exe.to_str().ok_or("executable path is not UTF-8")?;
     let out_str = out.to_str().ok_or("report path is not UTF-8")?;
     let (warmup, iters) = (WARMUP.to_string(), iterations.to_string());
-    let pty = Pty::spawn_program(exe_str, &["litty-bench-dsr", CHILD_FLAG, out_str, &warmup, &iters], &[], 80, 24)
+    let pty = Pty::spawn_program(exe_str, &["litty-bench-dsr", CHILD_FLAG, out_str, &warmup, &iters], &[], (80, 24), (8, 16))
         .map_err(|e| format!("PTY spawn failed: {e}"))?;
     let grid = Arc::new(Mutex::new(Grid::new(80, 24)));
     let (done_tx, done_rx) = mpsc::channel();

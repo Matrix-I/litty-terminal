@@ -364,17 +364,17 @@ impl Surface {
         }
     }
 
-    /// Block until the GPU has finished the last submitted frame (its fence is
-    /// signaled by the submit). Benchmarks only: the render loop never waits here.
-    pub fn wait_gpu_idle(&self) {
-        let Some(vk) = self.vk.as_ref() else { return };
+    /// Wait up to `timeout` for the GPU to finish the last submitted frame (its
+    /// fence is signaled by the submit); `false` on timeout, device loss or no
+    /// device. Benchmarks only: the render loop never waits here.
+    pub fn wait_gpu_idle(&self, timeout: std::time::Duration) -> bool {
+        let Some(vk) = self.vk.as_ref() else { return false };
         if self.fence == 0 {
-            return;
+            return false;
         }
+        let timeout_ns = u64::try_from(timeout.as_nanos()).unwrap_or(u64::MAX);
         // SAFETY: `fence` belongs to `vk.device` and lives as long as the surface.
-        unsafe {
-            (vk.lib.vkWaitForFences)(vk.device, 1, &self.fence, 1, u64::MAX);
-        }
+        unsafe { (vk.lib.vkWaitForFences)(vk.device, 1, &self.fence, 1, timeout_ns) == VK_SUCCESS }
     }
 
     pub fn shrink_drawables(&mut self, _device: &Device, _queue: &Queue) {

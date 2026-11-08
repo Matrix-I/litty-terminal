@@ -30,6 +30,12 @@ pub(crate) enum Command {
     Run { bench_ram: bool, bench_all: bool, scroll_fps: bool },
 }
 
+/// `args[i]` as a count in `1..=max`; anything else (missing, zero, too big,
+/// not a number) is `None` so the caller falls back to its default.
+fn count_arg(args: &[String], i: usize, max: usize) -> Option<usize> {
+    args.get(i)?.parse().ok().filter(|n| (1..=max).contains(n))
+}
+
 pub(crate) fn parse(args: &[String]) -> Command {
     let first = args.get(1).map(String::as_str).unwrap_or("");
     let is = |names: &[&str]| names.contains(&first);
@@ -53,21 +59,21 @@ pub(crate) fn parse(args: &[String]) -> Command {
         }
     } else if is(&["+bench-input-latency", "--bench-input-latency"]) {
         Command::BenchInputLatency {
-            samples: args.get(2).and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(crate::bench_input::DEFAULT_SAMPLES),
+            samples: count_arg(args, 2, crate::bench_input::MAX_SAMPLES).unwrap_or(crate::bench_input::DEFAULT_SAMPLES),
         }
     } else if is(&[crate::bench_input::ECHO_CHILD_FLAG]) {
         Command::BenchEchoChild
     } else if is(&["+bench-first-frame", "--bench-first-frame"]) {
         Command::BenchFirstFrame {
-            runs: args.get(2).and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(crate::bench_startup::DEFAULT_RUNS),
+            runs: count_arg(args, 2, crate::bench_startup::MAX_RUNS).unwrap_or(crate::bench_startup::DEFAULT_RUNS),
         }
     } else if is(&["+bench-pty-throughput", "--bench-pty-throughput"]) {
         Command::BenchPtyThroughput {
-            mib: args.get(2).and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(crate::bench_throughput::DEFAULT_MIB),
+            mib: count_arg(args, 2, crate::bench_throughput::MAX_MIB).unwrap_or(crate::bench_throughput::DEFAULT_MIB),
         }
     } else if is(&[crate::bench_throughput::GUI_FLAG, crate::bench_throughput::CAT_CHILD_FLAG]) {
         let kind = args.get(2).cloned().unwrap_or_default();
-        let mib = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(crate::bench_throughput::DEFAULT_MIB);
+        let mib = count_arg(args, 3, crate::bench_throughput::MAX_MIB).unwrap_or(crate::bench_throughput::DEFAULT_MIB);
         let out = args.get(4).cloned().unwrap_or_default();
         if first == crate::bench_throughput::GUI_FLAG {
             Command::BenchPtyThroughputGui { kind, mib, out }
@@ -151,6 +157,7 @@ mod tests {
         assert_eq!(parse(&argv(&["+bench-input-latency"])), Command::BenchInputLatency { samples: 1000 });
         assert_eq!(parse(&argv(&["--bench-input-latency", "200"])), Command::BenchInputLatency { samples: 200 });
         assert_eq!(parse(&argv(&["+bench-input-latency", "0"])), Command::BenchInputLatency { samples: 1000 });
+        assert_eq!(parse(&argv(&["+bench-input-latency", "100001"])), Command::BenchInputLatency { samples: 1000 });
         assert_eq!(parse(&argv(&["+bench-echo-child"])), Command::BenchEchoChild);
     }
 
@@ -159,6 +166,7 @@ mod tests {
         assert_eq!(parse(&argv(&["+bench-first-frame"])), Command::BenchFirstFrame { runs: 10 });
         assert_eq!(parse(&argv(&["--bench-first-frame", "3"])), Command::BenchFirstFrame { runs: 3 });
         assert_eq!(parse(&argv(&["+bench-first-frame", "0"])), Command::BenchFirstFrame { runs: 10 });
+        assert_eq!(parse(&argv(&["+bench-first-frame", "1001"])), Command::BenchFirstFrame { runs: 10 });
         assert_eq!(parse(&argv(&["+bench-first-frame-child", "123"])), Command::BenchFirstFrameChild { spawn_ns: 123 });
         assert_eq!(parse(&argv(&["+bench-first-frame-child"])), Command::BenchFirstFrameChild { spawn_ns: 0 });
     }
@@ -167,6 +175,7 @@ mod tests {
     fn bench_pty_throughput_parses_size_and_internal_arguments() {
         assert_eq!(parse(&argv(&["+bench-pty-throughput"])), Command::BenchPtyThroughput { mib: 64 });
         assert_eq!(parse(&argv(&["--bench-pty-throughput", "8"])), Command::BenchPtyThroughput { mib: 8 });
+        assert_eq!(parse(&argv(&["+bench-pty-throughput", "18000000000000"])), Command::BenchPtyThroughput { mib: 64 });
         assert_eq!(
             parse(&argv(&["+bench-pty-throughput-gui", "sgr", "8", "/tmp/r"])),
             Command::BenchPtyThroughputGui { kind: "sgr".into(), mib: 8, out: "/tmp/r".into() }

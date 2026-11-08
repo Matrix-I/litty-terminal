@@ -167,15 +167,16 @@ impl Pty {
     }
 
     /// Run `program` with `args` (argv[0] included) on a fresh PTY through the same
-    /// fork path as a shell, without shell integration. Used by the PTY benchmark.
+    /// fork path as a shell, without shell integration. Used by the benchmarks.
+    /// `(cols, rows)` and `(cell_w, cell_h)` size the terminal as for a shell.
     pub(crate) fn spawn_program(
         program: &str,
         args: &[&str],
         env: &[(&str, &str)],
-        cols: u16,
-        rows: u16,
+        (cols, rows): (u16, u16),
+        (cell_w, cell_h): (u32, u32),
     ) -> io::Result<Pty> {
-        Self::spawn_command(program, Some(args), env, cols, rows, 8, 16, None, None)
+        Self::spawn_command(program, Some(args), env, cols, rows, cell_w, cell_h, None, None)
     }
 
     #[allow(clippy::too_many_arguments)]
