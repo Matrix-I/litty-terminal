@@ -1,11 +1,11 @@
 # Litty Terminal ⚡
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/version-0.10.0-blue.svg)]()
+[![Version](https://img.shields.io/badge/version-0.10.1-blue.svg)]()
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue.svg)]()
 [![GPU Backend](https://img.shields.io/badge/GPU-Metal%20%7C%20Vulkan-orange.svg)]()
 [![Idle CPU](https://img.shields.io/badge/idle%20CPU-0.0%25-green.svg)]()
-[![Idle RAM](https://img.shields.io/badge/idle%20RAM-~33MB-success.svg)]()
+[![Idle RAM](https://img.shields.io/badge/idle%20RAM-~47MB-success.svg)]()
 [![Binary Size](https://img.shields.io/badge/binary-2.1MB-informational.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -17,7 +17,7 @@
 
 - **Native GPU rendering** on Metal (macOS) and Vulkan (Linux): the whole grid in a single instanced draw call.
 - **12-byte cells in a zero-allocation ring buffer**, so heavy output never thrashes the heap.
-- **0.0% idle CPU** and ~33 MB idle RAM (`ControlFlow::Wait`, event-driven).
+- **0.0% idle CPU** and ~47 MB idle RAM (`ControlFlow::Wait`, event-driven).
 - **Ghostty-compatible configuration** with live reload.
 - **Tabs, windows and splits** that inherit the working directory. Drag a tab title left or right to reorder tabs within a window, or drag it away from the tab bar to pull it out into a new window that follows the pointer, and move it over another window's tab bar to merge it there, as in Chrome.
 - **Seamless title bar on Linux**: the window has no native frame; its title bar is drawn in the terminal's background color with minimize / maximize / close buttons, drag-to-move, double-click to maximize and resizable edges.

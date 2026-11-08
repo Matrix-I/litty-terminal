@@ -9,6 +9,7 @@ optimization candidates are identified separately from reproduced failures.
 
 | Version | Record |
 | --- | --- |
+| [v0.10.1](./docs/plans/0.10.1.md) | Hotfix record — macOS pointer-hide and key-window fixes; first release built by the tag-triggered CI workflow |
 | [v0.10.0](./docs/plans/0.10.0.md) | Release record (2026-11-08) — ships the direct Metal/Vulkan renderer, native AppKit/X11 windowing, native OS font/image engines and the SIMD VT/search core; native Wayland, the macOS `winit` benchmark and the size/RAM targets carry over (listed in the record) |
 | [v0.9.0](./docs/plans/0.9.0.md) | Release record (2026-11-05) — ships the v0.8.1 fixes, tab drag-and-drop and the Linux title bar |
 | [v0.8.1](./docs/plans/0.8.1.md) | Historical record — shipped in v0.9.0 (never tagged) |

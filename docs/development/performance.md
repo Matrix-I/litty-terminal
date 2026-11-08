@@ -9,13 +9,13 @@ Tested on macOS Sequoia / Sonoma (Apple Silicon M-series, empty idle shell):
 
 | Terminal Emulator | Idle RAM (Activity Monitor) | Idle RAM (RSS) | Idle CPU | Startup Time | Binary Size | GPU Backend |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Litty** | **~33 MB** | **~104 MB** | **0.0%** | **< 30 ms** | **2.1 MB** | Metal (Direct) |
+| **Litty** | **~47 MB** | **~104 MB** | **0.0%** | **< 30 ms** | **2.1 MB** | Metal (Direct) |
 | Ghostty | ~70 – 85 MB | ~110 – 125 MB | 0.0% | ~50 ms | ~45 MB | Metal |
 | Alacritty | ~75 – 95 MB | ~115 – 135 MB | 0.0% | ~60 ms | ~18 MB | OpenGL / Metal |
 | WezTerm | ~130 – 160 MB | ~170 – 210 MB | 0.0% – 0.5% | ~120 ms | ~95 MB | OpenGL / Vulkan |
 
 > [!NOTE]
-> **Measuring Memory Footprint on macOS**: macOS Activity Monitor displays **Physical Footprint** (`task_vm_info.phys_footprint`: actual private dirty memory + compressed memory), which accurately reflects the real memory cost attributed to the process (**~33 MB** for Litty). The legacy Unix `ps -o rss` metric includes shared read-only framework pages (Metal, AppKit, and system dylib caches) shared across all macOS GUI applications.
+> **Measuring Memory Footprint on macOS**: macOS Activity Monitor displays **Physical Footprint** (`task_vm_info.phys_footprint`: actual private dirty memory + compressed memory), which accurately reflects the real memory cost attributed to the process (**~47 MB** for Litty). The legacy Unix `ps -o rss` metric includes shared read-only framework pages (Metal, AppKit, and system dylib caches) shared across all macOS GUI applications.
 
 ## 🚀 Measured Engine Latencies & Microbenchmarks
 
