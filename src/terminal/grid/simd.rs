@@ -325,8 +325,9 @@ pub fn fixup_wide_edges(row: &mut [Cell], col: usize, last: usize, cols: usize, 
 }
 
 /// Try to parse a complete semicolon-separated CSI sequence `\x1b[...<final>`
-/// at the start of `bytes` into `out` (up to 16 params, matching `vte::Params`),
-/// provided there are no private/intermediate markers (`?`, `>`, `:`, etc.).
+/// at the start of `bytes` into `out`, provided there are no private or
+/// intermediate markers (`?`, `>`, `:`, etc.). Returns `None` for more than 16
+/// params so `vte` (which keeps 32) handles them.
 /// Returns `Some((bytes_consumed, param_count, final_byte))`.
 #[inline]
 pub fn try_parse_simple_csi(bytes: &[u8], out: &mut [u16; 16]) -> Option<(usize, usize, u8)> {
@@ -347,19 +348,16 @@ pub fn try_parse_simple_csi(bytes: &[u8], out: &mut [u16; 16]) -> Option<(usize,
         if b.is_ascii_digit() {
             cur = (cur * 10 + (b - b'0') as u32).min(u16::MAX as u32);
             i += 1;
-        } else if b == b';' {
-            if n < out.len() {
-                out[n] = cur as u16;
-                n += 1;
+        } else if b == b';' || matches!(b, b'm' | b'K' | b'H' | b'f' | b'J' | b'A' | b'B' | b'C' | b'D' | b'G') {
+            // More parameters than `out` holds: let `vte` (32 params) parse it
+            // rather than silently dropping the tail.
+            *out.get_mut(n)? = cur as u16;
+            n += 1;
+            if b != b';' {
+                return Some((i + 1, n, b));
             }
             cur = 0;
             i += 1;
-        } else if matches!(b, b'm' | b'K' | b'H' | b'f' | b'J' | b'A' | b'B' | b'C' | b'D' | b'G') {
-            if n < out.len() {
-                out[n] = cur as u16;
-                n += 1;
-            }
-            return Some((i + 1, n, b));
         } else {
             return None;
         }

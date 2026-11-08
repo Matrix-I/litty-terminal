@@ -2031,3 +2031,24 @@ fn benchmark_search_snapshot_dense_vs_sparse() {
         eprintln!("{name}: dense {dense_t:?} {dense_b} B | sparse {sparse_t:?} {sparse_b} B");
     }
 }
+
+fn feed_fast(g: &mut Grid, bytes: &[u8]) {
+    let mut parser = vte::Parser::new();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        offset += g.feed_bytes(&mut parser, &bytes[offset..]);
+    }
+}
+
+#[test]
+fn sgr_fast_path_keeps_parameters_after_the_sixteenth() {
+    // 16 resets followed by bold: the 17th parameter must not be dropped.
+    // A leading print puts the parser in ground state so the fast path runs.
+    let seq = format!("a\x1b[{}1mx", "0;".repeat(16));
+    let mut fast = Grid::new(4, 1);
+    feed_fast(&mut fast, seq.as_bytes());
+    let mut slow = Grid::new(4, 1);
+    feed(&mut slow, &seq);
+    assert_eq!(slow.display_row(0)[1].fg, FG_BOLD);
+    assert_eq!(fast.display_row(0)[1].fg, slow.display_row(0)[1].fg);
+}
