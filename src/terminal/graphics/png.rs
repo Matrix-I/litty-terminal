@@ -1,5 +1,5 @@
 //! Native / minimal RFC 1950 (zlib) + RFC 1951 (DEFLATE) decompression and
-//! PNG decoding (`ImageIO.framework` on macOS, pure-Rust PNG reader everywhere).
+//! a pure-Rust PNG reader used on every platform.
 
 use super::{MAX_SIDE, STORE_LIMIT};
 
@@ -338,8 +338,10 @@ pub(crate) fn crc32(data: &[u8]) -> u32 {
 
 /// Decode a PNG image into `(width, height, rgba)`.
 ///
-/// Validates the PNG header, `IHDR` bounds, and APNG `fcTL` canvas invariants first,
-/// then uses `ImageIO.framework` on macOS or the built-in RFC 2083 decoder.
+/// Validates the PNG header, `IHDR` bounds, and APNG `fcTL` canvas invariants
+/// first, then decodes every standard color type and bit depth (palette and
+/// `tRNS` expansion, 16-bit samples stripped to their high byte, Adam7) with
+/// the built-in RFC 2083 reader, so both platforms produce the same pixels.
 pub fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     const PNG_SIG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
     if data.len() < 33 || &data[..8] != PNG_SIG || &data[12..16] != b"IHDR" {
@@ -366,10 +368,13 @@ pub fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     if compression != 0 || filter != 0 || interlace > 1 {
         return Err("EINVAL:bad PNG".into());
     }
+    let format = Format::new(color_type, bit_depth).ok_or("EINVAL:bad PNG")?;
 
     // Walk chunks to validate APNG sub-frame bounds and collect IDAT stream.
     let mut pos = 8usize;
     let mut idat = Vec::new();
+    let mut plte: &[u8] = &[];
+    let mut trns: &[u8] = &[];
     let mut saw_iend = false;
     while pos + 12 <= data.len() {
         let len = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
@@ -393,6 +398,8 @@ pub fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
                     return Err("EINVAL:bad PNG".into());
                 }
             }
+            b"PLTE" => plte = cdata,
+            b"tRNS" => trns = cdata,
             b"IDAT" => {
                 if idat.len().saturating_add(cdata.len()) > STORE_LIMIT {
                     return Err("EINVAL:image too large".into());
@@ -410,42 +417,134 @@ pub fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     if !saw_iend || idat.is_empty() {
         return Err("EINVAL:bad PNG".into());
     }
+    let palette = Palette::new(&format, plte, trns).ok_or("EINVAL:bad PNG")?;
+    decode_png_scanlines(w as usize, h as usize, &format, &palette, interlace == 1, &idat)
+        .map(|rgba| (w, h, rgba))
+}
 
-    // Indexed color is rejected to match existing contract; non-interlaced 8-bit
-    // Grayscale (0), RGB (2), GrayscaleAlpha (4), and RGBA (6) are decoded via
-    // our zero-dependency RFC 2083 scanline path, with ImageIO fallback on macOS
-    // for 16-bit / interlaced PNGs.
-    if color_type == 3 {
-        return Err("EINVAL:bad PNG".into());
-    }
-    if bit_depth == 8 && interlace == 0 {
-        return decode_png_scanlines(w, h, color_type, &idat);
+/// Adam7 pass origins and steps: `(x0, y0, dx, dy)`.
+const ADAM7: [(usize, usize, usize, usize); 7] =
+    [(0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2)];
+const NO_INTERLACE: [(usize, usize, usize, usize); 1] = [(0, 0, 1, 1)];
+
+/// Sample layout of one `IHDR` color type / bit depth pair.
+struct Format {
+    color_type: u8,
+    depth: u8,
+    channels: usize,
+}
+
+impl Format {
+    /// The combinations allowed by the PNG specification, table 11.1.
+    fn new(color_type: u8, depth: u8) -> Option<Self> {
+        let channels = match (color_type, depth) {
+            (0, 1 | 2 | 4 | 8 | 16) | (3, 1 | 2 | 4 | 8) => 1,
+            (2, 8 | 16) => 3,
+            (4, 8 | 16) => 2,
+            (6, 8 | 16) => 4,
+            _ => return None,
+        };
+        Some(Self { color_type, depth, channels })
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        decode_png_imageio(data, w, h)
+    fn bits_per_pixel(&self) -> usize {
+        self.channels * usize::from(self.depth)
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err("EINVAL:bad PNG".into())
+
+    /// Filter distance: bytes per complete pixel, rounded up to one.
+    fn filter_bpp(&self) -> usize {
+        self.bits_per_pixel().div_ceil(8)
+    }
+
+    fn row_bytes(&self, width: usize) -> Option<usize> {
+        Some(width.checked_mul(self.bits_per_pixel())?.div_ceil(8))
+    }
+
+    /// Sample `i` (in channel order) of a reconstructed scanline, unscaled.
+    #[inline]
+    fn sample(&self, line: &[u8], i: usize) -> u16 {
+        match self.depth {
+            8 => u16::from(line[i]),
+            16 => u16::from_be_bytes([line[2 * i], line[2 * i + 1]]),
+            d => {
+                let bit = i * usize::from(d);
+                let shift = 8 - usize::from(d) - bit % 8;
+                u16::from(line[bit / 8] >> shift) & ((1 << d) - 1)
+            }
+        }
+    }
+
+    /// Scale an unscaled sample to 8 bits (high byte for 16-bit samples).
+    #[inline]
+    fn to_u8(&self, v: u16) -> u8 {
+        match self.depth {
+            16 => (v >> 8) as u8,
+            8 => v as u8,
+            d => (u32::from(v) * 255 / ((1 << d) - 1)) as u8,
+        }
     }
 }
 
-fn decode_png_scanlines(w: u32, h: u32, color_type: u8, idat: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
-    let bpp: usize = match color_type {
-        0 => 1,
-        2 => 3,
-        4 => 2,
-        6 => 4,
-        _ => return Err("EINVAL:bad PNG".into()),
+/// `PLTE` entries and the `tRNS` alpha table or color key for one image.
+struct Palette {
+    rgba: Vec<[u8; 4]>,
+    /// Gray (`[g, -, -]`) or RGB transparent key in unscaled samples.
+    key: Option<[u16; 3]>,
+}
+
+impl Palette {
+    /// `None` when an indexed image has no valid `PLTE`. A malformed `tRNS`
+    /// is ignored, as libpng does, instead of rejecting the whole image.
+    fn new(format: &Format, plte: &[u8], trns: &[u8]) -> Option<Self> {
+        let be = |i: usize| u16::from_be_bytes([trns[2 * i], trns[2 * i + 1]]);
+        match format.color_type {
+            3 => {
+                let entries = plte.len() / 3;
+                // Entries beyond `1 << depth` are unreachable, so a long
+                // palette is harmless (libpng treats it as a benign error).
+                if !plte.len().is_multiple_of(3) || entries == 0 {
+                    return None;
+                }
+                let alpha = if trns.len() <= entries { trns } else { &[] };
+                let rgba = plte
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &[r, g, b])| [r, g, b, alpha.get(i).copied().unwrap_or(255)])
+                    .collect();
+                Some(Self { rgba, key: None })
+            }
+            0 => Some(Self { rgba: Vec::new(), key: (trns.len() == 2).then(|| [be(0), 0, 0]) }),
+            2 => Some(Self { rgba: Vec::new(), key: (trns.len() == 6).then(|| [be(0), be(1), be(2)]) }),
+            _ => Some(Self { rgba: Vec::new(), key: None }),
+        }
+    }
+}
+
+fn decode_png_scanlines(
+    w: usize,
+    h: usize,
+    format: &Format,
+    palette: &Palette,
+    interlaced: bool,
+    idat: &[u8],
+) -> Result<Vec<u8>, String> {
+    let passes: &[(usize, usize, usize, usize)] = if interlaced { &ADAM7 } else { &NO_INTERLACE };
+    let pass_size = |&(x0, y0, dx, dy): &(usize, usize, usize, usize)| {
+        ((w.saturating_sub(x0)).div_ceil(dx), (h.saturating_sub(y0)).div_ceil(dy))
     };
-    let stride = (w as usize)
-        .checked_mul(bpp)
-        .and_then(|s| s.checked_add(1))
-        .ok_or("EINVAL:bad PNG")?;
-    let expected_raw = stride.checked_mul(h as usize).ok_or("EINVAL:bad PNG")?;
-    if expected_raw > STORE_LIMIT + (h as usize) {
+    let mut expected_raw = 0usize;
+    for pass in passes {
+        let (pw, ph) = pass_size(pass);
+        if pw > 0 && ph > 0 {
+            let stride = format.row_bytes(pw).ok_or("EINVAL:bad PNG")? + 1;
+            expected_raw = stride.checked_mul(ph).and_then(|n| n.checked_add(expected_raw)).ok_or("EINVAL:bad PNG")?;
+        }
+    }
+    // Raw samples may be twice the RGBA8 output (16-bit), plus filter bytes.
+    let raw_limit = STORE_LIMIT * if format.depth == 16 { 2 } else { 1 } + 7 * h;
+    if expected_raw > raw_limit {
         return Err("EINVAL:image too large".into());
     }
     let raw = zlib_decompress_with_limit(idat, expected_raw).map_err(|_| "EINVAL:bad PNG")?;
@@ -453,51 +552,84 @@ fn decode_png_scanlines(w: u32, h: u32, color_type: u8, idat: &[u8]) -> Result<(
         return Err("EINVAL:bad PNG".into());
     }
 
-    let row_bytes = (w as usize) * bpp;
-    let mut prev_row = vec![0u8; row_bytes];
-    let mut cur_row = vec![0u8; row_bytes];
-    let mut rgba = Vec::with_capacity((w as usize) * (h as usize) * 4);
-
-    for y in 0..h as usize {
-        let src = &raw[y * stride..(y + 1) * stride];
-        let filter = src[0];
-        let line = &src[1..];
-        for i in 0..row_bytes {
-            let a = if i >= bpp { cur_row[i - bpp] } else { 0 };
-            let b = prev_row[i];
-            let c = if i >= bpp { prev_row[i - bpp] } else { 0 };
-            let recon = match filter {
-                0 => line[i],
-                1 => line[i].wrapping_add(a),
-                2 => line[i].wrapping_add(b),
-                3 => line[i].wrapping_add(((u16::from(a) + u16::from(b)) >> 1) as u8),
-                4 => line[i].wrapping_add(paeth(a, b, c)),
-                _ => return Err("EINVAL:bad PNG".into()),
-            };
-            cur_row[i] = recon;
+    let bpp = format.filter_bpp();
+    let mut rgba = vec![0u8; w * h * 4];
+    let mut rows = raw.as_slice();
+    let mut prev_row = Vec::new();
+    let mut cur_row = Vec::new();
+    for pass @ &(x0, y0, dx, dy) in passes {
+        let (pw, ph) = pass_size(pass);
+        if pw == 0 || ph == 0 {
+            continue;
         }
-        match color_type {
-            6 => rgba.extend_from_slice(&cur_row),
-            2 => {
-                for &[r, g, b] in cur_row.as_chunks::<3>().0 {
-                    rgba.extend_from_slice(&[r, g, b, 255]);
-                }
+        let row_bytes = format.row_bytes(pw).ok_or("EINVAL:bad PNG")?;
+        prev_row.clear();
+        prev_row.resize(row_bytes, 0);
+        cur_row.resize(row_bytes, 0);
+        for py in 0..ph {
+            let (src, rest) = rows.split_at(row_bytes + 1);
+            rows = rest;
+            unfilter(src[0], &src[1..], &prev_row, &mut cur_row, bpp)?;
+            let y = y0 + py * dy;
+            if dx == 1 && format.color_type == 6 && format.depth == 8 {
+                // Common case: the reconstructed row already is RGBA.
+                rgba[y * w * 4..][..w * 4].copy_from_slice(&cur_row);
+                core::mem::swap(&mut prev_row, &mut cur_row);
+                continue;
             }
-            4 => {
-                for &[g, a] in cur_row.as_chunks::<2>().0 {
-                    rgba.extend_from_slice(&[g, g, g, a]);
-                }
+            for px in 0..pw {
+                let at = (y * w + x0 + px * dx) * 4;
+                rgba[at..at + 4].copy_from_slice(&pixel(format, palette, &cur_row, px)?);
             }
-            0 => {
-                for &g in &cur_row {
-                    rgba.extend_from_slice(&[g, g, g, 255]);
-                }
-            }
-            _ => unreachable!(),
+            core::mem::swap(&mut prev_row, &mut cur_row);
         }
-        core::mem::swap(&mut prev_row, &mut cur_row);
     }
-    Ok((w, h, rgba))
+    Ok(rgba)
+}
+
+/// Reverse one scanline filter (RFC 2083 §6) into `out`.
+fn unfilter(filter: u8, line: &[u8], prev: &[u8], out: &mut [u8], bpp: usize) -> Result<(), String> {
+    for i in 0..line.len() {
+        let a = if i >= bpp { out[i - bpp] } else { 0 };
+        let b = prev[i];
+        let c = if i >= bpp { prev[i - bpp] } else { 0 };
+        out[i] = match filter {
+            0 => line[i],
+            1 => line[i].wrapping_add(a),
+            2 => line[i].wrapping_add(b),
+            3 => line[i].wrapping_add(((u16::from(a) + u16::from(b)) >> 1) as u8),
+            4 => line[i].wrapping_add(paeth(a, b, c)),
+            _ => return Err("EINVAL:bad PNG".into()),
+        };
+    }
+    Ok(())
+}
+
+/// RGBA of pixel `x` in a reconstructed scanline.
+#[inline]
+fn pixel(format: &Format, palette: &Palette, line: &[u8], x: usize) -> Result<[u8; 4], String> {
+    let c = format.channels;
+    let s = |i: usize| format.sample(line, x * c + i);
+    let px = match format.color_type {
+        // An index past the palette is black, as in libpng.
+        3 => palette.rgba.get(usize::from(s(0))).copied().unwrap_or([0, 0, 0, 255]),
+        0 => {
+            let g = s(0);
+            let v = format.to_u8(g);
+            [v, v, v, if palette.key == Some([g, 0, 0]) { 0 } else { 255 }]
+        }
+        2 => {
+            let rgb = [s(0), s(1), s(2)];
+            let [r, g, b] = rgb.map(|v| format.to_u8(v));
+            [r, g, b, if palette.key == Some(rgb) { 0 } else { 255 }]
+        }
+        4 => {
+            let v = format.to_u8(s(0));
+            [v, v, v, format.to_u8(s(1))]
+        }
+        _ => [s(0), s(1), s(2), s(3)].map(|v| format.to_u8(v)),
+    };
+    Ok(px)
 }
 
 #[inline]
@@ -512,124 +644,6 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
         b
     } else {
         c
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn decode_png_imageio(data: &[u8], expected_w: u32, expected_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
-    use std::ffi::c_void;
-    use std::ptr;
-
-    #[link(name = "CoreFoundation", kind = "framework")]
-    unsafe extern "C" {
-        fn CFDataCreateWithBytesNoCopy(
-            allocator: *const c_void,
-            bytes: *const u8,
-            length: isize,
-            bytes_deallocator: *const c_void,
-        ) -> *const c_void;
-        fn CFRelease(cf: *const c_void);
-        static kCFAllocatorNull: *const c_void;
-    }
-
-    #[link(name = "CoreGraphics", kind = "framework")]
-    unsafe extern "C" {
-        fn CGImageGetWidth(image: *const c_void) -> usize;
-        fn CGImageGetHeight(image: *const c_void) -> usize;
-        fn CGColorSpaceCreateDeviceRGB() -> *mut c_void;
-        fn CGColorSpaceRelease(space: *mut c_void);
-        fn CGBitmapContextCreate(
-            data: *mut c_void,
-            width: usize,
-            height: usize,
-            bits_per_component: usize,
-            bytes_per_row: usize,
-            space: *mut c_void,
-            bitmap_info: u32,
-        ) -> *mut c_void;
-        fn CGContextDrawImage(c: *mut c_void, rect: CGRect, image: *const c_void);
-        fn CGContextRelease(c: *mut c_void);
-    }
-
-    #[link(name = "ImageIO", kind = "framework")]
-    unsafe extern "C" {
-        fn CGImageSourceCreateWithData(data: *const c_void, options: *const c_void) -> *const c_void;
-        fn CGImageSourceCreateImageAtIndex(isrc: *const c_void, index: usize, options: *const c_void) -> *const c_void;
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    struct CGPoint {
-        x: f64,
-        y: f64,
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    struct CGSize {
-        width: f64,
-        height: f64,
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    struct CGRect {
-        origin: CGPoint,
-        size: CGSize,
-    }
-
-    const K_CG_IMAGE_ALPHA_PREMULTIPLIED_LAST: u32 = 1;
-    const K_CG_BITMAP_BYTE_ORDER_32_BIG: u32 = 4 << 12;
-
-    unsafe {
-        let cf_data = CFDataCreateWithBytesNoCopy(ptr::null(), data.as_ptr(), data.len() as isize, kCFAllocatorNull);
-        if cf_data.is_null() {
-            return Err("EINVAL:bad PNG".into());
-        }
-        let src = CGImageSourceCreateWithData(cf_data, ptr::null());
-        CFRelease(cf_data);
-        if src.is_null() {
-            return Err("EINVAL:bad PNG".into());
-        }
-        let img = CGImageSourceCreateImageAtIndex(src, 0, ptr::null());
-        CFRelease(src);
-        if img.is_null() {
-            return Err("EINVAL:bad PNG".into());
-        }
-        let w = CGImageGetWidth(img) as u32;
-        let h = CGImageGetHeight(img) as u32;
-        if (w, h) != (expected_w, expected_h) {
-            CFRelease(img);
-            return Err("EINVAL:bad PNG".into());
-        }
-        let mut rgba = vec![0u8; (w as usize) * (h as usize) * 4];
-        let cs = CGColorSpaceCreateDeviceRGB();
-        let ctx = CGBitmapContextCreate(
-            rgba.as_mut_ptr() as *mut c_void,
-            w as usize,
-            h as usize,
-            8,
-            (w as usize) * 4,
-            cs,
-            K_CG_IMAGE_ALPHA_PREMULTIPLIED_LAST | K_CG_BITMAP_BYTE_ORDER_32_BIG,
-        );
-        CGColorSpaceRelease(cs);
-        if ctx.is_null() {
-            CFRelease(img);
-            return Err("EINVAL:bad PNG".into());
-        }
-        let rect = CGRect { origin: CGPoint { x: 0.0, y: 0.0 }, size: CGSize { width: w as f64, height: h as f64 } };
-        CGContextDrawImage(ctx, rect, img);
-        CGContextRelease(ctx);
-        CFRelease(img);
-        // Un-premultiply if any pixel has 0 < alpha < 255.
-        for px in rgba.as_chunks_mut::<4>().0 {
-            let a = px[3] as u32;
-            if a > 0 && a < 255 {
-                px[0] = ((px[0] as u32 * 255 + a / 2) / a).min(255) as u8;
-                px[1] = ((px[1] as u32 * 255 + a / 2) / a).min(255) as u8;
-                px[2] = ((px[2] as u32 * 255 + a / 2) / a).min(255) as u8;
-            }
-        }
-        Ok((w, h, rgba))
     }
 }
 

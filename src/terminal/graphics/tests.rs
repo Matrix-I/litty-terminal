@@ -480,6 +480,171 @@ fn decode_png_full_frame_roundtrips() {
     assert_eq!(decode_png(&out).unwrap(), (2, 1, vec![1, 2, 3, 255, 4, 5, 6, 255]));
 }
 
+/// Adam7 pass origins and steps: `(x0, y0, dx, dy)`.
+const ADAM7: [(usize, usize, usize, usize); 7] =
+    [(0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2)];
+
+/// Encode `samples` (one value per channel, row-major) as a PNG at any bit
+/// depth, optionally Adam7-interlaced, with `extra` chunks before `IDAT`.
+fn png_from_samples(
+    (w, h): (usize, usize),
+    depth: u8,
+    color_type: u8,
+    interlace: bool,
+    samples: &[u16],
+    extra: &[(&[u8; 4], &[u8])],
+) -> Vec<u8> {
+    let channels = match color_type {
+        0 | 3 => 1,
+        2 => 3,
+        4 => 2,
+        6 => 4,
+        _ => unreachable!(),
+    };
+    assert_eq!(samples.len(), w * h * channels);
+    let passes: Vec<_> = if interlace { ADAM7.to_vec() } else { vec![(0, 0, 1, 1)] };
+    let mut raw = Vec::new();
+    for (x0, y0, dx, dy) in passes {
+        for y in (y0..h).step_by(dy) {
+            if x0 >= w {
+                break;
+            }
+            raw.push(0);
+            let (mut acc, mut bits) = (0u32, 0u32);
+            for x in (x0..w).step_by(dx) {
+                for &v in &samples[(y * w + x) * channels..][..channels] {
+                    acc = (acc << depth) | u32::from(v);
+                    bits += u32::from(depth);
+                    while bits >= 8 {
+                        bits -= 8;
+                        raw.push((acc >> bits) as u8);
+                    }
+                }
+            }
+            if bits > 0 {
+                raw.push((acc << (8 - bits)) as u8);
+            }
+        }
+    }
+    let mut out = Vec::from(&b"\x89PNG\r\n\x1a\n"[..]);
+    let mut ihdr = [0u8; 13];
+    ihdr[0..4].copy_from_slice(&(w as u32).to_be_bytes());
+    ihdr[4..8].copy_from_slice(&(h as u32).to_be_bytes());
+    ihdr[8] = depth;
+    ihdr[9] = color_type;
+    ihdr[12] = u8::from(interlace);
+    super::png::write_png_chunk(&mut out, b"IHDR", &ihdr);
+    for (ctype, data) in extra {
+        super::png::write_png_chunk(&mut out, ctype, data);
+    }
+    super::png::write_png_chunk(&mut out, b"IDAT", &super::png::zlib_store(&raw));
+    super::png::write_png_chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+fn rgba_of(png: &[u8]) -> Vec<[u8; 4]> {
+    decode_png(png).unwrap().2.as_chunks::<4>().0.to_vec()
+}
+
+#[test]
+fn decode_png_expands_palette_with_transparency() {
+    let plte = [255, 0, 0, 0, 255, 0, 0, 0, 255];
+    for depth in [1u8, 2, 4, 8] {
+        let indices: &[u16] = if depth == 1 { &[0, 1, 1, 0] } else { &[0, 1, 2, 1] };
+        let png = png_from_samples((4, 1), depth, 3, false, indices, &[(b"PLTE", &plte), (b"tRNS", &[0x80])]);
+        let expect: Vec<[u8; 4]> = indices
+            .iter()
+            .map(|&i| {
+                let c = &plte[i as usize * 3..][..3];
+                [c[0], c[1], c[2], if i == 0 { 0x80 } else { 255 }]
+            })
+            .collect();
+        assert_eq!(rgba_of(&png), expect, "depth {depth}");
+    }
+}
+
+#[test]
+fn decode_png_rejects_palette_errors() {
+    let missing = png_from_samples((1, 1), 8, 3, false, &[0], &[]);
+    assert_eq!(decode_png(&missing).unwrap_err(), "EINVAL:bad PNG");
+    let bad_depth = png_from_samples((1, 1), 4, 2, false, &[1, 2, 3], &[]);
+    assert_eq!(decode_png(&bad_depth).unwrap_err(), "EINVAL:bad PNG");
+}
+
+#[test]
+fn decode_png_draws_out_of_range_palette_indices_black() {
+    let png = png_from_samples((2, 1), 8, 3, false, &[0, 1], &[(b"PLTE", &[1, 2, 3])]);
+    assert_eq!(rgba_of(&png), [[1, 2, 3, 255], [0, 0, 0, 255]]);
+}
+
+#[test]
+fn decode_png_accepts_sixteen_bit_images_up_to_the_output_limit() {
+    // 4000² RGBA16: 128 MB of raw samples for 64 MB of RGBA8 output.
+    let side = 4000;
+    let row = 1 + side * 8;
+    let png = {
+        let mut out = Vec::from(&b"\x89PNG\r\n\x1a\n"[..]);
+        let mut ihdr = [0u8; 13];
+        ihdr[0..4].copy_from_slice(&(side as u32).to_be_bytes());
+        ihdr[4..8].copy_from_slice(&(side as u32).to_be_bytes());
+        ihdr[8] = 16;
+        ihdr[9] = 6;
+        super::png::write_png_chunk(&mut out, b"IHDR", &ihdr);
+        super::png::write_png_chunk(&mut out, b"IDAT", &super::png::zlib_compress_zeros(row * side));
+        super::png::write_png_chunk(&mut out, b"IEND", &[]);
+        out
+    };
+    let (w, h, rgba) = decode_png(&png).unwrap();
+    assert_eq!((w, h, rgba.len()), (side as u32, side as u32, side * side * 4));
+}
+
+#[test]
+fn decode_png_scales_low_bit_depth_gray() {
+    let gray = |depth, samples: &[u16]| rgba_of(&png_from_samples((samples.len(), 1), depth, 0, false, samples, &[]));
+    let px = |g: u8| [g, g, g, 255];
+    assert_eq!(gray(1, &[0, 1, 1, 0, 1, 0, 0, 1, 1]), [0, 255, 255, 0, 255, 0, 0, 255, 255].map(px));
+    assert_eq!(gray(2, &[0, 1, 2, 3]), [0, 85, 170, 255].map(px));
+    assert_eq!(gray(4, &[0, 7, 15]), [0, 119, 255].map(px));
+}
+
+#[test]
+fn decode_png_strips_sixteen_bit_samples_to_high_byte() {
+    let rgba = png_from_samples((1, 1), 16, 6, false, &[0x1234, 0xABCD, 0xFFFF, 0x80FF], &[]);
+    assert_eq!(rgba_of(&rgba), [[0x12, 0xAB, 0xFF, 0x80]]);
+    let ga = png_from_samples((1, 1), 16, 4, false, &[0x4000, 0x0100], &[]);
+    assert_eq!(rgba_of(&ga), [[0x40, 0x40, 0x40, 0x01]]);
+}
+
+#[test]
+fn decode_png_applies_trns_color_key() {
+    let gray8 = png_from_samples((2, 1), 8, 0, false, &[5, 6], &[(b"tRNS", &[0, 5])]);
+    assert_eq!(rgba_of(&gray8), [[5, 5, 5, 0], [6, 6, 6, 255]]);
+    // 16-bit keys compare the full sample, not the stripped high byte.
+    let gray16 = png_from_samples((2, 1), 16, 0, false, &[0x0102, 0x0103], &[(b"tRNS", &[1, 2])]);
+    assert_eq!(rgba_of(&gray16), [[1, 1, 1, 0], [1, 1, 1, 255]]);
+    let gray2 = png_from_samples((2, 1), 2, 0, false, &[1, 2], &[(b"tRNS", &[0, 2])]);
+    assert_eq!(rgba_of(&gray2), [[85, 85, 85, 255], [170, 170, 170, 0]]);
+    let rgb = png_from_samples((2, 1), 8, 2, false, &[1, 2, 3, 1, 2, 4], &[(b"tRNS", &[0, 1, 0, 2, 0, 3])]);
+    assert_eq!(rgba_of(&rgb), [[1, 2, 3, 0], [1, 2, 4, 255]]);
+    // A malformed key is ignored rather than failing the whole image.
+    let bad = png_from_samples((1, 1), 8, 2, false, &[1, 2, 3], &[(b"tRNS", &[0, 1])]);
+    assert_eq!(rgba_of(&bad), [[1, 2, 3, 255]]);
+}
+
+#[test]
+fn decode_png_deinterlaces_adam7() {
+    for (w, h, depth, color_type) in [(5, 3, 8, 6), (9, 9, 1, 0), (1, 1, 8, 2), (17, 10, 16, 2), (3, 7, 4, 3)] {
+        let channels = match color_type { 0 | 3 => 1, 2 => 3, _ => 4 };
+        let max = if color_type == 3 { 3 } else { (1u32 << depth) - 1 };
+        let samples: Vec<u16> = (0..w * h * channels).map(|i| ((i as u32 * 7919) % (max + 1)) as u16).collect();
+        let plte: &[u8] = &[10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
+        let extra: &[(&[u8; 4], &[u8])] = if color_type == 3 { &[(b"PLTE", plte)] } else { &[] };
+        let plain = png_from_samples((w, h), depth, color_type, false, &samples, extra);
+        let adam7 = png_from_samples((w, h), depth, color_type, true, &samples, extra);
+        assert_eq!(decode_png(&adam7).unwrap(), decode_png(&plain).unwrap(), "{w}x{h} depth {depth} type {color_type}");
+    }
+}
+
 #[test]
 fn kitty_animation_frame_limits() {
     let mut store = Store::default();
