@@ -441,11 +441,17 @@ impl NativeWindow {
         }
     }
 
+    /// Hide the pointer until it next moves, or show it again.
+    ///
+    /// `NSCursor hide`/`unhide` keep one process-wide counter, while the app
+    /// tracks "hidden" per window: a window closed or left after hiding never
+    /// balanced it, and the pointer stayed hidden over every later window.
+    /// `setHiddenUntilMouseMoves:` has no counter, and AppKit shows the pointer
+    /// on the next movement whichever window it is over.
     pub fn set_cursor_visible(&self, visible: bool) {
         unsafe {
             if let Some(cursor_cls) = class(c"NSCursor") {
-                let sel = if visible { c"unhide" } else { c"hide" };
-                msg_send!(cursor_cls, sel);
+                msg_send!(cursor_cls, c"setHiddenUntilMouseMoves:", !visible => bool);
             }
         }
     }
