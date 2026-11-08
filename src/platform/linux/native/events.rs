@@ -5,6 +5,7 @@ use crate::platform::gui::{
     WindowEvent,
 };
 use crate::platform::input::{Key, KeyCode, KeyInput, KeyLocation, Mods, NamedKey, PhysicalKey};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[allow(dead_code)]
 #[derive(Copy, Clone, Debug)]
@@ -242,6 +243,63 @@ pub fn convert_linux_key(keycode: u32, pressed: bool, repeat: bool) -> KeyInput 
     }
 }
 
+/// Pointer event for an X11 core button. Buttons 4/5 are one wheel notch
+/// up/down on press; 6/7 (horizontal wheel) have no `ScrollDelta` axis, and
+/// no wheel button produces a release.
+pub fn x11_button_event(button: u32, pressed: bool) -> Option<WindowEvent> {
+    let notch = match button {
+        4 => 1.0,
+        5 => -1.0,
+        6 | 7 => return None,
+        _ => {
+            let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
+            let button = match button {
+                1 => MouseButton::Left,
+                2 => MouseButton::Middle,
+                3 => MouseButton::Right,
+                _ => MouseButton::Other,
+            };
+            return Some(WindowEvent::MouseInput { state, button });
+        }
+    };
+    pressed.then_some(WindowEvent::MouseWheel { delta: ScrollDelta::Lines { y: notch }, phase: TouchPhase::Moved })
+}
+
+/// Character for keysyms with a fixed Unicode mapping: Latin-1 and the
+/// `0x0100_0000 + code point` range. Other legacy keysyms need xkbcommon.
+pub fn keysym_char(keysym: u32) -> Option<char> {
+    match keysym {
+        0x20..=0x7e | 0xa0..=0xff => char::from_u32(keysym),
+        0x0100_00a0..=0x0110_ffff => char::from_u32(keysym - 0x0100_0000),
+        _ => None,
+    }
+}
+
+/// X11 keycodes currently held, to tell auto-repeat presses (detectable
+/// auto-repeat sends press, press, ..., release) from fresh ones.
+#[derive(Default)]
+pub struct HeldKeys([AtomicU64; 4]);
+
+impl HeldKeys {
+    /// Record a key event; true when it is a press of an already held key.
+    pub fn update(&self, keycode: u8, pressed: bool) -> bool {
+        let (word, bit) = (&self.0[usize::from(keycode >> 6)], 1u64 << (keycode & 63));
+        if pressed {
+            word.fetch_or(bit, Ordering::Relaxed) & bit != 0
+        } else {
+            word.fetch_and(!bit, Ordering::Relaxed);
+            false
+        }
+    }
+
+    /// Forget every key: releases are not delivered while unfocused.
+    pub fn clear(&self) {
+        for word in &self.0 {
+            word.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,5 +324,52 @@ mod tests {
         assert_eq!(mods_after_key(CTRL, 42, true), Mods { ctrl: true, shift: true, ..Mods::default() }); // LShift down
         assert_eq!(mods_after_key(CTRL | SHIFT, 97, false), Mods { shift: true, ..Mods::default() }); // RCtrl up
         assert_eq!(mods_after_key(SHIFT, 54, false), Mods::default()); // RShift up
+    }
+
+    #[test]
+    fn wheel_buttons_scroll_one_line_per_press() {
+        let notch = |button| match x11_button_event(button, true) {
+            Some(WindowEvent::MouseWheel { delta: ScrollDelta::Lines { y }, phase: TouchPhase::Moved }) => Some(y),
+            _ => None,
+        };
+        assert_eq!(notch(4), Some(1.0));
+        assert_eq!(notch(5), Some(-1.0));
+        for button in 4..=7 {
+            assert!(x11_button_event(button, false).is_none(), "button {button} release");
+        }
+        assert!(x11_button_event(6, true).is_none());
+        assert!(matches!(
+            x11_button_event(1, true),
+            Some(WindowEvent::MouseInput { state: ButtonState::Pressed, button: MouseButton::Left })
+        ));
+        assert!(matches!(
+            x11_button_event(3, false),
+            Some(WindowEvent::MouseInput { state: ButtonState::Released, button: MouseButton::Right })
+        ));
+    }
+
+    #[test]
+    fn keysyms_map_to_unicode_beyond_latin1() {
+        assert_eq!(keysym_char(0x61), Some('a'));
+        assert_eq!(keysym_char(0xe9), Some('é'));
+        assert_eq!(keysym_char(0x0100_1ea1), Some('ạ')); // Vietnamese layout
+        assert_eq!(keysym_char(0x0100_0111), Some('đ'));
+        assert_eq!(keysym_char(0xff0d), None); // Return
+        assert_eq!(keysym_char(0x0100_d800), None); // surrogate
+    }
+
+    #[test]
+    fn held_keys_mark_auto_repeat() {
+        let held = HeldKeys::default();
+        assert!(!held.update(38, true));
+        assert!(held.update(38, true), "second press without release is a repeat");
+        assert!(!held.update(255, true));
+        assert!(!held.update(38, false));
+        assert!(!held.update(38, true), "press after release is fresh");
+        held.clear();
+        assert!(!held.update(38, true), "focus loss forgets held keys");
+        // Highest keycodes share the last word without aliasing.
+        assert!(!held.update(255, true) && held.update(255, true));
+        assert!(!held.update(254, true));
     }
 }

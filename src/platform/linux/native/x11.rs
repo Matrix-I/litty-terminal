@@ -3,12 +3,11 @@
 use std::ffi::{c_char, c_int, c_long, c_ulong, c_void, CStr, CString};
 use std::sync::Arc;
 
-use crate::platform::gui::{
-    ButtonState, MouseButton, PhysicalPosition, PhysicalSize, RawHandle, WindowEvent, WindowSpec,
-};
-use super::events::{convert_linux_key, mods_after_key, mods_from_state};
+use crate::platform::gui::{PhysicalPosition, PhysicalSize, RawHandle, WindowEvent, WindowSpec};
+use super::events::{convert_linux_key, keysym_char, mods_after_key, mods_from_state, x11_button_event, HeldKeys};
 use crate::platform::input::{Key, Mods};
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Once, OnceLock};
 
 #[repr(C)]
 pub struct XEvent {
@@ -103,6 +102,76 @@ pub struct XClientMessageEvent {
     pub data: [c_long; 5],
 }
 
+#[repr(C)]
+pub struct XErrorEvent {
+    pub type_: c_int,
+    pub display: *mut c_void,
+    pub resourceid: c_ulong,
+    pub serial: c_ulong,
+    pub error_code: u8,
+    pub request_code: u8,
+    pub minor_code: u8,
+}
+
+/// `PropModeReplace` for `XChangeProperty`.
+const PROP_MODE_REPLACE: c_int = 0;
+/// Predefined `CARDINAL` atom.
+const XA_CARDINAL: c_ulong = 6;
+
+type XErrorHandler = unsafe extern "C" fn(*mut c_void, *mut XErrorEvent) -> c_int;
+type XIOErrorHandler = unsafe extern "C" fn(*mut c_void) -> c_int;
+
+/// Xlib's default handler calls `exit()` on any protocol error (e.g. a
+/// `BadWindow` racing teardown); log it and keep running instead.
+unsafe extern "C" fn log_x_error(_display: *mut c_void, event: *mut XErrorEvent) -> c_int {
+    // SAFETY: Xlib passes a valid event for the duration of the call.
+    let e = unsafe { &*event };
+    eprintln!(
+        "litty: X11 error {} (request {}.{}, resource {:#x})",
+        e.error_code, e.request_code, e.minor_code, e.resourceid
+    );
+    0
+}
+
+/// The server connection is gone; Xlib exits once this returns, so leave a
+/// reason in the log rather than a silent exit.
+unsafe extern "C" fn log_x_io_error(_display: *mut c_void) -> c_int {
+    eprintln!("litty: lost the connection to the X server");
+    0
+}
+
+/// `xkb_keysym_to_utf8` from libxkbcommon, when installed: maps every
+/// legacy keysym (Cyrillic, Greek, Latin-2, ...) to text.
+fn xkb_keysym_to_utf8() -> Option<unsafe extern "C" fn(u32, *mut c_char, usize) -> c_int> {
+    static SYM: OnceLock<Option<unsafe extern "C" fn(u32, *mut c_char, usize) -> c_int>> = OnceLock::new();
+    *SYM.get_or_init(|| unsafe {
+        let handle = libc::dlopen(c"libxkbcommon.so.0".as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
+        if handle.is_null() {
+            return None;
+        }
+        let p = libc::dlsym(handle, c"xkb_keysym_to_utf8".as_ptr());
+        (!p.is_null()).then(|| std::mem::transmute_copy(&p))
+    })
+}
+
+/// Text a keysym produces, or `None` for function keys and control codes.
+fn keysym_text(keysym: c_ulong) -> Option<String> {
+    let keysym = u32::try_from(keysym).ok()?;
+    let text = match xkb_keysym_to_utf8() {
+        Some(to_utf8) => {
+            let mut buf = [0u8; 8];
+            // Returns bytes written including the NUL, 0 when there is no text.
+            let n = unsafe { to_utf8(keysym, buf.as_mut_ptr().cast(), buf.len()) };
+            if n <= 1 {
+                return None;
+            }
+            std::str::from_utf8(&buf[..n as usize - 1]).ok()?.to_owned()
+        }
+        None => keysym_char(keysym)?.to_string(),
+    };
+    Some(text).filter(|t| t.chars().all(|c| !c.is_control()))
+}
+
 #[allow(non_snake_case)]
 pub struct X11Lib {
     _handle: *mut c_void,
@@ -113,6 +182,13 @@ pub struct X11Lib {
     pub XCreateSimpleWindow: unsafe extern "C" fn(*mut c_void, c_ulong, c_int, c_int, c_int, c_int, c_int, c_ulong, c_ulong) -> c_ulong,
     pub XDestroyWindow: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
     pub XMapWindow: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
+    pub XMapRaised: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
+    pub XWithdrawWindow: unsafe extern "C" fn(*mut c_void, c_ulong, c_int) -> c_int,
+    pub XMoveWindow: unsafe extern "C" fn(*mut c_void, c_ulong, c_int, c_int) -> c_int,
+    pub XRaiseWindow: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
+    pub XSetErrorHandler: unsafe extern "C" fn(Option<XErrorHandler>) -> Option<XErrorHandler>,
+    pub XSetIOErrorHandler: unsafe extern "C" fn(Option<XIOErrorHandler>) -> Option<XIOErrorHandler>,
+    pub XkbSetDetectableAutoRepeat: unsafe extern "C" fn(*mut c_void, c_int, *mut c_int) -> c_int,
     pub XSelectInput: unsafe extern "C" fn(*mut c_void, c_ulong, c_long) -> c_int,
     pub XFlush: unsafe extern "C" fn(*mut c_void) -> c_int,
     pub XConnectionNumber: unsafe extern "C" fn(*mut c_void) -> c_int,
@@ -127,6 +203,7 @@ pub struct X11Lib {
     pub XUngrabPointer: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
     pub XResourceManagerString: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     pub XLookupString: unsafe extern "C" fn(*mut XKeyEvent, *mut c_char, c_int, *mut c_ulong, *mut c_void) -> c_int,
+    pub XRefreshKeyboardMapping: unsafe extern "C" fn(*mut XEvent) -> c_int,
     #[allow(clippy::type_complexity)]
     pub XQueryPointer: unsafe extern "C" fn(
         *mut c_void, c_ulong, *mut c_ulong, *mut c_ulong,
@@ -166,6 +243,13 @@ impl X11Lib {
                 XCreateSimpleWindow: sym(handle, c"XCreateSimpleWindow")?,
                 XDestroyWindow: sym(handle, c"XDestroyWindow")?,
                 XMapWindow: sym(handle, c"XMapWindow")?,
+                XMapRaised: sym(handle, c"XMapRaised")?,
+                XWithdrawWindow: sym(handle, c"XWithdrawWindow")?,
+                XMoveWindow: sym(handle, c"XMoveWindow")?,
+                XRaiseWindow: sym(handle, c"XRaiseWindow")?,
+                XSetErrorHandler: sym(handle, c"XSetErrorHandler")?,
+                XSetIOErrorHandler: sym(handle, c"XSetIOErrorHandler")?,
+                XkbSetDetectableAutoRepeat: sym(handle, c"XkbSetDetectableAutoRepeat")?,
                 XSelectInput: sym(handle, c"XSelectInput")?,
                 XFlush: sym(handle, c"XFlush")?,
                 XConnectionNumber: sym(handle, c"XConnectionNumber")?,
@@ -181,6 +265,7 @@ impl X11Lib {
                 XQueryPointer: sym(handle, c"XQueryPointer")?,
                 XResourceManagerString: sym(handle, c"XResourceManagerString")?,
                 XLookupString: sym(handle, c"XLookupString")?,
+                XRefreshKeyboardMapping: sym(handle, c"XRefreshKeyboardMapping")?,
             })
         }
     }
@@ -197,6 +282,8 @@ pub struct X11WindowInner {
     pub scale: f64,
     /// Last modifiers reported to the app, packed by `pack_mods`.
     pub mods: AtomicU8,
+    /// Keys held down, to flag auto-repeat presses.
+    pub held: HeldKeys,
 }
 
 unsafe impl Send for X11WindowInner {}
@@ -229,6 +316,11 @@ pub struct X11Window(pub Arc<X11WindowInner>);
 impl X11Window {
     pub fn create(spec: &WindowSpec) -> Option<Self> {
         let lib = Arc::new(X11Lib::load()?);
+        static ERROR_HANDLERS: Once = Once::new();
+        ERROR_HANDLERS.call_once(|| unsafe {
+            (lib.XSetErrorHandler)(Some(log_x_error));
+            (lib.XSetIOErrorHandler)(Some(log_x_io_error));
+        });
         unsafe {
             let display = (lib.XOpenDisplay)(std::ptr::null());
             if display.is_null() {
@@ -279,12 +371,23 @@ impl X11Window {
                 let atom = (lib.XInternAtom)(display, hints, 0);
                 // flags = MWM_HINTS_DECORATIONS, decorations = 0
                 let data: [c_long; 5] = [2, 0, 0, 0, 0];
-                const PROP_MODE_REPLACE: c_int = 0;
                 (lib.XChangeProperty)(display, window, atom, atom, 32, PROP_MODE_REPLACE, data.as_ptr().cast(), 5);
             }
 
-            // Map and flush to display
-            (lib.XMapWindow)(display, window);
+            // `_NET_WM_PID`: lets window managers and tools (xdotool) map
+            // the window to this process, as winit did.
+            let pid_atom = (lib.XInternAtom)(display, c"_NET_WM_PID".as_ptr(), 0);
+            let pid = [c_long::from(libc::getpid())];
+            (lib.XChangeProperty)(display, window, pid_atom, XA_CARDINAL, 32, PROP_MODE_REPLACE, pid.as_ptr().cast(), 1);
+
+            // Auto-repeat as press, press, ..., release (no fake releases),
+            // so repeats are detectable and Kitty sees no spurious releases.
+            let mut supported = 0;
+            (lib.XkbSetDetectableAutoRepeat)(display, 1, &mut supported);
+
+            if spec.visible {
+                (lib.XMapWindow)(display, window);
+            }
             (lib.XFlush)(display);
 
             let fd = (lib.XConnectionNumber)(display);
@@ -299,6 +402,7 @@ impl X11Window {
                 screen,
                 scale,
                 mods: AtomicU8::new(0),
+                held: HeldKeys::default(),
             }));
 
             Some(win)
@@ -371,6 +475,43 @@ impl X11Window {
         self.send_wm_message(c"_NET_WM_STATE", [c_long::from(maximized), vert, horz, 1, 0]);
     }
 
+    /// Show (mapped and raised) or withdraw the window.
+    pub fn set_visible(&self, visible: bool) {
+        unsafe {
+            if visible {
+                (self.0.lib.XMapRaised)(self.0.display, self.0.window);
+            } else {
+                (self.0.lib.XWithdrawWindow)(self.0.display, self.0.window, self.0.screen);
+            }
+            (self.0.lib.XFlush)(self.0.display);
+        }
+    }
+
+    /// Move the window's top-left corner to physical `(x, y)`.
+    pub fn move_to(&self, x: i32, y: i32) {
+        unsafe {
+            (self.0.lib.XMoveWindow)(self.0.display, self.0.window, x, y);
+            (self.0.lib.XFlush)(self.0.display);
+        }
+    }
+
+    /// Raise and ask the window manager to activate the window.
+    pub fn focus(&self) {
+        unsafe {
+            (self.0.lib.XRaiseWindow)(self.0.display, self.0.window);
+        }
+        // Source 1: a normal application request; time 0 = CurrentTime.
+        self.send_wm_message(c"_NET_ACTIVE_WINDOW", [1, 0, 0, 0, 0]);
+    }
+
+    /// Set or clear the urgency (`_NET_WM_STATE_DEMANDS_ATTENTION`) hint.
+    pub fn request_attention(&self, requested: bool) {
+        let atom = unsafe {
+            (self.0.lib.XInternAtom)(self.0.display, c"_NET_WM_STATE_DEMANDS_ATTENTION".as_ptr(), 0) as c_long
+        };
+        self.send_wm_message(c"_NET_WM_STATE", [c_long::from(requested), atom, 0, 1, 0]);
+    }
+
     pub fn iconify(&self) {
         unsafe {
             (self.0.lib.XIconifyWindow)(self.0.display, self.0.window, self.0.screen);
@@ -391,15 +532,11 @@ impl X11Window {
         let mut ev = XKeyEvent { state: state as c_int, ..*kev };
         let mut buf = [0 as c_char; 16];
         let mut keysym: c_ulong = 0;
-        let n = unsafe {
-            (self.0.lib.XLookupString)(&mut ev, buf.as_mut_ptr(), buf.len() as c_int, &mut keysym, std::ptr::null_mut())
-        };
-        if n <= 0 {
-            return None;
+        unsafe {
+            (self.0.lib.XLookupString)(&mut ev, buf.as_mut_ptr(), buf.len() as c_int, &mut keysym, std::ptr::null_mut());
         }
-        // XLookupString returns Latin-1, which maps byte-for-byte to chars.
-        let text: String = buf[..n as usize].iter().map(|&b| char::from(b as u8)).collect();
-        Some(text).filter(|t| t.chars().all(|c| !c.is_control()))
+        // The returned bytes are Latin-1 only; the keysym covers every layout.
+        keysym_text(keysym)
     }
 
     pub fn raw_handle(&self) -> RawHandle {
@@ -425,8 +562,11 @@ impl X11Window {
                         let evdev_code = (kev.keycode as u32).saturating_sub(8);
                         let state = kev.state as u32;
                         self.report_mods(mods_after_key(state, evdev_code, pressed), events);
-                        let mut key_input = convert_linux_key(evdev_code, pressed, false);
-                        if let Key::Character(_) = key_input.logical {
+                        let repeat = self.0.held.update(kev.keycode as u8, pressed);
+                        let mut key_input = convert_linux_key(evdev_code, pressed, repeat);
+                        // Keys outside the evdev table (other layouts' extra
+                        // keys, remapped keycodes) still produce layout text.
+                        if !matches!(key_input.logical, Key::Named(_)) {
                             // Layout-aware text: Shift (and AltGr) applied,
                             // Ctrl/Alt/Super left to the keymap.
                             const CTRL_ALT_SUPER: u32 = 4 | 8 | 64;
@@ -444,14 +584,9 @@ impl X11Window {
                     4 | 5 => {
                         let bev: &XButtonEvent = std::mem::transmute(&xev);
                         self.report_mods(mods_from_state(bev.state as u32), events);
-                        let state = if xev.type_ == 4 { ButtonState::Pressed } else { ButtonState::Released };
-                        let button = match bev.button {
-                            1 => MouseButton::Left,
-                            2 => MouseButton::Middle,
-                            3 => MouseButton::Right,
-                            _ => MouseButton::Other,
-                        };
-                        events.push(WindowEvent::MouseInput { state, button });
+                        if let Some(ev) = x11_button_event(bev.button as u32, xev.type_ == 4) {
+                            events.push(ev);
+                        }
                     }
                     // MotionNotify = 6
                     6 => {
@@ -469,7 +604,14 @@ impl X11Window {
                     }
                     // FocusIn = 9, FocusOut = 10
                     9 | 10 => {
+                        // Keys released while unfocused never report a release.
+                        self.0.held.clear();
                         events.push(WindowEvent::Focused(xev.type_ == 9));
+                    }
+                    // MappingNotify = 34: the layout changed; without this
+                    // `XLookupString` keeps resolving keysyms from the old map.
+                    34 => {
+                        (self.0.lib.XRefreshKeyboardMapping)(&mut xev);
                     }
                     // ClientMessage = 33
                     33 => {
