@@ -80,7 +80,10 @@ ln -s /Applications "$DMG_STAGING/Applications"
 
 # `hdiutil create` is deprecated in favour of `diskutil image`; older macOS
 # releases ship without the latter, so keep hdiutil as the fallback there.
-if diskutil image create from --help >/dev/null 2>&1; then
+# macOS 15 has `diskutil image create from` but not its `--volumeName`
+# option, so probe for the option itself, not just the subcommand.
+DISKUTIL_CREATE_HELP="$(diskutil image create from --help 2>&1 || true)"
+if [[ "$DISKUTIL_CREATE_HELP" == *--volumeName* ]]; then
     diskutil image create from --format UDZO --volumeName "Litty" \
         "$DMG_STAGING" "$DMG_PATH"
 else
