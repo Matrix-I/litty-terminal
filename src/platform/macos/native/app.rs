@@ -226,7 +226,10 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
 
         let native_ctx = NativeLoopCtx::new();
         let loop_ctx = LoopCtx::from_native(&native_ctx);
-        handler.resumed(&loop_ctx);
+        // `resumed` creates the first window outside the loop's per-cycle pools:
+        // without a pool of its own, everything it autoreleases leaks, leaving
+        // that NSWindow with hundreds of retains it can never shed.
+        autoreleasepool(|| handler.resumed(&loop_ctx));
         // Bring the first window to the front with keyboard focus, as winit did:
         // launched from a shell, the app is otherwise left behind it.
         crate::platform::macos::app::activate_app();
