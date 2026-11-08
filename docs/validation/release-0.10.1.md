@@ -26,17 +26,23 @@ Other release checks:
 
 - `cargo check`, `cargo check --target x86_64-unknown-linux-gnu`,
   `cargo clippy --all-targets -- -D warnings`, `git diff --check`: clean.
-- `cargo test`: 525 passed, 0 failed, 11 ignored.
+- `cargo test`: 527 passed, 0 failed, 11 ignored (rerun on `2d2bbe9`, which
+  includes `48357a6` and its two regression tests).
+- The pre-release suite and the idle measurements above ran on `9768a8f`,
+  before `48357a6` (macOS function-key text) landed. That fix only changes
+  the text reported for AppKit function keys; the maintainer tested it
+  manually and it was not rerun through the suite.
 - `.deb` (Debian 13) and `.rpm` (Fedora 43) packaging, package tests and
   install/remove round trips run in the tag-triggered release workflow
   (`.github/workflows/release.yml`) instead of locally.
-- Not run: `scripts/linux/test.sh` (Linux runtime smoke test); both fixes in
-  this release are macOS-only code paths. Launching the packaged desktop
+- Not run: `scripts/linux/test.sh` (Linux runtime smoke test); all three fixes in
+  this release are macOS-only code paths. CI release workflow runs on
+  `v0.10.1-rc.1` are the reference for the packaging checks. Launching the packaged desktop
   entries in a desktop session and native Wayland were not run either.
 
 - **Execution Date**: 2026-11-08 22:14:28 +0700
 - **Platform**: Darwin arm64 (Kernel 27.2.0)
-- **Git Commit**: 9768a8f + version bump and release docs, committed as the v0.10.1 release commit (`git rev-parse v0.10.1^{commit}`; no code changed afterwards)
+- **Git Commit**: 9768a8f (suite run); release code is `2d2bbe9` = 9768a8f + `48357a6` + version bump and release docs (`git rev-parse v0.10.1^{commit}` adds only this record update)
 - **Automated Suite Status**: ✅ **ALL EXECUTED CHECKS PASS**
 
 This suite uses the budgets in src/bench.rs. Passing it does not establish
