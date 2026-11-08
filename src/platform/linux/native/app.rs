@@ -8,17 +8,24 @@ use std::time::Instant;
 use parking_lot::Mutex;
 
 use crate::platform::gui::{EventHandler, EventProxy, Flow, LoopCtx, WindowEvent, WindowId};
-use super::window::NativeWindow;
+use super::window::{NativeWindow, WeakNativeWindow};
 
 static PENDING_REDRAWS: Mutex<Vec<WindowId>> = Mutex::new(Vec::new());
 static PENDING_EVENTS: Mutex<Vec<(WindowId, WindowEvent)>> = Mutex::new(Vec::new());
-static WINDOWS: Mutex<Vec<NativeWindow>> = Mutex::new(Vec::new());
+/// Weak, so dropping a window's last `NativeWindow` destroys it (TD-1).
+static WINDOWS: Mutex<Vec<WeakNativeWindow>> = Mutex::new(Vec::new());
 static WAKE_EVENTFD: Mutex<Option<RawFd>> = Mutex::new(None);
 static DISPLAY_FD: Mutex<Option<RawFd>> = Mutex::new(None);
 static EPOLL_FD: Mutex<Option<RawFd>> = Mutex::new(None);
 
-pub fn register_window(win: NativeWindow) {
-    WINDOWS.lock().push(win);
+pub fn register_window(win: &NativeWindow) {
+    WINDOWS.lock().push(win.downgrade());
+}
+
+/// Replace `out` with the windows the app still holds, pruning closed ones.
+fn live_windows(out: &mut Vec<NativeWindow>) {
+    out.clear();
+    WINDOWS.lock().retain(|weak| weak.upgrade().map(|win| out.push(win)).is_some());
 }
 
 pub fn register_display_fd(fd: RawFd) {
@@ -30,6 +37,19 @@ pub fn register_display_fd(fd: RawFd) {
         };
         unsafe {
             libc::epoll_ctl(epoll, libc::EPOLL_CTL_ADD, fd, &mut ev);
+        }
+    }
+}
+
+/// Stop watching a display connection that is about to close.
+pub fn deregister_display_fd(fd: RawFd) {
+    let mut display = DISPLAY_FD.lock();
+    if *display == Some(fd) {
+        *display = None;
+    }
+    if let Some(epoll) = *EPOLL_FD.lock() {
+        unsafe {
+            libc::epoll_ctl(epoll, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut());
         }
     }
 }
@@ -215,6 +235,11 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
 
         let mut events: [libc::epoll_event; 32] = std::mem::zeroed();
         let mut timer_fired = false;
+        // Reused every cycle: the idle loop must not allocate (TD-10).
+        let mut wins: Vec<NativeWindow> = Vec::new();
+        let mut window_events: Vec<WindowEvent> = Vec::new();
+        let mut pending: Vec<(WindowId, WindowEvent)> = Vec::new();
+        let mut redraws: Vec<WindowId> = Vec::new();
 
         while !native_ctx.exit_flag.load(Ordering::SeqCst) {
             // 1. Process user events from proxy
@@ -223,21 +248,21 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
             }
 
             // 2. Poll each window's own X11 connection
-            let wins = WINDOWS.lock().clone();
-            for win in wins {
+            live_windows(&mut wins);
+            for win in &wins {
                 let Some(x11) = win.x11() else { continue };
-                for ev in x11.poll_events(win.id()) {
+                x11.poll_events(&mut window_events);
+                for ev in window_events.drain(..) {
                     win.observe(&ev);
                     handler.window_event(&loop_ctx, win.id(), ev);
                 }
             }
+            // Release our references so a window the app just closed drops now.
+            wins.clear();
 
             // 3. Deliver pending window events
-            let pending: Vec<(WindowId, WindowEvent)> = {
-                let mut guard = PENDING_EVENTS.lock();
-                guard.drain(..).collect()
-            };
-            for (id, ev) in pending {
+            std::mem::swap(&mut *PENDING_EVENTS.lock(), &mut pending);
+            for (id, ev) in pending.drain(..) {
                 handler.window_event(&loop_ctx, id, ev);
             }
 
@@ -245,11 +270,8 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
             timer_fired = false;
 
             // 4. Deliver pending redraws
-            let redraws: Vec<WindowId> = {
-                let mut guard = PENDING_REDRAWS.lock();
-                guard.drain(..).collect()
-            };
-            for id in redraws {
+            std::mem::swap(&mut *PENDING_REDRAWS.lock(), &mut redraws);
+            for id in redraws.drain(..) {
                 handler.window_event(&loop_ctx, id, WindowEvent::RedrawRequested);
             }
 
@@ -257,7 +279,9 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
 
             // 5. Determine epoll_wait timeout
             let flow_mode = native_ctx.flow_mode.load(Ordering::SeqCst);
-            let has_x11_pending = WINDOWS.lock().iter().any(|w| w.x11().is_some_and(|x| x.pending()));
+            live_windows(&mut wins);
+            let has_x11_pending = wins.iter().any(|w| w.x11().is_some_and(|x| x.pending()));
+            wins.clear();
             let timeout = if has_x11_pending || flow_mode == 1 {
                 0 // Non-blocking poll if events are pending or poll requested
             } else {
@@ -290,5 +314,28 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         libc::close(timer_fd);
         libc::close(event_fd);
         libc::close(epoll_fd);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::linux::native::window::detached;
+
+    /// The registry must not keep a window alive: its strong reference kept
+    /// closed X11 windows mapped and their connections open (TD-1).
+    #[test]
+    fn dropped_windows_leave_the_registry() {
+        let (kept, dropped) = (detached(10, 10), detached(10, 10));
+        register_window(&kept);
+        register_window(&dropped);
+        let dropped_id = dropped.id();
+        drop(dropped);
+        let mut live = Vec::new();
+        live_windows(&mut live);
+        let ids: Vec<_> = live.iter().map(NativeWindow::id).collect();
+        assert!(ids.contains(&kept.id()));
+        assert!(!ids.contains(&dropped_id), "a window the app dropped is still polled");
+        assert!(WINDOWS.lock().iter().all(|w| w.upgrade().is_some()), "dead entry not pruned");
     }
 }
