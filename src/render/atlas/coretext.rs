@@ -183,11 +183,55 @@ unsafe extern "C" {
 const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
 const K_CF_NUMBER_SINT32_TYPE: isize = 3;
 
-/// Native macOS font handle backed by `CTFontDescriptorRef` and a cached `CTFontRef`
-/// for the most recently requested pixel size.
+/// Native macOS font handle backed by `CTFontDescriptorRef` and cached
+/// `CTFontRef`s for the most recently used pixel sizes.
 pub struct NativeFont {
     desc: *const c_void,
-    sized: Mutex<(u32, *const c_void)>,
+    sized: Mutex<SizedFonts>,
+}
+
+/// Pixel sizes kept at once: atlases for windows on displays with different
+/// scale factors share one `NativeFont`, and each asks for its own size.
+const SIZED_FONTS: usize = 4;
+
+/// Size for a glyph lookup before any sized font exists; glyph ids do not depend on it.
+const LOOKUP_PX: f32 = 16.0;
+
+/// Owned `CTFontRef`s by size bits; null slots are free. Replaced round-robin.
+struct SizedFonts {
+    fonts: [(u32, *const c_void); SIZED_FONTS],
+    next: usize,
+}
+
+impl SizedFonts {
+    const fn new() -> Self {
+        SizedFonts { fonts: [(0, ptr::null()); SIZED_FONTS], next: 0 }
+    }
+
+    /// A retained font at `px`, created and cached on a miss (null on failure).
+    unsafe fn get_or_create(&mut self, desc: *const c_void, px: f32) -> *const c_void {
+        let bits = px.to_bits();
+        if let Some(&(_, f)) = self.fonts.iter().find(|(b, f)| *b == bits && !f.is_null()) {
+            return unsafe { CFRetain(f) };
+        }
+        let f = unsafe { CTFontCreateWithFontDescriptor(desc, px as f64, ptr::null()) };
+        if f.is_null() {
+            return ptr::null();
+        }
+        let slot = &mut self.fonts[self.next];
+        if !slot.1.is_null() {
+            unsafe { CFRelease(slot.1) };
+        }
+        *slot = (bits, f);
+        self.next = (self.next + 1) % SIZED_FONTS;
+        unsafe { CFRetain(f) }
+    }
+
+    /// Any cached font, retained.
+    unsafe fn any(&self) -> Option<*const c_void> {
+        let &(_, f) = self.fonts.iter().find(|(_, f)| !f.is_null())?;
+        Some(unsafe { CFRetain(f) })
+    }
 }
 
 // SAFETY: `CTFontDescriptorRef` and `CTFontRef` are immutable, thread-safe
@@ -198,9 +242,10 @@ unsafe impl Sync for NativeFont {}
 impl Drop for NativeFont {
     fn drop(&mut self) {
         unsafe {
-            let (_, font) = *self.sized.lock();
-            if !font.is_null() {
-                CFRelease(font);
+            for &(_, font) in &self.sized.lock().fonts {
+                if !font.is_null() {
+                    CFRelease(font);
+                }
             }
             if !self.desc.is_null() {
                 CFRelease(self.desc);
@@ -210,28 +255,35 @@ impl Drop for NativeFont {
 }
 
 impl NativeFont {
-    /// Obtain a retained `CTFontRef` at `px` (cached for the active atlas size).
+    /// Obtain a retained `CTFontRef` at `px` (cached for recently used sizes).
     unsafe fn font_at(&self, px: f32) -> *const c_void {
-        let bits = px.to_bits();
+        unsafe { self.sized.lock().get_or_create(self.desc, px) }
+    }
+
+    /// The sizes of the cached fonts, sorted.
+    #[cfg(test)]
+    pub(super) fn cached_sizes(&self) -> Vec<f32> {
+        let mut sizes: Vec<f32> =
+            self.sized.lock().fonts.iter().filter(|(_, f)| !f.is_null()).map(|&(b, _)| f32::from_bits(b)).collect();
+        sizes.sort_by(f32::total_cmp);
+        sizes
+    }
+
+    /// A retained font for size-independent queries (cmap lookups): any cached
+    /// one. Asking for a fixed size instead would take a cache slot from a size
+    /// an atlas is drawing at.
+    unsafe fn font_any_size(&self) -> *const c_void {
         let mut guard = self.sized.lock();
-        if guard.0 == bits && !guard.1.is_null() {
-            return unsafe { CFRetain(guard.1) };
+        match unsafe { guard.any() } {
+            Some(f) => f,
+            None => unsafe { guard.get_or_create(self.desc, LOOKUP_PX) },
         }
-        let f = unsafe { CTFontCreateWithFontDescriptor(self.desc, px as f64, ptr::null()) };
-        if f.is_null() {
-            return ptr::null();
-        }
-        if !guard.1.is_null() {
-            unsafe { CFRelease(guard.1) };
-        }
-        *guard = (bits, f);
-        unsafe { CFRetain(f) }
     }
 
     /// Look up the nominal glyph ID for `ch` (`0` if unmapped).
     pub fn lookup_glyph_index(&self, ch: char) -> u16 {
         unsafe {
-            let f = self.font_at(16.0);
+            let f = self.font_any_size();
             if f.is_null() {
                 return 0;
             }
@@ -653,7 +705,7 @@ pub(super) fn parse_font(path: &str, collection_index: u32, substitutions: bool)
         if desc.is_null() {
             return None;
         }
-        Some(NativeFont { desc, sized: Mutex::new((0, ptr::null())) })
+        Some(NativeFont { desc, sized: Mutex::new(SizedFonts::new()) })
     }
 }
 

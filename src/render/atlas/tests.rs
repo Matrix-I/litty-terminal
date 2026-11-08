@@ -133,6 +133,45 @@ fn primary_font_rasterizes_ascii_and_indexed_glyphs() {
     assert!(fonts.primary.rasterize_cluster_primary(&mut buf, cw as u32, ch as u32, 24, 28.0, "e\u{0301}"));
 }
 
+#[cfg(target_os = "macos")]
+const MENLO: &str = "/System/Library/Fonts/Menlo.ttc";
+
+/// `ch`'s glyph id, looked up on a throwaway font so the font under test
+/// starts with no cached sizes.
+#[cfg(target_os = "macos")]
+fn menlo_gid(ch: char) -> u16 {
+    parse_font(MENLO, 0, true).unwrap().lookup_glyph_index(ch)
+}
+
+/// Shaping asks for nominal glyph ids between sized calls at the atlas size;
+/// a lookup at another size would replace the one cached font every time.
+#[cfg(target_os = "macos")]
+#[test]
+fn glyph_lookup_keeps_the_cached_font_size() {
+    let gid = menlo_gid('A');
+    // Its own font: `load_font` shares one across tests that use other sizes.
+    let font = parse_font(MENLO, 0, true).unwrap();
+    assert!(font.glyph_bounds(gid, 28.0).2 > 0);
+    assert!(font.lookup_glyph_index('>') > 0);
+    assert_eq!(font.cached_sizes(), [28.0]);
+}
+
+/// Windows on a Retina and a 1x display share one font at two sizes.
+#[cfg(target_os = "macos")]
+#[test]
+fn sized_fonts_keep_several_sizes() {
+    let gid = menlo_gid('A');
+    let font = parse_font(MENLO, 0, true).unwrap();
+    for px in [28.0, 14.0, 28.0, 14.0] {
+        assert!(font.glyph_bounds(gid, px).2 > 0);
+    }
+    assert_eq!(font.cached_sizes(), [14.0, 28.0]);
+    for px in [10.0, 11.0, 12.0, 13.0, 15.0] {
+        let _ = font.glyph_bounds(gid, px);
+    }
+    assert_eq!(font.cached_sizes().len(), 4, "bounded");
+}
+
 #[test]
 fn metric_adjust_parses_pixels_and_percent() {
     assert_eq!(MetricAdjust::parse("2"), Ok(MetricAdjust::Px(2)));
