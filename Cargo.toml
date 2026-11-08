@@ -1,6 +1,6 @@
 [package]
 name = "litty"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 description = "Minimal GPU terminal: <50MB RAM, 0% idle CPU (Metal on macOS, Vulkan on Linux)"
 license = "MIT"
