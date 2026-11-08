@@ -197,15 +197,17 @@ jobs:
     # run in the job that holds the signing key.
     steps:
       - uses: actions/checkout@v7
+      # Not `assets/`: the checkout already has that directory (bundled
+      # themes), and every file in this one is uploaded to the release.
       - uses: actions/download-artifact@v8
         with:
-          path: assets/
+          path: release-assets/
           merge-multiple: true
       - name: Check assets
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          cd assets
+          cd release-assets
           expected=(Litty.dmg Litty-macos-aarch64.zip litty-macos-aarch64 litty-linux-x86_64 "litty_${VERSION}_amd64.deb" "litty-${VERSION}-1.x86_64.rpm")
           for f in "${expected[@]}"; do test -s "$f" || { echo "::error::missing asset $f"; exit 1; }; done
           count=$(find . -mindepth 1 -maxdepth 1 | wc -l)
@@ -231,9 +233,9 @@ jobs:
           key_file="$RUNNER_TEMP/minisign.key"
           trap 'rm -f "$key_file"' EXIT
           printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key_file"
-          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$key_file" -m assets/SHA256SUMS.txt
+          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$key_file" -m release-assets/SHA256SUMS.txt
           # Catch a secret key that does not match the key baked into the binaries.
-          minisign -V -m assets/SHA256SUMS.txt -p resources/minisign.pub
+          minisign -V -m release-assets/SHA256SUMS.txt -p resources/minisign.pub
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -241,4 +243,4 @@ jobs:
         run: |
           flags=(--draft --verify-tag --generate-notes --title "Litty $GITHUB_REF_NAME ⚡")
           [ "$PRERELEASE" = "true" ] && flags+=(--prerelease)
-          gh release create "$GITHUB_REF_NAME" "${flags[@]}" assets/*
+          gh release create "$GITHUB_REF_NAME" "${flags[@]}" release-assets/*
