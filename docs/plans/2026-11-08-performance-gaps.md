@@ -133,8 +133,29 @@ PASS/FAIL threshold until a baseline exists.
 - **Tests:** CLI parse tests; unit test for the stage aggregation (pure);
   echo child roundtrip test over a real PTY (no window). The GUI run itself is
   verified by running it and quoting its JSON.
-- [ ] Implement, run 3× on macOS, record numbers in this file.
-- [ ] Run on Linux X11 (container or host) or state that it was not run.
+- [x] Implement, run 3× on macOS, record numbers in this file (`1bca032`).
+- [ ] Run on Linux X11 (container or host). **Not run yet**: only `cargo check` / `clippy` for `x86_64-unknown-linux-gnu`.
+- Deviations from the design above: the reader-side stamp (`t_echo_in_grid`)
+  is not taken; `echo` ends when the main thread first sees the byte in the
+  grid right before a draw, so it includes the wake-up. A frame that picks up
+  the echo between that check and its own grid read is not counted, so a
+  sample can be one frame late, never early. `render` includes waiting for a
+  free drawable (`nextDrawable`).
+
+Result, 2026-11-09 (M1 Pro, window 2590×1492 px, scale 2, 1,000 samples after
+50 warmup, three runs):
+
+| Stage | p50 ms | p95 ms | p99 ms |
+|---|---|---|---|
+| total | 3.6–3.9 | 9.8–10.2 | 12.3–14.7 |
+| input | 0.012–0.013 | 0.027–0.034 | 0.04–0.33 |
+| echo | 0.39–0.44 | 3.3–4.1 | 8.1–10.0 |
+| render | 0.30–0.35 | 4.4–5.4 | 7.8–8.8 |
+| gpu | 2.45–2.52 | 4.7–4.9 | 6.0–6.1 |
+
+Reading: the median is dominated by GPU completion (~2.5 ms for a frame
+that changes one cell), the tail by `echo` and `render`; both tails exceed
+one 120 Hz frame. These are new findings for P1/P2, not yet investigated.
 
 ### B2 `+bench-first-frame`: launch → first GPU-completed frame
 
@@ -151,8 +172,25 @@ PASS/FAIL threshold until a baseline exists.
   function with unit tests.
 - **Stage stamps** also answer S2: device creation, atlas/font load, pipeline
   build, PTY spawn, first frame.
-- [ ] Implement with the platform function on both OSes (Linux reads `/proc`).
-- [ ] Run cold (first launch of a freshly built binary, which misses the system shader cache) and warm; record numbers here.
+- [x] Implement (`ebfc8da`). Deviation: instead of a kernel process-start
+  query per OS, the parent passes its `CLOCK_MONOTONIC` reading at spawn and
+  the child subtracts it (that clock is system-wide), so no new platform
+  function was needed. Stages are `exec`, `init` (main → window created),
+  `first_submit`, `gpu`; finer stamps inside `init` are still needed for S2.
+- [ ] Cold run. **Not achieved**: run 1 below was not cold (the shader
+  cache was already warm from earlier runs of the same shader source).
+- [x] Warm runs, 2026-11-09 (M1 Pro, 10 launches):
+
+| Stage | Run 1 ms | Runs 2–10 p50 ms | min–max ms |
+|---|---|---|---|
+| total | 196.9 | 211.4 | 203.0–224.1 |
+| exec | 6.7 | 12.3 | 7.4–25.9 |
+| init | 176.9 | 183.4 | 172.3–194.4 |
+| first_submit | 8.8 | 9.2 | 8.2–12.0 |
+| gpu | 4.6 | 4.6 | 3.3–5.0 |
+
+Reading: `init` (config, fonts, GPU device, window, PTY spawn) is ~87% of
+startup; that is where S2 must look.
 
 ### B3 `+bench-pty-throughput`: bytes through the whole app
 
@@ -163,7 +201,26 @@ PASS/FAIL threshold until a baseline exists.
   last frame completed.
 - Generators are shared with `grid::perf_probe` so grid-only and in-app numbers
   use identical bytes.
-- [ ] Implement; record the full table (replaces the manual `cat` numbers above).
+- [x] Implement (`399a777`). Deviation: the generators live in
+  `src/bench_throughput.rs`, not shared with `grid::perf_probe`; instead the
+  parent measures a parser-only rate on the exact same bytes.
+- [x] Result, 2026-11-09 (M1 Pro, 64 MiB per kind, one run each):
+
+| Kind | In app MB/s | Grid only MB/s | In app / grid |
+|---|---|---|---|
+| ascii | 116.3 | 1,029.3 | 0.11 |
+| sgr | 98.8 | 488.3 | 0.20 |
+| code | **56.0** | 1,566.1 | **0.04** |
+| unicode | 48.1 | 76.2 | 0.63 |
+| osc8 | 4.8 | 2.6 | 1.87 |
+| region | 48.2 | 79.3 | 0.61 |
+
+Reading: for `code` the parser is the fastest of all kinds yet the app is
+28× slower than it, which supports T1/T2 (work outside the parser,
+under or around the grid lock). `osc8` runs faster in the app than in the
+parser-only pass; the cause is unknown (the in-app grid has a different
+size, and both use the default 5,000-line scrollback) and belongs to T3's
+isolation step.
 
 ### D1 Decide what the targets measure (user decision, blocks P2 memory work)
 
