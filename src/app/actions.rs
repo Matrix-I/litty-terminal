@@ -25,6 +25,35 @@ use crate::paste::{paste_payload, paste_preview};
 use crate::platform::clipboard::{copy_to_clipboard, paste_from_clipboard};
 use crate::split::{Direction, SplitDirection};
 
+/// What a menu action does on macOS once the last window has closed.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) enum WindowlessAction {
+    OpenWindow,
+    Quit,
+    OpenConfig,
+    CheckUpdate,
+    Ignore,
+}
+
+/// With no window left, only app-level actions apply; New Window / New Tab
+/// open a fresh window like a Dock click does.
+pub(super) fn windowless_action(action: keymap::Action) -> WindowlessAction {
+    use keymap::Action as A;
+    match action {
+        A::NewWindow | A::NewTab => WindowlessAction::OpenWindow,
+        A::Quit => WindowlessAction::Quit,
+        A::OpenConfig => WindowlessAction::OpenConfig,
+        A::CheckUpdate => WindowlessAction::CheckUpdate,
+        _ => WindowlessAction::Ignore,
+    }
+}
+
+/// Show the progress dialog and check for a newer release in the background.
+pub(super) fn start_update_check(waker: &Waker, channel: config::AutoUpdateChannel) {
+    platform::show_progress_dialog("Checking for Updates…", "Checking for new releases of Litty…");
+    update::start_interactive_check(waker.proxy.clone(), channel);
+}
+
 /// Execute a shortcut. Returns `false` when it does not apply in the current state
 /// (e.g. switching tabs with a single tab), so the key falls through to the shell.
 pub(super) fn run_action(
@@ -44,10 +73,7 @@ pub(super) fn run_action(
         A::NewTab if s.tabs.is_empty() => open_fresh_tab(s, waker),
         A::NewTab if cfg!(target_os = "macos") && s.config.macos_native_tabs => s.requests.native_tab = true,
         A::NewTab => duplicate_active_tab(s, waker),
-        A::CheckUpdate => {
-            platform::show_progress_dialog("Checking for Updates…", "Checking for new releases of Litty…");
-            update::start_interactive_check(waker.proxy.clone(), s.config.auto_update_channel);
-        }
+        A::CheckUpdate => start_update_check(waker, s.config.auto_update_channel),
         _ if s.tabs.is_empty() => {}
         _ => return run_tab_action(s, action, waker),
     }
@@ -223,4 +249,30 @@ pub(super) fn paste_text(s: &mut State, text: &str) -> bool {
         s.window.request_redraw();
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use keymap::Action as A;
+
+    #[test]
+    fn windowless_actions_open_a_window_for_new_window_and_new_tab() {
+        assert_eq!(windowless_action(A::NewWindow), WindowlessAction::OpenWindow);
+        assert_eq!(windowless_action(A::NewTab), WindowlessAction::OpenWindow);
+    }
+
+    #[test]
+    fn windowless_actions_keep_app_level_commands() {
+        assert_eq!(windowless_action(A::Quit), WindowlessAction::Quit);
+        assert_eq!(windowless_action(A::OpenConfig), WindowlessAction::OpenConfig);
+        assert_eq!(windowless_action(A::CheckUpdate), WindowlessAction::CheckUpdate);
+    }
+
+    #[test]
+    fn windowless_actions_ignore_window_and_tab_commands() {
+        for action in [A::Minimize, A::ReloadConfig, A::Copy, A::Paste, A::ClearScreen] {
+            assert_eq!(windowless_action(action), WindowlessAction::Ignore, "{action:?}");
+        }
+    }
 }
