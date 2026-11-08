@@ -190,6 +190,24 @@ pub fn convert_modifier_flags(flags: usize) -> Mods {
     }
 }
 
+/// The logical key of a non-named key event.
+///
+/// With Control held, AppKit's `characters` is already the control character
+/// (Ctrl+C gives "\u{3}"), which neither shortcut matching nor the terminal
+/// encoder recognise; the key underneath (`charactersIgnoringModifiers`) is what
+/// they expect, matching the Linux backend.
+pub(super) fn character_key(characters: Option<&str>, characters_ignoring_modifiers: Option<&str>) -> Key {
+    let Some(s) = characters.filter(|s| !s.is_empty()) else {
+        return Key::Unidentified;
+    };
+    if s.chars().all(|c| c.is_ascii_control())
+        && let Some(base) = characters_ignoring_modifiers.filter(|b| !b.is_empty())
+    {
+        return Key::Character(base.into());
+    }
+    Key::Character(s.into())
+}
+
 pub(super) unsafe fn convert_key_event(event: Id, pressed: bool) -> KeyInput {
     unsafe {
         let key_code = msg_send!(event, c"keyCode"; -> u16);
@@ -232,17 +250,7 @@ pub(super) unsafe fn convert_key_event(event: Id, pressed: bool) -> KeyInput {
         109 => (Key::Named(NamedKey::F10), Some(NamedKey::F10)),
         103 => (Key::Named(NamedKey::F11), Some(NamedKey::F11)),
         111 => (Key::Named(NamedKey::F12), Some(NamedKey::F12)),
-        _ => {
-            if let Some(ref s) = text {
-                if !s.is_empty() {
-                    (Key::Character(s.clone()), None)
-                } else {
-                    (Key::Unidentified, None)
-                }
-            } else {
-                (Key::Unidentified, None)
-            }
-        }
+        _ => (character_key(text.as_deref(), unshifted_text.as_deref()), None),
     };
 
     let unshifted = if let Some(n) = named {
@@ -313,6 +321,29 @@ pub(super) unsafe fn convert_key_event(event: Id, pressed: bool) -> KeyInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ctrl_letter_resolves_to_the_letter_not_its_control_character() {
+        // AppKit reports Ctrl+C as `characters` "\u{3}"; the keymap expects "c".
+        assert_eq!(character_key(Some("\u{3}"), Some("c")), Key::Character("c".into()));
+        assert_eq!(character_key(Some("\u{1b}"), Some("[")), Key::Character("[".into()), "Ctrl+[");
+        assert_eq!(character_key(Some("\u{1f}"), Some("-")), Key::Character("-".into()), "Ctrl+-");
+    }
+
+    #[test]
+    fn printable_characters_keep_the_layout_text() {
+        assert_eq!(character_key(Some("a"), Some("a")), Key::Character("a".into()));
+        assert_eq!(character_key(Some("A"), Some("A")), Key::Character("A".into()));
+        assert_eq!(character_key(Some("ç"), Some("c")), Key::Character("ç".into()), "Option+C");
+    }
+
+    #[test]
+    fn a_control_character_without_a_base_key_stays_as_is() {
+        assert_eq!(character_key(Some("\u{3}"), None), Key::Character("\u{3}".into()));
+        assert_eq!(character_key(Some("\u{3}"), Some("")), Key::Character("\u{3}".into()));
+        assert_eq!(character_key(None, Some("c")), Key::Unidentified);
+        assert_eq!(character_key(Some(""), None), Key::Unidentified);
+    }
 
     #[test]
     fn a_plain_key_is_delivered_as_a_key() {
