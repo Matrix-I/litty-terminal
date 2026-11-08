@@ -356,9 +356,7 @@ impl Window {
                 w.set_outer_position(LogicalPosition::new(position.x as f64, position.y as f64));
             }
             #[cfg(target_os = "linux")]
-            WindowInner::NativeLinux(w) => {
-                w.set_outer_position(LogicalPosition::new(position.x as f64, position.y as f64));
-            }
+            WindowInner::NativeLinux(w) => w.set_outer_position_physical(position),
         }
     }
 
@@ -732,5 +730,17 @@ mod tests {
     #[test]
     fn physical_size_converts_to_logical_by_scale() {
         assert_eq!(PhysicalSize::new(200u32, 100).to_logical(2.0), LogicalSize::new(100.0, 50.0));
+    }
+
+    /// `set_outer_position` takes physical pixels (the new-window cascade);
+    /// the Linux backend used to scale them a second time.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_outer_position_stays_physical() {
+        let native = crate::platform::linux::native::window::detached(800, 600);
+        native.set_scale_factor_for_test(2.0);
+        let window = Window::from_native_linux(native);
+        window.set_outer_position(PhysicalPosition::new(1920, 40));
+        assert_eq!(window.outer_position(), Ok(PhysicalPosition::new(1920, 40)));
     }
 }
