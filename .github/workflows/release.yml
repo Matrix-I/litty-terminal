@@ -1,0 +1,244 @@
+name: Release
+
+# Pushing a `vX.Y.Z` (or `vX.Y.Z-rc.N`) tag builds every asset, signs the
+# checksum manifest and creates a *draft* GitHub release. Publishing the draft
+# stays a manual step (see docs/development/release.md).
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+', 'v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+']
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_TOOLCHAIN: 1.99.1
+  ZIG_VERSION: 0.17.1
+  ZIG_SHA256: 3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a
+  CARGO_ZIGBUILD_VERSION: 0.24.1
+
+# Build jobs only read the repository; only the `release` job may write, and
+# only it can see the signing secrets (through the `release` environment).
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Check version
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: v
+        name: Tag matches Cargo.toml and Info.plist
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          base="${tag%%-rc.*}"
+          cargo_ver=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          plist_ver=$(grep -A1 CFBundleShortVersionString resources/Info.plist | sed -n 's:.*<string>\(.*\)</string>.*:\1:p')
+          echo "tag=$tag Cargo.toml=$cargo_ver Info.plist=$plist_ver"
+          [ "$cargo_ver" = "$base" ] || { echo "::error::Cargo.toml version $cargo_ver != tag $tag"; exit 1; }
+          [ "$plist_ver" = "$base" ] || { echo "::error::Info.plist version $plist_ver != tag $tag"; exit 1; }
+          echo "version=$base" >> "$GITHUB_OUTPUT"
+          if [ "$tag" != "$base" ]; then echo "prerelease=true"; else echo "prerelease=false"; fi >> "$GITHUB_OUTPUT"
+
+  macos:
+    name: macOS aarch64
+    needs: version
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal && rustup default "$RUST_TOOLCHAIN"
+      - name: Test
+        run: cargo test --release
+      - name: Bundle
+        # minisign is not installed here, so the macOS-only manifest stays
+        # unsigned; the release job signs the combined manifest.
+        run: ./bundle_macos.sh --no-install
+      - name: Collect assets
+        run: |
+          mkdir -p out
+          cp dist/Litty.dmg dist/Litty-macos-aarch64.zip dist/litty-macos-aarch64 out/
+          ls -l out
+      - uses: actions/upload-artifact@v5
+        with:
+          name: macos
+          path: out/
+          if-no-files-found: error
+
+  linux:
+    name: Linux x86_64
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target x86_64-unknown-linux-gnu
+          rustup default "$RUST_TOOLCHAIN"
+      - name: Install zig ${{ env.ZIG_VERSION }}
+        run: |
+          curl -fsSL --retry 3 --max-time 300 -o zig.tar.xz \
+            "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz"
+          echo "$ZIG_SHA256  zig.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/zig"
+          tar -xJf zig.tar.xz -C "$RUNNER_TEMP/zig" --strip-components=1
+          echo "$RUNNER_TEMP/zig" >> "$GITHUB_PATH"
+      - name: Install cargo-zigbuild ${{ env.CARGO_ZIGBUILD_VERSION }}
+        run: cargo install cargo-zigbuild --locked --version "$CARGO_ZIGBUILD_VERSION"
+      - name: Build (glibc 2.34 baseline)
+        run: |
+          LITTY_MINISIGN_PUBKEY="$(tail -n 1 resources/minisign.pub)" \
+            cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.34
+          mkdir -p out
+          cp target/x86_64-unknown-linux-gnu/release/litty out/litty-linux-x86_64
+      - uses: actions/upload-artifact@v5
+        with:
+          name: linux
+          path: out/
+          if-no-files-found: error
+
+  deb:
+    name: Debian package
+    needs: [version, linux]
+    runs-on: ubuntu-latest
+    container: debian:13
+    timeout-minutes: 15
+    steps:
+      - name: Install packaging tools
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends ca-certificates dpkg binutils desktop-file-utils file
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v5
+        with:
+          name: linux
+          path: in/
+      - name: Package and test
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          chmod +x in/litty-linux-x86_64
+          mkdir -p out
+          bash scripts/linux/package-deb.sh in/litty-linux-x86_64 "$VERSION" out
+          bash scripts/linux/test-package-deb.sh in/litty-linux-x86_64
+      - name: Install and remove with apt
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          apt-get install -y -qq "./out/litty_${VERSION}_amd64.deb"
+          cmp /usr/bin/litty in/litty-linux-x86_64
+          test -f /usr/share/applications/litty.desktop
+          apt-get remove -y -qq litty
+          if test -e /usr/bin/litty || test -e /usr/share/applications/litty.desktop; then
+            echo "::error::files left behind after apt remove"; exit 1
+          fi
+      - uses: actions/upload-artifact@v5
+        with:
+          name: deb
+          path: out/*.deb
+          if-no-files-found: error
+
+  rpm:
+    name: Fedora package
+    needs: [version, linux]
+    runs-on: ubuntu-latest
+    container: fedora:43
+    timeout-minutes: 15
+    steps:
+      - name: Install packaging tools
+        run: dnf -y -q install rpm-build binutils cpio desktop-file-utils
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v5
+        with:
+          name: linux
+          path: in/
+      - name: Package and test
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          chmod +x in/litty-linux-x86_64
+          mkdir -p out
+          bash scripts/linux/package-rpm.sh in/litty-linux-x86_64 "$VERSION" out
+          bash scripts/linux/test-package-rpm.sh in/litty-linux-x86_64
+      - name: Install and remove with dnf
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          dnf -y -q --setopt=install_weak_deps=False install "./out/litty-${VERSION}-1.x86_64.rpm"
+          cmp /usr/bin/litty in/litty-linux-x86_64
+          rpm -V litty
+          dnf -y -q --setopt=clean_requirements_on_remove=False remove litty
+          if test -e /usr/bin/litty; then echo "::error::/usr/bin/litty left behind after dnf remove"; exit 1; fi
+      - uses: actions/upload-artifact@v5
+        with:
+          name: rpm
+          path: out/*.rpm
+          if-no-files-found: error
+
+  release:
+    name: Sign and draft release
+    needs: [version, macos, linux, deb, rpm]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Required reviewers on this environment gate access to the signing key.
+    environment: release
+    permissions:
+      contents: write
+    # No third-party actions here: only GitHub's own checkout/download actions
+    # run in the job that holds the signing key.
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v5
+        with:
+          path: assets/
+          merge-multiple: true
+      - name: Check assets
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          cd assets
+          expected=(Litty.dmg Litty-macos-aarch64.zip litty-macos-aarch64 litty-linux-x86_64 "litty_${VERSION}_amd64.deb" "litty-${VERSION}-1.x86_64.rpm")
+          for f in "${expected[@]}"; do test -s "$f" || { echo "::error::missing asset $f"; exit 1; }; done
+          count=$(find . -mindepth 1 -maxdepth 1 | wc -l)
+          [ "$count" -eq "${#expected[@]}" ] || { echo "::error::unexpected assets:"; find . -mindepth 1; exit 1; }
+          # A binary without the pinned key refuses every auto-update.
+          key="$(tail -n 1 ../resources/minisign.pub)"
+          for f in litty-macos-aarch64 litty-linux-x86_64; do
+            strings -a "$f" | grep -Fq "$key" || { echo "::error::$f: minisign key not pinned"; exit 1; }
+            strings -a "$f" | grep -Fq "$VERSION" || { echo "::error::$f: version $VERSION missing"; exit 1; }
+          done
+          unzip -p Litty-macos-aarch64.zip Litty.app/Contents/Info.plist | grep -Fq "<string>$VERSION</string>"
+          sha256sum "${expected[@]}" > SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+      - name: Install minisign
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+      - name: Sign checksums
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          [ -n "$MINISIGN_SECRET_KEY" ] || { echo "::error::MINISIGN_SECRET_KEY secret is not set"; exit 1; }
+          umask 077
+          key_file="$RUNNER_TEMP/minisign.key"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key_file"
+          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$key_file" -m assets/SHA256SUMS.txt
+          # Catch a secret key that does not match the key baked into the binaries.
+          minisign -V -m assets/SHA256SUMS.txt -p resources/minisign.pub
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          flags=(--draft --verify-tag --generate-notes --title "Litty $GITHUB_REF_NAME ⚡")
+          [ "$PRERELEASE" = "true" ] && flags+=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" "${flags[@]}" assets/*

@@ -8,6 +8,39 @@ checksum manifest are part of the contract — do not rename them casually.
 > Agents: every step that pushes, tags, or publishes requires explicit user
 > approval in the current session.
 
+## Automated release (CI)
+
+Pushing a `vX.Y.Z` or `vX.Y.Z-rc.N` tag runs `.github/workflows/release.yml`,
+which replaces §4–§5 and step 3 of §6:
+
+1. Checks the tag against `Cargo.toml` and `resources/Info.plist`.
+2. Builds the macOS assets on `macos-15` (after `cargo test --release`) and the
+   Linux binary with `cargo-zigbuild` (glibc 2.34), both with the key from
+   `resources/minisign.pub` pinned.
+3. Builds and tests the `.deb` (Debian 13) and `.rpm` (Fedora 43), including
+   an install/remove round trip.
+4. Checks the key and version are in both binaries, writes `SHA256SUMS.txt`,
+   signs it, verifies the signature against `resources/minisign.pub`, and
+   creates a **draft** release with every asset.
+
+§2 and §3 still run locally before tagging: the pre-release suite and the idle
+RAM/CPU figures need a real Mac GUI session. Afterwards, replace the draft's
+generated notes with `RELEASE_NOTES.md`, review it, and publish it (§7 checks
+still apply).
+
+One-time setup (repository **Settings**):
+
+- **Environments → New environment `release`**: add yourself as a required
+  reviewer and restrict deployment to tags matching `v*`. The signing job waits
+  for that approval.
+- In that environment, add the secrets `MINISIGN_SECRET_KEY` (the full content
+  of the secret key file) and `MINISIGN_PASSWORD` (empty if the key has none).
+- **Rules → Rulesets**: protect `v*` tags and `.github/workflows/` changes so
+  only reviewed changes can reach the signing job.
+
+If the key may have leaked, every installed build needs a manual update to a
+build that pins the new key, so rotate it only with a release planned for it.
+
 ## 1. Versioning
 
 - [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`, tags are
