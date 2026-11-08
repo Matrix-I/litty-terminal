@@ -24,7 +24,6 @@ use ai_bridge::handle_ai_requests;
 use state::State;
 use tabs::confirm_close;
 use tabs::end_tab_drag;
-use tabs::hide_or_exit_last_window;
 use terminal_io::handle_terminal_requests;
 use window::apply_system_appearance;
 use tab_tearoff::{adopt_dropped_tab, follow_torn_window, restore_tab, set_pointer_from_screen, tab_bar_hit_x};
@@ -49,8 +48,8 @@ use crate::platform::gui::{EventHandler, Flow, LogicalPosition, LoopCtx, Physica
 
 struct App {
     waker: Waker,
-    /// One entry per window. On macOS a hidden window with no tabs stays here
-    /// after the last one closes, so a Dock click can reopen it.
+    /// One entry per window. Empty on macOS after the last window closes: the
+    /// app stays in the Dock and a Dock click or menu action opens a new one.
     windows: Vec<State>,
     bench_ram_mode: bool,
     scroll_fps_run: Option<frame_metrics::ScrollRun>,
@@ -61,15 +60,16 @@ impl App {
         self.windows.iter_mut().find(|s| s.window.id() == id)
     }
 
-    /// Drop the hidden, tab-less window kept for the Dock once another one opens.
-    fn drop_tabless_windows(&mut self) {
-        let had_tabless = self.windows.iter().any(|s| s.tabs.is_empty());
-        for s in self.windows.iter_mut().filter(|s| s.tabs.is_empty()) {
-            s.renderer.shrink_drawables();
-        }
-        self.windows.retain(|w| !w.tabs.is_empty());
-        if had_tabless {
-            platform::release_free_memory();
+    /// Open a fresh window with one tab in the home directory and bring it to the front.
+    fn open_window(&mut self, event_loop: &LoopCtx) {
+        match create_window(event_loop, &self.waker, None) {
+            Ok(s) => {
+                s.window.focus_window();
+                platform::activate_app();
+                s.window.request_redraw();
+                self.windows.push(s);
+            }
+            Err(e) => eprintln!("litty: failed to open window: {e}"),
         }
     }
 
@@ -231,7 +231,6 @@ impl App {
         }
         for (cwd, parent, from) in requests {
             match create_window(event_loop, &self.waker, cwd.as_deref()) {
-                // The hidden, tab-less window kept for the Dock is no longer needed.
                 Ok(s) => {
                     if let Some(p) = parent.and_then(|id| self.windows.iter().find(|w| w.window.id() == id)) {
                         platform::add_tabbed_window(&p.window, &s.window);
@@ -245,7 +244,6 @@ impl App {
                     s.window.focus_window();
                     platform::activate_app();
                     s.window.request_redraw();
-                    self.drop_tabless_windows();
                     self.windows.push(s);
                 }
                 Err(e) => eprintln!("litty: failed to open window: {e}"),
@@ -258,15 +256,20 @@ impl App {
         self.end_forwarded_drags();
 
         while let Some(pos) = self.windows.iter().position(|s| s.requests.close) {
-            if self.windows.len() > 1 {
-                // Dropping the state closes the window and hangs up its shells.
-                self.windows.remove(pos).renderer.shrink_drawables();
-                platform::release_free_memory();
-                continue;
+            if self.windows.len() == 1 && !cfg!(target_os = "macos") {
+                event_loop.exit();
+                return;
             }
-            let s = &mut self.windows[pos];
-            s.requests.close = false;
-            hide_or_exit_last_window(s, event_loop);
+            // Dropping the state closes the window and hangs up its shells. On
+            // macOS the last window goes too, releasing its renderer, glyph atlas
+            // and pipelines while the app waits in the Dock.
+            let mut s = self.windows.remove(pos);
+            if s.secure_input && s.focused {
+                platform::set_secure_input(false);
+            }
+            s.renderer.shrink_drawables();
+            drop(s);
+            platform::release_free_memory();
         }
     }
 }
@@ -357,14 +360,10 @@ impl EventHandler<AppEvent> for App {
                 }
             }
             AppEvent::ChildExit(exited_id) => self.on_child_exit(event_loop, exited_id),
+            AppEvent::Menu(action) if self.windows.is_empty() => self.run_windowless_action(event_loop, action),
             AppEvent::Menu(action) => {
-                // The focused window, else any window with tabs, else the hidden one.
-                let target = self
-                    .windows
-                    .iter()
-                    .position(|s| s.focused && !s.tabs.is_empty())
-                    .or_else(|| self.windows.iter().position(|s| !s.tabs.is_empty()))
-                    .unwrap_or(0);
+                // The focused window, else the first one.
+                let target = self.windows.iter().position(|s| s.focused).unwrap_or(0);
                 let waker = self.waker.clone();
                 if let Some(s) = self.windows.get_mut(target) {
                     run_action(s, action, &waker);
@@ -377,7 +376,7 @@ impl EventHandler<AppEvent> for App {
                     self.windows.iter_mut().for_each(apply_system_appearance);
                 }
             }
-            AppEvent::Reopen => self.on_reopen(),
+            AppEvent::Reopen => self.on_reopen(event_loop),
             AppEvent::UpdateCheckResult(result) => self.on_update_check_result(result),
             AppEvent::UpdateInstallResult(result) => {
                 platform::close_progress_dialog();

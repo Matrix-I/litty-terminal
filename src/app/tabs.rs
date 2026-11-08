@@ -1,6 +1,5 @@
 //! Tab and split-pane lifecycle and navigation for one window.
 
-use super::search_ui::close_search;
 use super::state::State;
 use super::window::refresh_tab_titles;
 use super::window::spawn_pane;
@@ -127,30 +126,11 @@ pub(super) fn confirm_close<'a>(cfg: &config::Config, mut panes: impl Iterator<I
         .map_or(true, |status| status.success())
 }
 
-/// The window's last tab is gone: `App` closes the window, or this was the last
-/// window. On macOS the app keeps running in the Dock (at 0% CPU) and a Dock
-/// click reopens a fresh tab; elsewhere the process exits.
+/// The window's last tab is gone: `App` closes the window. Closing the last
+/// window keeps the app running in the Dock on macOS (at 0% CPU, with no window
+/// left), where a Dock click opens a new one; elsewhere the process exits.
 pub(super) fn close_last_window(s: &mut State) {
     s.requests.close = true;
-}
-
-pub(super) fn hide_or_exit_last_window(s: &mut State, event_loop: &crate::platform::gui::LoopCtx) {
-    if cfg!(target_os = "macos") {
-        if s.secure_input && s.focused {
-            platform::set_secure_input(false);
-        }
-        s.history_search.close();
-        close_search(s);
-        s.tab_titles.clear();
-        s.pointer.hovered_link = None;
-        s.pointer.selecting = false;
-        s.active = 0;
-        s.window.set_visible(false);
-        s.renderer.shrink_drawables();
-        platform::release_free_memory();
-    } else {
-        event_loop.exit();
-    }
 }
 
 pub(super) fn select_tab(s: &mut State, idx: usize) {

@@ -5,10 +5,11 @@ use super::tabs::open_fresh_tab;
 use super::window::apply_system_appearance;
 use super::window::refresh_tab_titles;
 use super::window::sync_size;
+use super::actions::{start_update_check, windowless_action, WindowlessAction};
 use super::App;
 
 use crate::terminal::grid;
-use crate::{bench, update};
+use crate::{bench, config, keymap, update};
 use crate::platform;
 
 
@@ -83,7 +84,7 @@ impl App {
         }
     }
 
-    pub(super) fn on_reopen(&mut self) {
+    pub(super) fn on_reopen(&mut self, event_loop: &crate::platform::gui::LoopCtx) {
         // A Light/Dark switch made while another app was in front.
         if cfg!(target_os = "macos") {
             let dark = platform::system_dark();
@@ -92,22 +93,32 @@ impl App {
                 self.windows.iter_mut().for_each(apply_system_appearance);
             }
         }
-        // Bring the windows back; with none left, reopen the hidden one.
-        let visible = self.windows.iter().position(|s| !s.tabs.is_empty());
-        if let Some(s) = self.windows.get_mut(visible.unwrap_or(0)) {
-            s.occluded = false;
-            s.focused = true;
-            if s.tabs.is_empty() {
-                open_fresh_tab(s, &self.waker);
-            } else {
-                let sz = s.window.inner_size();
-                s.renderer.resize(sz.width, sz.height);
-                s.window.set_visible(true);
-                s.window.focus_window();
-                platform::activate_app();
-                s.renderer.invalidate();
-                s.window.request_redraw();
+        // Bring the windows back; with none left, open a new one.
+        let Some(s) = self.windows.first_mut() else {
+            self.open_window(event_loop);
+            return;
+        };
+        s.occluded = false;
+        s.focused = true;
+        let sz = s.window.inner_size();
+        s.renderer.resize(sz.width, sz.height);
+        s.window.set_visible(true);
+        s.window.focus_window();
+        platform::activate_app();
+        s.renderer.invalidate();
+        s.window.request_redraw();
+    }
+
+    /// A menu-bar action while no window is open (macOS, after the last one closed).
+    pub(super) fn run_windowless_action(&mut self, event_loop: &crate::platform::gui::LoopCtx, action: keymap::Action) {
+        match windowless_action(action) {
+            WindowlessAction::OpenWindow => self.open_window(event_loop),
+            WindowlessAction::Quit => event_loop.exit(),
+            WindowlessAction::OpenConfig => config::open_config_in_editor(),
+            WindowlessAction::CheckUpdate => {
+                start_update_check(&self.waker, config::Config::load().auto_update_channel);
             }
+            WindowlessAction::Ignore => {}
         }
     }
 
