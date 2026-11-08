@@ -208,6 +208,18 @@ pub(super) fn character_key(characters: Option<&str>, characters_ignoring_modifi
     Key::Character(s.into())
 }
 
+/// AppKit's Private Use range for function keys (`NSUpArrowFunctionKey` ...
+/// `NSModeSwitchFunctionKey`, reserved up to U+F8FF).
+const APPKIT_FUNCTION_KEYS: std::ops::RangeInclusive<char> = '\u{f700}'..='\u{f8ff}';
+
+/// The text a key event types: none for function keys, whose `characters` are
+/// AppKit's Private Use codes rather than text (the Linux backend reports none
+/// either). Encoders send text as is, so keeping them broke arrows under the
+/// Kitty keyboard protocol.
+pub(super) fn key_text(characters: Option<String>) -> Option<String> {
+    characters.filter(|s| !s.chars().any(|c| APPKIT_FUNCTION_KEYS.contains(&c)))
+}
+
 pub(super) unsafe fn convert_key_event(event: Id, pressed: bool) -> KeyInput {
     unsafe {
         let key_code = msg_send!(event, c"keyCode"; -> u16);
@@ -311,7 +323,7 @@ pub(super) unsafe fn convert_key_event(event: Id, pressed: bool) -> KeyInput {
             unshifted,
             physical,
             location: KeyLocation::Standard,
-            text,
+            text: key_text(text),
             pressed,
             repeat: is_repeat,
         }
@@ -321,6 +333,28 @@ pub(super) unsafe fn convert_key_event(event: Id, pressed: bool) -> KeyInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn function_keys_type_no_text() {
+        // AppKit spells arrows, F-keys, Home/End, PageUp/Down and Forward Delete
+        // as Private Use characters; reported as text, the Kitty encoder sent
+        // them as is instead of `CSI A` (arrows dead in Claude Code's pickers).
+        assert_eq!(key_text(Some("\u{f700}".into())), None, "Up");
+        assert_eq!(key_text(Some("\u{f703}".into())), None, "Right");
+        assert_eq!(key_text(Some("\u{f704}".into())), None, "F1");
+        assert_eq!(key_text(Some("\u{f728}".into())), None, "Forward Delete");
+        assert_eq!(key_text(Some("\u{f8ff}".into())), None, "end of the range");
+    }
+
+    #[test]
+    fn typed_text_is_kept() {
+        assert_eq!(key_text(Some("a".into())), Some("a".into()));
+        assert_eq!(key_text(Some("ç".into())), Some("ç".into()));
+        assert_eq!(key_text(Some("\r".into())), Some("\r".into()), "Enter keeps its text");
+        assert_eq!(key_text(Some("\u{f6ff}".into())), Some("\u{f6ff}".into()), "just below the range");
+        assert_eq!(key_text(Some("\u{f900}".into())), Some("\u{f900}".into()), "just above the range");
+        assert_eq!(key_text(None), None);
+    }
 
     #[test]
     fn ctrl_letter_resolves_to_the_letter_not_its_control_character() {
