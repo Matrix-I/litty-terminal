@@ -4,7 +4,7 @@ use std::ffi::{c_char, c_int, c_long, c_ulong, c_void, CStr, CString};
 use std::sync::Arc;
 
 use crate::platform::gui::{
-    ButtonState, MouseButton, PhysicalPosition, PhysicalSize, RawHandle, WindowEvent, WindowId, WindowSpec,
+    ButtonState, MouseButton, PhysicalPosition, PhysicalSize, RawHandle, WindowEvent, WindowSpec,
 };
 use super::events::{convert_linux_key, mods_after_key, mods_from_state};
 use crate::platform::input::{Key, Mods};
@@ -204,6 +204,7 @@ unsafe impl Sync for X11WindowInner {}
 
 impl Drop for X11WindowInner {
     fn drop(&mut self) {
+        super::app::deregister_display_fd(self.fd);
         unsafe {
             (self.lib.XDestroyWindow)(self.display, self.window);
             (self.lib.XCloseDisplay)(self.display);
@@ -408,8 +409,8 @@ impl X11Window {
         }
     }
 
-    pub fn poll_events(&self, _window_id: WindowId) -> Vec<WindowEvent> {
-        let mut events = Vec::new();
+    /// Append this connection's queued events to `events`.
+    pub fn poll_events(&self, events: &mut Vec<WindowEvent>) {
         unsafe {
             while (self.0.lib.XPending)(self.0.display) > 0 {
                 let mut xev: XEvent = std::mem::zeroed();
@@ -423,7 +424,7 @@ impl X11Window {
                         // X11 keycodes on Linux are evdev scancode + 8
                         let evdev_code = (kev.keycode as u32).saturating_sub(8);
                         let state = kev.state as u32;
-                        self.report_mods(mods_after_key(state, evdev_code, pressed), &mut events);
+                        self.report_mods(mods_after_key(state, evdev_code, pressed), events);
                         let mut key_input = convert_linux_key(evdev_code, pressed, false);
                         if let Key::Character(_) = key_input.logical {
                             // Layout-aware text: Shift (and AltGr) applied,
@@ -442,7 +443,7 @@ impl X11Window {
                     // ButtonPress = 4, ButtonRelease = 5
                     4 | 5 => {
                         let bev: &XButtonEvent = std::mem::transmute(&xev);
-                        self.report_mods(mods_from_state(bev.state as u32), &mut events);
+                        self.report_mods(mods_from_state(bev.state as u32), events);
                         let state = if xev.type_ == 4 { ButtonState::Pressed } else { ButtonState::Released };
                         let button = match bev.button {
                             1 => MouseButton::Left,
@@ -481,7 +482,6 @@ impl X11Window {
                 }
             }
         }
-        events
     }
 }
 

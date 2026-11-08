@@ -17,8 +17,10 @@ use crate::split::PaneRect;
 
 pub(super) struct State {
     pub(super) ai: std::collections::BTreeMap<u64, ai::PaneState>,
-    pub(super) window: Arc<Window>,
+    /// Declared before `window`: fields drop in order, and the GPU surface
+    /// must be destroyed while its window and display connection still exist.
     pub(super) renderer: Renderer,
+    pub(super) window: Arc<Window>,
     pub(super) tabs: Vec<Tab>,
     pub(super) tab_titles: Vec<String>,
     /// Column offsets of tab-bar tabs while one is dragged or settling.

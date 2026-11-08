@@ -1,7 +1,7 @@
 //! Native Linux Window representation for Wayland and X11.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use parking_lot::Mutex;
 
 use crate::platform::gui::{
@@ -79,12 +79,17 @@ impl NativeWindow {
         }));
 
         let win = Self { id, inner };
-        super::app::register_window(win.clone());
+        super::app::register_window(&win);
         Ok(win)
     }
 
     pub fn id(&self) -> WindowId {
         self.id
+    }
+
+    /// A handle that does not keep the window (and its X11 connection) alive.
+    pub fn downgrade(&self) -> WeakNativeWindow {
+        WeakNativeWindow { id: self.id, inner: Arc::downgrade(&self.inner) }
     }
 
     pub fn request_redraw(&self) {
@@ -223,6 +228,19 @@ impl NativeWindow {
     }
 }
 
+/// Registry handle for the event loop: the window closes (and its X11
+/// connection with it) once the app drops its last `NativeWindow`.
+pub struct WeakNativeWindow {
+    id: WindowId,
+    inner: Weak<Mutex<NativeWindowInner>>,
+}
+
+impl WeakNativeWindow {
+    pub fn upgrade(&self) -> Option<NativeWindow> {
+        Some(NativeWindow { id: self.id, inner: self.inner.upgrade()? })
+    }
+}
+
 /// `_NET_WM_MOVERESIZE` edge codes.
 fn moveresize_direction(direction: ResizeDirection) -> std::ffi::c_long {
     match direction {
@@ -237,30 +255,32 @@ fn moveresize_direction(direction: ResizeDirection) -> std::ffi::c_long {
     }
 }
 
+/// A window with no X11 connection, for tests of the loop's bookkeeping.
+#[cfg(test)]
+pub(super) fn detached(width: u32, height: u32) -> NativeWindow {
+    NativeWindow {
+        id: allocate_window_id(),
+        inner: Arc::new(Mutex::new(NativeWindowInner {
+            title: String::new(),
+            inner_size: PhysicalSize::new(width, height),
+            position: PhysicalPosition::new(0, 0),
+            scale_factor: 1.0,
+            visible: true,
+            minimized: false,
+            maximized: false,
+            fullscreen: false,
+            cursor_visible: true,
+            cursor_icon: CursorIcon::Default,
+            raw_handle: None,
+            x11_window: None,
+        })),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::platform::gui::WindowEvent;
-
-    fn detached(width: u32, height: u32) -> NativeWindow {
-        NativeWindow {
-            id: allocate_window_id(),
-            inner: Arc::new(Mutex::new(NativeWindowInner {
-                title: String::new(),
-                inner_size: PhysicalSize::new(width, height),
-                position: PhysicalPosition::new(0, 0),
-                scale_factor: 1.0,
-                visible: true,
-                minimized: false,
-                maximized: false,
-                fullscreen: false,
-                cursor_visible: true,
-                cursor_icon: CursorIcon::Default,
-                raw_handle: None,
-                x11_window: None,
-            })),
-        }
-    }
 
     /// The app re-reads `inner_size()` on focus changes; a stale size makes
     /// the renderer draw the old layout over the resized swapchain.
