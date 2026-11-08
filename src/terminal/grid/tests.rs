@@ -185,6 +185,15 @@ fn combining_mark_at_right_margin_uses_pending_wrap_cell() {
     assert_eq!(line(&g, 1), "x");
 }
 
+/// Widths that changed with the Unicode 16 tables of `unicode-width` 0.2
+/// (0.1 still reports the old ones): catches an accidental downgrade.
+#[test]
+fn unicode_widths_use_current_tables() {
+    assert_eq!(char_width('\u{4DC0}'), 2, "hexagram (EAW Wide since Unicode 16)");
+    assert_eq!(char_width('\u{2630}'), 2, "trigram");
+    assert_eq!(char_width('\u{FF9E}'), 1, "halfwidth voiced sound mark");
+}
+
 #[test]
 fn unicode_widths_follow_east_asian_and_emoji_tables() {
     assert_eq!(char_width('a'), 1);
