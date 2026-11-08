@@ -86,7 +86,9 @@ pub unsafe fn process_ns_event<F: FnMut(WindowEvent)>(
                 } else {
                     ScrollDelta::Lines { y: dy as f32 }
                 };
-                emit(WindowEvent::MouseWheel { delta, phase: TouchPhase::Moved });
+                let phase = msg_send!(event, c"phase"; -> usize);
+                let momentum = msg_send!(event, c"momentumPhase"; -> usize);
+                emit(WindowEvent::MouseWheel { delta, phase: scroll_phase(phase, momentum) });
             }
             // NSFlagsChanged = 12
             12 => {
@@ -97,6 +99,28 @@ pub unsafe fn process_ns_event<F: FnMut(WindowEvent)>(
             _ => {}
         }
     }
+}
+
+/// `NSEventPhase` bits.
+const PHASE_BEGAN: usize = 1;
+const PHASE_ENDED: usize = 8;
+const PHASE_CANCELLED: usize = 16;
+const PHASE_MAY_BEGIN: usize = 32;
+
+/// Gesture phase of a scroll event from its `phase` and `momentumPhase`
+/// (as winit mapped them), so a new gesture drops the previous one's
+/// fractional remainder.
+fn scroll_phase(phase: usize, momentum: usize) -> TouchPhase {
+    let map = |p: usize| {
+        if p & (PHASE_MAY_BEGIN | PHASE_BEGAN) != 0 {
+            Some(TouchPhase::Started)
+        } else if p & (PHASE_ENDED | PHASE_CANCELLED) != 0 {
+            Some(TouchPhase::Ended)
+        } else {
+            None
+        }
+    };
+    map(momentum).or_else(|| map(phase)).unwrap_or(TouchPhase::Moved)
 }
 
 #[allow(dead_code)]
@@ -339,5 +363,19 @@ mod tests {
 
         let mods_all = convert_modifier_flags((1 << 18) | (1 << 19) | (1 << 17) | (1 << 20));
         assert!(mods_all.ctrl && mods_all.alt && mods_all.shift && mods_all.sup);
+    }
+
+    #[test]
+    fn scroll_phase_follows_gesture_then_momentum() {
+        const CHANGED: usize = 4;
+        assert_eq!(scroll_phase(0, 0), TouchPhase::Moved, "mouse wheel without phases");
+        assert_eq!(scroll_phase(PHASE_MAY_BEGIN, 0), TouchPhase::Started);
+        assert_eq!(scroll_phase(PHASE_BEGAN, 0), TouchPhase::Started);
+        assert_eq!(scroll_phase(CHANGED, 0), TouchPhase::Moved);
+        assert_eq!(scroll_phase(PHASE_ENDED, 0), TouchPhase::Ended);
+        assert_eq!(scroll_phase(PHASE_CANCELLED, 0), TouchPhase::Ended);
+        assert_eq!(scroll_phase(0, PHASE_BEGAN), TouchPhase::Started, "momentum start");
+        assert_eq!(scroll_phase(0, CHANGED), TouchPhase::Moved);
+        assert_eq!(scroll_phase(0, PHASE_ENDED), TouchPhase::Ended);
     }
 }
