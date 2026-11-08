@@ -42,6 +42,24 @@ unsafe extern "C" {
     pub(super) fn objc_getAssociatedObject(object: Id, key: *const c_void) -> Id;
     pub(super) fn objc_getProtocol(name: *const std::ffi::c_char) -> Id;
     pub(super) fn class_addProtocol(cls: Id, protocol: Id) -> bool;
+    fn objc_autoreleasePoolPush() -> *mut c_void;
+    fn objc_autoreleasePoolPop(pool: *mut c_void);
+}
+
+/// Run `f` inside an autorelease pool, freeing what it autoreleases on
+/// return. Threads without a run loop (PTY readers) otherwise keep every
+/// autoreleased object until the thread exits.
+pub(super) fn autoreleasepool<R>(f: impl FnOnce() -> R) -> R {
+    struct Pool(*mut c_void);
+    impl Drop for Pool {
+        fn drop(&mut self) {
+            // SAFETY: pops the pool pushed below, on the same thread, once.
+            unsafe { objc_autoreleasePoolPop(self.0) }
+        }
+    }
+    // SAFETY: push/pop are balanced by `Pool`, even if `f` unwinds.
+    let _pool = Pool(unsafe { objc_autoreleasePoolPush() });
+    f()
 }
 
 pub(super) fn sel(name: &CStr) -> Id {

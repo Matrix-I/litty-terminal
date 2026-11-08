@@ -18,32 +18,41 @@ unsafe extern "C" {
     fn CFRunLoopWakeUp(rl: *mut c_void);
 }
 
+/// Wake the main loop. Called from PTY reader threads through
+/// `EventProxy::send_event`, so the autoreleased wake-up event needs a pool
+/// of its own (TD-6).
 pub fn wakeup_main_loop() {
-    unsafe {
+    autoreleasepool(|| unsafe {
         if let Some(app) = shared_application()
-            && let Some(event_cls) = class(c"NSEvent") {
-            let dummy = msg_send!(
-                event_cls,
-                c"otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:",
-                15usize => usize, // NSEventTypeApplicationDefined
-                NSPoint { x: 0.0, y: 0.0 } => NSPoint,
-                0usize => usize,
-                0.0f64 => f64,
-                0isize => isize,
-                std::ptr::null_mut::<c_void>() => Id,
-                0isize => isize,
-                0isize => isize,
-                0isize => isize
-                ; -> Id
-            );
-            if !dummy.is_null() {
-                msg_send!(app, c"postEvent:atStart:", dummy => Id, false => bool);
-            }
+            && let Some(dummy) = wakeup_event() {
+            msg_send!(app, c"postEvent:atStart:", dummy => Id, false => bool);
         }
         let main_loop = CFRunLoopGetMain();
         if !main_loop.is_null() {
             CFRunLoopWakeUp(main_loop);
         }
+    })
+}
+
+/// An autoreleased `NSEventTypeApplicationDefined` event.
+fn wakeup_event() -> Option<Id> {
+    // SAFETY: the selector's signature matches the arguments sent.
+    unsafe {
+        let dummy = msg_send!(
+            class(c"NSEvent")?,
+            c"otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:",
+            15usize => usize, // NSEventTypeApplicationDefined
+            NSPoint { x: 0.0, y: 0.0 } => NSPoint,
+            0usize => usize,
+            0.0f64 => f64,
+            0isize => isize,
+            std::ptr::null_mut::<c_void>() => Id,
+            0isize => isize,
+            0isize => isize,
+            0isize => isize
+            ; -> Id
+        );
+        (!dummy.is_null()).then_some(dummy)
     }
 }
 
@@ -298,5 +307,47 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
 
             msg_send!(pool, c"drain");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[link(name = "objc", kind = "dylib")]
+    unsafe extern "C" {
+        fn objc_initWeak(location: *mut Id, value: Id) -> Id;
+        fn objc_loadWeakRetained(location: *mut Id) -> Id;
+        fn objc_destroyWeak(location: *mut Id);
+    }
+
+    /// Whether the event created by `make` is still alive once it returns.
+    fn survives(make: impl FnOnce(&mut Id)) -> bool {
+        let mut weak: Id = std::ptr::null_mut();
+        make(&mut weak);
+        // SAFETY: `weak` was initialised by `objc_initWeak` in `make`.
+        unsafe {
+            let alive = objc_loadWeakRetained(&mut weak);
+            if !alive.is_null() {
+                msg_send!(alive, c"release");
+            }
+            objc_destroyWeak(&mut weak);
+            !alive.is_null()
+        }
+    }
+
+    /// Wake-up events are created on PTY reader threads, which have no run
+    /// loop: without a pool each one lived until the pane closed.
+    #[test]
+    fn wakeup_events_from_background_threads_are_freed() {
+        std::thread::spawn(|| {
+            let track = |weak: &mut Id| unsafe {
+                objc_initWeak(weak, wakeup_event().expect("NSEvent"));
+            };
+            assert!(survives(|weak| track(weak)), "unpooled: kept until the thread exits");
+            assert!(!survives(|weak| autoreleasepool(|| track(weak))), "pooled: freed on return");
+        })
+        .join()
+        .unwrap();
     }
 }
