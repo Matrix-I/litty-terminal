@@ -80,8 +80,8 @@ Not measured: keystroke-to-screen latency, launch → first presented frame.
 | B1 | No input-latency benchmark | Confirmed gap | P0 |
 | B2 | No first-frame benchmark | Confirmed gap | P0 |
 | B3 | No end-to-end PTY throughput benchmark | Confirmed gap | P0 |
-| T1 | Glyph shaping and rasterization run under the grid lock | Confirmed path, impact Hypothesis | P1 |
-| T2 | CoreText shaping allocates per run, per dirty row, per frame | Confirmed path | P1 |
+| T1 | Glyph shaping and rasterization run under the grid lock | Measured; deferred after T2 (≤ 3% left) | P3 |
+| T2 | CoreText shaping allocates per run, per dirty row, per frame | Done | P1 |
 | T3 | OSC 8 throughput 3.3 MB/s | Hypothesis on cause | P1 |
 | T4 | Region scroll 36 MB/s | Hypothesis on cause | P2 |
 | T5 | Unicode/emoji path 56–75 MB/s | Hypothesis on cause | P2 |
@@ -254,6 +254,24 @@ isolation step.
   lock while a frame build is shaping (same style as the image-decode lock
   test in `pty.rs:752`).
 - **Acceptance:** B3 code/ascii ratio and reader lock-wait before/after.
+- [x] Isolation, 2026-11-09 (M1 Pro, 512 MiB `code` stream, temporary
+  counters in `feed_output` and `collect_pane_instances`, not committed).
+  Per second of streaming:
+
+| Build | Reader waits for lock | Reader parses | Render holds lock | Of which `shape_row` |
+|---|---|---|---|---|
+| before T2, synthetic `code` line | 560 ms | 45 ms | 560 ms | 550 ms |
+| after T2, synthetic `code` line | 18 ms | 107 ms | 12 ms | 4 ms |
+| before T2, real source (800 KB of `src/**/*.rs`, cycled) | 110 ms | 255 ms | 105 ms | 92 ms |
+| after T2, real source | 35 ms | 290 ms | 30 ms | 21 ms |
+
+  Shaping was the whole lock hold; T2 removed most of it.
+- [ ] Fix. **Deferred**: after T2 the render holds the lock 1–3% of the
+  time, so snapshotting rows would win at most ~3% throughput for a large
+  refactor of `build_pane_row`. The reader is now idle ~60% of the time
+  waiting on the PTY, not on the lock; the next throughput gain is on the
+  read side (read size, wakeups), not here. Revisit if a cache-miss-heavy
+  workload shows the lock hold above ~10%.
 
 ### T2 Cache shaping results; stop allocating in CoreText per frame
 
@@ -271,6 +289,53 @@ isolation step.
   over random punctuation runs); allocation counter test using `src/test_alloc.rs`
   showing zero allocations on a steady-state frame with code text.
 - **Acceptance:** B3 code throughput, frame `render_ms` p95 from `+bench-scroll-fps`.
+- [x] Fix, branch `fix/shaping-cache`:
+  - `RunCache` (`src/render/atlas/run_cache.rs`) maps (style, run text) to
+    the run's output words at one size and cell width. Two generations of
+    4,096 entries / 64 KiB of key bytes each: when the current one fills it
+    becomes the previous one, and previous-generation hits are copied forward,
+    so runs in use survive a flood of one-off runs. All-zero outputs (every
+    run with a font without ligatures) store no words. One randomly keyed
+    hash per lookup; collisions are checked against the stored key. Cleared
+    on a piece-id reset and on a size change. A warm hit never calls CoreText
+    or HarfBuzz and never allocates.
+  - `NativeFont::lookup_glyph_index` (macOS) asked `font_at(16.0)` between
+    `font_at(px)` calls, so the one-entry sized-font cache created a new
+    `CTFont` for every shaped glyph. It now uses any cached font (glyph ids
+    do not depend on size), and the cache keeps up to 4 sizes so windows at
+    different scale factors sharing one font do not evict each other. Linux
+    was not affected.
+  - Found on the way: `set_font_features` held `FONT_FEATURES` while taking
+    `FONT_CACHE`, the reverse of `load_font` → `parse_font`; the parallel
+    test run with `LITTY_LIGATURE_FONT` set deadlocked 10/10. It now releases
+    `FONT_FEATURES` first (regression test included).
+  - Not done: reusing the attribute dictionary and skipping fonts without
+    GSUB features. With the cache, misses cost ~21 ms/s on real source; not
+    worth the extra platform code yet.
+- [x] Tests: `RunCache` unit tests (stored words per style and text,
+  collision is a miss, hot runs survive a flood, bounded, size change clears,
+  warm lookup allocation-free); cached vs fresh shaper output equal (default
+  font, and a ligature font via `LITTY_LIGATURE_FONT`, run with JetBrains
+  Mono); repeated runs shaped once; cache cleared on piece reset; glyph lookup
+  keeps the cached font size; several font sizes cached.
+- [x] Result, 2026-11-09 (M1 Pro, `+bench-pty-throughput 64`, one run each,
+  release builds of `b6f322e` and of this branch):
+
+| Kind | Before MB/s | After MB/s |
+|---|---|---|
+| ascii | 149.6 | 150.2 |
+| sgr | 119.0 | 152.4 |
+| code | **58.5** | **150.9** |
+| unicode | 53.7 | 52.4 |
+| osc8 | 4.9 | 4.9 |
+| region | 56.9 | 55.8 |
+
+  Real source stream (temporary generator, 512 MiB, instrumented builds of
+  the first cache version): 114 → 136 MB/s.
+  `+bench-scroll-fps` `render_p95_ms`: slow 60 Hz 1.00 → 0.53; the 120 Hz
+  scenarios are bound by drawable acquire (~9 ms p95) before and after.
+  ascii/unicode/region changes are within run-to-run noise (single runs);
+  sgr has punctuation runs (`req=`, `/api/v1`), so it gains too.
 
 ### T3 OSC 8 throughput (299 ns/byte)
 
