@@ -42,7 +42,7 @@ Other release checks:
 
 - **Execution Date**: 2026-11-08 22:14:28 +0700
 - **Platform**: Darwin arm64 (Kernel 27.2.0)
-- **Git Commit**: 9768a8f (suite run); release code is `2d2bbe9` = 9768a8f + `48357a6` + version bump and release docs (`git rev-parse v0.10.1^{commit}` adds only this record update)
+- **Git Commit**: 9768a8f (suite run); release code is `2d2bbe9` = 9768a8f + `48357a6` + version bump and release docs (`v0.10.1` adds only `af5b01d`, a `bundle_macos.sh` DMG fix that does not change the binary, and this record update)
 - **Automated Suite Status**: ✅ **ALL EXECUTED CHECKS PASS**
 
 This suite uses the budgets in src/bench.rs. Passing it does not establish
