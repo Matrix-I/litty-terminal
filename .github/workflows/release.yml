@@ -67,7 +67,7 @@ jobs:
           mkdir -p out
           cp dist/Litty.dmg dist/Litty-macos-aarch64.zip dist/litty-macos-aarch64 out/
           ls -l out
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: out/
@@ -100,7 +100,7 @@ jobs:
             cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.34
           mkdir -p out
           cp target/x86_64-unknown-linux-gnu/release/litty out/litty-linux-x86_64
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: out/
@@ -118,7 +118,7 @@ jobs:
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends ca-certificates dpkg binutils desktop-file-utils file
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: linux
           path: in/
@@ -141,7 +141,7 @@ jobs:
           if test -e /usr/bin/litty || test -e /usr/share/applications/litty.desktop; then
             echo "::error::files left behind after apt remove"; exit 1
           fi
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: deb
           path: out/*.deb
@@ -157,7 +157,7 @@ jobs:
       - name: Install packaging tools
         run: dnf -y -q install rpm-build binutils cpio desktop-file-utils
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: linux
           path: in/
@@ -178,7 +178,7 @@ jobs:
           rpm -V litty
           dnf -y -q --setopt=clean_requirements_on_remove=False remove litty
           if test -e /usr/bin/litty; then echo "::error::/usr/bin/litty left behind after dnf remove"; exit 1; fi
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: rpm
           path: out/*.rpm
@@ -197,7 +197,7 @@ jobs:
     # run in the job that holds the signing key.
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: assets/
           merge-multiple: true
