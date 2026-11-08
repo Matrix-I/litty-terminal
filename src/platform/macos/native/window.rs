@@ -155,11 +155,64 @@ impl Drop for NativeWindowInner {
     fn drop(&mut self) {
         unsafe {
             if !self.ns_window.is_null() {
+                let was_key = msg_send!(self.ns_window, c"isKeyWindow"; -> bool);
                 msg_send!(self.ns_window, c"close");
+                if was_key {
+                    hand_key_to_frontmost_window(self.ns_window);
+                }
                 msg_send!(self.ns_window, c"release");
             }
         }
     }
+}
+
+/// A window AppKit could make key after another closes, in front-to-back order.
+#[derive(Clone, Copy)]
+struct KeyCandidate {
+    closing: bool,
+    visible: bool,
+    can_become_key: bool,
+    on_active_space: bool,
+}
+
+/// Index of the window that should become key once the key window closes:
+/// the frontmost visible one on the current Space that can take it.
+fn next_key_window(front_to_back: impl IntoIterator<Item = KeyCandidate>) -> Option<usize> {
+    front_to_back
+        .into_iter()
+        .position(|c| !c.closing && c.visible && c.can_become_key && c.on_active_space)
+}
+
+/// Make the frontmost remaining window key after `closing`, the key window,
+/// was closed by us (`windowShouldClose:` defers closing to the app). AppKit
+/// leaves the app with no key window then, so keystrokes and Cmd+W reach no
+/// window until the user clicks one or reactivates the app. Where AppKit did
+/// pick one (e.g. a sibling native tab), it is left alone.
+unsafe fn hand_key_to_frontmost_window(closing: Id) {
+    // Drop can run outside the event loop's pools (e.g. at exit).
+    autoreleasepool(|| unsafe {
+        let Some(app) = shared_application() else { return };
+        if let Some(key) = send_id(app, c"keyWindow")
+            && key != closing
+        {
+            return;
+        }
+        let Some(windows) = send_id(app, c"orderedWindows") else { return };
+        let count = msg_send!(windows, c"count"; -> usize);
+        let window_at = |i: usize| msg_send!(windows, c"objectAtIndex:", i => usize; -> Id);
+        let candidates = (0..count).map(|i| {
+            let w = window_at(i);
+            KeyCandidate {
+                closing: w == closing,
+                visible: msg_send!(w, c"isVisible"; -> bool),
+                can_become_key: msg_send!(w, c"canBecomeKeyWindow"; -> bool),
+                on_active_space: msg_send!(w, c"isOnActiveSpace"; -> bool),
+            }
+        });
+        if let Some(i) = next_key_window(candidates) {
+            msg_send!(window_at(i), c"makeKeyWindow");
+        }
+    })
 }
 
 fn primary_screen_height() -> f64 {
@@ -534,6 +587,36 @@ mod tests {
             matches!(events.as_slice(), [WindowEvent::ModifiersChanged(m), WindowEvent::Focused(false)] if *m == crate::platform::input::Mods::default()),
             "{events:?}"
         );
+    }
+
+    const OPEN: KeyCandidate = KeyCandidate { closing: false, visible: true, can_become_key: true, on_active_space: true };
+    const CLOSING: KeyCandidate = KeyCandidate { closing: true, ..OPEN };
+
+    #[test]
+    fn closing_the_key_window_hands_key_to_the_frontmost_remaining_one() {
+        // Front to back: the closing window, then two open ones.
+        assert_eq!(next_key_window([CLOSING, OPEN, OPEN]), Some(1));
+    }
+
+    #[test]
+    fn hidden_and_non_key_windows_are_skipped() {
+        let hidden = KeyCandidate { visible: false, ..OPEN };
+        let panel = KeyCandidate { can_become_key: false, ..OPEN };
+        assert_eq!(next_key_window([hidden, panel, OPEN]), Some(2));
+    }
+
+    #[test]
+    fn windows_on_other_spaces_are_skipped() {
+        // Keystrokes must not go to a terminal the user cannot see.
+        let elsewhere = KeyCandidate { on_active_space: false, ..OPEN };
+        assert_eq!(next_key_window([CLOSING, elsewhere, OPEN]), Some(2));
+        assert_eq!(next_key_window([CLOSING, elsewhere]), None);
+    }
+
+    #[test]
+    fn closing_the_last_window_hands_key_to_none() {
+        assert_eq!(next_key_window([CLOSING]), None);
+        assert_eq!(next_key_window([]), None);
     }
 
     #[test]
