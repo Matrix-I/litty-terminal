@@ -21,6 +21,12 @@ pub(crate) enum Command {
     BenchFirstFrame { runs: usize },
     /// Internal: one launch of `BenchFirstFrame`; `spawn_ns` is the parent's clock at spawn.
     BenchFirstFrameChild { spawn_ns: u64 },
+    /// Bytes per second through PTY, parser and drawing, per stream kind.
+    BenchPtyThroughput { mib: usize },
+    /// Internal: the app `BenchPtyThroughput` runs for one stream kind.
+    BenchPtyThroughputGui { kind: String, mib: usize, out: String },
+    /// Internal: the stream writer that app runs in its pane.
+    BenchCatChild { kind: String, mib: usize, out: String },
     Run { bench_ram: bool, bench_all: bool, scroll_fps: bool },
 }
 
@@ -54,6 +60,19 @@ pub(crate) fn parse(args: &[String]) -> Command {
     } else if is(&["+bench-first-frame", "--bench-first-frame"]) {
         Command::BenchFirstFrame {
             runs: args.get(2).and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(crate::bench_startup::DEFAULT_RUNS),
+        }
+    } else if is(&["+bench-pty-throughput", "--bench-pty-throughput"]) {
+        Command::BenchPtyThroughput {
+            mib: args.get(2).and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(crate::bench_throughput::DEFAULT_MIB),
+        }
+    } else if is(&[crate::bench_throughput::GUI_FLAG, crate::bench_throughput::CAT_CHILD_FLAG]) {
+        let kind = args.get(2).cloned().unwrap_or_default();
+        let mib = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(crate::bench_throughput::DEFAULT_MIB);
+        let out = args.get(4).cloned().unwrap_or_default();
+        if first == crate::bench_throughput::GUI_FLAG {
+            Command::BenchPtyThroughputGui { kind, mib, out }
+        } else {
+            Command::BenchCatChild { kind, mib, out }
         }
     } else if is(&[crate::bench_startup::CHILD_FLAG]) {
         Command::BenchFirstFrameChild { spawn_ns: args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0) }
@@ -142,6 +161,20 @@ mod tests {
         assert_eq!(parse(&argv(&["+bench-first-frame", "0"])), Command::BenchFirstFrame { runs: 10 });
         assert_eq!(parse(&argv(&["+bench-first-frame-child", "123"])), Command::BenchFirstFrameChild { spawn_ns: 123 });
         assert_eq!(parse(&argv(&["+bench-first-frame-child"])), Command::BenchFirstFrameChild { spawn_ns: 0 });
+    }
+
+    #[test]
+    fn bench_pty_throughput_parses_size_and_internal_arguments() {
+        assert_eq!(parse(&argv(&["+bench-pty-throughput"])), Command::BenchPtyThroughput { mib: 64 });
+        assert_eq!(parse(&argv(&["--bench-pty-throughput", "8"])), Command::BenchPtyThroughput { mib: 8 });
+        assert_eq!(
+            parse(&argv(&["+bench-pty-throughput-gui", "sgr", "8", "/tmp/r"])),
+            Command::BenchPtyThroughputGui { kind: "sgr".into(), mib: 8, out: "/tmp/r".into() }
+        );
+        assert_eq!(
+            parse(&argv(&["+bench-cat-child", "code", "4", "/tmp/r"])),
+            Command::BenchCatChild { kind: "code".into(), mib: 4, out: "/tmp/r".into() }
+        );
     }
 
     #[test]

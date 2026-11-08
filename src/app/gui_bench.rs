@@ -217,13 +217,16 @@ impl FirstFrameRun {
 pub(super) enum GuiBench {
     InputLatency(InputLatencyRun),
     FirstFrame(FirstFrameRun),
+    /// `+bench-pty-throughput-gui`: a normal app whose pane runs the stream
+    /// child; the parent process times and closes it.
+    Throughput,
 }
 
 /// Draw `s`, letting a running benchmark observe the frame. Every draw of a
 /// window goes through here (redraw requests and PTY wake-ups).
 pub(super) fn render_observed(s: &mut State, bench: &mut Option<GuiBench>, result: &mut Option<Result<String, String>>) {
     let done = match bench {
-        None => {
+        None | Some(GuiBench::Throughput) => {
             render_active(s);
             return;
         }

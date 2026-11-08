@@ -300,9 +300,9 @@ impl EventHandler<AppEvent> for App {
             return;
         }
 
-        if matches!(self.gui_bench, Some(gui_bench::GuiBench::InputLatency(_))) {
+        if matches!(self.gui_bench, Some(gui_bench::GuiBench::InputLatency(_) | gui_bench::GuiBench::Throughput)) {
             let s = &mut self.windows[0];
-            s.window.set_title("Litty — input latency benchmark");
+            s.window.set_title("Litty — benchmark");
             s.window.focus_window();
             platform::activate_app();
             s.window.request_redraw();
@@ -523,6 +523,20 @@ pub(crate) fn run_input_latency(samples: usize, echo_child: Vec<String>) {
         bench_ram_mode: false,
         scroll_fps_run: None,
         gui_bench: Some(gui_bench::GuiBench::InputLatency(gui_bench::InputLatencyRun::new(samples))),
+        gui_bench_result: None,
+    });
+}
+
+/// `+bench-pty-throughput-gui`: the first pane runs `stream_child` (argv), which
+/// writes one generated stream as fast as the app takes it.
+pub(crate) fn run_throughput_gui(stream_child: Vec<String>) {
+    gui_bench::set_pane_program(stream_child);
+    crate::platform::gui::run(|proxy| App {
+        waker: Waker { proxy, queued: Arc::new(AtomicBool::new(false)) },
+        windows: Vec::new(),
+        bench_ram_mode: false,
+        scroll_fps_run: None,
+        gui_bench: Some(gui_bench::GuiBench::Throughput),
         gui_bench_result: None,
     });
 }

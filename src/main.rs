@@ -7,6 +7,7 @@ pub mod bench;
 mod bench_dsr;
 mod bench_input;
 mod bench_startup;
+mod bench_throughput;
 mod cli;
 mod config;
 mod curl_config;
@@ -89,6 +90,22 @@ fn main() {
             }
         }
         cli::Command::BenchFirstFrameChild { spawn_ns } => app::run_first_frame_child(spawn_ns),
+        cli::Command::BenchPtyThroughput { mib } => {
+            if let Err(e) = bench_throughput::run(mib) {
+                eprintln!("litty: PTY throughput benchmark failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        cli::Command::BenchPtyThroughputGui { kind, mib, out } => match bench_input::current_exe() {
+            Ok(exe) => app::run_throughput_gui(vec![exe, bench_throughput::CAT_CHILD_FLAG.into(), kind, mib.to_string(), out]),
+            Err(e) => {
+                eprintln!("litty: {e}");
+                std::process::exit(1);
+            }
+        },
+        cli::Command::BenchCatChild { kind, mib, out } => {
+            std::process::exit(bench_throughput::run_cat_child(&kind, mib, std::path::Path::new(&out)))
+        }
         cli::Command::BenchFeatures => {
             if !bench::run_critical_features_benchmark().passed {
                 std::process::exit(1);

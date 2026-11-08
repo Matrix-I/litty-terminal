@@ -37,6 +37,7 @@ opens a real window and prints one JSON line.
 | :--- | :--- | :--- |
 | `litty +bench-input-latency [samples]` | Synthetic key press → GPU-completed frame that shows the echo, split into `input` / `echo` / `render` / `gpu` stages (default 1,000 samples after 50 warmup) | The pane runs an echo child, not a shell. Excludes the OS input stack and display scanout; `render` includes waiting for a free drawable |
 | `litty +bench-first-frame [runs]` | Process spawn → GPU-completed first frame over `runs` launches (default 10), split into `exec` / `init` / `first_submit` / `gpu` | A normal startup with the login shell; the update check is skipped. Run 1 is reported apart because it may pay cold caches. The first frame may be drawn before the shell prints its prompt |
+| `litty +bench-pty-throughput [MiB]` | MB/s of a generated stream (`ascii`, `sgr`, `code`, `unicode`, `osc8`, `region`) written by a pane child through the PTY while the app parses and draws it, next to a parser-only rate for the same bytes (default 64 MiB per kind) | Takes about 2 minutes; the `osc8` parser-only pass dominates |
 
 ---
 
