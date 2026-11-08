@@ -4,7 +4,6 @@
 
 mod app;
 mod dialog;
-mod hotkey;
 mod input;
 mod menu;
 mod native_clipboard;
@@ -12,4 +11,4 @@ mod tabs;
 mod window;
 pub(crate) mod native;
 
-pub use self::{app::*, dialog::*, hotkey::*, input::*, menu::*, native_clipboard::*, tabs::*, window::*};
+pub use self::{app::*, dialog::*, input::*, menu::*, native_clipboard::*, tabs::*, window::*};

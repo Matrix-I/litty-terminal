@@ -143,10 +143,6 @@ pub struct Config {
     /// `custom-shader-animation`: `None` = never, `Some(false)` = while
     /// focused (`true`), `Some(true)` = `always`.
     pub custom_shader_animation: Option<bool>,
-    /// `keybind = global:<trigger>=toggle_quick_terminal` (macOS).
-    pub quick_terminal_hotkey: Option<crate::keymap::Trigger>,
-    /// Hide the Quick Terminal when it loses focus.
-    pub quick_terminal_autohide: bool,
     /// `scrollback-limit` in bytes (Ghostty semantics); `None` = 5000 lines.
     pub scrollback_limit: Option<usize>,
     /// `grapheme-width-method = unicode` (true, default) starts terminals with
@@ -220,8 +216,6 @@ impl Default for Config {
             macos_native_tabs: false,
             custom_shaders: Vec::new(),
             custom_shader_animation: Some(false),
-            quick_terminal_hotkey: None,
-            quick_terminal_autohide: true,
             unfocused_split_opacity: 0.7,
             unfocused_split_fill: None,
             minimum_contrast: 1.0,
@@ -506,9 +500,7 @@ impl Config {
                 }
             }
             "font-thicken" => self.font_thicken = if empty { d.font_thicken } else { parse_bool(value)? },
-            "quick-terminal-autohide" => {
-                self.quick_terminal_autohide = if empty { d.quick_terminal_autohide } else { parse_bool(value)? }
-            }
+            "quick-terminal-autohide" => return Err(crate::keymap::QUICK_TERMINAL_REMOVED.into()),
             "custom-shader" => {
                 if empty {
                     self.custom_shaders.clear();
@@ -576,14 +568,9 @@ impl Config {
             "keybind" => {
                 if empty || value == "clear" {
                     self.keybinds.clear();
-                } else if let Some(rest) = value.strip_prefix("global:") {
-                    // System-wide hotkeys exist for the Quick Terminal only.
-                    match parse_keybind(rest)? {
-                        (t, crate::keymap::Binding::Action(crate::keymap::Action::ToggleQuickTerminal)) => {
-                            self.quick_terminal_hotkey = Some(t)
-                        }
-                        _ => return Err("only toggle_quick_terminal can be bound globally".into()),
-                    }
+                } else if value.starts_with("global:") {
+                    // System-wide hotkeys only ever served the Quick Terminal.
+                    return Err(crate::keymap::QUICK_TERMINAL_REMOVED.into());
                 } else {
                     self.keybinds.push(parse_keybind(value)?);
                 }
@@ -1050,6 +1037,25 @@ const TEMPLATE: &str = r#"# This is the configuration file for Litty.
 mod tests {
     use super::*;
 
+    /// Quick Terminal lines in an old config say why they are ignored, and
+    /// the rest of the file still applies.
+    #[test]
+    fn removed_quick_terminal_lines_are_reported() {
+        let (cfg, errors) = Config::parse(
+            "keybind = global:cmd+grave_accent=toggle_quick_terminal\n\
+             quick-terminal-autohide = false\n\
+             keybind = cmd+j=toggle_quick_terminal\n\
+             font-size = 15\n",
+        );
+        assert_eq!(errors.len(), 3, "{errors:?}");
+        for (line, error) in [1, 2, 3].into_iter().zip(&errors) {
+            assert!(error.starts_with(&format!("line {line}:")), "{error}");
+            assert!(error.contains("Quick Terminal was removed"), "{error}");
+        }
+        assert!(cfg.keybinds.is_empty());
+        assert_eq!(cfg.font_size, 15.0);
+    }
+
     #[test]
     fn ai_trigger_reaches_new_shells() {
         assert_eq!(Config::default().shell_setup().2, "yo");
@@ -1117,10 +1123,6 @@ mod tests {
         assert_eq!(cfg.custom_shaders.len(), 2);
         assert_eq!(cfg.custom_shader_animation, Some(true));
         assert!(Config::parse("custom-shader = /a\ncustom-shader =\n").0.custom_shaders.is_empty());
-        let (cfg, errors) = Config::parse("keybind = global:cmd+grave_accent=toggle_quick_terminal\n");
-        assert!(errors.is_empty(), "{errors:?}");
-        assert!(cfg.quick_terminal_hotkey.is_some() && cfg.keybinds.is_empty());
-        assert_eq!(Config::parse("keybind = global:cmd+t=new_tab\n").1.len(), 1);
         assert_eq!(Config::parse("confirm-close-surface = always\n").0.confirm_close_surface, ConfirmClose::Always);
         assert_eq!(Config::parse("confirm-close-surface = false\n").0.confirm_close_surface, ConfirmClose::Never);
         let (cfg, errors) = Config::parse("adjust-cell-height = 20%\nadjust-cell-width = -1\nfont-thicken = true\n");

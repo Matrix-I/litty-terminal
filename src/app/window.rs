@@ -24,40 +24,26 @@ use crate::terminal::pty::Pty;
 use crate::render::renderer::{Renderer, TabBarView};
 use crate::terminal::search::SearchBar;
 
-/// Drop the Quick Terminal from the top of its screen: full width, 40% height,
-/// then bring it to the front.
-pub(super) fn place_quick_terminal(s: &State) {
-    if let Some(m) = s.window.current_monitor() {
-        let (pos, size) = (m.position, m.size);
-        s.window.set_outer_position(pos);
-        s.window.request_inner_size(PhysicalSize::new(size.width, size.height * 2 / 5));
-    }
-    s.window.set_visible(true);
-    s.window.focus_window();
-    platform::activate_app();
-}
-
 /// `font-feature` values as shaper features (validated when the config was parsed).
 pub(super) fn font_features(cfg: &config::Config) -> Vec<atlas::FontFeature> {
     cfg.font_features.iter().filter_map(|f| atlas::parse_font_feature(f).ok()).collect()
 }
 
 /// Create a window with one tab whose shell starts in `cwd`.
-pub(super) fn create_window(event_loop: &LoopCtx, waker: &Waker, cwd: Option<&str>, quick: bool) -> std::io::Result<State> {
-    build_window(event_loop, waker, cwd, quick, &mut None)
+pub(super) fn create_window(event_loop: &LoopCtx, waker: &Waker, cwd: Option<&str>) -> std::io::Result<State> {
+    build_window(event_loop, waker, cwd, &mut None)
 }
 
 /// Open a window around a tab torn off another one. `torn` is emptied only once
 /// the window exists, so on failure the caller can still put the tab back.
 pub(super) fn create_window_for_tab(event_loop: &LoopCtx, waker: &Waker, torn: &mut Option<TornTab>) -> std::io::Result<State> {
-    build_window(event_loop, waker, None, false, torn)
+    build_window(event_loop, waker, None, torn)
 }
 
 fn build_window(
     event_loop: &LoopCtx,
     waker: &Waker,
     cwd: Option<&str>,
-    quick: bool,
     adopt: &mut Option<TornTab>,
 ) -> std::io::Result<State> {
     let cfg = config::Config::load();
@@ -86,7 +72,7 @@ fn build_window(
 
     // Linux draws its own title bar in the terminal's colors (the native frame
     // cannot be recolored); macOS makes its native title bar transparent instead.
-    let csd = cfg!(target_os = "linux") && !quick;
+    let csd = cfg!(target_os = "linux");
     let (inner_size, position) = match adopt.as_ref() {
         // A torn-off tab keeps the size of its old window, so its grids do not reflow.
         Some(torn) => (torn.size, torn.position),
@@ -94,11 +80,8 @@ fn build_window(
     };
     let spec = WindowSpec {
         title: "Litty",
-        // Build Quick Terminal in its final mode while hidden. Changing X11
-        // decorations on an already mapped window causes spurious focus loss.
-        decorations: !quick && !csd,
-        always_on_top: quick,
-        visible: !quick,
+        decorations: !csd,
+        visible: true,
         transparent: cfg.background_opacity < 1.0 || csd,
         inner_size,
         position,
@@ -106,7 +89,7 @@ fn build_window(
     let window = Arc::new(event_loop.create_window(&spec)?);
     platform::init_clipboard(&window);
     platform::set_tabbing_allowed(&window, false);
-    if !quick { window.set_visible(true); }
+    window.set_visible(true);
     // Composed input (Vietnamese Telex/VNI, CJK) arrives as `WindowEvent::Ime`.
     window.set_ime_allowed(true);
     let dark = window.theme() != Some(Theme::Light);
@@ -208,8 +191,7 @@ fn build_window(
         consumed_keys: Vec::new(),
         locks: 0,
         cursor_blink_epoch: std::time::Instant::now(),
-        focused: !quick,
-        quick_autohide_at: None,
+        focused: true,
         history_search: HistorySearch::new(),
         search: SearchBar::new(),
         first_frame: true,
@@ -221,7 +203,6 @@ fn build_window(
             close: false,
             new_window: false,
             native_tab: false,
-            quick_terminal: false,
             quit: false,
             reload_config: false,
             tear_off: None,
@@ -230,7 +211,6 @@ fn build_window(
             drag_release: None,
         },
         occluded: false,
-        quick,
         csd,
         bar_title,
         inspector: InspectorState { shown: false, last_key: String::new() },
@@ -432,19 +412,6 @@ pub(super) fn cursor_is_visible_now(s: &State) -> bool {
     (elapsed % 1000) < 500
 }
 
-/// Grab (or, with `None`, release) the Quick Terminal global hotkey. A key the
-/// platform has no code for releases it and says so.
-pub(super) fn set_quick_terminal_hotkey(trigger: Option<&crate::keymap::Trigger>) {
-    let hotkey = trigger.and_then(|t| {
-        let hotkey = crate::keymap::global_hotkey(t);
-        if hotkey.is_none() {
-            eprintln!("litty: Quick Terminal hotkey: key not supported for a global hotkey");
-        }
-        hotkey
-    });
-    platform::set_global_hotkey(hotkey);
-}
-
 pub(super) fn reload_config(s: &mut State) {
     let old = s.config.clone();
     let new = config::Config::load();
@@ -479,9 +446,6 @@ pub(super) fn reload_config(s: &mut State) {
     // Compared per window: another window may already have set the new tweaks.
     atlas::set_font_tweaks(new.adjust_cell_width, new.adjust_cell_height, new.font_thicken);
     atlas::set_font_features(&font_features(&new));
-    if new.quick_terminal_hotkey != old.quick_terminal_hotkey {
-        set_quick_terminal_hotkey(new.quick_terminal_hotkey.as_ref());
-    }
     let tweaks_changed = (new.adjust_cell_width, new.adjust_cell_height, new.font_thicken, &new.font_features)
         != (old.adjust_cell_width, old.adjust_cell_height, old.font_thicken, &old.font_features);
     if font_changed || size_changed || tweaks_changed {

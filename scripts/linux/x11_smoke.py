@@ -58,15 +58,6 @@ class Keyboard:
             assert self.xt.XTestFakeKeyEvent(self.display, code, down, 0)
         self.x.XSync(self.display, 0)
 
-    def chord(self, *symbols):
-        codes = [self.x.XKeysymToKeycode(self.display, self.x.XStringToKeysym(s.encode())) for s in symbols]
-        assert all(codes), symbols
-        for code in codes:
-            assert self.xt.XTestFakeKeyEvent(self.display, code, 1, 0)
-        for code in reversed(codes):
-            assert self.xt.XTestFakeKeyEvent(self.display, code, 0, 0)
-        self.x.XSync(self.display, 0)
-
     def close(self):
         self.x.XCloseDisplay(self.display)
 
@@ -81,8 +72,7 @@ def main():
         (home / '.litty').mkdir(parents=True)
         (home / '.litty/config').write_text(
             'auto-update = off\nshell-integration = none\nconfirm-close-surface = false\n'
-            'window-padding-x = 8\nwindow-padding-y = 8\ntitle = Litty Linux probe\n'
-            'keybind = global:ctrl+grave_accent=toggle_quick_terminal\n')
+            'window-padding-x = 8\nwindow-padding-y = 8\ntitle = Litty Linux probe\n')
         runtime = root / 'runtime'
         runtime.mkdir(mode=0o700)
         events = root / 'keys.jsonl'
@@ -180,30 +170,6 @@ while True:
             keypad = press('KP_Home')
             assert mods(keypad, 57423) & 128 == 0, keypad
             print('PASS X11 synthetic Caps/Num Lock Kitty modifiers', flush=True)
-
-            external = subprocess.Popen(['xterm', '-fa', 'DejaVu Sans Mono', '-fs', '12', '-title', 'External probe'],
-                                        stdout=log, stderr=log, env=dict(env, SHELL='/bin/sh'))
-            processes.append(external)
-            other = wait_for(lambda: run('xdotool', 'search', '--onlyvisible', '--pid', str(external.pid), check=False).stdout.split(), bool, 'external window')[0]
-            run('xdotool', 'windowactivate', '--sync', other)
-            shells = ready_count()
-            keyboard.chord('Control_L', 'grave')
-            shown = wait_for(visible, lambda v: len(v) == 2, 'global hotkey shows Quick Terminal')
-            quick = next(w for w in shown if w != normal)
-            geometry = run('xdotool', 'getwindowgeometry', '--shell', quick).stdout
-            values = dict(re.findall(r'^(\w+)=(\d+)$', geometry, re.M))
-            assert int(values['WIDTH']) >= 1200 and 200 <= int(values['HEIGHT']) <= 500, geometry
-            wait_for(lambda: run('xdotool', 'getactivewindow').stdout.strip(), lambda w: w == quick, 'Quick Terminal takes focus')
-            ready = [x['ready'] for x in wait_for(records, lambda r: sum('ready' in x for x in r) == shells + 1, 'quick shell') if 'ready' in x]
-            keyboard.chord('Control_L', 'grave')
-            wait_for(visible, lambda v: v == [normal], 'global hotkey hides Quick Terminal')
-            run(binary, '+toggle-quick-terminal', env=env)
-            wait_for(visible, lambda v: quick in v and len(v) == 2, 'socket restores same Quick Terminal')
-            wait_for(lambda: run('xdotool', 'getactivewindow').stdout.strip(), lambda w: w == quick, 'restored panel takes focus')
-            assert [x['ready'] for x in records() if 'ready' in x] == ready
-            run('xdotool', 'windowactivate', '--sync', other)
-            wait_for(visible, lambda v: v == [normal], 'Quick Terminal autohides')
-            print('PASS X11 Quick Terminal global hotkey, geometry, socket, session reuse, autohide', flush=True)
         except Exception:
             log.flush()
             print(log.name + ':\n' + pathlib.Path(log.name).read_text(), file=sys.stderr)

@@ -3,7 +3,8 @@
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command {
     ListThemes,
-    ToggleQuickTerminal,
+    /// `+toggle-quick-terminal` from before the Quick Terminal was removed.
+    QuickTerminalRemoved,
     CheckUpdate,
     Update { force: bool },
     BenchPerf,
@@ -21,7 +22,7 @@ pub(crate) fn parse(args: &[String]) -> Command {
     if is(&["+list-themes", "--list-themes"]) {
         Command::ListThemes
     } else if is(&["+toggle-quick-terminal"]) {
-        Command::ToggleQuickTerminal
+        Command::QuickTerminalRemoved
     } else if is(&["+check-update", "--check-update"]) {
         Command::CheckUpdate
     } else if is(&["+update", "--update"]) {
@@ -76,8 +77,9 @@ mod tests {
     }
 
     #[test]
-    fn toggle_quick_terminal_has_only_plus_spelling() {
-        assert_eq!(parse(&argv(&["+toggle-quick-terminal"])), Command::ToggleQuickTerminal);
+    fn toggle_quick_terminal_says_it_was_removed() {
+        // A desktop shortcut still running it must not start a new instance.
+        assert_eq!(parse(&argv(&["+toggle-quick-terminal"])), Command::QuickTerminalRemoved);
         assert_eq!(parse(&argv(&["--toggle-quick-terminal"])), Command::Run { bench_ram: false, bench_all: false, scroll_fps: false });
     }
 

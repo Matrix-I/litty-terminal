@@ -45,9 +45,6 @@ pub(super) struct State {
     pub(super) locks: u8,
     pub(super) cursor_blink_epoch: std::time::Instant,
     pub(super) focused: bool,
-    /// A global X11 key grab briefly loses focus. Defer autohide until that
-    /// transient focus round-trip or the corresponding toggle has completed.
-    pub(super) quick_autohide_at: Option<std::time::Instant>,
     pub(super) history_search: HistorySearch,
     /// Find-in-terminal box (`Cmd+F` / `Ctrl+Shift+F`).
     pub(super) search: SearchBar,
@@ -62,8 +59,6 @@ pub(super) struct State {
     pub(super) requests: WindowRequests,
     /// The window is completely covered, minimized or on an inactive Space.
     pub(super) occluded: bool,
-    /// This is the Quick Terminal window.
-    pub(super) quick: bool,
     /// The tab strip is this window's title bar (Linux, no native frame): always shown.
     pub(super) csd: bool,
     /// Title bar text: the active tab's title as `user@host:path`.
@@ -142,8 +137,6 @@ pub(super) struct WindowRequests {
     pub(super) new_window: bool,
     /// New tab as a native macOS window tab (`macos-native-tabs`).
     pub(super) native_tab: bool,
-    /// A binding asked to show / hide the Quick Terminal.
-    pub(super) quick_terminal: bool,
     /// `Cmd+Q` / `Ctrl+Shift+Q`: `App` confirms across all windows, then exits.
     pub(super) quit: bool,
     /// Config reload requested; `App` propagates it to all windows.

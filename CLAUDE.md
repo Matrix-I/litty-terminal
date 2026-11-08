@@ -35,7 +35,7 @@ Layers (enforced by `src/layering_tests.rs`): `terminal` â†’ nothing; `render` â
 - `src/split.rs`: Pane tree layout management.
 - `src/terminal/`: `grid/` (12-byte `Cell`, scrollback ring, `vte::Perform`; responses (DSR, DA) go to `Grid::response`), `pty.rs` (`openpty` + `fork`/`execve`, reader thread pushing bytes to grid), search, shell history, bidi, graphics, shell integration.
 - `src/render/`: `renderer/` and `atlas/` (wgpu pipelines, one instanced cell draw per layer (`shaders/shader.wgsl`), glyph cache, CoreText / non-macOS rasterizers), fontdb, postfx, image layer, frame metrics.
-- `src/platform/`: one API (`platform::*`, listed by name in `platform/mod.rs`) implemented by `macos/` and `linux/` with identical file and function names; plus clipboard, detached processes (`open` / `xdg-open`, notifications, sounds) and the control socket.
+- `src/platform/`: one API (`platform::*`, listed by name in `platform/mod.rs`) implemented by `macos/` and `linux/` with identical file and function names; plus clipboard, detached processes (`open` / `xdg-open`, notifications, sounds).
 
 ## Workflow & PR Checklist
 ### Implement

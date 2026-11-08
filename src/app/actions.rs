@@ -41,7 +41,6 @@ pub(super) fn run_action(
         A::OpenConfig => config::open_config_in_editor(),
         A::ReloadConfig => s.requests.reload_config = true,
         A::NewWindow => s.requests.new_window = true,
-        A::ToggleQuickTerminal => s.requests.quick_terminal = true,
         A::NewTab if s.tabs.is_empty() => open_fresh_tab(s, waker),
         A::NewTab if cfg!(target_os = "macos") && s.config.macos_native_tabs => s.requests.native_tab = true,
         A::NewTab => duplicate_active_tab(s, waker),
@@ -196,7 +195,7 @@ pub(super) fn run_tab_action(
                 s.window.request_redraw();
             }
         }
-        A::Quit | A::Minimize | A::OpenConfig | A::ReloadConfig | A::NewTab | A::NewWindow | A::CheckUpdate | A::ToggleQuickTerminal => {}
+        A::Quit | A::Minimize | A::OpenConfig | A::ReloadConfig | A::NewTab | A::NewWindow | A::CheckUpdate => {}
     }
     true
 }

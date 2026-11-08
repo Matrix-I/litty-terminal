@@ -57,7 +57,6 @@ Litty reads its configuration from:
 | **Shaders & Effects** | `custom-shader` | Path to GLSL file (repeatable) | None | Shadertoy GLSL post-processing shader pass (chains in file order) |
 | | `custom-shader-animation` | `true` (focused), `false` (off), `always` | `true` | Animation frame loop policy for custom GLSL shaders |
 | **Keybindings & Actions** | `keybind` | `trigger=action`, `trigger=text:<val>`, `unbind`, `clear` | Defaults | Custom shortcut mapping (Ghostty syntax) |
-| | `quick-terminal-autohide` | `true`, `false` | `true` | Dismiss drop-down Quick Terminal when losing window focus |
 | **Auto Update** | `auto-update` | `check`, `download`, `off` (`false`) | `check` | GitHub self-update checking and downloading policy |
 | | `auto-update-channel` | `stable`, `tip` | `stable` | Update release channel (`tip` includes prereleases) |
 
@@ -128,7 +127,6 @@ auto-update-channel = "stable"  # "stable" (default) or "tip"
 keybind = cmd+t=new_split:right
 keybind = ctrl+shift+h=text:hello\n
 keybind = cmd+d=unbind
-keybind = global:cmd+grave_accent=toggle_quick_terminal
 ```
 
 ## See also

@@ -609,7 +609,7 @@ impl App {
             }
             s.pointer.wheel_scroll.reset();
         }
-        let was_focused = std::mem::replace(&mut s.focused, focused);
+        s.focused = focused;
         if focused {
             s.occluded = false;
             let sz = s.window.inner_size();
@@ -618,16 +618,10 @@ impl App {
             }
             s.renderer.invalidate();
             s.renderer.set_bell_border(false);
-            s.quick_autohide_at = None;
             platform::set_secure_input_menu_state(s.secure_input);
         }
         if s.secure_input {
             platform::set_secure_input(focused);
-        }
-        if !focused && was_focused && s.quick && s.config.quick_terminal_autohide {
-            // A passive X11 keyboard grab emits FocusOut/FocusIn even
-            // while the panel remains the active application window.
-            s.quick_autohide_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(50));
         }
         if let Some(tab) = s.tabs.get_mut(s.active).filter(|t| focused && t.bell) {
             tab.bell = false;
