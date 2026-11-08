@@ -36,6 +36,7 @@ opens a real window and prints one JSON line.
 | Command | Measures | Notes |
 | :--- | :--- | :--- |
 | `litty +bench-input-latency [samples]` | Synthetic key press → GPU-completed frame that shows the echo, split into `input` / `echo` / `render` / `gpu` stages (default 1,000 samples after 50 warmup) | The pane runs an echo child, not a shell. Excludes the OS input stack and display scanout; `render` includes waiting for a free drawable |
+| `litty +bench-first-frame [runs]` | Process spawn → GPU-completed first frame over `runs` launches (default 10), split into `exec` / `init` / `first_submit` / `gpu` | A normal startup with the login shell; the update check is skipped. Run 1 is reported apart because it may pay cold caches. The first frame may be drawn before the shell prints its prompt |
 
 ---
 

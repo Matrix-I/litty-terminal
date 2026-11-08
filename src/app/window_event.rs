@@ -653,6 +653,6 @@ impl App {
         }
         // Re-arm before rendering so any PTY write during the draw schedules the next frame.
         waker.rearm();
-        super::gui_bench::render_observed(s, &mut self.input_latency_run, &mut self.gui_bench_result);
+        super::gui_bench::render_observed(s, &mut self.gui_bench, &mut self.gui_bench_result);
     }
 }

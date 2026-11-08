@@ -17,6 +17,10 @@ pub(crate) enum Command {
     BenchInputLatency { samples: usize },
     /// Internal: the echo program `BenchInputLatency` runs in its pane.
     BenchEchoChild,
+    /// Process launch → first GPU-completed frame, over several launches.
+    BenchFirstFrame { runs: usize },
+    /// Internal: one launch of `BenchFirstFrame`; `spawn_ns` is the parent's clock at spawn.
+    BenchFirstFrameChild { spawn_ns: u64 },
     Run { bench_ram: bool, bench_all: bool, scroll_fps: bool },
 }
 
@@ -47,6 +51,12 @@ pub(crate) fn parse(args: &[String]) -> Command {
         }
     } else if is(&[crate::bench_input::ECHO_CHILD_FLAG]) {
         Command::BenchEchoChild
+    } else if is(&["+bench-first-frame", "--bench-first-frame"]) {
+        Command::BenchFirstFrame {
+            runs: args.get(2).and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(crate::bench_startup::DEFAULT_RUNS),
+        }
+    } else if is(&[crate::bench_startup::CHILD_FLAG]) {
+        Command::BenchFirstFrameChild { spawn_ns: args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0) }
     } else if is(&[crate::bench_dsr::CHILD_FLAG]) {
         let num = |i: usize| args.get(i).and_then(|s| s.parse().ok()).unwrap_or(0);
         Command::BenchDsrChild { out: args.get(2).cloned().unwrap_or_default(), warmup: num(3), iterations: num(4) }
@@ -123,6 +133,15 @@ mod tests {
         assert_eq!(parse(&argv(&["--bench-input-latency", "200"])), Command::BenchInputLatency { samples: 200 });
         assert_eq!(parse(&argv(&["+bench-input-latency", "0"])), Command::BenchInputLatency { samples: 1000 });
         assert_eq!(parse(&argv(&["+bench-echo-child"])), Command::BenchEchoChild);
+    }
+
+    #[test]
+    fn bench_first_frame_parses_runs_and_child_clock() {
+        assert_eq!(parse(&argv(&["+bench-first-frame"])), Command::BenchFirstFrame { runs: 10 });
+        assert_eq!(parse(&argv(&["--bench-first-frame", "3"])), Command::BenchFirstFrame { runs: 3 });
+        assert_eq!(parse(&argv(&["+bench-first-frame", "0"])), Command::BenchFirstFrame { runs: 10 });
+        assert_eq!(parse(&argv(&["+bench-first-frame-child", "123"])), Command::BenchFirstFrameChild { spawn_ns: 123 });
+        assert_eq!(parse(&argv(&["+bench-first-frame-child"])), Command::BenchFirstFrameChild { spawn_ns: 0 });
     }
 
     #[test]

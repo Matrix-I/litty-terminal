@@ -53,7 +53,7 @@ struct App {
     windows: Vec<State>,
     bench_ram_mode: bool,
     scroll_fps_run: Option<frame_metrics::ScrollRun>,
-    input_latency_run: Option<gui_bench::InputLatencyRun>,
+    gui_bench: Option<gui_bench::GuiBench>,
     /// A finished in-app benchmark's report, printed when the loop next idles.
     gui_bench_result: Option<Result<String, String>>,
 }
@@ -293,7 +293,14 @@ impl EventHandler<AppEvent> for App {
         let state = create_window(event_loop, &self.waker, None).expect("spawn initial PTY");
         self.windows.push(state);
 
-        if self.input_latency_run.is_some() {
+        if let Some(gui_bench::GuiBench::FirstFrame(run)) = &mut self.gui_bench {
+            run.window_created();
+            platform::install_menu();
+            self.windows[0].window.request_redraw();
+            return;
+        }
+
+        if matches!(self.gui_bench, Some(gui_bench::GuiBench::InputLatency(_))) {
             let s = &mut self.windows[0];
             s.window.set_title("Litty — input latency benchmark");
             s.window.focus_window();
@@ -367,7 +374,7 @@ impl EventHandler<AppEvent> for App {
                     handle_terminal_requests(s);
                     handle_ai_requests(s, &self.waker);
                     if !s.tabs.is_empty() {
-                        gui_bench::render_observed(s, &mut self.input_latency_run, &mut self.gui_bench_result);
+                        gui_bench::render_observed(s, &mut self.gui_bench, &mut self.gui_bench_result);
                     }
                 }
             }
@@ -453,7 +460,7 @@ impl EventHandler<AppEvent> for App {
         }
         let mut deadline: Option<std::time::Instant> = None;
         let now = std::time::Instant::now();
-        if let Some(run) = &mut self.input_latency_run {
+        if let Some(gui_bench::GuiBench::InputLatency(run)) = &mut self.gui_bench {
             let Some(s) = self.windows.first_mut() else { event_loop.exit(); return };
             match run.tick(s, &self.waker, now) {
                 gui_bench::Step::Continue(at) => deadline = at,
@@ -501,7 +508,7 @@ pub(crate) fn run(bench_ram_mode: bool, scroll_fps: bool) {
         windows: Vec::new(),
         bench_ram_mode,
         scroll_fps_run: scroll_fps.then(frame_metrics::ScrollRun::new),
-        input_latency_run: None,
+        gui_bench: None,
         gui_bench_result: None,
     });
 }
@@ -515,7 +522,20 @@ pub(crate) fn run_input_latency(samples: usize, echo_child: Vec<String>) {
         windows: Vec::new(),
         bench_ram_mode: false,
         scroll_fps_run: None,
-        input_latency_run: Some(gui_bench::InputLatencyRun::new(samples)),
+        gui_bench: Some(gui_bench::GuiBench::InputLatency(gui_bench::InputLatencyRun::new(samples))),
+        gui_bench_result: None,
+    });
+}
+
+/// `+bench-first-frame-child`: a normal startup (shell included, update check
+/// skipped) that prints its stage times once the first frame is complete.
+pub(crate) fn run_first_frame_child(spawn_ns: u64) {
+    crate::platform::gui::run(|proxy| App {
+        waker: Waker { proxy, queued: Arc::new(AtomicBool::new(false)) },
+        windows: Vec::new(),
+        bench_ram_mode: false,
+        scroll_fps_run: None,
+        gui_bench: Some(gui_bench::GuiBench::FirstFrame(gui_bench::FirstFrameRun::new(spawn_ns))),
         gui_bench_result: None,
     });
 }

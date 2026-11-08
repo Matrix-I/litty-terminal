@@ -1,5 +1,6 @@
-//! In-app benchmark drivers that need a real window: `+bench-input-latency`.
-//! The pure parts (stages, report, echo child) live in `crate::bench_input`.
+//! In-app benchmark drivers that need a real window: `+bench-input-latency`
+//! and the `+bench-first-frame` child. The pure parts (stages, reports, child
+//! programs) live in `crate::bench_input` and `crate::bench_startup`.
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -8,6 +9,7 @@ use super::keyboard::handle_key;
 use super::state::State;
 use super::window::render_active;
 use crate::bench_input::{self, Sample};
+use crate::bench_startup;
 use crate::input::{Key, KeyCode, KeyInput, KeyLocation, PhysicalKey};
 use crate::Waker;
 
@@ -176,17 +178,67 @@ impl InputLatencyRun {
     }
 }
 
-/// Draw `s`, letting a running input-latency benchmark observe the frame.
-/// Every draw of a window goes through here (redraw requests and PTY wake-ups).
-pub(super) fn render_observed(s: &mut State, run: &mut Option<InputLatencyRun>, result: &mut Option<Result<String, String>>) {
-    let Some(active) = run else {
-        render_active(s);
-        return;
+/// `+bench-first-frame-child`: stamps the startup stages, then reports once
+/// the GPU has finished the first submitted frame.
+pub(super) struct FirstFrameRun {
+    spawn_ns: u64,
+    window_ns: Option<u64>,
+}
+
+impl FirstFrameRun {
+    pub(super) fn new(spawn_ns: u64) -> Self {
+        Self { spawn_ns, window_ns: None }
+    }
+
+    /// The first window exists (its renderer, fonts and PTY are set up).
+    pub(super) fn window_created(&mut self) {
+        self.window_ns = Some(bench_startup::mono_ns());
+    }
+
+    fn after_render(&mut self, s: &mut State) -> Option<Result<String, String>> {
+        if s.renderer.frames_submitted() == 0 {
+            return None;
+        }
+        let first_submit = bench_startup::mono_ns();
+        s.renderer.wait_gpu_idle();
+        let gpu_done = bench_startup::mono_ns();
+        let stamps = bench_startup::Stamps {
+            spawn: self.spawn_ns,
+            main: bench_startup::main_ns(),
+            window: self.window_ns.unwrap_or(first_submit),
+            first_submit,
+            gpu_done,
+        };
+        Some(Ok(bench_startup::Stages::from_stamps(&stamps).report_line()))
+    }
+}
+
+/// The in-app benchmark this process runs, if any.
+pub(super) enum GuiBench {
+    InputLatency(InputLatencyRun),
+    FirstFrame(FirstFrameRun),
+}
+
+/// Draw `s`, letting a running benchmark observe the frame. Every draw of a
+/// window goes through here (redraw requests and PTY wake-ups).
+pub(super) fn render_observed(s: &mut State, bench: &mut Option<GuiBench>, result: &mut Option<Result<String, String>>) {
+    let done = match bench {
+        None => {
+            render_active(s);
+            return;
+        }
+        Some(GuiBench::InputLatency(run)) => {
+            run.before_render(s);
+            render_active(s);
+            run.after_render(s)
+        }
+        Some(GuiBench::FirstFrame(run)) => {
+            render_active(s);
+            run.after_render(s)
+        }
     };
-    active.before_render(s);
-    render_active(s);
-    if let Some(done) = active.after_render(s) {
-        *run = None;
+    if let Some(done) = done {
+        *bench = None;
         *result = Some(done);
     }
 }

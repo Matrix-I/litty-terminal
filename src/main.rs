@@ -6,6 +6,7 @@ mod app;
 pub mod bench;
 mod bench_dsr;
 mod bench_input;
+mod bench_startup;
 mod cli;
 mod config;
 mod curl_config;
@@ -38,6 +39,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod test_alloc;
 
 fn main() {
+    bench_startup::mark_main();
     let args: Vec<String> = std::env::args().collect();
     match cli::parse(&args) {
         cli::Command::ListThemes => {
@@ -80,6 +82,13 @@ fn main() {
             }
         },
         cli::Command::BenchEchoChild => std::process::exit(bench_input::run_echo_child()),
+        cli::Command::BenchFirstFrame { runs } => {
+            if let Err(e) = bench_startup::run(runs) {
+                eprintln!("litty: first-frame benchmark failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        cli::Command::BenchFirstFrameChild { spawn_ns } => app::run_first_frame_child(spawn_ns),
         cli::Command::BenchFeatures => {
             if !bench::run_critical_features_benchmark().passed {
                 std::process::exit(1);
