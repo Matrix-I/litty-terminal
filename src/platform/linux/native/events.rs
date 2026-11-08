@@ -50,7 +50,7 @@ pub fn convert_raw_event(ev: LinuxRawEvent, scale: f64) -> Option<WindowEvent> {
             Some(WindowEvent::MouseWheel { delta, phase: TouchPhase::Moved })
         }
         LinuxRawEvent::Key { keycode, pressed, repeat } => {
-            Some(WindowEvent::Key(convert_linux_key(keycode, pressed, repeat)))
+            Some(WindowEvent::Key(convert_linux_key(keycode, 0, pressed, repeat)))
         }
         LinuxRawEvent::Modifiers { ctrl, alt, shift, sup } => {
             Some(WindowEvent::ModifiersChanged(Mods { ctrl, alt, shift, sup }))
@@ -84,9 +84,66 @@ pub fn mods_after_key(state: u32, evdev: u32, pressed: bool) -> Mods {
     m
 }
 
+/// X11 `state` bit for Num Lock (`Mod2` on every common X keymap).
+pub const NUM_LOCK_MASK: u32 = 16;
+
+/// Logical key of a keypad key: digits and `.` when `digits`, navigation keys
+/// otherwise; `None` for keys outside the keypad.
+fn keypad_logical(evdev: u32, digits: bool) -> Option<Key> {
+    let (digit, nav) = match evdev {
+        79 => ("1", NamedKey::End),
+        80 => ("2", NamedKey::ArrowDown),
+        81 => ("3", NamedKey::PageDown),
+        75 => ("4", NamedKey::ArrowLeft),
+        76 => ("5", NamedKey::Clear),
+        77 => ("6", NamedKey::ArrowRight),
+        71 => ("7", NamedKey::Home),
+        72 => ("8", NamedKey::ArrowUp),
+        73 => ("9", NamedKey::PageUp),
+        82 => ("0", NamedKey::Insert),
+        83 => (".", NamedKey::Delete),
+        55 => return Some(Key::Character("*".into())),
+        74 => return Some(Key::Character("-".into())),
+        78 => return Some(Key::Character("+".into())),
+        98 => return Some(Key::Character("/".into())),
+        117 => return Some(Key::Character("=".into())),
+        121 => return Some(Key::Character(",".into())),
+        96 => return Some(Key::Named(NamedKey::Enter)),
+        _ => return None,
+    };
+    Some(if digits { Key::Character(digit.into()) } else { Key::Named(nav) })
+}
+
+/// A keypad key event, or `None` for keys outside the keypad. With Num Lock
+/// on the keypad types digits; Shift inverts that, as in the X core keymap.
+fn keypad_key(evdev: u32, state: u32, pressed: bool, repeat: bool) -> Option<KeyInput> {
+    let num_lock = state & NUM_LOCK_MASK != 0;
+    let logical = keypad_logical(evdev, num_lock != (state & 1 != 0))?;
+    let unshifted = keypad_logical(evdev, num_lock)?;
+    let text = match &logical {
+        Key::Character(s) => Some(s.clone()),
+        _ => None,
+    };
+    let code = if evdev == 76 { KeyCode::Numpad5 } else { KeyCode::Other(evdev) };
+    Some(KeyInput {
+        logical,
+        unshifted,
+        physical: PhysicalKey::Code(code),
+        location: KeyLocation::Numpad,
+        text,
+        pressed,
+        repeat,
+    })
+}
+
+/// Key event for an evdev code under the X11 modifier `state` (which only
+/// matters for the keypad).
 #[allow(dead_code)]
-pub fn convert_linux_key(keycode: u32, pressed: bool, repeat: bool) -> KeyInput {
+pub fn convert_linux_key(keycode: u32, state: u32, pressed: bool, repeat: bool) -> KeyInput {
     let evdev = keycode;
+    if let Some(key) = keypad_key(evdev, state, pressed, repeat) {
+        return key;
+    }
     let code = match evdev {
         1 => KeyCode::Other(1), // ESC
         2 => KeyCode::Digit1,
@@ -159,6 +216,7 @@ pub fn convert_linux_key(keycode: u32, pressed: bool, repeat: bool) -> KeyInput 
         15 => Some(NamedKey::Tab),
         28 => Some(NamedKey::Enter),
         57 => Some(NamedKey::Space),
+        69 => Some(NamedKey::NumLock),
         102 => Some(NamedKey::Home),
         103 => Some(NamedKey::ArrowUp),
         104 => Some(NamedKey::PageUp),
@@ -356,6 +414,35 @@ mod tests {
         assert_eq!(keysym_char(0x0100_0111), Some('đ'));
         assert_eq!(keysym_char(0xff0d), None); // Return
         assert_eq!(keysym_char(0x0100_d800), None); // surrogate
+    }
+
+    /// Num Lock picks digits or navigation keys, Shift inverts it (as X
+    /// does), and every keypad key reports the numpad location (TD-11).
+    #[test]
+    fn keypad_follows_num_lock() {
+        let key = |evdev, state| convert_linux_key(evdev, state, true, false);
+        let kp7 = key(71, NUM_LOCK_MASK);
+        assert_eq!((kp7.logical, kp7.text.as_deref(), kp7.location), (Key::Character("7".into()), Some("7"), KeyLocation::Numpad));
+        let home = key(71, 0);
+        assert_eq!((home.logical, home.text, home.location), (Key::Named(NamedKey::Home), None, KeyLocation::Numpad));
+        let shifted = key(71, NUM_LOCK_MASK | SHIFT);
+        assert_eq!((shifted.logical, shifted.unshifted), (Key::Named(NamedKey::Home), Key::Character("7".into())));
+        assert_eq!(key(71, SHIFT).logical, Key::Character("7".into()));
+        assert_eq!(key(76, 0).logical, Key::Named(NamedKey::Clear));
+        assert_eq!(key(76, NUM_LOCK_MASK).physical, PhysicalKey::Code(KeyCode::Numpad5));
+        assert_eq!(key(83, NUM_LOCK_MASK).logical, Key::Character(".".into()));
+        assert_eq!(key(83, 0).logical, Key::Named(NamedKey::Delete));
+        for (evdev, op) in [(55, "*"), (74, "-"), (78, "+"), (98, "/"), (117, "="), (121, ",")] {
+            let k = key(evdev, 0);
+            assert_eq!((k.logical, k.text.as_deref(), k.location), (Key::Character(op.into()), Some(op), KeyLocation::Numpad), "evdev {evdev}");
+        }
+        let enter = key(96, NUM_LOCK_MASK);
+        assert_eq!((enter.logical, enter.text, enter.location), (Key::Named(NamedKey::Enter), None, KeyLocation::Numpad));
+        let num_lock = key(69, 0);
+        assert_eq!((num_lock.logical, num_lock.location), (Key::Named(NamedKey::NumLock), KeyLocation::Standard));
+        // Main-block keys are unaffected by Num Lock.
+        assert_eq!(key(8, NUM_LOCK_MASK).location, KeyLocation::Standard);
+        assert_eq!(key(102, NUM_LOCK_MASK).logical, Key::Named(NamedKey::Home));
     }
 
     #[test]

@@ -121,11 +121,18 @@ impl NativeWindow {
     }
 
     pub fn set_outer_position(&self, position: LogicalPosition<f64>) {
+        let scale = self.scale_factor();
+        self.set_outer_position_physical(PhysicalPosition::new(
+            (position.x * scale).round() as i32,
+            (position.y * scale).round() as i32,
+        ));
+    }
+
+    pub fn set_outer_position_physical(&self, position: PhysicalPosition<i32>) {
         let mut guard = self.inner.lock();
-        let scale = guard.scale_factor;
-        guard.position = PhysicalPosition::new((position.x * scale).round() as i32, (position.y * scale).round() as i32);
+        guard.position = position;
         if let Some(x11) = &guard.x11_window {
-            x11.move_to(guard.position.x, guard.position.y);
+            x11.move_to(position.x, position.y);
         }
     }
 
@@ -237,6 +244,11 @@ impl NativeWindow {
         self.inner.lock().raw_handle
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_scale_factor_for_test(&self, scale: f64) {
+        self.inner.lock().scale_factor = scale;
+    }
+
     #[allow(dead_code)]
     pub fn set_raw_handle(&self, handle: RawHandle) {
         self.inner.lock().raw_handle = Some(handle);
@@ -272,7 +284,7 @@ fn moveresize_direction(direction: ResizeDirection) -> std::ffi::c_long {
 
 /// A window with no X11 connection, for tests of the loop's bookkeeping.
 #[cfg(test)]
-pub(super) fn detached(width: u32, height: u32) -> NativeWindow {
+pub(crate) fn detached(width: u32, height: u32) -> NativeWindow {
     NativeWindow {
         id: allocate_window_id(),
         inner: Arc::new(Mutex::new(NativeWindowInner {
@@ -304,5 +316,17 @@ mod tests {
         let win = detached(968, 620);
         win.observe(&WindowEvent::Resized(PhysicalSize::new(1920, 1080)));
         assert_eq!(win.inner_size(), PhysicalSize::new(1920, 1080));
+    }
+
+    /// Cascade positions are physical pixels already; scaling them again
+    /// placed new windows twice as far away on a HiDPI screen.
+    #[test]
+    fn physical_positions_are_not_scaled_again() {
+        let win = detached(800, 600);
+        win.set_scale_factor_for_test(2.0);
+        win.set_outer_position_physical(PhysicalPosition::new(1920, 40));
+        assert_eq!(win.outer_position(), Ok(PhysicalPosition::new(1920, 40)));
+        win.set_outer_position(LogicalPosition::new(100.0, 50.0));
+        assert_eq!(win.outer_position(), Ok(PhysicalPosition::new(200, 100)));
     }
 }

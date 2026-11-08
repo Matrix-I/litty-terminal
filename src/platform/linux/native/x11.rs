@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::platform::gui::{PhysicalPosition, PhysicalSize, RawHandle, WindowEvent, WindowSpec};
 use super::events::{convert_linux_key, keysym_char, mods_after_key, mods_from_state, x11_button_event, HeldKeys};
-use crate::platform::input::{Key, Mods};
+use crate::platform::input::{Key, KeyLocation, Mods};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Once, OnceLock};
 
@@ -563,18 +563,23 @@ impl X11Window {
                         let state = kev.state as u32;
                         self.report_mods(mods_after_key(state, evdev_code, pressed), events);
                         let repeat = self.0.held.update(kev.keycode as u8, pressed);
-                        let mut key_input = convert_linux_key(evdev_code, pressed, repeat);
+                        let mut key_input = convert_linux_key(evdev_code, state, pressed, repeat);
                         // Keys outside the evdev table (other layouts' extra
                         // keys, remapped keycodes) still produce layout text.
                         if !matches!(key_input.logical, Key::Named(_)) {
                             // Layout-aware text: Shift (and AltGr) applied,
-                            // Ctrl/Alt/Super left to the keymap.
+                            // Ctrl/Alt/Super left to the keymap. This keeps
+                            // a layout's own keypad symbols (KP_Separator).
                             const CTRL_ALT_SUPER: u32 = 4 | 8 | 64;
                             if let Some(c) = self.lookup(kev, state & !CTRL_ALT_SUPER) {
                                 key_input.logical = Key::Character(c.clone());
                                 key_input.text = Some(c);
                             }
-                            if let Some(c) = self.lookup(kev, 0) {
+                            // A keypad key's base key is its Num Lock one,
+                            // not the navigation key `state` 0 would give.
+                            if key_input.location != KeyLocation::Numpad
+                                && let Some(c) = self.lookup(kev, 0)
+                            {
                                 key_input.unshifted = Key::Character(c);
                             }
                         }
