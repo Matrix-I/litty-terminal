@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use parking_lot::Mutex;
 
 use super::fonts::FONT_CACHE;
+use super::run_cache::RunCache;
 use super::{FontSet, GLYPH_PIECE, SHAPED_BLANK};
 
 /// An OpenType feature tag (`calt`, `liga`, `ss01`, ...) and value (`0` = off, `1` = on).
@@ -35,16 +36,31 @@ pub(super) struct GlyphPiece {
     pub(super) italic: bool,
 }
 
-/// Ligature shaping state: reusable shaped-glyph buffer and interned glyph pieces.
+/// Ligature shaping state: reusable shaped-glyph buffer, interned glyph pieces
+/// and the outputs of recently shaped runs.
 pub(super) struct Shaper {
     shaped_buf: Vec<ShapedGlyph>,
     pub(super) pieces: Vec<GlyphPiece>,
     pub(super) piece_ids: HashMap<GlyphPiece, u32>,
+    runs: RunCache,
+    /// Calls into the platform shaper, so tests can tell cache hits from misses.
+    #[cfg(test)]
+    pub(super) platform_shapes: u64,
 }
+
+/// Interned pieces before their ids start over (they are 22-bit slot keys).
+const MAX_PIECES: usize = 4096;
 
 impl Shaper {
     pub(super) fn new(_features: Vec<FontFeature>) -> Self {
-        Shaper { shaped_buf: Vec::with_capacity(64), pieces: Vec::new(), piece_ids: HashMap::new() }
+        Shaper {
+            shaped_buf: Vec::with_capacity(64),
+            pieces: Vec::new(),
+            piece_ids: HashMap::new(),
+            runs: RunCache::new(),
+            #[cfg(test)]
+            platform_shapes: 0,
+        }
     }
 
     /// Shape the ligature candidates of a row: runs of printable ASCII in one
@@ -61,11 +77,14 @@ impl Shaper {
         out: &mut Vec<u32>,
     ) -> (bool, bool) {
         let mut reset_pieces = false;
-        if self.pieces.len() >= 4096 {
+        if self.pieces.len() >= MAX_PIECES {
             self.pieces.clear();
             self.piece_ids.clear();
+            // Cached outputs name the old piece ids.
+            self.runs.clear();
             reset_pieces = true;
         }
+        self.runs.set_shaped_at(px, cell_w);
         out.clear();
         out.resize(row.len(), 0);
         if cell_w == 0 {
@@ -92,72 +111,98 @@ impl Shaper {
             if run.len() < 2 || !punct {
                 continue;
             }
-
-            if !fonts.primary.shape_ascii_run(px, run, &mut self.shaped_buf) {
-                continue;
+            let style_byte = u8::from(style.0) | u8::from(style.1) << 1;
+            let hash = self.runs.load(style_byte, run.iter().map(|c| c.codepoint as u8));
+            let run_out = &mut out[start..i];
+            if !self.runs.get_into(hash, run_out) {
+                self.shape_run(fonts, px, cell_w, run, style, run_out);
+                self.runs.insert(hash, run_out);
             }
-            let n_shaped = self.shaped_buf.len();
-            for idx in 0..n_shaped {
-                let sg = self.shaped_buf[idx];
-                let cluster_end = (idx + 1..n_shaped)
-                    .map(|j| self.shaped_buf[j].cluster)
-                    .find(|&c| c > sg.cluster)
-                    .unwrap_or(run.len())
-                    .min(run.len());
-                let cluster_len = cluster_end.saturating_sub(sg.cluster).max(1);
-                let Some(cell) = run.get(sg.cluster) else { continue };
-                let ch = char::from_u32(cell.codepoint).unwrap_or(' ');
-                let nominal = fonts.primary.lookup_glyph_index(ch);
-                if sg.gid == nominal
-                    && cluster_len == 1
-                    && sg.x_offset_px.abs() < 0.1
-                    && sg.y_offset_px.abs() < 0.1
-                {
-                    continue;
-                }
-                let (xmin, _ymin, bw, bh) = fonts.primary.glyph_bounds(sg.gid, px);
-                if bw == 0 || bh == 0 {
-                    for c_idx in sg.cluster..cluster_end {
-                        if out[start + c_idx] == 0 {
-                            out[start + c_idx] = SHAPED_BLANK;
-                            changed = true;
-                        }
-                    }
-                    continue;
-                }
-                let cw = cell_w as i32;
-                let rel = if xmin < 0 && cluster_len > 1 {
-                    cluster_end - 1
-                } else {
-                    sg.cluster
-                };
-                let x0 = xmin + sg.x_offset_px.round() as i32;
-                let first = (rel as i32 + x0.div_euclid(cw)).min(sg.cluster as i32);
-                let last = (rel as i32 + (x0 + bw as i32 - 1).div_euclid(cw)).max(cluster_end as i32 - 1);
-                let (first, last) = (first.max(0), last.min(run.len() as i32 - 1));
-                let (span, origin) = (last - first + 1, rel as i32 - first);
-                if !(1..=31).contains(&span) || !(0..32).contains(&origin) {
-                    continue;
-                }
-                let piece = GlyphPiece {
-                    gid: sg.gid,
-                    span: span as u8,
-                    origin: origin as u8,
-                    bold: style.0,
-                    italic: style.1,
-                };
-                let next = self.pieces.len() as u32;
-                let id = *self.piece_ids.entry(piece).or_insert(next);
-                if id == next {
-                    self.pieces.push(piece);
-                }
-                for k in 0..span {
-                    out[start + (first + k) as usize] = GLYPH_PIECE | (id << 5) | k as u32;
-                }
-                changed = true;
-            }
+            changed |= run_out.iter().any(|&v| v != 0);
         }
         (changed, reset_pieces)
+    }
+
+    /// Shape one run with the platform shaper into `out` (one word per cell, all 0 on entry).
+    fn shape_run(
+        &mut self,
+        fonts: &FontSet,
+        px: f32,
+        cell_w: u32,
+        run: &[crate::terminal::grid::Cell],
+        style: (bool, bool),
+        out: &mut [u32],
+    ) {
+        #[cfg(test)]
+        {
+            self.platform_shapes += 1;
+        }
+        if !fonts.primary.shape_ascii_run(px, run, &mut self.shaped_buf) {
+            return;
+        }
+        let n_shaped = self.shaped_buf.len();
+        for idx in 0..n_shaped {
+            let sg = self.shaped_buf[idx];
+            let cluster_end = (idx + 1..n_shaped)
+                .map(|j| self.shaped_buf[j].cluster)
+                .find(|&c| c > sg.cluster)
+                .unwrap_or(run.len())
+                .min(run.len());
+            let cluster_len = cluster_end.saturating_sub(sg.cluster).max(1);
+            let Some(cell) = run.get(sg.cluster) else { continue };
+            let ch = char::from_u32(cell.codepoint).unwrap_or(' ');
+            let nominal = fonts.primary.lookup_glyph_index(ch);
+            if sg.gid == nominal
+                && cluster_len == 1
+                && sg.x_offset_px.abs() < 0.1
+                && sg.y_offset_px.abs() < 0.1
+            {
+                continue;
+            }
+            let (xmin, _ymin, bw, bh) = fonts.primary.glyph_bounds(sg.gid, px);
+            if bw == 0 || bh == 0 {
+                for slot in &mut out[sg.cluster..cluster_end] {
+                    if *slot == 0 {
+                        *slot = SHAPED_BLANK;
+                    }
+                }
+                continue;
+            }
+            let cw = cell_w as i32;
+            let rel = if xmin < 0 && cluster_len > 1 {
+                cluster_end - 1
+            } else {
+                sg.cluster
+            };
+            let x0 = xmin + sg.x_offset_px.round() as i32;
+            let first = (rel as i32 + x0.div_euclid(cw)).min(sg.cluster as i32);
+            let last = (rel as i32 + (x0 + bw as i32 - 1).div_euclid(cw)).max(cluster_end as i32 - 1);
+            let (first, last) = (first.max(0), last.min(run.len() as i32 - 1));
+            let (span, origin) = (last - first + 1, rel as i32 - first);
+            if !(1..=31).contains(&span) || !(0..32).contains(&origin) {
+                continue;
+            }
+            let piece = GlyphPiece {
+                gid: sg.gid,
+                span: span as u8,
+                origin: origin as u8,
+                bold: style.0,
+                italic: style.1,
+            };
+            let next = self.pieces.len() as u32;
+            let id = *self.piece_ids.entry(piece).or_insert(next);
+            if id == next {
+                self.pieces.push(piece);
+            }
+            for k in 0..span {
+                out[(first + k) as usize] = GLYPH_PIECE | (id << 5) | k as u32;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn cached_runs(&self) -> usize {
+        self.runs.len()
     }
 }
 

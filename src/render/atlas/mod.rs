@@ -23,6 +23,7 @@ mod fonts;
 #[cfg(not(target_os = "macos"))]
 mod linux;
 mod raster;
+mod run_cache;
 mod shaper;
 mod sprites;
 pub use fonts::load_font;

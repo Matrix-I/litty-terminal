@@ -1,6 +1,7 @@
 #[cfg(target_os = "macos")]
 use super::coretext::{rasterize_color, rasterize_text_cluster};
 use super::fonts::parse_font;
+use super::run_cache;
 use super::shaper::{GlyphPiece, Shaper};
 use super::sprites::draw_builtin_sprite;
 use super::*;
@@ -286,3 +287,112 @@ fn line_metrics_prefers_the_font_when_it_has_them() {
 
 /// Tests that change or depend on the global `font-feature` list take this.
 static FEATURES_LOCK: parking_lot::Mutex<()> = parking_lot::const_mutex(());
+
+fn cells(text: &str, bold: bool) -> Vec<crate::terminal::grid::Cell> {
+    let fg = if bold { crate::terminal::grid::FG_BOLD } else { 0 };
+    text.chars().map(|c| crate::terminal::grid::Cell { codepoint: c as u32, fg, ..Default::default() }).collect()
+}
+
+/// `out` with piece ids replaced by the pieces they name, so shapers that
+/// interned pieces in a different order still compare equal.
+fn resolved(shaper: &Shaper, out: &[u32]) -> Vec<(u32, Option<GlyphPiece>)> {
+    out.iter()
+        .map(|&v| match v & GLYPH_PIECE != 0 {
+            true => (v & 31, Some(shaper.pieces[((v & !GLYPH_PIECE) >> 5) as usize])),
+            false => (v, None),
+        })
+        .collect()
+}
+
+fn shaping_fonts() -> Vec<Arc<FontSet>> {
+    let mut sets = vec![load_font(&[])];
+    if let Ok(path) = std::env::var("LITTY_LIGATURE_FONT") {
+        sets.push(Arc::new(FontSet { primary: parse_font(&path, 0, true).unwrap(), fallbacks: Vec::new() }));
+    }
+    sets
+}
+
+const CODE_ROWS: [&str; 5] = [
+    "fn main() -> Result<(), Box<dyn Error>> { let x = a != b && c <= d; }",
+    "    if (x === y || z !== w) { return a >>= 2; } // => ok",
+    "ab -> cd != ef",
+    "plain words only here",
+    "<!-- html --> |> :: ... ++ -- ** www ;;",
+];
+
+#[test]
+fn cached_shaping_matches_fresh_shaping() {
+    // HarfBuzz reads the global features while shaping; keep them fixed.
+    let _features = FEATURES_LOCK.lock();
+    for fonts in shaping_fonts() {
+        let mut cached = Shaper::new(Vec::new());
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        // Twice over, so the second pass is served from the cache.
+        for pass in 0..2 {
+            for (i, text) in CODE_ROWS.iter().enumerate() {
+                let row = cells(text, i % 2 == 1);
+                let hit = cached.shape_row(&fonts, 28.0, 17, &row, &mut a).0;
+                let mut fresh = Shaper::new(Vec::new());
+                let miss = fresh.shape_row(&fonts, 28.0, 17, &row, &mut b).0;
+                assert_eq!(hit, miss, "pass {pass}, row {text:?}");
+                assert_eq!(resolved(&cached, &a), resolved(&fresh, &b), "pass {pass}, row {text:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn repeated_runs_are_shaped_once() {
+    let fonts = load_font(&[]);
+    let mut shaper = Shaper::new(Vec::new());
+    let mut out = Vec::new();
+    let row = cells(CODE_ROWS[0], false);
+    shaper.shape_row(&fonts, 28.0, 17, &row, &mut out);
+    let shaped = shaper.platform_shapes;
+    assert!(shaped > 0, "the row has punctuation runs to shape");
+    shaper.shape_row(&fonts, 28.0, 17, &row, &mut out);
+    assert_eq!(shaper.platform_shapes, shaped, "the same runs come from the cache");
+    // The same text in another style, size or cell width is a different entry.
+    shaper.shape_row(&fonts, 28.0, 17, &cells(CODE_ROWS[0], true), &mut out);
+    assert!(shaper.platform_shapes > shaped, "bold runs are cached separately");
+    let shaped = shaper.platform_shapes;
+    shaper.shape_row(&fonts, 30.0, 18, &row, &mut out);
+    assert!(shaper.platform_shapes > shaped, "a new size shapes again");
+}
+
+#[test]
+fn cached_shaping_does_not_allocate() {
+    let fonts = load_font(&[]);
+    let mut shaper = Shaper::new(Vec::new());
+    let mut out = Vec::new();
+    let rows: Vec<_> = CODE_ROWS.iter().map(|t| cells(t, false)).collect();
+    for row in &rows {
+        shaper.shape_row(&fonts, 28.0, 17, row, &mut out);
+    }
+    let allocations = crate::test_alloc::allocations(|| {
+        for row in &rows {
+            shaper.shape_row(&fonts, 28.0, 17, row, &mut out);
+        }
+    });
+    assert_eq!(allocations, 0);
+}
+
+#[test]
+fn shaping_cache_stays_bounded_and_survives_a_piece_reset() {
+    let fonts = load_font(&[]);
+    let mut shaper = Shaper::new(Vec::new());
+    let mut out = Vec::new();
+    for i in 0..2 * run_cache::RUN_CACHE_ENTRIES + 10 {
+        shaper.shape_row(&fonts, 28.0, 17, &cells(&format!("a->{i}"), false), &mut out);
+        assert!(shaper.cached_runs() <= 2 * run_cache::RUN_CACHE_ENTRIES);
+    }
+    // Interned piece ids restart after a reset, so cached runs must go too.
+    let row = cells(CODE_ROWS[0], false);
+    shaper.shape_row(&fonts, 28.0, 17, &row, &mut out);
+    for gid in 0..4096u16 {
+        shaper.pieces.push(GlyphPiece { gid, span: 2, origin: 0, bold: false, italic: false });
+    }
+    let shaped = shaper.platform_shapes;
+    assert!(shaper.shape_row(&fonts, 28.0, 17, &row, &mut out).1, "pieces reset");
+    assert!(shaper.platform_shapes > shaped, "the reset cleared the cache");
+}
