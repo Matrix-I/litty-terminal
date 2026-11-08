@@ -16,7 +16,7 @@ vte = { version = "0.13", default-features = false }
 libc = "0.2"
 parking_lot = "0.12"
 bytemuck = { version = "1", features = ["derive", "extern_crate_alloc"] }
-unicode-width = "0.1"
+unicode-width = "0.2"
 unicode-normalization = "0.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
