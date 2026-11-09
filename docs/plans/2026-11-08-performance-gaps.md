@@ -77,22 +77,22 @@ Not measured: keystroke-to-screen latency, launch → first presented frame.
 
 | ID | Issue | Status | Priority |
 |---|---|---|---|
-| B1 | No input-latency benchmark | Confirmed gap | P0 |
-| B2 | No first-frame benchmark | Confirmed gap | P0 |
-| B3 | No end-to-end PTY throughput benchmark | Confirmed gap | P0 |
+| B1 | No input-latency benchmark | Done (macOS; Linux in a software-Vulkan container) | P0 |
+| B2 | No first-frame benchmark | Done (warm and cold) | P0 |
+| B3 | No end-to-end PTY throughput benchmark | Done | P0 |
 | T1 | Glyph shaping and rasterization run under the grid lock | Measured; deferred after T2 (≤ 3% left) | P3 |
 | T2 | CoreText shaping allocates per run, per dirty row, per frame | Done | P1 |
 | T3 | OSC 8 throughput 3.3 MB/s | Done (scan skipped when provably full) | P1 |
 | T4 | Region scroll 36 MB/s | Closed: cost is the row copy itself (no change) | P2 |
 | T5 | Unicode/emoji path 56–75 MB/s | Done (UTF-8 fast path); emoji cluster interning left | P2 |
 | T6 | Grid locked 4–5 times per frame | Closed: 2 locks per frame, ~0.5 µs extra (no change) | P2 |
-| T7 | Terminal reply buffer reallocated each batch | Confirmed path | P3 |
+| T7 | Terminal reply buffer reallocated each batch | Done (no allocation per short reply; latency unchanged) | P3 |
 | S1 | Metal shaders compiled from source at startup | Done (overlapped, not precompiled) | P1 |
 | S2 | ~130 ms warm startup unexplained | Explained; font load overlapped | P1 |
 | M1 | 1-window footprint dominated by 45 MB IOSurface | Closed: now 2 drawables (30 MB), the CAMetalLayer minimum | P2 |
 | M2 | ~10 MB Malloc Small retained with 0 windows | Done: closed window pinned a 15 MB drawable; Malloc is framework state | P2 |
 | M3 | Unbundled runs carry an 8 MB Dock icon | Done (set once, skipped in benchmarks) | P3 |
-| D1 | Targets that cannot be met as defined | Confirmed | P0 (decision) |
+| D1 | Targets that cannot be met as defined | Decided (targets redefined) | P0 (decision) |
 | D2 | README and `performance.md` claims disagree with measurements | Done (measured numbers with methods) | P1 |
 
 ## P0 — Benchmarks first
@@ -134,7 +134,23 @@ PASS/FAIL threshold until a baseline exists.
   echo child roundtrip test over a real PTY (no window). The GUI run itself is
   verified by running it and quoting its JSON.
 - [x] Implement, run 3× on macOS, record numbers in this file (`1bca032`).
-- [ ] Run on Linux X11 (container or host). **Not run yet**: only `cargo check` / `clippy` for `x86_64-unknown-linux-gnu`.
+- [x] Run on Linux X11, 2026-11-09, in the `scripts/linux/Containerfile`
+  image (Debian 13, aarch64 under Podman on the M1 Pro, Xvfb 1280×800, Mesa
+  lavapipe software Vulkan, window 960×600 px, scale 1, 60 Hz, release build,
+  1,000 samples after 50 warmup, three runs). Proves the benchmark runs on the
+  Linux backend; the numbers are not representative of a GPU, because
+  lavapipe rasterizes on the CPU inside `render` and `gpu` is ~0.
+
+| Stage | p50 ms | p95 ms | p99 ms |
+|---|---|---|---|
+| total | 11.1–12.5 | 13.3–14.5 | 14.9–15.6 |
+| input | 0.008–0.010 | 0.017–0.023 | 0.023–0.035 |
+| echo | 0.10–0.11 | 0.16–0.26 | 0.70–1.11 |
+| render | 10.9–12.3 | 13.1–14.3 | 14.7–15.4 |
+| gpu | 0.001 | 0.001–0.002 | 0.002 |
+
+- Not done: a run on Linux hardware with a real Vulkan driver (the Intel
+  UHD 620 host used for `0.10.0.md` §4.3).
 - Deviations from the design above: the reader-side stamp (`t_echo_in_grid`)
   is not taken; `echo` ends when the main thread first sees the byte in the
   grid right before a draw, so it includes the wake-up. A frame that picks up
@@ -177,8 +193,19 @@ one 120 Hz frame. These are new findings for P1/P2, not yet investigated.
   the child subtracts it (that clock is system-wide), so no new platform
   function was needed. Stages are `exec`, `init` (main → window created),
   `first_submit`, `gpu`; finer stamps inside `init` are still needed for S2.
-- [ ] Cold run. **Not achieved**: run 1 below was not cold (the shader
-  cache was already warm from earlier runs of the same shader source).
+- [x] Cold run, 2026-11-09 (M1 Pro, release build of `e56bab5`, three
+  builds, each with a temporary comment appended to `shader.metal` so its
+  source hash is new and run 1 compiles the shader cold; `+bench-first-frame 5`
+  per build, comment removed afterwards):
+
+| Build | Run 1 (cold) total ms | Run 1 `init` ms | Runs 2–5 p50 total ms |
+|---|---|---|---|
+| 1 | 520.8 | 477.1 | 137.0 |
+| 2 | 249.1 | 214.3 | 139.6 |
+| 3 | 332.8 | 309.9 | 165.3 |
+
+  Cold first frame median 333 ms; the spread is the font load, which is only
+  cold when the OS font caches are also cold (see S2).
 - [x] Warm runs, 2026-11-09 (M1 Pro, 10 launches):
 
 | Stage | Run 1 ms | Runs 2–10 p50 ms | min–max ms |
@@ -230,7 +257,20 @@ isolation step.
 | Idle RAM 1 window < 22 MB | Two BGRA8 drawables at Retina size are ~25 MB each | Measure 1-window RAM excluding IOSurface, or set the target per window size |
 | `CLAUDE.md` < 50 MB with windows closed | Met (20–22 MB) | Keep |
 
-- [ ] Ask the user; update `docs/plans/0.10.0.md` §1 targets and `CLAUDE.md` if changed.
+- [x] Decision, 2026-11-09 (user): both proposals above. `docs/plans/0.10.0.md`
+  §1 now states the grid-only 2.5 GB/s target plus an in-app target of ≥ 80% of
+  the raw PTY ceiling, and a 1-window RAM target that excludes the
+  `CAMetalLayer` drawables' IOSurface. `CLAUDE.md` is unchanged (< 50 MB with
+  all windows closed is met).
+- Where the redefined targets stand, 2026-11-09 (M1 Pro, release build):
+  - In app vs raw PTY: `ascii` ~150 MB/s (T2 result) of 215–228 MB/s, i.e.
+    66–70%; below the 80% target.
+  - 1 window, default size, raw binary, stand-in `$SHELL` that idles,
+    `footprint` 15 s after launch, three runs: 49–50 MB, of which IOSurface
+    15 MB and the Dock icon `CG Image` 8 MB (raw binary only, M3). Without
+    IOSurface: 34–35 MB raw; ~26–27 MB after also taking out the icon that
+    bundled runs do not load (computed, not measured from a bundle). Above the
+    22 MB target; Malloc Small (11–12 MB) is the largest remaining part.
 
 ## P1 — Throughput and startup
 
@@ -658,6 +698,16 @@ isolation step.
 - `std::mem::take(&mut reply)` (`src/terminal/pty.rs:520`) hands the buffer to
   the writer and allocates a new one on the next reply. Only matters for
   reply-heavy apps (DSR/DA floods). Measure with `+bench-dsr` before changing.
+- [x] Fix, branch `perf/reply-buffer-reuse`: `queue_reply_buffer` copies the
+  reply into a `WritePayload` (inline up to 15 bytes, which covers DSR, CPR and
+  DA) and clears the buffer, which keeps its capacity. Longer replies (XTVERSION,
+  DECRQSS) still allocate one `Vec`, as before. Tests: a short reply in steady
+  state allocates nothing (failed with 1 allocation before the fix); a long
+  reply is sent whole and the buffer is emptied.
+- [x] Result, 2026-11-09 (M1 Pro, release builds, `+bench-dsr 20000`, 3
+  alternating rounds): mean 0.016–0.017 ms before, 0.016 ms after; P99
+  0.040–0.058 ms before, 0.042–0.048 ms after. Latency is unchanged within
+  noise; the gain is the zero-allocation invariant on the PTY reader path.
 
 ### M3 Dock icon in unbundled runs
 
