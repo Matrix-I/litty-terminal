@@ -91,7 +91,7 @@ Not measured: keystroke-to-screen latency, launch → first presented frame.
 | S2 | ~130 ms warm startup unexplained | Explained; font load overlapped | P1 |
 | M1 | 1-window footprint dominated by 45 MB IOSurface | Confirmed | P2 |
 | M2 | ~10 MB Malloc Small retained with 0 windows | Unknown | P2 |
-| M3 | Unbundled runs carry an 8 MB Dock icon | Confirmed | P3 |
+| M3 | Unbundled runs carry an 8 MB Dock icon | Done (set once, skipped in benchmarks) | P3 |
 | D1 | Targets that cannot be met as defined | Confirmed | P0 (decision) |
 | D2 | README and `performance.md` claims disagree with measurements | Confirmed | P1 |
 
@@ -482,6 +482,26 @@ isolation step.
   a `.app`. Affects dev runs and `+bench-ram` numbers taken from the raw
   binary, not users. Options: smaller embedded icon, or document that RAM
   benchmarks must run from the bundle. Decide during D2.
+- Also found: `build_window` called it for every window, so each new window
+  decoded the icon again (~31 ms on the main thread), and
+  `scripts/pre-release-check.sh` runs `+bench-ram` on the raw binary, so the
+  release RAM gate included the icon.
+- Decision: no asset change. The icon is set once per process, from
+  `App::resumed`, and not at all in benchmark runs (`+bench-ram` and the GUI
+  benchmarks), so they measure what bundled users get.
+- Result (raw binary, `+bench-ram` footprint, 2 alternating rounds):
+
+  | Step | Before | After |
+  |---|---|---|
+  | 1 window, 1 tab | 74 MB | 65 MB |
+  | 1 window, 3 tabs | 75 MB | 66 MB |
+  | 2 windows, 6 tabs | 109 MB | 100–101 MB |
+  | All windows closed | 61 MB | 52 MB |
+
+  `+bench-first-frame 8` warm p50, 3 alternating rounds: 177–188 ms before,
+  151–167 ms after. That drop is the benchmark no longer paying the icon, not
+  a faster start for users: bundled runs never set it, and unbundled dev runs
+  still pay it once before the first frame.
 
 ## Order of work
 
