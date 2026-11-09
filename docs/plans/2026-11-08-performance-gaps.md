@@ -85,7 +85,7 @@ Not measured: keystroke-to-screen latency, launch → first presented frame.
 | T3 | OSC 8 throughput 3.3 MB/s | Done (scan skipped when provably full) | P1 |
 | T4 | Region scroll 36 MB/s | Closed: cost is the row copy itself (no change) | P2 |
 | T5 | Unicode/emoji path 56–75 MB/s | Done (UTF-8 fast path); emoji cluster interning left | P2 |
-| T6 | Grid locked 4–5 times per frame | Confirmed path | P2 |
+| T6 | Grid locked 4–5 times per frame | Closed: 2 locks per frame, ~0.5 µs extra (no change) | P2 |
 | T7 | Terminal reply buffer reallocated each batch | Confirmed path | P3 |
 | S1 | Metal shaders compiled from source at startup | Done (overlapped, not precompiled) | P1 |
 | S2 | ~130 ms warm startup unexplained | Explained; font load overlapped | P1 |
@@ -547,6 +547,24 @@ isolation step.
   (`src/render/renderer/frame.rs:62`, `:184`, `:227`, `:269`, `:359`).
 - Fold the dirty check and active-pane read into the T1 snapshot step.
 - Acceptance: reader lock-wait (from T1 instrumentation).
+- [x] Measured, 2026-11-09 (temporary hold-time counters at each site,
+  `+bench-pty-throughput 64`, one pane). A normal frame locks twice:
+  `read_active_pane` and `collect_pane_instances`. `nothing_changed` locks
+  only the other panes; `snap_fractional_scroll` runs only while an overlay
+  is open; `rebuild_after_eviction` runs only after atlas eviction.
+
+  | Site (`code` stream, 508 ms, 53 frames) | Hold per frame | Share of time |
+  |---|---|---|
+  | `read_active_pane` | ~0.5 µs | 0.006% |
+  | `collect_pane_instances` | ~105 µs | 1.1% |
+  | Reader waiting for the lock | — | 1.6% |
+
+  The `osc8` stream gave the same picture: 0.5 µs and 56 µs per frame.
+- [x] Decision, 2026-11-09: close without a change. The extra lock costs
+  ~0.5 µs per frame. The two locks are split on purpose: `acquire_frame`
+  runs between them and can wait up to a vsync for a drawable, so one lock
+  would hold the grid mutex across that wait. Folding them only makes sense
+  inside T1's row snapshot, which stays deferred.
 
 ### M1 1-window footprint (45 MB IOSurface, 5 regions)
 
