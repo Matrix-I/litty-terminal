@@ -5,17 +5,29 @@ avoid scanning scrollback for every new cluster. Existing clusters remain
 available; new clusters may temporarily lose combining marks until a later
 collection reclaims unused entries.
 
-Tested on macOS Sequoia / Sonoma (Apple Silicon M-series, empty idle shell):
+Measured on 2026-11-09: Litty 0.10.1 release build (`cargo build --release`),
+Apple M1 Pro, macOS 27.2, one 2590 × 1492 px Retina window.
 
-| Terminal Emulator | Idle RAM (Activity Monitor) | Idle RAM (RSS) | Idle CPU | Startup Time | Binary Size | GPU Backend |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Litty** | **~47 MB** | **~104 MB** | **0.0%** | **< 30 ms** | **2.1 MB** | Metal (Direct) |
-| Ghostty | ~70 – 85 MB | ~110 – 125 MB | 0.0% | ~50 ms | ~45 MB | Metal |
-| Alacritty | ~75 – 95 MB | ~115 – 135 MB | 0.0% | ~60 ms | ~18 MB | OpenGL / Metal |
-| WezTerm | ~130 – 160 MB | ~170 – 210 MB | 0.0% – 0.5% | ~120 ms | ~95 MB | OpenGL / Vulkan |
+| Metric | Result | How it was measured |
+| :--- | :---: | :--- |
+| Idle footprint, 1 window | **63 MB** | `litty +bench-ram`, step 1 (1 window, 1 tab, idle shell) |
+| Idle RSS, 1 window | 92 MB | Same run |
+| Idle footprint, all windows closed | **32–33 MB** | Shell exits so the only window closes; `footprint` 10–45 s later, 3 runs |
+| Idle CPU | **0.0%** | 1 window, idle shell: no CPU time used over 30 s (`ps -o time`) |
+| Startup to first frame | **172 ms** p50 warm, 400 ms first run | `litty +bench-first-frame 10`: process spawn → GPU-completed first frame |
+| Keystroke to frame | **4.0 ms** p50, 9.4 ms p95 | `litty +bench-input-latency`: synthetic key → GPU-completed frame showing the echo; excludes the OS input stack and display scanout |
+| Binary size | **2.1 MB** | `target/release/litty` |
+
+Two drawables at Retina size (15 MB each) make up about half of the
+1-window footprint; they are freed when the window is occluded or closed.
+Startup is dominated by `init` (~146 ms p50: font loading and the Metal
+device, overlapped). Comparisons with other terminals are not listed: they
+have not been measured on this setup.
 
 > [!NOTE]
-> **Measuring Memory Footprint on macOS**: macOS Activity Monitor displays **Physical Footprint** (`task_vm_info.phys_footprint`: actual private dirty memory + compressed memory), which accurately reflects the real memory cost attributed to the process (**~47 MB** for Litty). The legacy Unix `ps -o rss` metric includes shared read-only framework pages (Metal, AppKit, and system dylib caches) shared across all macOS GUI applications.
+> **Measuring Memory Footprint on macOS**: macOS Activity Monitor displays **Physical Footprint** (`task_vm_info.phys_footprint`: actual private dirty memory + compressed memory), which accurately reflects the real memory cost attributed to the process. The legacy Unix `ps -o rss` metric includes shared read-only framework pages (Metal, AppKit, and system dylib caches) shared across all macOS GUI applications.
+>
+> Run from the raw binary outside a benchmark, Litty also carries an 8 MB Dock icon bitmap that a bundled `Litty.app` does not; `+bench-ram` skips it so it measures what bundled users get.
 
 ## 🚀 Measured Engine Latencies & Microbenchmarks
 

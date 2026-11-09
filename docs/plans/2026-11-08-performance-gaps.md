@@ -93,7 +93,7 @@ Not measured: keystroke-to-screen latency, launch → first presented frame.
 | M2 | ~10 MB Malloc Small retained with 0 windows | Done: closed window pinned a 15 MB drawable; Malloc is framework state | P2 |
 | M3 | Unbundled runs carry an 8 MB Dock icon | Done (set once, skipped in benchmarks) | P3 |
 | D1 | Targets that cannot be met as defined | Confirmed | P0 (decision) |
-| D2 | README and `performance.md` claims disagree with measurements | Confirmed | P1 |
+| D2 | README and `performance.md` claims disagree with measurements | Done (measured numbers with methods) | P1 |
 
 ## P0 — Benchmarks first
 
@@ -463,6 +463,17 @@ isolation step.
   "~47 MB" idle RAM; measurements are ~150 ms warm / 1.3 s cold and 77 MB with
   one window (20–22 MB with none). Update after B1–B3 exist, with the
   method stated next to each number.
+- [x] Measured, 2026-11-09 (release build of `a6039dc`, M1 Pro, macOS 27.2,
+  2590×1492 px window): `+bench-ram` 63 MB footprint / 92 MB RSS with 1
+  window; 32–33 MB with all windows closed (after M2); idle CPU 0 s over
+  30 s; `+bench-first-frame 10` 172 ms p50 warm, 400 ms first run;
+  `+bench-input-latency` 4.0 ms p50, 9.4 ms p95; binary 2.1 MB.
+- [x] Done, 2026-11-09. Decisions (user): state both RAM numbers (badge
+  shows the 1-window one), and drop the Ghostty / Alacritty / WezTerm rows,
+  which could not be re-measured here. README badge, intro ("sub-millisecond
+  input response" → ~4 ms) and highlight updated; `performance.md` now lists
+  each number with its method. Not re-measured: "120Hz ProMotion" (no
+  ProMotion display attached) and the engine microbenchmark table.
 
 ## P2 — Secondary throughput and memory
 
