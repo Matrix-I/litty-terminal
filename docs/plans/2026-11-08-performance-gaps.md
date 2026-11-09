@@ -89,7 +89,7 @@ Not measured: keystroke-to-screen latency, launch → first presented frame.
 | T7 | Terminal reply buffer reallocated each batch | Confirmed path | P3 |
 | S1 | Metal shaders compiled from source at startup | Done (overlapped, not precompiled) | P1 |
 | S2 | ~130 ms warm startup unexplained | Explained; font load overlapped | P1 |
-| M1 | 1-window footprint dominated by 45 MB IOSurface | Confirmed | P2 |
+| M1 | 1-window footprint dominated by 45 MB IOSurface | Closed: now 2 drawables (30 MB), the CAMetalLayer minimum | P2 |
 | M2 | ~10 MB Malloc Small retained with 0 windows | Unknown | P2 |
 | M3 | Unbundled runs carry an 8 MB Dock icon | Done (set once, skipped in benchmarks) | P3 |
 | D1 | Targets that cannot be met as defined | Confirmed | P0 (decision) |
@@ -575,6 +575,26 @@ isolation step.
 - **Fix candidates:** release drawables after an idle period
   (`shrink_drawables` already exists, `surface.rs:125`), and when occluded.
 - Blocked by D1 for the target number.
+- [x] Measured, 2026-11-09 (release build of `7cf0d6e`, raw binary, 1 window
+  2590×1492 px, a stand-in `$SHELL` printing 128 MiB then idling, `footprint
+  -v` and `vmmap` 20 s after start):
+
+  | Region | Size |
+  |---|---|
+  | IOSurface, 2 × `CAMetalLayer` drawable (2590×1492, 15.1 MB each) | 30.3 MB |
+  | Malloc Small | 9.6 MB |
+  | `CG Image` (Dock icon, raw binary only, see M3) | 7.2 MB |
+  | IOAccelerator | 5.5 MB |
+  | Total footprint (peak 105 MB) | 75 MB |
+
+  The five regions / 45 MB recorded at the start of this plan no longer
+  occur: only the two configured drawables are present. Both are needed
+  while the window is visible (one on screen, one to draw into), and
+  `maximumDrawableCount` accepts only 2 or 3. `shrink_drawables` already
+  frees them when the window is occluded or closed.
+- [x] Decision, 2026-11-09: close without a change. Going lower would mean
+  single buffering, which CAMetalLayer does not offer, or a smaller pixel
+  format.
 
 ### M2 ~10 MB Malloc Small with 0 windows
 
