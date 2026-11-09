@@ -147,3 +147,50 @@ impl Surface {
         }
     }
 }
+
+impl Drop for Surface {
+    /// Detach the layer so it dies with this surface: AppKit keeps a closed
+    /// `NSWindow`, and through it this view, alive (as `NSApp`'s previous key
+    /// window), and the view's layer would pin its last full-size drawable.
+    fn drop(&mut self) {
+        unsafe {
+            if msg_send!(self.ns_view, c"layer"; -> Id) == self.layer.as_ptr() {
+                msg_send!(self.ns_view, c"setLayer:", std::ptr::null_mut::<std::ffi::c_void>() => Id);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[repr(C)]
+    struct NSRect {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    }
+
+    /// A closed window's view outlives its surface (AppKit keeps the window
+    /// alive), so the surface must take its layer, and the layer's last
+    /// full-size drawable, with it.
+    #[test]
+    fn dropping_the_surface_detaches_its_layer_from_the_view() {
+        unsafe {
+            let rect = NSRect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 };
+            let view = msg_send!(class(c"NSView").unwrap(), c"alloc"; -> Id);
+            let view = msg_send!(view, c"initWithFrame:", rect => NSRect; -> Id);
+            let layer = msg_send!(class(c"CAMetalLayer").unwrap(), c"new"; -> Id);
+            msg_send!(view, c"setWantsLayer:", true => bool);
+            msg_send!(view, c"setLayer:", layer => Id);
+            let surface = Surface { ns_view: view, layer: ObjPtr(layer), in_flight: InFlight::default() };
+
+            drop(surface);
+
+            assert!(msg_send!(view, c"layer"; -> Id).is_null(), "the view no longer holds the layer");
+            msg_send!(view, c"release");
+        }
+    }
+}

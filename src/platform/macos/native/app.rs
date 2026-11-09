@@ -207,6 +207,37 @@ unsafe fn dispatch_event<T: 'static, H: EventHandler<T>>(app: Id, event: Id, han
     }
 }
 
+/// One loop cycle's handler work, before the loop waits for the next event.
+/// It has a pool of its own: what it autoreleases (a closed window's view and
+/// layer, which pin its last full-size drawable) would otherwise live in the
+/// cycle pool until the next event, and with no window left that may never come.
+fn run_handlers<T: 'static, H: EventHandler<T>>(handler: &mut H, loop_ctx: &LoopCtx, rx: &Receiver<T>) {
+    autoreleasepool(|| run_handlers_unpooled(handler, loop_ctx, rx));
+}
+
+fn run_handlers_unpooled<T: 'static, H: EventHandler<T>>(handler: &mut H, loop_ctx: &LoopCtx, rx: &Receiver<T>) {
+    // 1. Process user events from proxy
+    while let Ok(user_ev) = rx.try_recv() {
+        handler.user_event(loop_ctx, user_ev);
+    }
+
+    // 2. Deliver pending view/window events
+    deliver_pending_events(handler, loop_ctx);
+
+    handler.cycle_started(false);
+
+    // 3. Deliver pending redraws
+    let redraws: Vec<WindowId> = {
+        let mut guard = PENDING_REDRAWS.lock();
+        guard.drain(..).collect()
+    };
+    for id in redraws {
+        handler.window_event(loop_ctx, id, WindowEvent::RedrawRequested);
+    }
+
+    handler.about_to_wait(loop_ctx);
+}
+
 pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T>) -> H) {
     ensure_litty_view_class();
 
@@ -240,26 +271,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         while !native_ctx.exit_flag.load(Ordering::SeqCst) {
             let pool = msg_send!(class(c"NSAutoreleasePool").unwrap(), c"new"; -> Id);
 
-            // 1. Process user events from proxy
-            while let Ok(user_ev) = rx.try_recv() {
-                handler.user_event(&loop_ctx, user_ev);
-            }
-
-            // 2. Deliver pending view/window events
-            deliver_pending_events(&mut handler, &loop_ctx);
-
-            handler.cycle_started(false);
-
-            // 3. Deliver pending redraws
-            let redraws: Vec<WindowId> = {
-                let mut guard = PENDING_REDRAWS.lock();
-                guard.drain(..).collect()
-            };
-            for id in redraws {
-                handler.window_event(&loop_ctx, id, WindowEvent::RedrawRequested);
-            }
-
-            handler.about_to_wait(&loop_ctx);
+            run_handlers(&mut handler, &loop_ctx, &rx);
 
             // 4. Wait / poll for Cocoa events
             let flow_mode = native_ctx.flow_mode.load(Ordering::SeqCst);
@@ -337,6 +349,40 @@ mod tests {
             objc_destroyWeak(&mut weak);
             !alive.is_null()
         }
+    }
+
+    /// A handler that autoreleases one object when the loop is about to wait.
+    struct AutoreleasesOnWait(*mut Id);
+
+    impl EventHandler<()> for AutoreleasesOnWait {
+        fn cycle_started(&mut self, _timer_fired: bool) {}
+        fn resumed(&mut self, _ctx: &LoopCtx) {}
+        fn user_event(&mut self, _ctx: &LoopCtx, _event: ()) {}
+        fn window_event(&mut self, _ctx: &LoopCtx, _id: WindowId, _event: WindowEvent) {}
+        fn about_to_wait(&mut self, _ctx: &LoopCtx) {
+            // SAFETY: `self.0` is the weak slot `survives` hands out.
+            unsafe {
+                let obj = msg_send!(class(c"NSObject").unwrap(), c"new"; -> Id);
+                objc_initWeak(self.0, obj);
+                msg_send!(obj, c"autorelease"; -> Id);
+            }
+        }
+    }
+
+    /// The cycle pool is drained only after the wait for the next event, so
+    /// what the handlers autoreleased (a closed window's view and layer,
+    /// pinning its last full-size drawable) must be freed before that wait:
+    /// with no window left, the next event may never come.
+    #[test]
+    fn handler_autoreleases_are_freed_before_the_loop_waits() {
+        // Stands in for the cycle pool, still open while the loop waits.
+        autoreleasepool(|| {
+            let native_ctx = NativeLoopCtx::new();
+            let loop_ctx = LoopCtx::from_native(&native_ctx);
+            let (_tx, rx) = channel::<()>();
+            let run = |weak: &mut Id| run_handlers(&mut AutoreleasesOnWait(weak), &loop_ctx, &rx);
+            assert!(!survives(run), "freed when the handlers return");
+        });
     }
 
     /// Wake-up events are created on PTY reader threads, which have no run
