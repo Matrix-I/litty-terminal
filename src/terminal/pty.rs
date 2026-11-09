@@ -64,6 +64,15 @@ fn queue_reply(tx: &mpsc::SyncSender<WritePayload>, mut data: WritePayload, shut
     }
 }
 
+/// Queue the bytes in `reply` and empty it for the next batch. The buffer keeps
+/// its capacity, so the usual short replies (DSR, DA) are copied inline and the
+/// PTY reader allocates nothing for them.
+fn queue_reply_buffer(tx: &mpsc::SyncSender<WritePayload>, reply: &mut Vec<u8>, shutdown: RawFd) -> io::Result<()> {
+    let payload = WritePayload::from_slice(reply);
+    reply.clear();
+    queue_reply(tx, payload, shutdown)
+}
+
 /// Dropping a `Pty` closes the master side and wakes both I/O threads through the
 /// shutdown pipe; once their duplicated descriptors are closed the kernel hangs up
 /// the terminal (SIGHUP to the shell and its foreground job) and the reader thread
@@ -518,7 +527,7 @@ impl Pty {
                         if !reply.is_empty() {
                             // Same queue as keyboard input, so replies never interleave with a paste.
                             notify();
-                            if let Err(e) = queue_reply(&tx, WritePayload::Heap(std::mem::take(&mut reply)), shutdown.as_raw_fd()) {
+                            if let Err(e) = queue_reply_buffer(&tx, &mut reply, shutdown.as_raw_fd()) {
                                 eprintln!("litty: terminal reply failed: {e}");
                                 break 'read;
                             }
@@ -735,6 +744,33 @@ mod tests {
         let worker = std::thread::spawn(move || queue_reply(&tx, WritePayload::from_slice(b"reply"), shutdown.as_raw_fd()));
         drop(close);
         assert_eq!(worker.join().unwrap().unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn short_replies_reuse_the_reply_buffer_without_allocating() {
+        let (shutdown, _close) = shutdown_pipe();
+        let (tx, rx) = mpsc::sync_channel(4);
+        let mut reply: Vec<u8> = Vec::with_capacity(256);
+        let mut send = || {
+            reply.extend_from_slice(b"\x1b[1;1R");
+            queue_reply_buffer(&tx, &mut reply, shutdown.as_raw_fd()).unwrap();
+        };
+        send();
+        assert_eq!(crate::test_alloc::allocations(&mut send), 0);
+        assert!(reply.is_empty());
+        assert_eq!(rx.recv().unwrap().as_slice(), b"\x1b[1;1R");
+        assert_eq!(rx.recv().unwrap().as_slice(), b"\x1b[1;1R");
+    }
+
+    #[test]
+    fn long_replies_are_sent_whole_and_the_buffer_is_emptied() {
+        let (shutdown, _close) = shutdown_pipe();
+        let (tx, rx) = mpsc::sync_channel(1);
+        let long = b"\x1bP>|litty 0.10.0 (a reply longer than fifteen bytes)\x1b\\";
+        let mut reply = long.to_vec();
+        queue_reply_buffer(&tx, &mut reply, shutdown.as_raw_fd()).unwrap();
+        assert!(reply.is_empty());
+        assert_eq!(rx.recv().unwrap().as_slice(), long);
     }
 
     #[test]
