@@ -295,6 +295,10 @@ isolation step.
   before, 25.0–25.9 MB after.
 - Left: the command buffer pool and the unmapped graphics memory (~3 MB
   together) are unexplained; even both removed would leave ~22 MB.
+- [x] Targets revised, 2026-11-09 (user): every §1 target in
+  `docs/plans/0.10.0.md` now sits between a measured floor (minimal AppKit
+  app) and Litty's current value; the table and its sources are there.
+  `CLAUDE.md` (< 50 MB with all windows closed) is unchanged.
 
 ## P1 — Throughput and startup
 
