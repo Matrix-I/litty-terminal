@@ -84,7 +84,7 @@ Not measured: keystroke-to-screen latency, launch → first presented frame.
 | T2 | CoreText shaping allocates per run, per dirty row, per frame | Done | P1 |
 | T3 | OSC 8 throughput 3.3 MB/s | Done (scan skipped when provably full) | P1 |
 | T4 | Region scroll 36 MB/s | Closed: cost is the row copy itself (no change) | P2 |
-| T5 | Unicode/emoji path 56–75 MB/s | Hypothesis on cause | P2 |
+| T5 | Unicode/emoji path 56–75 MB/s | Done (UTF-8 fast path); emoji cluster interning left | P2 |
 | T6 | Grid locked 4–5 times per frame | Confirmed path | P2 |
 | T7 | Terminal reply buffer reallocated each batch | Confirmed path | P3 |
 | S1 | Metal shaders compiled from source at startup | Done (overlapped, not precompiled) | P1 |
@@ -501,6 +501,44 @@ isolation step.
 
 - Profile first; candidates are width lookup, grapheme cluster interning and
   NFC normalization per character. No fix without a profile.
+- [x] Profile, 2026-11-09 (`/usr/bin/sample`, unstripped release test binary
+  looping over `unicode_mixed`). Share of worker samples:
+
+  | Where | Share |
+  |---|---|
+  | vte state machine + `utf8parse` for each non-ASCII byte | 36% |
+  | `feed_bytes` (ASCII batches) | 32% |
+  | `Perform::print` | 22% |
+  | `char_width` | 1.4% |
+
+  Width lookup and NFC were not the cost. Every non-ASCII byte left the
+  `feed_bytes` fast path (`ground` is cleared by any byte ≥ 0x80), so each
+  went through vte one byte at a time, and so did the short ASCII runs (a
+  single space) between words.
+- [x] Fix: the `feed_bytes` loop now also prints (1) a lone printable ASCII
+  byte and (2) a complete, well-formed UTF-8 character ≥ U+00A0, decoded by
+  `printable_utf8_char` (Unicode table 3-7, checked against
+  `std::str::from_utf8` over all 1–2 byte inputs and sampled 3–4 byte ones),
+  straight into `Perform::print`. That is the call vte would make. Invalid or
+  truncated sequences and C1 controls still go through vte. The loop stops
+  when `print` leaves a pending ZWJ, so the next character is decided by the
+  joiner rules. The existing fuzz test (byte path vs `feed_bytes`, random
+  chunking) passes at 200,000 iterations.
+- [x] Result, 2026-11-09:
+
+  | Measure | Before | After |
+  |---|---|---|
+  | `perf_probe unicode_mixed` | 13.8 ns/B | 6.1 ns/B |
+  | `perf_probe emoji_clusters` | 18.3 ns/B | 11.0 ns/B |
+  | `perf_probe sgr_log` | 2.38 ns/B | 1.90 ns/B |
+  | `+bench-pty-throughput 64` unicode, in app | 52.6 MB/s | 77.2 MB/s |
+  | Same, grid only | 76.1 MB/s | 161.1 MB/s |
+
+  Other kinds unchanged within noise.
+- Left: for emoji, SipHash in `intern_cluster` (~11%) and `append_to_cell`
+  (~10%) are the next costs. SipHash stays on purpose: cluster text comes
+  from untrusted output, so a cheaper hasher would open hash flooding. A
+  pending ZWJ still sends the next character through vte (~6%).
 
 ### T6 Lock the grid once per pane per frame
 
