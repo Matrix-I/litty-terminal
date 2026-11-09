@@ -90,7 +90,7 @@ Not measured: keystroke-to-screen latency, launch → first presented frame.
 | S1 | Metal shaders compiled from source at startup | Done (overlapped, not precompiled) | P1 |
 | S2 | ~130 ms warm startup unexplained | Explained; font load overlapped | P1 |
 | M1 | 1-window footprint dominated by 45 MB IOSurface | Closed: now 2 drawables (30 MB), the CAMetalLayer minimum | P2 |
-| M2 | ~10 MB Malloc Small retained with 0 windows | Unknown | P2 |
+| M2 | ~10 MB Malloc Small retained with 0 windows | Done: closed window pinned a 15 MB drawable; Malloc is framework state | P2 |
 | M3 | Unbundled runs carry an 8 MB Dock icon | Done (set once, skipped in benchmarks) | P3 |
 | D1 | Targets that cannot be met as defined | Confirmed | P0 (decision) |
 | D2 | README and `performance.md` claims disagree with measurements | Confirmed | P1 |
@@ -591,7 +591,8 @@ isolation step.
   occur: only the two configured drawables are present. Both are needed
   while the window is visible (one on screen, one to draw into), and
   `maximumDrawableCount` accepts only 2 or 3. `shrink_drawables` already
-  frees them when the window is occluded or closed.
+  frees them when the window is occluded (on close, one stayed pinned until
+  M2's fix).
 - [x] Decision, 2026-11-09: close without a change. Going lower would mean
   single buffering, which CAMetalLayer does not offer, or a smaller pixel
   format.
@@ -603,6 +604,41 @@ isolation step.
   global caches that outlive windows (font DB, shared Metal device and
   pipelines in `gpu::shared_device` / `shared_pipeline`, config, history).
 - Fix only what the investigation names.
+- [x] Measured, 2026-11-09 (release build of `9a80600`, raw binary, a
+  stand-in `$SHELL` that exits after 3 s so the only window closes;
+  `footprint -v`, `vmmap`, `heap`, `leaks -traceTree` and `malloc_history`
+  on the 0-window process 10–45 s after start):
+  - Footprint 47–48 MB (3 runs), of which 15 MB is one full-size (2590×1492)
+    `CAMetalLayer` drawable that never goes away. `heap` still lists the
+    closed window's `NSWindow`, `LittyView` and `CAMetalLayer`.
+  - The layer is pinned twice. (1) The loop drains its per-cycle autorelease
+    pool only after `nextEventMatchingMask` returns, so what the close
+    autoreleased lives until the next event, which may never come with no
+    window left. (2) AppKit keeps the closed `NSWindow` alive (`NSApp`'s
+    `_previousKeyWindowX`), the window keeps `LittyView`, and the view keeps
+    its layer. `shrink_drawables`' 1×1 presents never replace the last
+    displayed drawable of a window that is already ordered out.
+  - Malloc Small (~11 MB) is framework state: Core Animation transactions
+    (~2.7 MB), the retained window's frame views (~1.4 MB), CF/objc caches.
+    No Rust allocation of note survives the window. The 8 MB `CG Image` is
+    M3's icon, rendered by `NSAppearance` (raw binary only).
+- [x] Fix, 2026-11-09: the handler phase of each loop cycle runs in its own
+  pool (`run_handlers`, `src/platform/macos/native/app.rs`), drained before
+  the wait, and dropping a `Surface` detaches its layer from the view
+  (`src/render/backend/metal/surface.rs`). Either change alone leaves the
+  drawable in place. Tests: `handler_autoreleases_are_freed_before_the_loop_waits`,
+  `dropping_the_surface_detaches_its_layer_from_the_view`.
+- Result (same setup, 3 runs each):
+
+  | 0 windows | Before | After |
+  |---|---|---|
+  | Footprint | 47–48 MB | 32–33 MB |
+  | IOSurface | 15 MB | 16 KB |
+  | Surviving `CAMetalLayer` | 1 | 0 |
+
+  The `NSWindow` shell itself stays (AppKit's reference, not ours).
+  `+bench-ram` is unchanged (63 / 64 / 98–99 / 50 MB): its last step keeps
+  a window open, so it never reaches 0 windows.
 
 ## P3 — Small items
 
