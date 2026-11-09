@@ -271,6 +271,30 @@ isolation step.
     IOSurface: 34–35 MB raw; ~26–27 MB after also taking out the icon that
     bundled runs do not load (computed, not measured from a bundle). Above the
     22 MB target; Malloc Small (11–12 MB) is the largest remaining part.
+- 1-window RAM breakdown, 2026-11-09 (M1 Pro, raw release binary, stand-in
+  `$SHELL` that idles, `footprint` / `vmmap` / `heap` / `malloc_history` 15 s
+  after launch, 3 runs each). Reference: a minimal Swift AppKit app with one
+  `NSWindow` and a `CAMetalLayer` (2 drawables, 2590×1492) is **19 MB**
+  without IOSurface. A main menu, Litty's `shader.metal` with its three
+  pipelines, or 120 back-to-back frames with 4 encoders each add nothing
+  measurable to it. Litty over that floor (median):
+
+  | Category | Floor MB | Litty MB | Source |
+  |---|---|---|---|
+  | IOAccelerator (graphics) | 0.3 | 2.1 | glyph atlas R8 + RGBA8 (1.3 MB), instance buffer |
+  | IOAccelerator | 0.1 | 1.6 | driver command buffer storage pool (`IOGPUMetalCommandBufferStorageAllocResourceAt` from `begin_render_pass`, 16 pooled resources); not reproduced by the floor app |
+  | Owned physical footprint (unmapped) (graphics) | 0 | 1.6 | not identified |
+  | Malloc Small | 10.0 | 11.0 | AppKit (menu, window); live Litty ObjC objects ~1 KB |
+  | Untagged | 0.5 | 1.0 | Rust heap (mimalloc maps untagged memory, so `heap` does not list it) |
+
+  `malloc_zone_pressure_relief` freed 0 bytes, so Malloc Small is live data,
+  not freed pages.
+- [x] Fix, 2026-11-09: the color glyph atlas (RGBA8, 1 MB at 512 px) is a 1×1
+  placeholder until the first color glyph (`Atlas::ensure_color_texture`).
+  Footprint without IOSurface and the icon, 4 alternating runs: 26.0–26.6 MB
+  before, 25.0–25.9 MB after.
+- Left: the command buffer pool and the unmapped graphics memory (~3 MB
+  together) are unexplained; even both removed would leave ~22 MB.
 
 ## P1 — Throughput and startup
 
