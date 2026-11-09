@@ -336,6 +336,11 @@ impl EventHandler<AppEvent> for App {
 
         platform::register_reopen_handler(crate::event::platform_sink(self.waker.proxy.clone()));
         platform::install_menu();
+        // Once per process, not per window: the icon stays set. A RAM run skips
+        // it so it measures what bundled users get (their Dock reads Litty.icns).
+        if !self.bench_ram_mode {
+            platform::set_dock_icon();
+        }
 
         let cfg = &self.windows[0].config;
         update::check_on_startup(cfg.auto_update, cfg.auto_update_channel);

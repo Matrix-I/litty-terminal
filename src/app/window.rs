@@ -111,7 +111,6 @@ fn build_window(
     };
 
     platform::apply_window_config(&window, &(&cfg).into());
-    platform::set_dock_icon();
 
     let font_px = (font_pt * window.scale_factor() as f32).round();
 
