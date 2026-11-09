@@ -503,53 +503,37 @@ impl EventHandler<AppEvent> for App {
 }
 
 pub(crate) fn run(bench_ram_mode: bool, scroll_fps: bool) {
-    crate::platform::gui::run(|proxy| App {
-        waker: Waker { proxy, queued: Arc::new(AtomicBool::new(false)) },
-        windows: Vec::new(),
-        bench_ram_mode,
-        scroll_fps_run: scroll_fps.then(frame_metrics::ScrollRun::new),
-        gui_bench: None,
-        gui_bench_result: None,
-    });
+    run_app(bench_ram_mode, scroll_fps.then(frame_metrics::ScrollRun::new), None);
 }
 
 /// `+bench-input-latency`: the first pane runs `echo_child` (argv) instead of a
 /// shell; the app types `samples` keys into it and prints one JSON report line.
 pub(crate) fn run_input_latency(samples: usize, echo_child: Vec<String>) {
     gui_bench::set_pane_program(echo_child);
-    crate::platform::gui::run(|proxy| App {
-        waker: Waker { proxy, queued: Arc::new(AtomicBool::new(false)) },
-        windows: Vec::new(),
-        bench_ram_mode: false,
-        scroll_fps_run: None,
-        gui_bench: Some(gui_bench::GuiBench::InputLatency(gui_bench::InputLatencyRun::new(samples))),
-        gui_bench_result: None,
-    });
+    run_app(false, None, Some(gui_bench::GuiBench::InputLatency(gui_bench::InputLatencyRun::new(samples))));
 }
 
 /// `+bench-pty-throughput-gui`: the first pane runs `stream_child` (argv), which
 /// writes one generated stream as fast as the app takes it.
 pub(crate) fn run_throughput_gui(stream_child: Vec<String>) {
     gui_bench::set_pane_program(stream_child);
-    crate::platform::gui::run(|proxy| App {
-        waker: Waker { proxy, queued: Arc::new(AtomicBool::new(false)) },
-        windows: Vec::new(),
-        bench_ram_mode: false,
-        scroll_fps_run: None,
-        gui_bench: Some(gui_bench::GuiBench::Throughput),
-        gui_bench_result: None,
-    });
+    run_app(false, None, Some(gui_bench::GuiBench::Throughput));
 }
 
 /// `+bench-first-frame-child`: a normal startup (shell included, update check
 /// skipped) that prints its stage times once the first frame is complete.
 pub(crate) fn run_first_frame_child(spawn_ns: u64) {
+    run_app(false, None, Some(gui_bench::GuiBench::FirstFrame(gui_bench::FirstFrameRun::new(spawn_ns))));
+}
+
+/// Every GUI run goes through here.
+fn run_app(bench_ram_mode: bool, scroll_fps_run: Option<frame_metrics::ScrollRun>, gui_bench: Option<gui_bench::GuiBench>) {
     crate::platform::gui::run(|proxy| App {
         waker: Waker { proxy, queued: Arc::new(AtomicBool::new(false)) },
         windows: Vec::new(),
-        bench_ram_mode: false,
-        scroll_fps_run: None,
-        gui_bench: Some(gui_bench::GuiBench::FirstFrame(gui_bench::FirstFrameRun::new(spawn_ns))),
+        bench_ram_mode,
+        scroll_fps_run,
+        gui_bench,
         gui_bench_result: None,
     });
 }
