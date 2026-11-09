@@ -83,7 +83,7 @@ Not measured: keystroke-to-screen latency, launch → first presented frame.
 | T1 | Glyph shaping and rasterization run under the grid lock | Measured; deferred after T2 (≤ 3% left) | P3 |
 | T2 | CoreText shaping allocates per run, per dirty row, per frame | Done | P1 |
 | T3 | OSC 8 throughput 3.3 MB/s | Done (scan skipped when provably full) | P1 |
-| T4 | Region scroll 36 MB/s | Hypothesis on cause | P2 |
+| T4 | Region scroll 36 MB/s | Closed: cost is the row copy itself (no change) | P2 |
 | T5 | Unicode/emoji path 56–75 MB/s | Hypothesis on cause | P2 |
 | T6 | Grid locked 4–5 times per frame | Confirmed path | P2 |
 | T7 | Terminal reply buffer reallocated each batch | Confirmed path | P3 |
@@ -478,6 +478,24 @@ isolation step.
   extras scan when `extras.len() <= 1` (already partly done) or track a
   per-row "has extras" bit.
 - **Acceptance:** `perf_probe region_scroll`; tmux/vim scrolling via B3 `region`.
+- [x] Isolation, 2026-11-09 (temporary `perf_probe` cases, 160 × 50 grid,
+  same 5,000 lines):
+
+  | Region | Rows copied per line | ns/B |
+  |---|---|---|
+  | `5;9r` | 4 | 4.6 |
+  | `5;45r` (`region_scroll`) | 40 | 28.6 |
+  | `2;49r` | 47 | 35.7 |
+
+  Cost grows linearly with the rows copied (~0.7 ns/B per row): about 77 KB
+  of `memmove` per line, ~55 GB/s, i.e. memory bandwidth. The extras scan in
+  `copy_row` does not run here (no extras), so merging rows into one
+  `copy_within` would not reduce the bytes moved.
+- [x] Decision, 2026-11-09 (user): close without a code change. The in-app
+  rate (B3 `region`, ~52 MB/s) is far above what tmux or vim emit. The only
+  real fix, a row-indirection table that turns a region scroll into an index
+  rotation, would change every row access (print, display, selection,
+  search, resize, images). Reopen if a real workload is shown to be slow.
 
 ### T5 Unicode and emoji paths (13–18 ns/byte)
 
