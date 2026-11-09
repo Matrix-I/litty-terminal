@@ -82,7 +82,7 @@ Not measured: keystroke-to-screen latency, launch → first presented frame.
 | B3 | No end-to-end PTY throughput benchmark | Confirmed gap | P0 |
 | T1 | Glyph shaping and rasterization run under the grid lock | Measured; deferred after T2 (≤ 3% left) | P3 |
 | T2 | CoreText shaping allocates per run, per dirty row, per frame | Done | P1 |
-| T3 | OSC 8 throughput 3.3 MB/s | Hypothesis on cause | P1 |
+| T3 | OSC 8 throughput 3.3 MB/s | Done (scan skipped when provably full) | P1 |
 | T4 | Region scroll 36 MB/s | Hypothesis on cause | P2 |
 | T5 | Unicode/emoji path 56–75 MB/s | Hypothesis on cause | P2 |
 | T6 | Grid locked 4–5 times per frame | Confirmed path | P2 |
@@ -349,6 +349,48 @@ isolation step.
   (run at most once per N new links, or per scrollback page evicted).
 - **Tests:** existing OSC 8 tests; new test for slot reuse after eviction.
 - **Acceptance:** `perf_probe osc8_links` before/after; no change to other cases.
+- [x] Isolation, 2026-11-09 (temporary counters, `perf_probe`, 20,000 links):
+
+  | Distinct URIs | ns/B | Scans per run | Scans that freed a slot | Links dropped |
+  |---|---|---|---|---|
+  | 100 | 18 | 0 | — | 0 |
+  | 400 | 330–555 | 5,522 | 0 | 7,250 |
+
+  The 255 slots fill with the first URIs, which stay in the scrollback, so the
+  table never frees a slot. But every scrolled-out row and every closed link
+  sets `extras_dirty`, so each new distinct link rescans the ring until it has
+  seen 255 slots. The linear `position` lookup is not the bottleneck (the
+  100-URI case runs at 18 ns/B).
+- [x] Fix: `Grid::extras_witness` keeps, per slot, the cell where the last scan
+  saw it. Before a scan, `extras_proven_full` checks 255 cells: if each slot
+  is still held by its recorded cell (in a live ring row) or by a pen, the
+  table is full and the scan is skipped. The scan now walks the newest rows
+  first, so the recorded cells stay in the scrollback longest. Results are
+  unchanged by construction (a slot is only proven used by a live cell that
+  holds it). A temporary test fed both versions (with and without witnesses)
+  6,000 lines that mix links, overwrites and region scrolls, and compared every
+  cell's link and the slot table.
+- [x] Result, 2026-11-09:
+
+  | Measure | Before | After |
+  |---|---|---|
+  | `perf_probe osc8_links` | 308–555 ns/B | 32 ns/B |
+  | `+bench-pty-throughput 64` osc8, in app | 4.8 MB/s | 26.5 MB/s |
+  | Same, grid only | 2.5–2.6 MB/s | 31.2 MB/s |
+  | Full scans, 4,000 lines × 400 URIs, 1,000-line scrollback | 1,162 | 5 |
+
+  Other `perf_probe` cases and `+bench-pty-throughput` kinds stayed within run
+  noise (two runs each). `Grid` grows by 1 KB per pane. The osc8 in-app/grid
+  ratio (1.87 before) is now 0.85, in line with the other kinds.
+- Independent review: no correctness finding. It checked the proof against the
+  old scan on 400 random seeds × 20k operations (links, SGR 58, erases, alt
+  screen, reset, insert/delete, scroll regions, resize, clear history). It
+  found that no test covered the live-ring-row check; one now does, and it
+  fails when that check is removed.
+- Not done: links over the 255-slot limit are still dropped (an 8-bit index
+  in the 12-byte `Cell`). Each OSC 8 still allocates its `OscLink` strings and
+  the joined URI. At 32 ns/B this is no longer the bottleneck; measure before
+  changing it.
 
 ### S1 Load precompiled Metal shaders
 
