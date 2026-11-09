@@ -87,8 +87,8 @@ Not measured: keystroke-to-screen latency, launch → first presented frame.
 | T5 | Unicode/emoji path 56–75 MB/s | Hypothesis on cause | P2 |
 | T6 | Grid locked 4–5 times per frame | Confirmed path | P2 |
 | T7 | Terminal reply buffer reallocated each batch | Confirmed path | P3 |
-| S1 | Metal shaders compiled from source at startup | Confirmed | P1 |
-| S2 | ~130 ms warm startup unexplained | Unknown | P1 |
+| S1 | Metal shaders compiled from source at startup | Done (overlapped, not precompiled) | P1 |
+| S2 | ~130 ms warm startup unexplained | Explained; font load overlapped | P1 |
 | M1 | 1-window footprint dominated by 45 MB IOSurface | Confirmed | P2 |
 | M2 | ~10 MB Malloc Small retained with 0 windows | Unknown | P2 |
 | M3 | Unbundled runs carry an 8 MB Dock icon | Confirmed | P3 |
@@ -363,6 +363,14 @@ isolation step.
   decision because it changes the build requirements (`docs/development/building.md`).
 - Custom shaders (`create_postfx_pipeline`) stay source-compiled.
 - **Acceptance:** B2 cold first-frame before/after.
+- [x] Decision, 2026-11-09 (user): no build-requirement change. Instead the
+  device and shader compile start on a thread (`src/app/prewarm.rs`) before
+  the platform event loop starts, overlapping AppKit's launch and the font
+  load. The first window takes the result from the `SHARED_METAL` cache or
+  waits on its mutex; nothing is compiled twice. Precompiling (`.metallib`)
+  stays possible later; it would remove the MSL front end only, not the GPU
+  back-end compile.
+- [x] Result: see S2 (font and GPU prewarm were measured together).
 
 ### S2 Explain the remaining ~130 ms warm startup
 
@@ -370,6 +378,42 @@ isolation step.
   creation, shell-integration setup, config parse, `update::check_on_startup`
   (must not block), window creation.
 - Each found cost becomes its own task with before/after numbers.
+- [x] Breakdown, 2026-11-09 (M1 Pro, unbundled release binary, temporary
+  stamps from `main`, not committed; warm = runs 2–6, cold = first run of a
+  new binary with a new shader source hash):
+
+| Step (main thread, in order) | Warm ms | Cold ms |
+|---|---|---|
+| `main` → `resumed` (AppKit `sharedApplication`, `finishLaunching`) | 76–98 | 140 |
+| `Config::load` | 0.3 | 1.7 |
+| `load_font` (font discovery and CoreText faces) | 57–66 | 297 |
+| OS window | 46–58 | 102 |
+| `set_dock_icon` (unbundled runs only, see M3) | 31 | 35 |
+| GPU device + `newLibraryWithSource` | 2–3 | **294** |
+| surface, atlas, pipelines, resize | ~9 | ~8 |
+| PTY spawn | 3.5 | 8 |
+
+  Reading: AppKit's launch, the font load and the window are the warm cost;
+  on a cold start the shader compile and the font load each cost ~300 ms.
+  Neither the font set nor the GPU device needs a window, so both now start
+  on threads at the top of every GUI run (`src/app/prewarm.rs`) while AppKit
+  launches. The main thread reads the config first (`Config::load_quiet`,
+  ~0.3 ms, errors left to the window's own read) and sets the process-wide
+  font tweaks and features itself; the thread only calls `load_font`, so a
+  late thread can never overwrite newer settings. The GPU prewarm is macOS
+  only: on Linux a Vulkan driver may use Xlib while the main thread opens the
+  display.
+- [x] Result, 2026-11-09 (M1 Pro), prewarm on vs off (temporary build switch):
+  - Cold: `+bench-first-frame 4` per build, 3 builds each, every build with
+    a new shader source hash so its first run compiles the shader cold. First
+    run total: off 462, 472, 531 ms; on 336, 233, 251 ms (median 472 → 251).
+  - Warm: one build each, 4 alternating rounds of `+bench-first-frame 10`,
+    p50 total: off 246, 251, 242, 243 ms; on 190, 197, 200, 187 ms
+    (median ~244 → ~193); `init` p50 ~214 → ~159 ms.
+  - `+bench-ram`: footprint unchanged (1 window 71 vs 72 MB, 2 windows 107
+    vs 107 MB).
+- Left: AppKit launch (~80 ms) and window creation (~50 ms) are on the main
+  thread by AppKit's rules. `set_dock_icon` (31 ms) only runs unbundled (M3).
 
 ### D2 Fix published claims
 
