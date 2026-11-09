@@ -216,6 +216,14 @@ impl Renderer {
         self.surface.wait_gpu_idle(timeout)
     }
 
+    /// Create the process-wide GPU device and queue before any window exists,
+    /// so a startup thread can do it while the platform event loop starts. On
+    /// macOS this compiles the built-in shaders (~300 ms on a cold shader cache).
+    #[cfg(target_os = "macos")]
+    pub fn prewarm_device() {
+        let _ = gpu::shared_device();
+    }
+
     pub fn new(
         window: Arc<Window>,
         font: Arc<FontSet>,

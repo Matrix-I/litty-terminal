@@ -10,6 +10,7 @@ mod ime;
 mod inspector;
 mod keyboard;
 mod pointer;
+mod prewarm;
 mod search_ui;
 mod state;
 mod tab_anim;
@@ -526,8 +527,9 @@ pub(crate) fn run_first_frame_child(spawn_ns: u64) {
     run_app(false, None, Some(gui_bench::GuiBench::FirstFrame(gui_bench::FirstFrameRun::new(spawn_ns))));
 }
 
-/// Every GUI run goes through here.
+/// Every GUI run: start the window-independent setup, then the event loop.
 fn run_app(bench_ram_mode: bool, scroll_fps_run: Option<frame_metrics::ScrollRun>, gui_bench: Option<gui_bench::GuiBench>) {
+    prewarm::start();
     crate::platform::gui::run(|proxy| App {
         waker: Waker { proxy, queued: Arc::new(AtomicBool::new(false)) },
         windows: Vec::new(),

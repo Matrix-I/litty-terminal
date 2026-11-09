@@ -16,7 +16,8 @@ pub(super) fn make_instance_buf(device: &Device, cells: usize) -> HostBuffer<Ins
     HostBuffer::new(device, cells.max(1))
 }
 
-/// The process-wide device and queue; created on the first window.
+/// The process-wide device and queue; created by the startup prewarm thread
+/// (macOS) or the first window, whichever asks first.
 pub(super) fn shared_device() -> (Arc<Device>, Arc<Queue>) {
     backend::shared_device_and_queue()
 }

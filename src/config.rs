@@ -11,7 +11,7 @@
 //! `Cmd+Shift+,` / `Ctrl+Shift+,` reloads it; the file is also reloaded
 //! automatically when the window regains focus after the file changed.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 pub use crate::update::{AutoUpdateChannel, AutoUpdateMode};
@@ -259,18 +259,28 @@ impl Config {
     /// are reported on stderr and skipped (like Ghostty, a bad line never
     /// prevents the terminal from starting).
     pub fn load() -> Config {
-        let path = active_config_path();
-        let text = match std::fs::read_to_string(&path) {
+        Config::load_from(&active_config_path(), |problem| eprintln!("litty: {problem}"))
+    }
+
+    /// [`Config::load`] without reporting problems, for the early read at
+    /// startup that only warms caches; the first window's own load reports
+    /// them, so they are printed once.
+    pub fn load_quiet() -> Config {
+        Config::load_from(&active_config_path(), |_| {})
+    }
+
+    fn load_from(path: &Path, mut report: impl FnMut(String)) -> Config {
+        let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Config::default(),
             Err(e) => {
-                eprintln!("litty: cannot read config {}: {e}", path.display());
+                report(format!("cannot read config {}: {e}", path.display()));
                 return Config::default();
             }
         };
         let (cfg, errors) = Config::parse(&text);
         for err in errors {
-            eprintln!("litty: config {}: {err}", path.display());
+            report(format!("config {}: {err}", path.display()));
         }
         cfg
     }
@@ -1036,6 +1046,27 @@ const TEMPLATE: &str = r#"# This is the configuration file for Litty.
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_from_reports_problems_and_still_applies_good_lines() {
+        let path = std::env::temp_dir().join(format!("litty-config-test-{}.conf", std::process::id()));
+        std::fs::write(&path, "font-size = 15\nnot a setting\n").unwrap();
+        let mut problems = Vec::new();
+        let cfg = Config::load_from(&path, |p| problems.push(p));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(cfg.font_size, 15.0);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].starts_with(&format!("config {}: line 2:", path.display())), "{}", problems[0]);
+    }
+
+    #[test]
+    fn load_from_a_missing_file_is_defaults_without_problems() {
+        let path = std::env::temp_dir().join(format!("litty-config-missing-{}.conf", std::process::id()));
+        let mut problems = Vec::new();
+        let cfg = Config::load_from(&path, |p| problems.push(p));
+        assert!(problems.is_empty());
+        assert_eq!(cfg.font_size, Config::default().font_size);
+    }
 
     /// Quick Terminal lines in an old config say why they are ignored, and
     /// the rest of the file still applies.

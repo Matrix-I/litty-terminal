@@ -29,6 +29,13 @@ pub(super) fn font_features(cfg: &config::Config) -> Vec<atlas::FontFeature> {
     cfg.font_features.iter().filter_map(|f| atlas::parse_font_feature(f).ok()).collect()
 }
 
+/// Set the process-wide font tweaks and features from `cfg`; fonts loaded
+/// afterwards use them. Main thread only, so a later config always wins.
+pub(super) fn apply_font_settings(cfg: &config::Config) {
+    atlas::set_font_tweaks(cfg.adjust_cell_width, cfg.adjust_cell_height, cfg.font_thicken);
+    atlas::set_font_features(&font_features(cfg));
+}
+
 /// Create a window with one tab whose shell starts in `cwd`.
 pub(super) fn create_window(event_loop: &LoopCtx, waker: &Waker, cwd: Option<&str>) -> std::io::Result<State> {
     build_window(event_loop, waker, cwd, &mut None)
@@ -52,8 +59,7 @@ fn build_window(
     grid::set_scrollback_limit(cfg.scrollback_limit);
     grid::set_grapheme_default(cfg.grapheme_unicode);
 
-    atlas::set_font_tweaks(cfg.adjust_cell_width, cfg.adjust_cell_height, cfg.font_thicken);
-    atlas::set_font_features(&font_features(&cfg));
+    apply_font_settings(&cfg);
     let font = atlas::load_font(&cfg.font_family);
     // A torn-off tab keeps the font size (zoom) of the window it came from.
     let font_pt = adopt.as_ref().map_or_else(|| cfg.font_size.clamp(6.0, 72.0), |torn| torn.font_pt);
