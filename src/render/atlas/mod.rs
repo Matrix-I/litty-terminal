@@ -158,7 +158,13 @@ pub struct Atlas {
 
     pub texture: crate::render::backend::Texture,
     /// Color glyphs (emoji), premultiplied RGBA in the same slot layout as `texture`.
+    /// A 1×1 placeholder until the first color glyph: at 512 px the full texture
+    /// is 1 MB, and many sessions never show an emoji. The shader samples it only
+    /// for slots flagged as color, so the placeholder is never read.
     pub color_texture: crate::render::backend::Texture,
+    /// Side of `color_texture` in px: 1 (placeholder) or `size`.
+    color_size: u32,
+    device: crate::render::backend::Device,
     slot_color: Vec<bool>,
     color_scratch: Vec<u8>,
     wide_r8_scratch: Vec<u8>,
@@ -229,7 +235,7 @@ impl Atlas {
         let n_slots = (slots_per_row * (size / cell_h)).min(u16::MAX as u32);
 
         let texture = Self::make_texture(device, size, crate::render::backend::TextureFormat::R8Unorm);
-        let color_texture = Self::make_texture(device, size, crate::render::backend::TextureFormat::Rgba8Unorm);
+        let color_texture = Self::make_color_placeholder(device);
 
         let mut atlas = Atlas {
             fonts,
@@ -256,6 +262,8 @@ impl Atlas {
             shaper: Shaper::new(FONT_FEATURES.lock().clone()),
             texture,
             color_texture,
+            color_size: 1,
+            device: device.clone(),
             slot_color: vec![false; n_slots as usize],
             color_scratch: vec![0; (cell_w * cell_h * 4) as usize],
             wide_r8_scratch: vec![0; (2 * cell_w * cell_h) as usize],
@@ -287,7 +295,6 @@ impl Atlas {
         }
 
         let texture = Self::make_texture(device, new_size, crate::render::backend::TextureFormat::R8Unorm);
-        let color_texture = Self::make_texture(device, new_size, crate::render::backend::TextureFormat::Rgba8Unorm);
 
         self.size = new_size;
         self.slots_per_row = slots_per_row;
@@ -309,7 +316,9 @@ impl Atlas {
         self.slot_color.clear();
         self.slot_color.resize(n_slots as usize, false);
         self.texture = texture;
-        self.color_texture = color_texture;
+        // Every slot was cleared, so no color glyph is left to keep.
+        self.color_texture = Self::make_color_placeholder(device);
+        self.color_size = 1;
         self.preload_ascii(queue);
         true
     }
@@ -432,6 +441,19 @@ impl Atlas {
         format: crate::render::backend::TextureFormat,
     ) -> crate::render::backend::Texture {
         crate::render::backend::Texture::new(device, size, size, format, false)
+    }
+
+    fn make_color_placeholder(device: &crate::render::backend::Device) -> crate::render::backend::Texture {
+        Self::make_texture(device, 1, crate::render::backend::TextureFormat::Rgba8Unorm)
+    }
+
+    /// Create the full-size color texture on the first color glyph.
+    fn ensure_color_texture(&mut self) {
+        if self.color_size != self.size {
+            self.color_texture =
+                Self::make_texture(&self.device, self.size, crate::render::backend::TextureFormat::Rgba8Unorm);
+            self.color_size = self.size;
+        }
     }
 
     pub fn begin_frame(&mut self) {

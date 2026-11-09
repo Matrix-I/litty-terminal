@@ -234,7 +234,8 @@ impl Atlas {
         }
     }
 
-    pub(super) fn upload_color(&self, queue: &crate::render::backend::Queue, slot: u16) {
+    pub(super) fn upload_color(&mut self, queue: &crate::render::backend::Queue, slot: u16) {
+        self.ensure_color_texture();
         let s = slot as u32;
         let x = (s % self.slots_per_row) * self.cell_w;
         let y = (s / self.slots_per_row) * self.cell_h;

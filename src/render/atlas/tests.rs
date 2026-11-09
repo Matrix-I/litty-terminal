@@ -396,3 +396,47 @@ fn shaping_cache_stays_bounded_and_survives_a_piece_reset() {
     assert!(shaper.shape_row(&fonts, 28.0, 17, &row, &mut out).1, "pieces reset");
     assert!(shaper.platform_shapes > shaped, "the reset cleared the cache");
 }
+
+/// The color texture's side, from the texture itself where the backend exposes it.
+fn color_side(atlas: &Atlas) -> u32 {
+    #[cfg(target_os = "macos")]
+    assert_eq!(atlas.color_texture.width, atlas.color_size, "texture matches the recorded size");
+    atlas.color_size
+}
+
+fn test_atlas() -> (Atlas, std::sync::Arc<crate::render::backend::Queue>) {
+    let (device, queue) = crate::render::backend::shared_device_and_queue();
+    (Atlas::new(&device, &queue, load_font(&[]), 16.0), queue)
+}
+
+#[test]
+fn color_texture_is_a_placeholder_until_a_color_glyph_is_uploaded() {
+    let (mut atlas, queue) = test_atlas();
+    for cp in ['a', '─', 'é'] {
+        atlas.slot(&queue, cp as u32);
+    }
+    assert_eq!(color_side(&atlas), 1, "no color glyph yet");
+    atlas.upload_color(&queue, 1);
+    assert_eq!(color_side(&atlas), atlas.size, "full size once a color glyph is stored");
+}
+
+#[test]
+fn growing_the_atlas_drops_the_color_texture() {
+    let (mut atlas, queue) = test_atlas();
+    let (device, _) = crate::render::backend::shared_device_and_queue();
+    atlas.upload_color(&queue, 1);
+    atlas.grow_needed = true;
+    assert!(atlas.grow_if_needed(&device, &queue));
+    assert_eq!(color_side(&atlas), 1, "every slot was cleared, so no color glyph is left");
+    atlas.upload_color(&queue, 1);
+    assert_eq!(color_side(&atlas), atlas.size);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn an_emoji_creates_the_color_texture() {
+    let (mut atlas, queue) = test_atlas();
+    let (left, _) = atlas.glyph_slots(&queue, '😀' as u32, 2, GlyphStyle::default());
+    assert!(atlas.is_color(left));
+    assert_eq!(color_side(&atlas), atlas.size);
+}
