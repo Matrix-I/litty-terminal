@@ -546,7 +546,8 @@ impl Grid {
     /// Feed a prefix of `bytes` and return how many were consumed (at least 1).
     /// Behaves exactly like calling `feed_byte` on those bytes, but a run of
     /// printable ASCII in the parser's ground state (together with inline `\r`,
-    /// `\n` and `\x1b[...m` SGR sequences) is written in one batch.
+    /// `\n`, `\x1b[...m` SGR sequences and complete UTF-8 characters) is
+    /// written in one batch.
     #[inline]
     pub fn feed_bytes(&mut self, parser: &mut vte::Parser, bytes: &[u8]) -> usize {
         if self.ground
@@ -586,6 +587,19 @@ impl Grid {
                 } else if let Some((consumed, n_params, action)) = simd::try_parse_simple_csi(rem, &mut csi_params) {
                     self.dispatch_simple_csi(&csi_params[..n_params], action);
                     offset += consumed;
+                } else if rem[0].wrapping_sub(0x20) < 0x5f {
+                    // Too short to batch, e.g. the space between two words.
+                    <Self as vte::Perform>::print(self, rem[0] as char);
+                    offset += 1;
+                } else if let Some(c) = printable_utf8_char(rem) {
+                    // What vte's UTF-8 decoder would hand to `print` in ground state.
+                    <Self as vte::Perform>::print(self, c);
+                    offset += c.len_utf8();
+                    if self.joiner {
+                        // The loop was entered with no pending ZWJ; keep that
+                        // true for the rest of the batch.
+                        break;
+                    }
                 } else {
                     break;
                 }
@@ -993,3 +1007,35 @@ mod tests;
 
 /// Shortest printable-ASCII run worth batching; shorter ones cost more to set up.
 const MIN_ASCII_RUN: usize = 4;
+
+/// The complete UTF-8 character at the start of `bytes`, if it is one vte
+/// would print (U+00A0 and up; C1 controls are left to vte). `None` for
+/// ASCII, invalid or truncated sequences, which go through vte instead.
+#[inline]
+fn printable_utf8_char(bytes: &[u8]) -> Option<char> {
+    // Well-formed sequences per the Unicode Standard, table 3-7: the second
+    // byte's range excludes overlong forms, surrogates and values > U+10FFFF.
+    let cont = |i: usize, lo: u8, hi: u8| bytes.get(i).filter(|b| (lo..=hi).contains(*b)).map(|&b| u32::from(b & 0x3F));
+    let b0 = u32::from(bytes[0]);
+    let cp = match bytes[0] {
+        0xC2..=0xDF => (b0 & 0x1F) << 6 | cont(1, 0x80, 0xBF)?,
+        0xE0..=0xEF => {
+            let (lo, hi) = match bytes[0] {
+                0xE0 => (0xA0, 0xBF),
+                0xED => (0x80, 0x9F),
+                _ => (0x80, 0xBF),
+            };
+            (b0 & 0x0F) << 12 | cont(1, lo, hi)? << 6 | cont(2, 0x80, 0xBF)?
+        }
+        0xF0..=0xF4 => {
+            let (lo, hi) = match bytes[0] {
+                0xF0 => (0x90, 0xBF),
+                0xF4 => (0x80, 0x8F),
+                _ => (0x80, 0xBF),
+            };
+            (b0 & 0x07) << 18 | cont(1, lo, hi)? << 12 | cont(2, 0x80, 0xBF)? << 6 | cont(3, 0x80, 0xBF)?
+        }
+        _ => return None,
+    };
+    char::from_u32(cp).filter(|&c| c >= '\u{A0}')
+}

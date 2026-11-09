@@ -178,6 +178,95 @@ fn invalid_utf8_before_an_ascii_run_is_resynchronized_by_vte() {
 }
 
 #[test]
+fn utf8_text_is_batched_in_ground_state() {
+    let mut g = Grid::new(20, 5);
+    let mut p = vte::Parser::new();
+    g.feed_byte(&mut p, b'a');
+    let text = "é漢字 Tiếng 😀";
+    assert_eq!(g.feed_bytes(&mut p, text.as_bytes()), text.len(), "the whole run in one call");
+    // Not in ground (mid-escape): byte by byte through vte.
+    g.feed_byte(&mut p, 0x1b);
+    assert_eq!(g.feed_bytes(&mut p, "é".as_bytes()), 1);
+}
+
+#[test]
+fn utf8_decoder_accepts_exactly_what_std_accepts() {
+    let std_char = |b: &[u8]| {
+        let len = match b[0] {
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF7 => 4,
+            _ => return None,
+        };
+        let c = std::str::from_utf8(b.get(..len)?).ok()?.chars().next()?;
+        (c >= '\u{A0}').then_some(c)
+    };
+    let mut seqs: Vec<Vec<u8>> = Vec::new();
+    for b0 in 0x80..=0xFFu8 {
+        seqs.push(vec![b0]);
+        for b1 in 0..=0xFFu8 {
+            seqs.push(vec![b0, b1]);
+            if b0 >= 0xE0 {
+                for b2 in [0x00, 0x7F, 0x80, 0x9F, 0xA0, 0xBF, 0xC0, 0xFF] {
+                    seqs.push(vec![b0, b1, b2]);
+                    if b0 >= 0xF0 {
+                        for b3 in [0x7F, 0x80, 0xBF, 0xC0] {
+                            seqs.push(vec![b0, b1, b2, b3, b'x']);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for b in &seqs {
+        assert_eq!(printable_utf8_char(b), std_char(b), "{b:02x?}");
+    }
+    for c in ['\u{A0}', 'é', '\u{7FF}', '\u{800}', '漢', '\u{D7FF}', '\u{E000}', '\u{FFFD}', '\u{FFFF}', '\u{10000}', '😀', '\u{10FFFF}'] {
+        let mut buf = [0u8; 4];
+        assert_eq!(printable_utf8_char(c.encode_utf8(&mut buf).as_bytes()), Some(c));
+    }
+}
+
+#[test]
+fn utf8_text_matches_the_byte_at_a_time_path() {
+    check("é ß ñ Tiếng Việt có dấu ─┼─ 漢字かな交じり文 한국어 ok");
+    check(&"漢字".repeat(30));
+    check("cafe\u{301} nai\u{308}ve e\u{301}\u{302} \u{301}leading mark");
+    check("👨\u{200D}👩\u{200D}👧 🇻🇳🇻🇳🇻 ❤\u{FE0F} 👍\u{1F3FD} #\u{FE0F}\u{20E3} 1\u{FE0F}\u{20E3} ok");
+    check("\u{A0}\u{A9}\u{AE}\u{AD} © ® \u{200B}\u{2060}\u{FEFF} zero widths");
+    // Narrow grids: wide glyphs and clusters at the right edge.
+    check_with(3, 3, b"", "漢字漢字 ab漢 a👨\u{200D}👩".as_bytes(), &CHUNKS);
+    check_with(1, 2, b"", "漢é字".as_bytes(), &CHUNKS);
+}
+
+#[test]
+fn utf8_text_respects_modes_and_line_editor() {
+    check("\x1b[4hinsert 漢字 mode é\x1b[1;1H漢字>>\x1b[4l more é");
+    check("\x1b[?7lno autowrap 漢字漢字漢字漢字漢字 é é\x1b[?7h 漢字");
+    check("\x1b(0lqqé漢k\x1b(B back é");
+    check("\x1b]133;B\x07❤\u{FE0F} 👨\u{200D}👩 cafe\u{301}\x1b]133;C\x07 ❤\u{FE0F}");
+    check("\x1b[?2027h👨\u{200D}👩\u{200D}👧 é\x1b[?2027l 👨\u{200D}👩");
+}
+
+#[test]
+fn utf8_control_and_invalid_sequences_go_through_vte() {
+    // C1 controls, overlong forms, surrogates, out-of-range and truncated
+    // sequences, between and before valid text.
+    let fragments: [&[u8]; 9] = [
+        b"\xc2\x85", b"\xc2\x9b", b"\xc0\xaf", b"\xe0\x80\xaf", b"\xed\xa0\x80",
+        b"\xf4\x90\x80\x80", b"\xf8\x88\x80\x80\x80", b"\xe6\xbc", b"\xf0\x9f\x98",
+    ];
+    for fragment in fragments {
+        for (before, after) in [("é", "漢字 text"), ("abcd", "é"), ("", "ü")] {
+            let mut data = before.as_bytes().to_vec();
+            data.extend_from_slice(fragment);
+            data.extend_from_slice(after.as_bytes());
+            check_with(20, 5, b"x", &data, &CHUNKS);
+        }
+    }
+}
+
+#[test]
 fn delete_and_control_bytes_end_a_run() {
     check("abcd\x7fefgh ijkl");
     check(&format!("{}\x7f{}", "a".repeat(40), "b".repeat(40)));
