@@ -4,6 +4,9 @@
 
 use super::*;
 
+/// `extras_witness` value for a slot no scan has seen in a cell.
+pub(super) const NO_WITNESS: u32 = u32::MAX;
+
 impl Grid {
     #[inline]
     pub(super) fn is_path_char(ch: char) -> bool {
@@ -171,13 +174,14 @@ impl Grid {
         }
         let free = match self.extras.iter().skip(1).position(Option::is_none) {
             Some(i) => Some(i + 1),
-            None => {
-                if self.extras_full && !self.extras_dirty {
-                    None
-                } else {
-                    self.collect_extras()
-                }
+            None if self.extras_full && !self.extras_dirty => None,
+            None if self.extras_proven_full() => {
+                // What a scan would find, without reading the whole scrollback.
+                self.extras_full = true;
+                self.extras_dirty = false;
+                None
             }
+            None => self.collect_extras(),
         };
         match free {
             Some(i) => {
@@ -188,47 +192,65 @@ impl Grid {
         }
     }
 
+    /// First ring row of the scrollback, and how many ring rows are live
+    /// (scrollback + main screen). Requires `cap > 0`.
+    fn live_ring_rows(&self) -> (usize, usize) {
+        let start_row = (self.top + self.cap - self.history) % self.cap;
+        (start_row, (self.history + self.rows).min(self.cap))
+    }
+
+    /// Every slot is still used by the live main-screen or scrollback cell the
+    /// last scan recorded for it, or by a pen, so a scan would free nothing.
+    /// Costs 255 cell reads instead of a scan of the whole scrollback.
+    fn extras_proven_full(&self) -> bool {
+        let c = self.cols;
+        if c == 0 || self.cap == 0 {
+            return false;
+        }
+        let (start_row, active_rows) = self.live_ring_rows();
+        let pens = [self.cur.pen.extra, self.saved.pen.extra, self.saved_main.pen.extra];
+        (1..=u8::MAX).all(|slot| {
+            let idx = self.extras_witness[slot as usize];
+            let ring_row = idx as usize / c;
+            pens.contains(&slot)
+                || (idx != NO_WITNESS
+                    && ring_row < self.cap
+                    && (ring_row + self.cap - start_row) % self.cap < active_rows
+                    && self.cells.get(idx as usize).is_some_and(|cell| cell.extra() == slot))
+        })
+    }
+
     /// Free every extra slot no cell or saved pen refers to; returns the first free one.
     pub(super) fn collect_extras(&mut self) -> Option<usize> {
+        #[cfg(test)]
+        {
+            self.extras_full_scans += 1;
+        }
         let mut used = [false; 256];
         let mut used_count = 0usize;
         let c = self.cols;
         if c > 0 && self.cap > 0 {
-            let active_rows = (self.history + self.rows).min(self.cap);
-            let start_row = (self.top + self.cap - self.history) % self.cap;
-
-            let mut check_slice = |slice: &[Cell]| -> bool {
-                for cell in slice {
-                    if ((cell.fg & FG_EXTRA) | (cell.bg & BG_EXTRA)) != 0 {
-                        let extra = cell.extra() as usize;
-                        if extra != 0 && !used[extra] {
-                            used[extra] = true;
-                            used_count += 1;
-                            if used_count >= 255 {
-                                return true;
-                            }
+            let (start_row, active_rows) = self.live_ring_rows();
+            // Newest rows first: the cell recorded for each slot is then the one
+            // that stays in the scrollback longest.
+            for k in (0..active_rows).rev() {
+                let row_start = (start_row + k) % self.cap * c;
+                for (i, cell) in self.cells[row_start..row_start + c].iter().enumerate() {
+                    if ((cell.fg & FG_EXTRA) | (cell.bg & BG_EXTRA)) == 0 {
+                        continue;
+                    }
+                    let extra = cell.extra() as usize;
+                    if extra != 0 && !used[extra] {
+                        used[extra] = true;
+                        used_count += 1;
+                        self.extras_witness[extra] = u32::try_from(row_start + i).unwrap_or(NO_WITNESS);
+                        if used_count >= 255 {
+                            self.extras_full = true;
+                            self.extras_dirty = false;
+                            return None;
                         }
                     }
                 }
-                false
-            };
-
-            let all_in_use = if active_rows == self.cap {
-                check_slice(&self.cells)
-            } else if start_row + active_rows <= self.cap {
-                let s = start_row * c;
-                let e = (start_row + active_rows) * c;
-                check_slice(&self.cells[s..e])
-            } else {
-                let s1 = start_row * c;
-                let s2 = (start_row + active_rows - self.cap) * c;
-                check_slice(&self.cells[s1..]) || check_slice(&self.cells[..s2])
-            };
-
-            if all_in_use {
-                self.extras_full = true;
-                self.extras_dirty = false;
-                return None;
             }
         }
 

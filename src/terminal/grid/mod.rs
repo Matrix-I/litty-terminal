@@ -170,6 +170,13 @@ pub struct Grid {
     extras: Vec<Option<CellExtra>>,
     extras_dirty: bool,
     extras_full: bool,
+    /// Per slot, the `cells` index where the last scan found it in use, or
+    /// `NO_WITNESS`. Only a hint: a slot counts as used while that cell is live
+    /// and still refers to it, so a stale entry just means a scan.
+    extras_witness: [u32; 256],
+    /// Times `collect_extras` walked the cells; tests bound it.
+    #[cfg(test)]
+    extras_full_scans: usize,
     /// Grapheme cluster table (see `ClusterTable`).
     clusters: ClusterTable,
     /// The last character joined a ZWJ to a cluster: a pictograph after it joins too.
@@ -266,6 +273,9 @@ impl Grid {
             extras: vec![None],
             extras_dirty: true,
             extras_full: false,
+            extras_witness: [links::NO_WITNESS; 256],
+            #[cfg(test)]
+            extras_full_scans: 0,
             clusters: ClusterTable::default(),
             joiner: false,
             ground: false,

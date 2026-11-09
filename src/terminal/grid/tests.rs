@@ -330,6 +330,89 @@ fn extra_slots_are_reclaimed_once_cells_stop_using_them() {
     assert!(g.extras.len() <= 256);
 }
 
+/// Fill all 255 extra slots with one-cell links: link `i` is the only cell
+/// using its slot, at screen cell `i - 1` of an 80-column grid (rows 0..=3).
+fn saturate_extras(g: &mut Grid) {
+    for i in 1..=255 {
+        let (row, col) = ((i - 1) / 80 + 1, (i - 1) % 80 + 1);
+        feed(g, &format!("\x1b[{row};{col}H\x1b]8;;https://e.test/{i}\x1b\\x\x1b]8;;\x1b\\"));
+    }
+    assert_eq!(g.extras.len(), 256);
+}
+
+/// A link written while every slot is in use is dropped; the attempt scans
+/// the grid, which records where each slot is used.
+fn feed_dropped_link(g: &mut Grid) {
+    let scans = g.extras_full_scans;
+    feed(g, "\x1b[4;16H\x1b]8;;https://e.test/dropped\x1b\\y\x1b]8;;\x1b\\");
+    assert_eq!(g.extras_full_scans, scans + 1, "a full table is scanned once");
+}
+
+#[test]
+fn saturated_extras_do_not_rescan_the_grid_for_every_new_link() {
+    // `ls --hyperlink` over a big directory: more distinct links than slots,
+    // while scrolled-out lines keep freeing cells.
+    let mut g = Grid::new(80, 24);
+    g.scrollback = 1000;
+    let mut linked = 0;
+    for i in 0..4000 {
+        feed(&mut g, &format!("\x1b]8;;https://e.test/{}\x1b\\link {i}\x1b]8;;\x1b\\\r\n", i % 400));
+        // A line whose link got a slot resolves to its own URI.
+        if let Some(link) = g.find_hyperlink_at(22, 0, None) {
+            assert_eq!(link.url, format!("https://e.test/{}", i % 400), "line {i}");
+            linked += 1;
+        }
+    }
+    assert!(linked > 2000, "{linked} of 4000 lines kept their link");
+    // Every slot stays in use, so a scan can free nothing until the lines that
+    // proved it are evicted: about once per scrollback's worth of output.
+    assert!(g.extras_full_scans <= 20, "{} full scans for 4000 lines", g.extras_full_scans);
+}
+
+#[test]
+fn saturated_extras_reclaim_a_slot_once_its_last_cell_is_overwritten() {
+    let mut g = Grid::new(80, 24);
+    saturate_extras(&mut g);
+    feed_dropped_link(&mut g);
+    assert_eq!(g.find_hyperlink_at(3, 15, None), None, "no slot was free");
+
+    // Cell (0, 0) held the only reference to the first link.
+    feed(&mut g, "\x1b[1;1Hz\x1b[6;1H\x1b]8;;https://e.test/new\x1b\\N\x1b]8;;\x1b\\");
+    let link = g.find_hyperlink_at(5, 0, None).expect("freed slot reused");
+    assert_eq!(link.url, "https://e.test/new");
+    assert_eq!(g.find_hyperlink_at(0, 1, None).map(|l| l.url).as_deref(), Some("https://e.test/2"));
+}
+
+#[test]
+fn saturated_extras_reclaim_slots_after_a_resize_moves_cells() {
+    let mut g = Grid::new(80, 24);
+    saturate_extras(&mut g);
+    feed_dropped_link(&mut g);
+
+    g.resize(40, 24);
+    feed(&mut g, "\x1b[2J\x1b[3J\x1b[H\x1b]8;;https://e.test/new\x1b\\N\x1b]8;;\x1b\\");
+    let link = g.find_hyperlink_at(0, 0, None).expect("cleared slots reused");
+    assert_eq!(link.url, "https://e.test/new");
+}
+
+#[test]
+fn saturated_extras_reclaim_slots_whose_cells_left_the_scrollback() {
+    let mut g = Grid::new(80, 4);
+    saturate_extras(&mut g);
+    feed(&mut g, "\x1b[4;1H\r\n\r\n\r\n");
+    assert_eq!(g.history, 3, "the first 240 links are in the scrollback");
+    feed_dropped_link(&mut g);
+
+    // Clearing the scrollback leaves the cells of links 1..=240 in the ring
+    // buffer, outside the live rows; links 241..=255 stay on screen row 0.
+    // Rewriting a live link marks the table dirty without freeing anything.
+    feed(&mut g, "\x1b[3J\x1b[1;20H\x1b]8;;https://e.test/250\x1b\\k\x1b]8;;\x1b\\");
+    feed(&mut g, "\x1b[3;1H\x1b]8;;https://e.test/new\x1b\\N\x1b]8;;\x1b\\");
+    let link = g.find_hyperlink_at(2, 0, None).expect("slot of a cleared link reused");
+    assert_eq!(link.url, "https://e.test/new");
+    assert_eq!(g.find_hyperlink_at(0, 9, None).map(|l| l.url).as_deref(), Some("https://e.test/250"));
+}
+
 #[test]
 fn kitty_keyboard_stack_per_screen() {
     let mut g = Grid::new(10, 3);
