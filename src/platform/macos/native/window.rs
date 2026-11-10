@@ -415,6 +415,12 @@ impl NativeWindow {
         }
     }
 
+    /// Move the top-left to `position` in physical pixels, the unit
+    /// `outer_position` reports; AppKit frames are in points.
+    pub fn set_outer_position_physical(&self, position: PhysicalPosition<i32>) {
+        self.set_outer_position(position.to_logical(self.scale_factor()));
+    }
+
     pub fn is_visible(&self) -> bool {
         unsafe {
             msg_send!(self.inner.ns_window, c"isVisible"; -> bool)
