@@ -343,9 +343,7 @@ impl Window {
     pub fn set_outer_position(&self, position: PhysicalPosition<i32>) {
         match &self.0 {
             #[cfg(target_os = "macos")]
-            WindowInner::Native(w) => {
-                w.set_outer_position(LogicalPosition::new(position.x as f64, position.y as f64));
-            }
+            WindowInner::Native(w) => w.set_outer_position_physical(position),
             #[cfg(target_os = "linux")]
             WindowInner::NativeLinux(w) => w.set_outer_position_physical(position),
         }
