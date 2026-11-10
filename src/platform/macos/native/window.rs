@@ -18,9 +18,18 @@ static mut SHARED_DELEGATE: Id = std::ptr::null_mut();
 /// key first releases every modifier: a modifier let go while no window of ours
 /// is key (e.g. Cmd after Cmd+W hid the window) never reaches us, and would
 /// otherwise stay held when the window comes back (`d` acting as Cmd+D).
-fn focus_events(focused: bool) -> impl Iterator<Item = WindowEvent> {
-    let released = (!focused).then(|| WindowEvent::ModifiersChanged(Default::default()));
-    released.into_iter().chain(std::iter::once(WindowEvent::Focused(focused)))
+/// Gaining key reports the modifiers `held` right now: one kept down across
+/// Cmd+N / Cmd+W sends no flagsChanged to the window that becomes key, which
+/// would otherwise type the next `n` / `w` as text.
+fn focus_events(focused: bool, held: crate::platform::input::Mods) -> impl Iterator<Item = WindowEvent> {
+    let mods = if focused { held } else { Default::default() };
+    [WindowEvent::ModifiersChanged(mods), WindowEvent::Focused(focused)].into_iter()
+}
+
+/// Modifiers physically held right now, whichever window has key.
+fn held_modifiers() -> crate::platform::input::Mods {
+    let flags = class(c"NSEvent").map_or(0, |cls| unsafe { msg_send!(cls, c"modifierFlags"; -> usize) });
+    super::events::convert_modifier_flags(flags)
 }
 
 pub fn ensure_window_delegate_class() {
@@ -42,7 +51,7 @@ pub fn ensure_window_delegate_class() {
                         let tag = msg_send!(view, c"tag"; -> usize);
                         if tag != 0 {
                             let id = WindowId::from_raw(tag as u64);
-                            focus_events(true).for_each(|ev| super::view::emit_event(id, ev));
+                            focus_events(true, held_modifiers()).for_each(|ev| super::view::emit_event(id, ev));
                         }
                     }
                 }
@@ -60,7 +69,7 @@ pub fn ensure_window_delegate_class() {
                         let tag = msg_send!(view, c"tag"; -> usize);
                         if tag != 0 {
                             let id = WindowId::from_raw(tag as u64);
-                            focus_events(false).for_each(|ev| super::view::emit_event(id, ev));
+                            focus_events(false, Default::default()).for_each(|ev| super::view::emit_event(id, ev));
                         }
                     }
                 }
@@ -613,7 +622,7 @@ mod tests {
     fn losing_key_releases_held_modifiers() {
         // Cmd+W hides the window before Cmd is released; that release reaches no
         // window of ours, so the app must not keep treating Cmd as held.
-        let events: Vec<_> = focus_events(false).collect();
+        let events: Vec<_> = focus_events(false, Default::default()).collect();
         assert!(
             matches!(events.as_slice(), [WindowEvent::ModifiersChanged(m), WindowEvent::Focused(false)] if *m == crate::platform::input::Mods::default()),
             "{events:?}"
@@ -650,10 +659,26 @@ mod tests {
         assert_eq!(next_key_window([]), None);
     }
 
+    const CMD: crate::platform::input::Mods = crate::platform::input::Mods { ctrl: false, alt: false, shift: false, sup: true };
+
     #[test]
-    fn gaining_key_only_reports_focus() {
-        let events: Vec<_> = focus_events(true).collect();
-        assert!(matches!(events.as_slice(), [WindowEvent::Focused(true)]), "{events:?}");
+    fn gaining_key_reports_the_modifiers_still_held() {
+        // Cmd held through Cmd+N / Cmd+W: the window that becomes key gets no
+        // flagsChanged, so without this the next `n` / `w` is typed as text.
+        let events: Vec<_> = focus_events(true, CMD).collect();
+        assert!(
+            matches!(events.as_slice(), [WindowEvent::ModifiersChanged(m), WindowEvent::Focused(true)] if *m == CMD),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn losing_key_ignores_the_modifiers_still_held() {
+        let events: Vec<_> = focus_events(false, CMD).collect();
+        assert!(
+            matches!(events.as_slice(), [WindowEvent::ModifiersChanged(m), WindowEvent::Focused(false)] if *m == crate::platform::input::Mods::default()),
+            "{events:?}"
+        );
     }
 
     #[test]
