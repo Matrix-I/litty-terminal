@@ -239,7 +239,7 @@ impl App {
                     if let Some(p) = parent.and_then(|id| self.windows.iter().find(|w| w.window.id() == id)) {
                         platform::add_tabbed_window(&p.window, &s.window);
                     }
-                    // winit centers every new window: cascade it down-right from the
+                    // Every new window opens centered: cascade it down-right from the
                     // one it was opened from so it does not hide exactly behind it.
                     if let Some((pos, scale)) = from {
                         let step = (28.0 * scale).round() as i32;

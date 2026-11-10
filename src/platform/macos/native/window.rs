@@ -342,6 +342,10 @@ impl NativeWindow {
             // Window configuration
             msg_send!(ns_window, c"setAcceptsMouseMovedEvents:", true => bool);
 
+            if spec.position.is_none() {
+                center_on_main_screen(ns_window);
+            }
+
             if spec.visible {
                 msg_send!(ns_window, c"makeKeyAndOrderFront:", std::ptr::null_mut::<c_void>() => Id);
             }
@@ -569,6 +573,27 @@ fn top_left_on_screen(rect: NSRect, screen_h: f64, scale: f64) -> PhysicalPositi
     PhysicalPosition::new((rect.x * scale).round() as i32, (top * scale).round() as i32)
 }
 
+/// Center `ns_window` on the screen the user is working on: `mainScreen` is the
+/// screen of the key window, or the one with the active menu bar when no window
+/// is key (app launch, Dock reopen). AppKit's own `center` sits above center.
+unsafe fn center_on_main_screen(ns_window: Id) { unsafe {
+    let Some(screen) = class(c"NSScreen").and_then(|cls| send_id(cls, c"mainScreen")) else { return };
+    let visible = msg_send!(screen, c"visibleFrame"; -> NSRect);
+    let frame = msg_send!(ns_window, c"frame"; -> NSRect);
+    let origin = centered_origin(visible, frame.w, frame.h);
+    msg_send!(ns_window, c"setFrameOrigin:", origin => NSPoint);
+}}
+
+/// Bottom-left origin (Cocoa coordinates) that centers a `w` x `h` pt window
+/// frame in `visible`. A frame larger than `visible` is pinned to its top-left
+/// so the title bar and traffic lights stay reachable.
+fn centered_origin(visible: NSRect, w: f64, h: f64) -> NSPoint {
+    let x = visible.x + ((visible.w - w) / 2.0).round().max(0.0);
+    let top = visible.y + visible.h;
+    let y = (visible.y + ((visible.h - h) / 2.0).round()).min(top - h);
+    NSPoint { x, y }
+}
+
 pub fn allocate_window_id() -> WindowId {
     let val = NEXT_WINDOW_ID.fetch_add(1, Ordering::Relaxed);
     unsafe { std::mem::transmute(val) }
@@ -630,6 +655,38 @@ mod tests {
         let frame = NSRect { x: 100.0, y: 323.0, w: 1295.0, h: 778.0 };
         let at = top_left_on_screen(frame, 1117.0, 2.0);
         assert_eq!((at.x, at.y), (200, 32));
+    }
+
+    #[test]
+    fn a_new_window_is_centered_in_the_visible_frame() {
+        // 1512x982 pt screen, 25 pt menu bar on top, 70 pt Dock at the bottom.
+        let visible = NSRect { x: 0.0, y: 70.0, w: 1512.0, h: 887.0 };
+        let at = centered_origin(visible, 960.0, 628.0);
+        assert_eq!((at.x, at.y), (276.0, 200.0));
+    }
+
+    #[test]
+    fn centering_uses_the_offset_of_a_secondary_screen() {
+        // A screen to the left of and below the primary one has negative origins.
+        let visible = NSRect { x: -1920.0, y: -300.0, w: 1920.0, h: 1080.0 };
+        let at = centered_origin(visible, 960.0, 600.0);
+        assert_eq!((at.x, at.y), (-1440.0, -60.0));
+    }
+
+    #[test]
+    fn a_window_larger_than_the_screen_keeps_its_title_bar_on_screen() {
+        let visible = NSRect { x: 0.0, y: 70.0, w: 800.0, h: 500.0 };
+        let at = centered_origin(visible, 960.0, 628.0);
+        // Left edge and top edge are pinned to the visible frame.
+        assert_eq!(at.x, 0.0);
+        assert_eq!(at.y + 628.0, 570.0);
+    }
+
+    #[test]
+    fn centered_origins_are_whole_points() {
+        let visible = NSRect { x: 0.0, y: 0.0, w: 1001.0, h: 701.0 };
+        let at = centered_origin(visible, 500.0, 300.0);
+        assert_eq!((at.x, at.y), (251.0, 201.0));
     }
 
     #[test]
