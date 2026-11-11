@@ -21,7 +21,7 @@ The public backend API used by the renderer (`Texture::new`, `Texture::write_rec
 
 **Tech Stack:** Rust 2024, Vulkan 1.0 through `dlopen`, no new dependency.
 
-**Branch:** `fix/vulkan-inline-images`, created from `main` **after plan B is merged** (both plans edit `ffi.rs` and `device.rs`).
+**Branch:** `fix/vulkan-inline-images` _(2026-11-12: stacked on `fix/vulkan-robustness` instead, so both can be tested on Linux before either is merged)_, created from `main` **after plan B is merged** (both plans edit `ffi.rs` and `device.rs`).
 
 ## Confirmed Requirements
 
@@ -91,7 +91,7 @@ No persisted data, config format, keybinding or public API changes.
 - Produces `unsafe fn begin_upload(vk: &VulkanCore)`, `unsafe fn submit_upload(vk: &VulkanCore)` and `unsafe fn image_barrier(vk: &VulkanCore, image: VkImage, layouts: (u32, u32), access: (VkFlags, VkFlags), stages: (VkFlags, VkFlags))` (all private to `resources.rs`).
 - `TextureInner` gains `ready: bool` (the image is in `SHADER_READ_ONLY_OPTIMAL` between uploads).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `resources.rs`:
 
@@ -114,12 +114,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Confirm the failure**
+- [x] **Step 2: Confirm the failure**
 
 Run: `cargo check --tests --target x86_64-unknown-linux-gnu`
 Expected: FAIL to compile with `cannot find function upload_source in this scope`.
 
-- [ ] **Step 3: Add the helpers**
+- [x] **Step 3: Add the helpers**
 
 In `resources.rs`, above `struct TextureInner`:
 
@@ -240,7 +240,7 @@ unsafe fn image_barrier(
 }
 ```
 
-- [ ] **Step 4: Make sampled textures ready at creation**
+- [x] **Step 4: Make sampled textures ready at creation**
 
 Replace `struct TextureInner` with:
 
@@ -315,7 +315,7 @@ with
                 ready: false,
 ```
 
-- [ ] **Step 5: Rewrite `write_rect` on the helpers**
+- [x] **Step 5: Rewrite `write_rect` on the helpers**
 
 Replace the whole `write_rect` method with:
 
@@ -386,12 +386,12 @@ Replace the whole `write_rect` method with:
     }
 ```
 
-- [ ] **Step 6: Run**
+- [x] **Step 6: Run**
 
 Run: `cargo check --tests --target x86_64-unknown-linux-gnu`, `cargo clippy --all-targets --target x86_64-unknown-linux-gnu -- -D warnings` and `cargo test`
 Expected: all succeed. On Linux, `cargo test --lib uploads_keep_the_contents_of_a_ready_texture` PASSES.
 
-- [ ] **Step 7: Commit checkpoint**
+- [x] **Step 7: Commit checkpoint**
 
 Ready to commit: `src/render/backend/linux_gpu/resources.rs` — `fix(linux): upload textures from their real image layout`
 
@@ -412,7 +412,7 @@ Ready to commit: `src/render/backend/linux_gpu/resources.rs` — `fix(linux): up
 - Produces `unsafe fn alloc_image_dset(vk: &VulkanCore, view: VkImageView) -> VkDescriptorSet` (private, `0` on failure) and `pub(super) fn image_dset(&self) -> VkDescriptorSet` on `Texture`.
 - Consumes `VulkanCore::{image_dset_layout, image_pipe_layout, image_ubuf, linear_sampler, cells_dsets, cells_pipe_layout}` (existing fields).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add inside `mod tests` of `resources.rs`:
 
@@ -429,12 +429,12 @@ Add inside `mod tests` of `resources.rs`:
     }
 ```
 
-- [ ] **Step 2: Confirm the failure**
+- [x] **Step 2: Confirm the failure**
 
 Run: `cargo check --tests --target x86_64-unknown-linux-gnu`
 Expected: FAIL to compile with `no method named image_dset found for struct Texture`.
 
-- [ ] **Step 3: Add the pool and the free function**
+- [x] **Step 3: Add the pool and the free function**
 
 In `ffi.rs`, next to the other descriptor constants:
 
@@ -505,7 +505,7 @@ and in the `Some(Arc::new(Self { .. }))` literal, after `desc_pool,`:
                 image_pool_lock: parking_lot::Mutex::new(()),
 ```
 
-- [ ] **Step 4: Give every sampled texture its set**
+- [x] **Step 4: Give every sampled texture its set**
 
 In `resources.rs`, above `struct TextureInner`:
 
@@ -657,7 +657,7 @@ Add to `impl Texture`, after `raw_ptr`:
     }
 ```
 
-- [ ] **Step 5: Bind it when drawing**
+- [x] **Step 5: Bind it when drawing**
 
 In `pass.rs`, replace the whole `draw_image_quad` method with:
 
@@ -712,14 +712,14 @@ and replace the whole `draw_corners` method with:
     }
 ```
 
-- [ ] **Step 6: Run**
+- [x] **Step 6: Run**
 
 Run: `cargo check --tests --target x86_64-unknown-linux-gnu`, `cargo clippy --all-targets --target x86_64-unknown-linux-gnu -- -D warnings` and `cargo test`
 Expected: all succeed. On Linux, `cargo test --lib sampled_textures_own_an_image_descriptor_set` PASSES.
 
 The draw itself has no automated test (it needs a presented frame); it is covered by items 2 to 4 of Task 4's manual checklist.
 
-- [ ] **Step 7: Commit checkpoint**
+- [x] **Step 7: Commit checkpoint**
 
 Ready to commit: `src/render/backend/linux_gpu/ffi.rs`, `src/render/backend/linux_gpu/device.rs`, `src/render/backend/linux_gpu/resources.rs`, `src/render/backend/linux_gpu/pass.rs` — `fix(linux): bind each inline image's texture when drawing it`
 
@@ -736,7 +736,7 @@ Ready to commit: `src/render/backend/linux_gpu/ffi.rs`, `src/render/backend/linu
 - Produces `pub(super) struct Staging { buf: VkBuffer, mem: VkDeviceMemory, ptr: *mut u8, cap: usize }` with `pub(super) const fn empty() -> Self`, and `fn staging_capacity(len: usize) -> Option<usize>`.
 - Produces in `VulkanCore`: `staging: parking_lot::Mutex<super::resources::Staging>`; holding it also serialises every use of `upload_cmd` outside a frame.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add inside `mod tests` of `resources.rs`:
 
@@ -752,12 +752,12 @@ Add inside `mod tests` of `resources.rs`:
     }
 ```
 
-- [ ] **Step 2: Confirm the failure**
+- [x] **Step 2: Confirm the failure**
 
 Run: `cargo check --tests --target x86_64-unknown-linux-gnu`
 Expected: FAIL to compile with `cannot find function staging_capacity in this scope`.
 
-- [ ] **Step 3: Add the staging buffer**
+- [x] **Step 3: Add the staging buffer**
 
 In `resources.rs`, above `upload_source`:
 
@@ -803,7 +803,7 @@ and to the `Some(Arc::new(Self { .. }))` literal after `image_pool_lock: parking
                 staging: parking_lot::Mutex::new(super::resources::Staging::empty()),
 ```
 
-- [ ] **Step 4: Use it**
+- [x] **Step 4: Use it**
 
 In `Texture::new`, replace
 
@@ -885,12 +885,12 @@ with
             }
 ```
 
-- [ ] **Step 5: Run**
+- [x] **Step 5: Run**
 
 Run: `cargo check --tests --target x86_64-unknown-linux-gnu`, `cargo clippy --all-targets --target x86_64-unknown-linux-gnu -- -D warnings` and `cargo test`
 Expected: all succeed. On Linux, `cargo test --lib staging_capacity` PASSES.
 
-- [ ] **Step 6: Commit checkpoint**
+- [x] **Step 6: Commit checkpoint**
 
 Ready to commit: `src/render/backend/linux_gpu/resources.rs`, `src/render/backend/linux_gpu/device.rs` — `perf(linux): reuse one staging buffer for small texture uploads`
 
@@ -901,7 +901,7 @@ Ready to commit: `src/render/backend/linux_gpu/resources.rs`, `src/render/backen
 **Files:**
 - Modify: `docs/reviews/2026-11-11-linux-history-ai-graphics.md` (status notes)
 
-- [ ] **Step 1: Mark the fixed findings in the review**
+- [x] **Step 1: Mark the fixed findings in the review**
 
 Add this line directly under each of the headings `### 1.` and `### 9.`:
 
@@ -911,12 +911,12 @@ Add this line directly under each of the headings `### 1.` and `### 9.`:
 
 `README.md` needs no change: inline images are already listed as a feature and no key or binding changes. The upload-batching follow-up is recorded in `ROADMAP.md` by plan A, Task 5.
 
-- [ ] **Step 2: Read the full diff**
+- [x] **Step 2: Read the full diff**
 
 Run: `git status --short` and `git diff`
 Expected: only `src/render/backend/linux_gpu/{ffi,device,resources,pass}.rs` and the review file.
 
-- [ ] **Step 3: Full verification (macOS)**
+- [x] **Step 3: Full verification (macOS)**
 
 Run each and quote the result:
 
@@ -932,7 +932,7 @@ git diff --check
 
 Expected: all succeed, zero warnings. If a Linux-target command fails for a reason unrelated to this branch (it also fails on `main`), report that with the output instead of working around it.
 
-- [ ] **Step 4: Manual checklist for the user (Linux, x86_64)**
+- [ ] **Step 4: Manual checklist for the user (Linux, x86_64)** _(2026-11-12: pending on real hardware. Run on macOS in an x86_64 Debian container (qemu, lavapipe, Xvfb, validation layers), binaries cross-built with `cargo zigbuild`: `linux_gpu` tests 11 passed with a real lavapipe device. Item 2 passed with before/after evidence: a 64x64 magenta Kitty PNG gives 0 magenta pixels on `main` (with `VUID-vkCmdDraw-None-08600`) and 4,096 on the branch, without that error. Item 5 passed (six window open/close cycles, image drawn again). Text stayed drawn across resizes; items 1 (glyph stress), 3, 4, 6 and 7 as written were not run.)_
 
 Hand this list to the user and record each answer; anything not run is reported as unverified.
 
@@ -950,11 +950,11 @@ Expected: `uploads_keep_the_contents_of_a_ready_texture`, `sampled_textures_own_
 6. Idle memory: with one window idle after items 1 to 3, `grep VmRSS /proc/$(pgrep -n litty)/status`; report it next to the same reading on `main`.
 7. Optional, if the validation layers are installed: `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation ./target/release/litty 2> vk.log`, repeat items 1 and 2, and attach any `VUID` line mentioning image layout or descriptor sets.
 
-- [ ] **Step 5: Self-review and independent review**
+- [x] **Step 5: Self-review and independent review** _(2026-11-12: `/code-review medium` on the combined diff of plans B and C; no finding required a code change, see the PR description)_
 
 Go through the nine-item self-review checklist of the user's global rules with a one-line reason per item, then request an independent review of the diff (`/code-review` or a review subagent given the diff and this plan's Confirmed Requirements). Address or report its findings; if anything changed, repeat from Step 2.
 
-- [ ] **Step 6: Commit checkpoint**
+- [x] **Step 6: Commit checkpoint**
 
 Ready to commit: `docs/reviews/2026-11-11-linux-history-ai-graphics.md` — `docs: mark vulkan image findings as fixed`
 
