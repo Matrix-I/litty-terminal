@@ -21,6 +21,11 @@ pub struct VulkanCore {
     pub(super) upload_cmd: VkCommandBuffer,
     #[allow(dead_code)]
     pub(super) desc_pool: VkDescriptorPool,
+    /// One set per sampled texture, for the image pipeline; sets are freed
+    /// with their texture, so the pool allows it.
+    pub(super) image_desc_pool: VkDescriptorPool,
+    /// Descriptor pools are not thread safe; guards `image_desc_pool`.
+    pub(super) image_pool_lock: parking_lot::Mutex<()>,
     pub(super) shader_mod: VkShaderModule,
     pub(super) image_mod: VkShaderModule,
     #[allow(dead_code)]
@@ -61,6 +66,10 @@ pub struct RenderPipelines {
 static SHARED_VK: parking_lot::Mutex<Option<(Arc<Device>, Arc<Queue>)>> = parking_lot::const_mutex(None);
 pub(super) static SHARED_PIPES: parking_lot::Mutex<Option<(TextureFormat, RenderPipelines)>> =
     parking_lot::const_mutex(None);
+
+/// Sampled textures that can own an image descriptor set at once (glyph
+/// atlases plus inline images; a terminal keeps at most 1024 images).
+const IMAGE_DESCRIPTOR_SETS: u32 = 2048;
 
 /// Window systems a surface can be created for, in no particular order.
 const WINDOW_SYSTEM_EXTENSIONS: [&CStr; 3] =
@@ -331,6 +340,7 @@ impl VulkanCore {
                 vkCreateDescriptorPool: load_fn!(vkCreateDescriptorPool),
                 vkAllocateDescriptorSets: load_fn!(vkAllocateDescriptorSets),
                 vkUpdateDescriptorSets: load_fn!(vkUpdateDescriptorSets),
+                vkFreeDescriptorSets: load_fn!(vkFreeDescriptorSets),
                 vkCreateFramebuffer: load_fn!(vkCreateFramebuffer),
                 vkDestroyFramebuffer: load_fn!(vkDestroyFramebuffer),
                 vkCreateCommandPool: load_fn!(vkCreateCommandPool),
@@ -524,6 +534,21 @@ impl VulkanCore {
             };
             let mut desc_pool = 0u64;
             (lib.vkCreateDescriptorPool)(device, &dp_info as *const _ as *const c_void, std::ptr::null(), &mut desc_pool);
+            let image_pool_sizes = [
+                PoolSize { ty: VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count: IMAGE_DESCRIPTOR_SETS },
+                PoolSize { ty: VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count: IMAGE_DESCRIPTOR_SETS },
+                PoolSize { ty: VK_DESCRIPTOR_TYPE_SAMPLER, count: IMAGE_DESCRIPTOR_SETS },
+            ];
+            let image_dp_info = DescPoolInfo {
+                s_type: VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                p_next: std::ptr::null(),
+                flags: VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+                max_sets: IMAGE_DESCRIPTOR_SETS,
+                pool_size_count: image_pool_sizes.len() as u32,
+                p_pool_sizes: image_pool_sizes.as_ptr(),
+            };
+            let mut image_desc_pool = 0u64;
+            (lib.vkCreateDescriptorPool)(device, &image_dp_info as *const _ as *const c_void, std::ptr::null(), &mut image_desc_pool);
 
             #[repr(C)]
             struct DsetAlloc {
@@ -558,6 +583,8 @@ impl VulkanCore {
                 cmd_pool,
                 upload_cmd,
                 desc_pool,
+                image_desc_pool,
+                image_pool_lock: parking_lot::Mutex::new(()),
                 shader_mod,
                 image_mod,
                 cells_dset_layout,

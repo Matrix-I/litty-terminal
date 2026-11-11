@@ -340,6 +340,84 @@ unsafe fn image_barrier(
     }
 }
 
+/// Allocate and fill the image pipeline's descriptor set for `view`: the
+/// shared image uniforms, the view and the linear sampler. Written once, so
+/// it is never updated while a recorded frame still refers to it. Returns 0
+/// when the pool is exhausted (the image is then skipped, not drawn wrongly).
+unsafe fn alloc_image_dset(vk: &VulkanCore, view: VkImageView) -> VkDescriptorSet {
+    unsafe {
+        #[repr(C)]
+        struct DsetAlloc {
+            s_type: u32,
+            p_next: *const c_void,
+            descriptor_pool: VkDescriptorPool,
+            descriptor_set_count: u32,
+            p_set_layouts: *const VkDescriptorSetLayout,
+        }
+        #[repr(C)]
+        struct BufDesc {
+            buffer: VkBuffer,
+            offset: VkDeviceSize,
+            range: VkDeviceSize,
+        }
+        #[repr(C)]
+        struct ImgDesc {
+            sampler: VkSampler,
+            image_view: VkImageView,
+            image_layout: u32,
+        }
+        #[repr(C)]
+        struct WriteDesc {
+            s_type: u32,
+            p_next: *const c_void,
+            dst_set: VkDescriptorSet,
+            dst_binding: u32,
+            dst_array_element: u32,
+            descriptor_count: u32,
+            descriptor_type: u32,
+            p_image_info: *const ImgDesc,
+            p_buffer_info: *const BufDesc,
+            p_texel_buffer_view: *const c_void,
+        }
+        let alloc = DsetAlloc {
+            s_type: VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            p_next: std::ptr::null(),
+            descriptor_pool: vk.image_desc_pool,
+            descriptor_set_count: 1,
+            p_set_layouts: &vk.image_dset_layout,
+        };
+        let mut dset = 0u64;
+        {
+            let _pool = vk.image_pool_lock.lock();
+            if (vk.lib.vkAllocateDescriptorSets)(vk.device, &alloc as *const _ as *const c_void, &mut dset) != VK_SUCCESS {
+                return 0;
+            }
+        }
+        let uniforms = BufDesc { buffer: vk.image_ubuf.0, offset: 0, range: u64::MAX };
+        let texture = ImgDesc { sampler: 0, image_view: view, image_layout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        let sampler = ImgDesc { sampler: vk.linear_sampler, image_view: 0, image_layout: 0 };
+        let write = |binding: u32, ty: u32, image: *const ImgDesc, buffer: *const BufDesc| WriteDesc {
+            s_type: VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            p_next: std::ptr::null(),
+            dst_set: dset,
+            dst_binding: binding,
+            dst_array_element: 0,
+            descriptor_count: 1,
+            descriptor_type: ty,
+            p_image_info: image,
+            p_buffer_info: buffer,
+            p_texel_buffer_view: std::ptr::null(),
+        };
+        let writes = [
+            write(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, std::ptr::null(), &uniforms),
+            write(1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &texture, std::ptr::null()),
+            write(2, VK_DESCRIPTOR_TYPE_SAMPLER, &sampler, std::ptr::null()),
+        ];
+        (vk.lib.vkUpdateDescriptorSets)(vk.device, writes.len() as u32, writes.as_ptr() as *const c_void, 0, std::ptr::null());
+        dset
+    }
+}
+
 struct TextureInner {
     vk: Option<Arc<VulkanCore>>,
     image: VkImage,
@@ -347,6 +425,8 @@ struct TextureInner {
     view: VkImageView,
     /// In `SHADER_READ_ONLY_OPTIMAL` between uploads (every sampled texture).
     ready: bool,
+    /// Descriptor set for drawing this texture as an inline image, or 0.
+    image_dset: VkDescriptorSet,
 }
 
 impl Drop for TextureInner {
@@ -354,6 +434,10 @@ impl Drop for TextureInner {
         if let Some(vk) = &self.vk {
             unsafe {
                 (vk.lib.vkDeviceWaitIdle)(vk.device);
+                if self.image_dset != 0 {
+                    let _pool = vk.image_pool_lock.lock();
+                    (vk.lib.vkFreeDescriptorSets)(vk.device, vk.image_desc_pool, 1, &self.image_dset);
+                }
                 if self.view != 0 {
                     (vk.lib.vkDestroyImageView)(vk.device, self.view, std::ptr::null());
                 }
@@ -478,6 +562,7 @@ impl Texture {
                     );
                     submit_upload(vk);
                 }
+                let image_dset = if ready { alloc_image_dset(vk, view) } else { 0 };
                 return Self {
                     inner: Arc::new(TextureInner {
                         vk: Some(vk.clone()),
@@ -485,6 +570,7 @@ impl Texture {
                         mem,
                         view,
                         ready,
+                        image_dset,
                     }),
                 };
             }
@@ -496,6 +582,7 @@ impl Texture {
                 mem: 0,
                 view: 0,
                 ready: false,
+                image_dset: 0,
             }),
         }
     }
@@ -572,6 +659,13 @@ impl Texture {
     pub fn raw_ptr(&self) -> RawTexHandle {
         self.inner.view
     }
+
+    /// Descriptor set binding this texture to the image pipeline; 0 when it
+    /// has none (render target, no GPU, or the pool was exhausted).
+    #[inline]
+    pub(super) fn image_dset(&self) -> VkDescriptorSet {
+        self.inner.image_dset
+    }
 }
 
 #[cfg(test)]
@@ -588,5 +682,16 @@ mod tests {
         );
         // A render target has no contents worth keeping before its first upload.
         assert_eq!(upload_source(false), (VK_IMAGE_LAYOUT_UNDEFINED, 0, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT));
+    }
+
+    #[test]
+    fn sampled_textures_own_an_image_descriptor_set() {
+        let (device, _queue) = super::super::device::shared_device_and_queue();
+        let sampled = Texture::new(&device, 4, 4, TextureFormat::Rgba8Unorm, false);
+        // With a GPU every sampled texture can be drawn as an inline image;
+        // without one (headless test machines) there is nothing to bind.
+        assert_eq!(sampled.image_dset() != 0, device.vk.is_some());
+        let target = Texture::new(&device, 4, 4, TextureFormat::Bgra8Unorm, true);
+        assert_eq!(target.image_dset(), 0, "render targets are never drawn as images");
     }
 }
