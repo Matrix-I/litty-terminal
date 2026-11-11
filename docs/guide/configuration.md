@@ -54,7 +54,7 @@ Litty reads its configuration from:
 | **Bell & Notifications** | `bell-features` | Comma-separated: `system`, `attention`, `title`, `audio`, `border` | `attention,title` | Actions triggered on terminal `BEL` (`\a`) |
 | | `bell-audio-path` | Path to audio file | System Glass | Custom audio sound file for bell alerts |
 | | `bell-audio-volume` | Float `0.0` .. `1.0` | `0.5` | Bell audio playback volume |
-| **Shaders & Effects** | `custom-shader` | Path to GLSL file (repeatable) | None | Shadertoy GLSL post-processing shader pass (chains in file order) |
+| **Shaders & Effects** | `custom-shader` | Path to GLSL file (repeatable) | None | Shadertoy GLSL post-processing shader pass (chains in file order). macOS only: on Linux the key is ignored with a warning |
 | | `custom-shader-animation` | `true` (focused), `false` (off), `always` | `true` | Animation frame loop policy for custom GLSL shaders |
 | **Keybindings & Actions** | `keybind` | `trigger=action`, `trigger=text:<val>`, `unbind`, `clear` | Defaults | Custom shortcut mapping (Ghostty syntax) |
 | **Auto Update** | `auto-update` | `check`, `download`, `off` (`false`) | `check` | GitHub self-update checking and downloading policy |
