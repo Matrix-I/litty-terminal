@@ -225,6 +225,32 @@ impl<T: bytemuck::Pod> Drop for HostBuffer<T> {
     }
 }
 
+/// Smallest shared staging buffer: a few hundred glyph cells.
+const STAGING_MIN: usize = 64 << 10;
+/// Largest staging buffer kept between uploads; bigger uploads (inline
+/// images) get a one-off buffer so idle memory does not hold their size.
+const STAGING_KEEP_MAX: usize = 4 << 20;
+
+/// Capacity the shared staging buffer needs for a `len`-byte upload, or
+/// `None` when the upload is too large to be kept around.
+fn staging_capacity(len: usize) -> Option<usize> {
+    (len <= STAGING_KEEP_MAX).then(|| len.next_power_of_two().max(STAGING_MIN))
+}
+
+/// Upload staging memory shared by every texture of the device.
+pub(super) struct Staging {
+    buf: VkBuffer,
+    mem: VkDeviceMemory,
+    ptr: *mut u8,
+    cap: usize,
+}
+
+impl Staging {
+    pub(super) const fn empty() -> Self {
+        Self { buf: 0, mem: 0, ptr: std::ptr::null_mut(), cap: 0 }
+    }
+}
+
 /// Where an upload's first barrier starts: `(old_layout, src_access, src_stage)`.
 /// A ready texture is sampled between uploads and keeps its contents; one that
 /// was never made ready starts from `UNDEFINED`.
@@ -552,6 +578,7 @@ impl Texture {
                 // (the color atlas placeholder): give it a valid layout now.
                 let ready = !render_target;
                 if ready {
+                    let _upload = vk.staging.lock();
                     begin_upload(vk);
                     image_barrier(
                         vk,
@@ -594,13 +621,34 @@ impl Texture {
         }
         let Some(vk) = &self.inner.vk else { return };
         unsafe {
-            let (stg_buf, stg_mem, stg_ptr) = alloc_host_buffer(
-                &vk.lib,
-                vk.device,
-                &vk.mem_props,
-                data.len(),
-                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            );
+            // Held until the upload finished: the previous one is complete
+            // (`submit_upload` waits), so the buffer is free to reuse or replace.
+            let mut staging = vk.staging.lock();
+            let one_off = match staging_capacity(data.len()) {
+                Some(cap) => {
+                    if staging.cap < cap {
+                        if staging.buf != 0 {
+                            (vk.lib.vkDestroyBuffer)(vk.device, staging.buf, std::ptr::null());
+                            (vk.lib.vkFreeMemory)(vk.device, staging.mem, std::ptr::null());
+                        }
+                        let (buf, mem, ptr) =
+                            alloc_host_buffer(&vk.lib, vk.device, &vk.mem_props, cap, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+                        *staging = Staging { buf, mem, ptr, cap };
+                    }
+                    None
+                }
+                None => Some(alloc_host_buffer(
+                    &vk.lib,
+                    vk.device,
+                    &vk.mem_props,
+                    data.len(),
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                )),
+            };
+            let (stg_buf, stg_ptr) = match one_off {
+                Some((buf, _, ptr)) => (buf, ptr),
+                None => (staging.buf, staging.ptr),
+            };
             std::ptr::copy_nonoverlapping(data.as_ptr(), stg_ptr, data.len());
 
             let (old_layout, src_access, src_stage) = upload_source(self.inner.ready);
@@ -647,8 +695,10 @@ impl Texture {
                 (VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT),
             );
             submit_upload(vk);
-            (vk.lib.vkDestroyBuffer)(vk.device, stg_buf, std::ptr::null());
-            (vk.lib.vkFreeMemory)(vk.device, stg_mem, std::ptr::null());
+            if let Some((buf, mem, _)) = one_off {
+                (vk.lib.vkDestroyBuffer)(vk.device, buf, std::ptr::null());
+                (vk.lib.vkFreeMemory)(vk.device, mem, std::ptr::null());
+            }
         }
     }
 
@@ -693,5 +743,15 @@ mod tests {
         assert_eq!(sampled.image_dset() != 0, device.vk.is_some());
         let target = Texture::new(&device, 4, 4, TextureFormat::Bgra8Unorm, true);
         assert_eq!(target.image_dset(), 0, "render targets are never drawn as images");
+    }
+
+    #[test]
+    fn staging_capacity_is_bounded_and_grows_by_powers_of_two() {
+        assert_eq!(staging_capacity(1), Some(64 << 10), "a glyph upload uses the minimum buffer");
+        assert_eq!(staging_capacity(64 << 10), Some(64 << 10));
+        assert_eq!(staging_capacity((64 << 10) + 1), Some(128 << 10));
+        assert_eq!(staging_capacity(4 << 20), Some(4 << 20));
+        // A large inline image must not pin its staging memory while idle.
+        assert_eq!(staging_capacity((4 << 20) + 1), None);
     }
 }
