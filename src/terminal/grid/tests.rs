@@ -1437,6 +1437,50 @@ fn clear_screen_and_history_clears_clusters() {
 }
 
 #[test]
+fn vertical_cursor_moves_stop_at_scroll_margins() {
+    // Both the byte-wise path and the batched fast path dispatch these.
+    let run = |seq: &[u8]| {
+        let mut g = Grid::new(80, 24);
+        feed_fast(&mut g, b"\x1b[5;10r");
+        feed_fast(&mut g, seq);
+        let mut slow = Grid::new(80, 24);
+        feed(&mut slow, "\x1b[5;10r");
+        feed(&mut slow, std::str::from_utf8(seq).unwrap());
+        assert_eq!((g.cur.row, g.cur.col), (slow.cur.row, slow.cur.col), "{seq:?}");
+        g
+    };
+    // Inside the region (rows 4..=9), moves stop at the margins.
+    assert_eq!(run(b"\x1b[7H\x1b[20A").cur.row, 4);
+    assert_eq!(run(b"\x1b[7H\x1b[20B").cur.row, 9);
+    assert_eq!(run(b"\x1b[7H\x1b[20e").cur.row, 9);
+    assert_eq!(run(b"\x1b[7;5H\x1b[20E").cur.row, 9);
+    assert_eq!(run(b"\x1b[7;5H\x1b[20F").cur.row, 4);
+    // Above the region, up stops at the screen top and down at the bottom margin.
+    assert_eq!(run(b"\x1b[3H\x1b[20A").cur.row, 0);
+    assert_eq!(run(b"\x1b[3H\x1b[20B").cur.row, 9);
+    // Below the region, up stops at the top margin and down at the screen bottom.
+    assert_eq!(run(b"\x1b[12H\x1b[20A").cur.row, 4);
+    assert_eq!(run(b"\x1b[12H\x1b[20B").cur.row, 23);
+}
+
+#[test]
+fn cursor_report_in_origin_mode_stays_inside_region() {
+    let mut g = Grid::new(80, 24);
+    feed(&mut g, "\x1b[5;10r\x1b[?6h\x1b[3A\x1b[6n");
+    assert_eq!(g.cur.row, 4);
+    assert_eq!(g.response, b"\x1b[1;1R");
+}
+
+#[test]
+fn cursor_report_in_origin_mode_after_decrc_above_region() {
+    // DECRC can restore a cursor saved above a region set later.
+    let mut g = Grid::new(80, 24);
+    feed(&mut g, "\x1b[?6h\x1b[2H\x1b7\x1b[5;10r\x1b8\x1b[6n");
+    assert!(g.cur.row < g.scroll_top);
+    assert_eq!(g.response, b"\x1b[1;1R");
+}
+
+#[test]
 fn osc_title_keeps_semicolons() {
     let mut g = Grid::new(80, 24);
     feed(&mut g, "\x1b]0;make; make test\x07");
