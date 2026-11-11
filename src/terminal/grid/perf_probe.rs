@@ -155,3 +155,29 @@ fn steady_state_print_and_scroll_allocate_nothing() {
     });
     assert_eq!(allocations, 0, "steady-state print / scroll must not allocate");
 }
+
+/// Prints `RESIZE_PROBE <case> <ms>` (best of `RUNS`) for one resize step of a
+/// 160-column grid with a full default scrollback:
+/// `cargo test --release grid::perf_probe::resize_probe -- --ignored --nocapture`
+#[test]
+#[ignore = "release-mode performance probe; run explicitly for refactor gates"]
+fn resize_probe() {
+    let fill = ascii_scroll();
+    let cases: [(&str, usize, usize); 4] = [("rows_shrink", 160, 49), ("rows_grow", 160, 60), ("cols_160_to_159", 159, 50), ("cols_160_to_80", 80, 50)];
+    for (name, cols, rows) in cases {
+        let mut best = f64::MAX;
+        for _ in 0..RUNS {
+            let mut grid = Grid::new(160, 50);
+            let mut parser = vte::Parser::new();
+            let mut off = 0;
+            while off < fill.len() {
+                off += grid.feed_bytes(&mut parser, &fill.as_bytes()[off..]);
+            }
+            let start = Instant::now();
+            grid.resize(cols, rows);
+            best = best.min(start.elapsed().as_secs_f64() * 1000.0);
+            std::hint::black_box(&grid);
+        }
+        println!("RESIZE_PROBE {name} {best:.4}");
+    }
+}
