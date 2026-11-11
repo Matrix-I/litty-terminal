@@ -705,3 +705,20 @@ fn warm_placement_scroll_and_visible_paths_do_not_allocate() {
     assert_eq!(allocations(|| store.prune(0)), 0, "prune");
     assert_eq!(allocations(|| store.delete_lines(100..101, true)), 0, "delete_lines");
 }
+
+#[test]
+fn kitty_animation_loop_length_does_not_overflow() {
+    let mut store = Store::default();
+    run(&mut store, "Ga=t,f=24,s=1,v=1,i=7,q=2;/wAA");
+    // 200 frames of i32::MAX ms each and the largest loop count: the total
+    // play time (cycle * plays) is far above u64::MAX milliseconds.
+    for _ in 0..200 {
+        run(&mut store, "Ga=f,f=24,i=7,z=2147483647,q=2;AP8A");
+    }
+    let now = Instant::now();
+    let (cmd, _) = parse_kitty(b"Ga=a,i=7,s=3,c=1,v=4294967295").unwrap();
+    store.kitty_animate(&cmd, now).unwrap();
+    let (frame, next) = store.image(7).unwrap().frame_at(now);
+    assert_eq!(frame, 0, "still inside the first frame of the first play");
+    assert_eq!(next, Some(now + Duration::from_millis(40)), "root frame keeps its 40 ms gap");
+}
