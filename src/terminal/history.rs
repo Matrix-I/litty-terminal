@@ -338,6 +338,29 @@ fn line_entry(span: std::ops::Range<usize>, content: &[u8], zsh: bool) -> RawEnt
     RawEntry { span, command, is_timestamp: false }
 }
 
+/// Reverse fish's history escaping in one pass: `\\` is a backslash and `\n`
+/// a newline. Two `replace` calls would read the `\n` inside `\\n` first.
+fn unescape_fish(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 /// Split a fish history file into `- cmd: <command>` blocks (each block runs until
 /// the next `- cmd:` line and includes its `when:` / `paths:` lines).
 fn split_fish_entries(bytes: &[u8]) -> Vec<RawEntry> {
@@ -348,7 +371,7 @@ fn split_fish_entries(bytes: &[u8]) -> Vec<RawEntry> {
         let next = (line_end + 1).min(bytes.len());
         let line = String::from_utf8_lossy(&bytes[pos..line_end]);
         if let Some(rest) = line.trim().strip_prefix("- cmd:") {
-            let cmd = rest.trim().replace("\\n", "\n").replace("\\\\", "\\");
+            let cmd = unescape_fish(rest.trim());
             let command = (!cmd.is_empty()).then_some(cmd);
             entries.push(RawEntry { span: pos..next, command, is_timestamp: false });
         } else if let Some(last) = entries.last_mut() {
@@ -1195,6 +1218,19 @@ mod tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert!(!remove_command_from_file(&path, "not there").expect("no-op"));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn fish_escaped_backslash_before_n_stays_a_backslash() {
+        // On disk: `printf 'a\\nb'` (escaped backslash, then `n`) and `echo x\ny` (a newline).
+        let content = b"- cmd: printf 'a\\\\nb'\n  when: 1\n- cmd: echo x\\ny\n  when: 2\n";
+        let path = temp_history("fish_history", content);
+        let mut out = Vec::new();
+        parse_history_file(&path, &mut out);
+        assert_eq!(out, vec!["echo x\ny", "printf 'a\\nb'"]);
+        assert!(remove_command_from_file(&path, "printf 'a\\nb'").expect("remove"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"- cmd: echo x\\ny\n  when: 2\n");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
