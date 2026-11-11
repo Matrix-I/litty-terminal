@@ -79,7 +79,7 @@ No persisted data, config format, keybinding or public API changes.
 
 **Interfaces:** `pub fn create_postfx_pipeline(&self, _msl_src: &str, _format: TextureFormat) -> Result<ObjPtr, String>` keeps its signature. Its only caller, `PostFx::new` (`src/render/postfx.rs:315`), already prints the error and returns `None` when no pipeline was built.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `src/render/backend/linux_gpu/device.rs`:
 
@@ -97,12 +97,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Confirm it compiles and would fail**
+- [x] **Step 2: Confirm it compiles and would fail**
 
 Run: `cargo check --tests --target x86_64-unknown-linux-gnu`
 Expected: compiles. On Linux, `cargo test --lib custom_shaders_are_rejected` FAILS with `left: None` (the function returns `Ok(ObjPtr(4))`).
 
-- [ ] **Step 3: Fix**
+- [x] **Step 3: Fix**
 
 Replace the body of `create_postfx_pipeline`:
 
@@ -115,7 +115,7 @@ Replace the body of `create_postfx_pipeline`:
     }
 ```
 
-- [ ] **Step 4: Document it**
+- [x] **Step 4: Document it**
 
 In `docs/guide/configuration.md`, replace line 57
 
@@ -129,12 +129,12 @@ with
 | **Shaders & Effects** | `custom-shader` | Path to GLSL file (repeatable) | None | Shadertoy GLSL post-processing shader pass (chains in file order). macOS only: on Linux the key is ignored with a warning |
 ```
 
-- [ ] **Step 5: Run**
+- [x] **Step 5: Run**
 
 Run: `cargo check --tests --target x86_64-unknown-linux-gnu` and `cargo test`
 Expected: both succeed (the new test is not compiled on macOS). On Linux, `cargo test --lib custom_shaders_are_rejected` PASSES.
 
-- [ ] **Step 6: Commit checkpoint**
+- [x] **Step 6: Commit checkpoint**
 
 Ready to commit: `src/render/backend/linux_gpu/device.rs`, `docs/guide/configuration.md` — `fix(linux): reject custom shaders instead of using fake handles`
 
@@ -148,7 +148,7 @@ Ready to commit: `src/render/backend/linux_gpu/device.rs`, `docs/guide/configura
 
 **Interfaces:** Produces `fn swapchain_extent(caps: &VkSurfaceCapabilitiesKHR, width: u32, height: u32) -> Option<VkExtent2D>` (private). Consumes `VkSurfaceCapabilitiesKHR` and `VkExtent2D` from `ffi.rs` (both `Copy + Default`).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to the tests module of `surface.rs`:
 
@@ -189,12 +189,12 @@ Add to the tests module of `surface.rs`:
     }
 ```
 
-- [ ] **Step 2: Confirm the failure**
+- [x] **Step 2: Confirm the failure**
 
 Run: `cargo check --tests --target x86_64-unknown-linux-gnu`
 Expected: FAIL to compile with `cannot find function swapchain_extent in this scope`.
 
-- [ ] **Step 3: Implement `swapchain_extent`**
+- [x] **Step 3: Implement `swapchain_extent`**
 
 Add to `surface.rs` above `pub struct Surface`:
 
@@ -219,7 +219,7 @@ fn swapchain_extent(caps: &VkSurfaceCapabilitiesKHR, width: u32, height: u32) ->
 }
 ```
 
-- [ ] **Step 4: Use it in `configure` and fix the failure path**
+- [x] **Step 4: Use it in `configure` and fix the failure path**
 
 In `Surface::configure`, directly after
 
@@ -288,14 +288,14 @@ with
             }
 ```
 
-- [ ] **Step 5: Run**
+- [x] **Step 5: Run**
 
 Run: `cargo check --tests --target x86_64-unknown-linux-gnu`, `cargo clippy --all-targets --target x86_64-unknown-linux-gnu -- -D warnings` and `cargo test`
 Expected: all succeed. On Linux, `cargo test --lib swapchain_extent` PASSES (3 tests) and `framebuffer_extent_tracks_register_and_forget` still passes.
 
 The failure path itself (`vkCreateSwapchainKHR` returning an error) has no automated test: it needs a live device and a surface in a state the driver rejects. It is covered by the resize and minimise items of Task 5's manual checklist.
 
-- [ ] **Step 6: Commit checkpoint**
+- [x] **Step 6: Commit checkpoint**
 
 Ready to commit: `src/render/backend/linux_gpu/surface.rs` — `fix(linux): never keep a destroyed swapchain after a failed create`
 
@@ -314,7 +314,7 @@ Ready to commit: `src/render/backend/linux_gpu/surface.rs` — `fix(linux): neve
 
 No automated test is possible: every object involved exists only with a live Vulkan device and window, and the tests of this module run with `vk: None` on machines without a GPU. The regression check is the scripted manual repro in Step 5.
 
-- [ ] **Step 1: Record the current behaviour (manual, Linux)**
+- [ ] **Step 1: Record the current behaviour (manual, Linux)** _(2026-11-12: not run, needs a real Linux GPU; in an x86_64 container with lavapipe and Xvfb the RSS of `main` did not grow over six open/close cycles, so the leak does not show there)_
 
 On the Linux machine, on `main`:
 
@@ -324,7 +324,7 @@ cargo build --release && ./target/release/litty &
 
 Open and close ten extra windows (`Ctrl+Shift+N`, then `Ctrl+Shift+W` on the only tab of each new window, which closes it), leaving one open, then read `grep VmRSS /proc/$(pgrep -n litty)/status`. Note the value as "before". Expected on `main`: RSS grows with every closed window.
 
-- [ ] **Step 2: Load the destroy functions**
+- [x] **Step 2: Load the destroy functions**
 
 In `ffi.rs`, inside `pub(super) struct VkLib`, add after the `vkResetFences` field:
 
@@ -352,7 +352,7 @@ and after `vkQueuePresentKHR: load_fn!(vkQueuePresentKHR),`:
                 vkDestroySurfaceKHR: load_fn!(vkDestroySurfaceKHR),
 ```
 
-- [ ] **Step 3: Share the teardown and add `Drop`**
+- [x] **Step 3: Share the teardown and add `Drop`**
 
 In `surface.rs`, replace the whole `shrink_drawables` method with:
 
@@ -414,16 +414,16 @@ impl Drop for Surface {
 }
 ```
 
-- [ ] **Step 4: Compile**
+- [x] **Step 4: Compile**
 
 Run: `cargo check --tests --target x86_64-unknown-linux-gnu`, `cargo clippy --all-targets --target x86_64-unknown-linux-gnu -- -D warnings` and `cargo test`
 Expected: all succeed.
 
-- [ ] **Step 5: Repeat the manual repro (Linux)**
+- [ ] **Step 5: Repeat the manual repro (Linux)** _(2026-11-12: not run on real hardware; container run of the branch: six open/close cycles, RSS 241 MB at start and 231 MB at the end, no crash, no `X11 error` line)_
 
 Repeat Step 1 on the branch. Expected: RSS after ten open/close cycles stays close to the single-window value (report both numbers), and closing a window prints no `litty: X11 error` line.
 
-- [ ] **Step 6: Commit checkpoint**
+- [x] **Step 6: Commit checkpoint**
 
 Ready to commit: `src/render/backend/linux_gpu/ffi.rs`, `src/render/backend/linux_gpu/device.rs`, `src/render/backend/linux_gpu/surface.rs` — `fix(linux): release swapchain and surface when a window closes`
 
@@ -440,7 +440,7 @@ Ready to commit: `src/render/backend/linux_gpu/ffi.rs`, `src/render/backend/linu
 - Produces in `ffi.rs`: `VkExtensionProperties { extension_name: [c_char; 256], spec_version: u32 }`, `VkQueueFamilyProperties { queue_flags: VkFlags, queue_count: u32, timestamp_valid_bits: u32, min_image_transfer_granularity: VkExtent3D }`, `VK_QUEUE_GRAPHICS_BIT: u32`.
 - Produces in `device.rs`: `fn instance_extensions(available: &[&CStr]) -> Option<Vec<&'static CStr>>` and `fn graphics_family(families: &[VkQueueFamilyProperties]) -> Option<u32>` (both private).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add inside `mod tests` of `device.rs`:
 
@@ -475,12 +475,12 @@ Add inside `mod tests` of `device.rs`:
     }
 ```
 
-- [ ] **Step 2: Confirm the failure**
+- [x] **Step 2: Confirm the failure**
 
 Run: `cargo check --tests --target x86_64-unknown-linux-gnu`
 Expected: FAIL to compile: `instance_extensions`, `graphics_family`, `VkQueueFamilyProperties` and `VK_QUEUE_GRAPHICS_BIT` do not exist.
 
-- [ ] **Step 3: Add the FFI types**
+- [x] **Step 3: Add the FFI types**
 
 In `ffi.rs`, after the `VkSurfaceCapabilitiesKHR` struct:
 
@@ -504,7 +504,7 @@ pub(super) struct VkQueueFamilyProperties {
 }
 ```
 
-- [ ] **Step 4: Add the two decisions**
+- [x] **Step 4: Add the two decisions**
 
 In `device.rs`, above `impl VulkanCore`:
 
@@ -535,7 +535,7 @@ fn graphics_family(families: &[VkQueueFamilyProperties]) -> Option<u32> {
 }
 ```
 
-- [ ] **Step 5: Use them in `try_init`**
+- [x] **Step 5: Use them in `try_init`**
 
 In `VulkanCore::try_init`, replace the block from `let exts_ws = [` through the closing brace of the `if vkCreateInstance(..) != VK_SUCCESS { .. }` retry (lines 116-139) with:
 
@@ -632,12 +632,12 @@ In the `PoolInfo` initialiser (`let pool_info = PoolInfo { .. }`) replace `queue
 
 No import is needed for `VkExtensionProperties`, `VkQueueFamilyProperties` and `VK_QUEUE_GRAPHICS_BIT`: `device.rs` already has `use super::ffi::*;`.
 
-- [ ] **Step 6: Run**
+- [x] **Step 6: Run**
 
 Run: `cargo check --tests --target x86_64-unknown-linux-gnu`, `cargo clippy --all-targets --target x86_64-unknown-linux-gnu -- -D warnings` and `cargo test`
 Expected: all succeed. On Linux, `cargo test --lib instance_extensions` and `cargo test --lib graphics_family` PASS (3 tests).
 
-- [ ] **Step 7: Commit checkpoint**
+- [x] **Step 7: Commit checkpoint**
 
 Ready to commit: `src/render/backend/linux_gpu/ffi.rs`, `src/render/backend/linux_gpu/device.rs` — `fix(linux): request only available vulkan extensions and queues`
 
@@ -648,7 +648,7 @@ Ready to commit: `src/render/backend/linux_gpu/ffi.rs`, `src/render/backend/linu
 **Files:**
 - Modify: `docs/reviews/2026-11-11-linux-history-ai-graphics.md` (status notes)
 
-- [ ] **Step 1: Mark the fixed findings in the review**
+- [x] **Step 1: Mark the fixed findings in the review**
 
 Add this line directly under each of the headings `### 3.`, `### 4.`, `### 5.` and `### 8.`:
 
@@ -658,12 +658,12 @@ Add this line directly under each of the headings `### 3.`, `### 4.`, `### 5.` a
 
 `README.md` needs no change: `custom-shader` is documented only in `docs/guide/configuration.md` (updated by Task 1). `ROADMAP.md` follow-ups for custom shaders and device selection are added by plan A, Task 5.
 
-- [ ] **Step 2: Read the full diff**
+- [x] **Step 2: Read the full diff**
 
 Run: `git status --short` and `git diff`
 Expected: only `src/render/backend/linux_gpu/{ffi,device,surface}.rs`, `docs/guide/configuration.md` and the review file.
 
-- [ ] **Step 3: Full verification (macOS)**
+- [x] **Step 3: Full verification (macOS)**
 
 Run each and quote the result:
 
@@ -679,7 +679,7 @@ git diff --check
 
 Expected: all succeed, zero warnings. If a Linux-target command fails for a reason unrelated to this branch (it also fails on `main`), report that with the output instead of working around it.
 
-- [ ] **Step 4: Manual checklist for the user (Linux, x86_64)**
+- [ ] **Step 4: Manual checklist for the user (Linux, x86_64)** _(2026-11-12: pending on real hardware. Run on macOS in an x86_64 Debian container (qemu, lavapipe, Xvfb, validation layers), binaries cross-built with `cargo zigbuild`: `linux_gpu` tests 11 passed; items 1 to 4 passed (start, six resizes, minimise and restore, `custom-shader` warning and normal operation); item 5 inconclusive, see Task 3; item 6 not run. The `custom-shader` line is printed once per window, not once per start.)_
 
 Hand this list to the user and record each answer; anything not run is reported as unverified.
 
@@ -696,11 +696,11 @@ Expected: `custom_shaders_are_rejected`, three `swapchain_extent_*`, two `instan
 5. Task 3, Step 5: RSS before and after ten open/close cycles.
 6. `VK_ICD_FILENAMES` or `vulkaninfo --summary` shows which device is used on a hybrid-GPU machine, if one is available.
 
-- [ ] **Step 5: Self-review and independent review**
+- [x] **Step 5: Self-review and independent review** _(2026-11-12: `/code-review medium` on the combined diff of plans B and C; no finding required a code change, see the PR description)_
 
 Go through the nine-item self-review checklist of the user's global rules with a one-line reason per item, then request an independent review of the diff (`/code-review` or a review subagent given the diff and this plan's Confirmed Requirements). Address or report its findings; if anything changed, repeat from Step 2.
 
-- [ ] **Step 6: Commit checkpoint**
+- [x] **Step 6: Commit checkpoint**
 
 Ready to commit: `docs/reviews/2026-11-11-linux-history-ai-graphics.md` — `docs: mark vulkan robustness findings as fixed`
 
