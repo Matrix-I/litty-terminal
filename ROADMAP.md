@@ -9,6 +9,7 @@ optimization candidates are identified separately from reproduced failures.
 
 | Version | Record |
 | --- | --- |
+| [v0.11.1](./docs/plans/0.11.1.md) | Release record — source review fixes (click-to-move panic, RIS, OSC titles, scroll margins), OSC 8 file-link hardening, faster OSC 8 interning and rows-only resize, SIGWINCH after resize bursts, macOS live-resize and window fixes |
 | [v0.11.0](./docs/plans/0.11.0.md) | Release record (2026-11-09) — ships the performance gap plan: new latency, startup and PTY throughput benchmarks, shaping cache, faster OSC 8 / Unicode paths, overlapped startup and lower idle memory; T1 and emoji interning carry over |
 | [v0.10.1](./docs/plans/0.10.1.md) | Release record (2026-11-08) — macOS pointer-hide, key-window and Kitty function-key fixes; first release built by the tag-triggered CI workflow |
 | [v0.10.0](./docs/plans/0.10.0.md) | Release record (2026-11-08) — ships the direct Metal/Vulkan renderer, native AppKit/X11 windowing, native OS font/image engines and the SIMD VT/search core; native Wayland, the macOS `winit` benchmark and the size/RAM targets carry over (listed in the record) |
@@ -44,6 +45,9 @@ follow-ups are in v0.8.0; shipped refactor results are in v0.7.1.
 - [x] **Linux feature and stability validation** (user-confirmed, 2026-11-04)
   - All features have been tested on Linux and run stably. Linux runtime/desktop verification is closed and is no longer technical debt.
   - This supersedes the outstanding Kitty lock modifier, Quick Terminal (X11/Wayland), real `xdg-open`, and fish-on-Linux checks. See the [validation status](./docs/validation/linux-status-2026-11-04.md) for evidence scope.
+
+- [ ] **Intermittent 47 MB footprint with all windows closed (macOS)**
+  - During v0.11.1 validation (2026-11-11) the 0-window footprint stayed at 47 MB in 7 of 18 runs of the release build, the level from before the drawable fix `79d44ef`; v0.11.0 gave 28–32 MB in 8 alternating runs. 78 later runs (v0.11.0, `15bca71`, `d37a085`, `a0f7ebc`, `86967b8` and the release build) never showed it, so it is not reproduced and no fix was made. Suspected timing under system load. Method and data: [validation report](./docs/validation/release-0.11.1.md).
 
 - [ ] **LLM assistant release validation on additional environments**
   - Implementation is complete (see [implementation record](./docs/plans/yosh_implementation_plan.md#implementation-record-2026-11-01)); mock provider/tool/continuation/cancellation/compaction tests and isolated zsh/Bash 3.2 smoke tests pass.
