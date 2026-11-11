@@ -1255,6 +1255,83 @@ fn resize_keeps_cursor_line() {
     assert_eq!(line(&g, 3), "d");
 }
 
+/// Everything a rows-only resize must preserve: every live line's cells and
+/// wrap flag, history length, line numbering, cursors and prompt marks.
+type ResizeSnapshot = (Vec<(Vec<Cell>, bool)>, usize, usize, (usize, usize), (usize, usize), Vec<PromptMark>, Vec<(usize, usize)>);
+
+fn resize_snapshot(g: &Grid) -> ResizeSnapshot {
+    // Read the main ring directly: `line_cells` shows the alternate screen while it is active.
+    let c = g.cols;
+    let lines = (0..g.history + g.rows)
+        .map(|i| (g.top + g.cap - g.history + i) % g.cap)
+        .map(|p| (g.cells[p * c..(p + 1) * c].to_vec(), g.wrapped[p]))
+        .collect();
+    let main = if g.alt_active { g.saved_main } else { g.cur };
+    let images = g.graphics.placements.iter().filter(|p| !p.alt).map(|p| (p.line, p.col)).collect();
+    (lines, g.history, g.lines_pushed, (main.row, main.col), (g.cur.row, g.cur.col), g.prompts.clone(), images)
+}
+
+/// Feed `setup`, then resize to each of `heights` both with the rows-only fast
+/// path and with a full reflow, and require identical results.
+fn assert_rows_only_resize_matches_reflow(cols: usize, rows: usize, setup: &str, heights: &[usize]) {
+    let mut fast = Grid::new(cols, rows);
+    let mut slow = Grid::new(cols, rows);
+    (fast.cell_px, slow.cell_px) = ((10, 20), (10, 20));
+    feed(&mut fast, setup);
+    feed(&mut slow, setup);
+    for &h in heights {
+        fast.resize(cols, h);
+        slow.reflow(cols, h);
+        assert_eq!(resize_snapshot(&fast), resize_snapshot(&slow), "{cols}x{rows} -> {h} rows after {setup:?}");
+        // Output after the resize lands identically too.
+        feed(&mut fast, "after\r\n");
+        feed(&mut slow, "after\r\n");
+        assert_eq!(resize_snapshot(&fast), resize_snapshot(&slow), "output after resize to {h} rows");
+    }
+}
+
+#[test]
+fn rows_only_resize_matches_reflow() {
+    let numbered = |n: usize| (0..n).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\r\n");
+    // Cursor at the bottom with history: shrinking pushes lines up, growing pulls them back.
+    assert_rows_only_resize_matches_reflow(10, 5, &numbered(30), &[3, 8, 2, 40, 5]);
+    // Cursor at the top after a clear: blank rows below it are dropped, not pushed.
+    assert_rows_only_resize_matches_reflow(10, 6, &format!("{}\x1b[2J\x1b[H$ ", numbered(12)), &[2, 9, 4]);
+    // Content below the cursor, wrapped lines, colored blanks and wide chars.
+    let mixed = format!(
+        "{}\r\n0123456789abc\r\n\x1b[44m  \x1b[K\x1b[0m\r\n中文中文中文x\x1b[3A\x1b[4G",
+        numbered(8)
+    );
+    assert_rows_only_resize_matches_reflow(10, 8, &mixed, &[4, 3, 12, 6, 1]);
+    // A wrapped line whose tail is blank, below the cursor.
+    assert_rows_only_resize_matches_reflow(10, 6, "a\r\n0123456789bc\x1b[2K\x1b[H", &[3, 8]);
+    // The same above the cursor and deep in scrollback: reflow drops the blank continuation.
+    assert_rows_only_resize_matches_reflow(10, 6, "0123456789bc\x1b[2K\r\nnext\r\nmore", &[3, 6, 2]);
+    assert_rows_only_resize_matches_reflow(10, 4, &format!("0123456789bc\x1b[2K\r\n{}", numbered(10)), &[2, 4]);
+    // Taller than the ring holds: falls back to a rebuild.
+    assert_rows_only_resize_matches_reflow(10, 5, &numbered(8), &[100, 5]);
+    // A main-screen image in scrollback and one on screen (3x2 cells each).
+    let image = format!("\x1b_Ga=T,f=32,s=30,v=40;{}\x1b\\", "A".repeat(6400));
+    assert_rows_only_resize_matches_reflow(20, 5, &format!("{}\r\nab{image}\r\n{}\r\ncd{image}", numbered(6), numbered(4)), &[3, 8, 2]);
+    // Prompt marks in scrollback and on screen.
+    let prompts = (0..10).map(|i| format!("\x1b]133;A\x07$ cmd{i}\r\n\x1b]133;C\x07out {i}\r\n\x1b]133;D\x07")).collect::<String>();
+    assert_rows_only_resize_matches_reflow(12, 6, &prompts, &[3, 10, 2, 6]);
+    // The alternate screen is active while the main screen is resized.
+    assert_rows_only_resize_matches_reflow(10, 5, &format!("{}\x1b[?1049hALT\x1b[3;2H", numbered(20)), &[3, 9, 5]);
+    // Scrollback at its limit.
+    assert_rows_only_resize_matches_reflow(4, 5, &numbered(SCROLLBACK + 50), &[3, 7, 2]);
+}
+
+#[test]
+fn shrinking_rows_with_full_scrollback_keeps_history_within_its_limit() {
+    let mut g = Grid::new(4, 50);
+    feed(&mut g, &"x\r\n".repeat(SCROLLBACK + 100));
+    assert_eq!(g.history, SCROLLBACK);
+    g.resize(4, 10);
+    feed(&mut g, &"y\r\n".repeat(200));
+    assert_eq!(g.history, SCROLLBACK);
+}
+
 #[test]
 fn dsr_reply() {
     let mut g = Grid::new(10, 5);
