@@ -1042,8 +1042,11 @@ pub fn shared_pipelines(device: &Device, format: TextureFormat) -> RenderPipelin
 }
 
 impl Device {
+    /// Custom shaders need GLSL to SPIR-V translation and offscreen targets,
+    /// which this backend does not have. Returning a handle here made the
+    /// renderer bind it as a real pipeline.
     pub fn create_postfx_pipeline(&self, _msl_src: &str, _format: TextureFormat) -> Result<ObjPtr, String> {
-        Ok(ObjPtr(4))
+        Err("custom shaders are not supported on Linux yet".into())
     }
 
     #[inline]
@@ -1054,5 +1057,17 @@ impl Device {
     #[inline]
     pub fn linear_sampler(&self) -> SamplerHandle {
         self.vk.as_ref().map_or(0, |v| v.linear_sampler)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_shaders_are_rejected() {
+        let device = Device { vk: None };
+        let err = device.create_postfx_pipeline("void mainImage() {}", TextureFormat::Bgra8Unorm).err();
+        assert_eq!(err.as_deref(), Some("custom shaders are not supported on Linux yet"));
     }
 }
