@@ -110,3 +110,59 @@ Not reviewed in depth: the Vulkan / Linux backend, `src/terminal/history.rs`,
 1. Finding 1 (in the fix plan).
 2. Finding 3 (in the fix plan).
 3. Finding 2 (separate plan: it needs platform work on both targets).
+
+## Fixes
+
+Plan: [2026-11-11-perf-review-fixes](../plans/2026-11-11-perf-review-fixes.md),
+branch `fix/perf-review-fixes`. Measured on 2026-11-12, macOS arm64, same
+machine for every before/after pair.
+
+| Task | Change | Commit |
+| :--- | :--- | :--- |
+| 1 | `scrollback-limit` defaults to 10,000,000 bytes | not committed yet |
+| 2 | A resize event resizes only the visible tab; the others follow 100 ms after the burst | not committed yet |
+| 3 | Atlas slot map hashes keys with one multiply instead of SipHash | not committed yet |
+
+### Atlas slot map (finding 3)
+
+`cargo test --release tmp_slot_map_lookup_cost`, 8,000 lookups, three runs:
+
+```
+SLOTMAP std_us_per_8000=51.2 / 53.8 / 47.2
+SLOTMAP mul_us_per_8000=16.8 / 18.8 / 16.6
+```
+
+About 3x faster per lookup.
+
+### Reflow of one 200-column pane (finding 1)
+
+`cargo test --release tmp_reflow_cost`, 25,000 lines of 150 columns, average of
+20 width changes, three runs each:
+
+```
+main:   REFLOW history=5000 avg_ms=4.319 / 5.177 / 4.505
+branch: REFLOW history=4166 avg_ms=2.296 / 2.334 / 2.246
+```
+
+With background tabs deferred, a drag step re-wraps only the visible tab, so
+the per-step cost no longer scales with the number of tabs.
+
+### Benchmarks
+
+- `litty +bench-ram` (branch): 61 MB footprint for 1 window / 1 tab, 63 MB for
+  3 tabs, 95 MB for 2 windows / 6 tabs, leak delta +3 MB. All budgets pass;
+  same as the 61 MB baseline in `docs/development/performance.md`.
+- `litty +bench-pty-throughput 16`, branch and `main` alternated four times:
+  the same binary varied 2-4x between runs (for example `ascii` in-app 28-67
+  MB/s on the branch, 14-86 MB/s on `main`), so no regression or gain can be
+  read from it. No consistent difference between the two builds.
+
+### Not verified
+
+- End-to-end GUI checks (plan Task 4 Step 3, items 1-4): scrollback depth after
+  `seq 1 30000`, `stty size` printed once per burst in background tabs, a tab
+  shown within 100 ms of a resize drawn at the new size, bold/italic text.
+  They need interactive window resizing and were not run. `sync_size`
+  touching only the visible tab is covered by the unit test of `resize_tab`
+  and `BackgroundResize` only.
+- Linux: compile-checked only (`cargo check --target x86_64-unknown-linux-gnu`).
