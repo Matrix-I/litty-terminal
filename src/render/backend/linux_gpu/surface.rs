@@ -30,6 +30,25 @@ pub(super) fn framebuffer_extent(fb: VkFramebuffer) -> Option<(u32, u32)> {
     FB_EXTENTS.lock().iter().find(|e| e.0 == fb).map(|e| (e.1, e.2))
 }
 
+/// The extent a new swapchain must use, or `None` when the surface has no
+/// area (minimised, or its capabilities could not be read). A surface with a
+/// fixed size (X11) dictates it; `0xFFFFFFFF` (Wayland) leaves it to the
+/// request, clamped to the surface's limits.
+fn swapchain_extent(caps: &VkSurfaceCapabilitiesKHR, width: u32, height: u32) -> Option<VkExtent2D> {
+    let current = caps.current_extent;
+    if current.width != u32::MAX {
+        return (current.width > 0 && current.height > 0).then_some(current);
+    }
+    let clamp = |v: u32, lo: u32, hi: u32| {
+        let lo = lo.max(1);
+        if hi >= lo { v.clamp(lo, hi) } else { v.max(lo) }
+    };
+    Some(VkExtent2D {
+        width: clamp(width, caps.min_image_extent.width, caps.max_image_extent.width),
+        height: clamp(height, caps.min_image_extent.height, caps.max_image_extent.height),
+    })
+}
+
 pub struct Surface {
     vk: Option<Arc<VulkanCore>>,
     surface_khr: VkSurfaceKHR,
@@ -198,6 +217,17 @@ impl Surface {
 
             let mut caps = VkSurfaceCapabilitiesKHR::default();
             (vk.lib.vkGetPhysicalDeviceSurfaceCapabilitiesKHR)(vk.phys, self.surface_khr, &mut caps);
+            let Some(extent) = swapchain_extent(&caps, self.width, self.height) else {
+                // Nothing to present to: drop the old swapchain so no frame is acquired.
+                if self.swapchain != 0 {
+                    (vk.lib.vkDestroySwapchainKHR)(vk.device, self.swapchain, std::ptr::null());
+                    self.swapchain = 0;
+                }
+                return;
+            };
+            // Framebuffers, render area and viewport all follow the real extent.
+            self.width = extent.width;
+            self.height = extent.height;
 
             let min_images = caps.min_image_count.max(2);
             let max_images = if caps.max_image_count > 0 { caps.max_image_count } else { min_images };
@@ -247,7 +277,7 @@ impl Surface {
                 min_image_count: image_count,
                 image_format: vk_format(config.format),
                 image_color_space: 0,
-                image_extent: VkExtent2D { width: self.width, height: self.height },
+                image_extent: extent,
                 image_array_layers: 1,
                 image_usage: VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                 image_sharing_mode: 0,
@@ -260,13 +290,15 @@ impl Surface {
                 old_swapchain: old_sc,
             };
             let mut new_sc = 0u64;
-            if (vk.lib.vkCreateSwapchainKHR)(vk.device, &sc_info as *const _ as *const c_void, std::ptr::null(), &mut new_sc) == VK_SUCCESS {
-                self.swapchain = new_sc;
-            }
+            let created = (vk.lib.vkCreateSwapchainKHR)(vk.device, &sc_info as *const _ as *const c_void, std::ptr::null(), &mut new_sc) == VK_SUCCESS;
+            // Destroy the old swapchain either way: it was replaced, or the create
+            // failed and it must not be presented to again. Never keep its handle.
             if old_sc != 0 {
                 (vk.lib.vkDestroySwapchainKHR)(vk.device, old_sc, std::ptr::null());
             }
+            self.swapchain = if created { new_sc } else { 0 };
             if self.swapchain == 0 {
+                eprintln!("litty: could not create a {}x{} swapchain", extent.width, extent.height);
                 return;
             }
 
@@ -413,5 +445,40 @@ mod tests {
         assert_eq!(framebuffer_extent(fb), Some((1200, 800)));
         forget_framebuffer(fb);
         assert_eq!(framebuffer_extent(fb), None);
+    }
+
+    fn caps(current: (u32, u32), min: (u32, u32), max: (u32, u32)) -> VkSurfaceCapabilitiesKHR {
+        VkSurfaceCapabilitiesKHR {
+            current_extent: VkExtent2D { width: current.0, height: current.1 },
+            min_image_extent: VkExtent2D { width: min.0, height: min.1 },
+            max_image_extent: VkExtent2D { width: max.0, height: max.1 },
+            ..VkSurfaceCapabilitiesKHR::default()
+        }
+    }
+
+    fn extent(c: &VkSurfaceCapabilitiesKHR, w: u32, h: u32) -> Option<(u32, u32)> {
+        swapchain_extent(c, w, h).map(|e| (e.width, e.height))
+    }
+
+    #[test]
+    fn swapchain_extent_follows_a_fixed_surface_size() {
+        // X11: the surface dictates the extent; a stale request must not be used.
+        let c = caps((1200, 800), (1200, 800), (1200, 800));
+        assert_eq!(extent(&c, 968, 620), Some((1200, 800)));
+    }
+
+    #[test]
+    fn swapchain_extent_clamps_a_free_surface_size() {
+        // Wayland: 0xFFFFFFFF means "the swapchain decides", within the limits.
+        let c = caps((u32::MAX, u32::MAX), (1, 1), (4096, 4096));
+        assert_eq!(extent(&c, 968, 620), Some((968, 620)));
+        assert_eq!(extent(&c, 9000, 0), Some((4096, 1)));
+    }
+
+    #[test]
+    fn swapchain_extent_is_none_for_a_zero_area_surface() {
+        // Minimised window, or a failed capabilities query (all zero).
+        assert_eq!(extent(&caps((0, 0), (0, 0), (0, 0)), 968, 620), None);
+        assert_eq!(extent(&VkSurfaceCapabilitiesKHR::default(), 968, 620), None);
     }
 }
