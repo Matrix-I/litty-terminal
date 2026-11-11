@@ -308,7 +308,8 @@ impl Grid {
         let mut count = 0;
         for r in from.0..=to.0 {
             let begin = if r == from.0 { from.1 } else { 0 };
-            let end = if r == to.0 { to.1 } else { row_end(r) };
+            // The input mark can sit past the row's last non-blank cell.
+            let end = if r == to.0 { to.1 } else { row_end(r).max(begin) };
             if r < to.0 && !self.line_wrapped(self.abs_line(r)) {
                 count += 1; // One horizontal shell movement crosses a literal newline.
             }
