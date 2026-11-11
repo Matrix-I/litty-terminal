@@ -1328,6 +1328,23 @@ fn cursor_movement_on_click() {
 }
 
 #[test]
+fn cursor_movement_from_input_mark_past_row_content_does_not_panic() {
+    // The input mark sits after the prompt's trailing space, so the first input
+    // row has no content past the mark; the old slice was `row[2..1]`.
+    let mut g = Grid::new(20, 5);
+    feed(&mut g, "$ \x1b]133;B\x07\r\nab");
+    assert_eq!((g.cur.row, g.cur.col), (1, 2));
+    // One newline plus "ab" lies between the mark and the cursor.
+    let bytes = g.calculate_cursor_movement_to(0, 0).expect("move to input start");
+    assert_eq!(bytes, b"\x1b[D".repeat(3));
+
+    // The exact sequence from the review: an empty second row.
+    let mut g = Grid::new(20, 5);
+    feed(&mut g, "$ \x1b]133;B\x07\n");
+    let _ = g.calculate_cursor_movement_to(0, 0);
+}
+
+#[test]
 fn cursor_click_crosses_soft_wrapped_rows() {
     let mut g = Grid::new(10, 5);
     feed(&mut g, "$ abcdefghijkl");
