@@ -102,10 +102,21 @@ fn osc8_links() -> String {
     s
 }
 
+/// `ls --hyperlink` in a big directory: distinct `file://` links sharing a
+/// long prefix, so interning cannot tell them apart by the first bytes.
+fn osc8_ls() -> String {
+    let mut s = String::new();
+    for i in 0..20_000 {
+        let n = i % 400;
+        let _ = write!(s, "\x1b]8;;file://build-host/home/user/projects/litty/target/debug/deps/file_{n:05}.rlib\x1b\\file_{n:05}.rlib\x1b]8;;\x1b\\\r\n");
+    }
+    s
+}
+
 #[test]
 #[ignore = "release-mode performance probe; run explicitly for refactor gates"]
 fn grid_throughput_probe() {
-    let cases: [Case; 7] = [
+    let cases: [Case; 8] = [
         ("ascii_scroll", ascii_scroll),
         ("sgr_log", sgr_log),
         ("unicode_mixed", unicode_mixed),
@@ -113,6 +124,7 @@ fn grid_throughput_probe() {
         ("region_scroll", region_scroll),
         ("alt_redraw", alt_redraw),
         ("osc8_links", osc8_links),
+        ("osc8_ls", osc8_ls),
     ];
     println!("GRID_SIZE {}", std::mem::size_of::<Grid>());
     for (name, build) in cases {
