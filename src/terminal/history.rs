@@ -500,22 +500,26 @@ fn parse_history_file(path: &Path, out: &mut Vec<String>) {
     out.extend(split_history_entries(path, &bytes).into_iter().rev().filter_map(|e| e.command));
 }
 
-/// Return `bytes` with the single latest entry equal to `cmd` removed (along with a bash
+/// Return `bytes` with every entry equal to `cmd` removed (each along with a bash
 /// timestamp comment directly preceding it), or `None` if nothing matched.
+/// The popup lists a command once, so deleting it must leave no copy behind.
 /// All other entries are kept byte-for-byte, so metafied zsh data is never re-encoded.
 fn strip_command_entries(path: &Path, bytes: &[u8], cmd: &str) -> Option<Vec<u8>> {
     let entries = split_history_entries(path, bytes);
-    let target_idx = entries.iter().rposition(|e| e.command.as_deref() == Some(cmd))?;
-
     let mut kept: Vec<&RawEntry> = Vec::with_capacity(entries.len());
-    for (i, entry) in entries.iter().enumerate() {
-        if i == target_idx {
+    let mut removed = false;
+    for entry in &entries {
+        if entry.command.as_deref() == Some(cmd) {
             if kept.last().is_some_and(|e| e.is_timestamp) {
                 kept.pop();
             }
+            removed = true;
             continue;
         }
         kept.push(entry);
+    }
+    if !removed {
+        return None;
     }
     let mut out = Vec::with_capacity(bytes.len());
     for entry in kept {
@@ -1271,11 +1275,12 @@ mod tests {
     }
 
     #[test]
-    fn removal_only_deletes_single_latest_occurrence() {
-        let content = b"echo first\necho repeated\necho middle\necho repeated\n";
+    fn removal_deletes_every_occurrence_with_its_timestamp() {
+        let content = b"#1\necho repeated\necho first\n#2\necho repeated\necho middle\necho repeated\n";
         let path = temp_history(".bash_history", content);
         assert!(remove_command_from_file(&path, "echo repeated").expect("remove"));
-        assert_eq!(std::fs::read(&path).unwrap(), b"echo first\necho repeated\necho middle\n");
+        assert_eq!(std::fs::read(&path).unwrap(), b"echo first\necho middle\n");
+        assert!(!remove_command_from_file(&path, "echo repeated").expect("no-op"), "nothing left to remove");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }
