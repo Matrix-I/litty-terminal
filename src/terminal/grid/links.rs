@@ -381,12 +381,36 @@ impl Grid {
 /// become local paths; other URIs are only opened for a few well-known schemes, so
 /// a program cannot make a click launch an arbitrary URL handler.
 pub(super) fn osc8_target(uri: &str) -> Option<(String, bool)> {
-    if uri.starts_with("file://") {
-        return parse_osc7_path(uri.as_bytes()).map(|path| (path, true));
+    osc8_target_on(uri, local_hostname())
+}
+
+/// [`osc8_target`] for a machine named `local_host` (empty when unknown).
+/// A `file://` URI names a path on its host, so one from another machine (an
+/// SSH session, a log) is not a link here: the same path may hold anything.
+pub(super) fn osc8_target_on(uri: &str, local_host: &str) -> Option<(String, bool)> {
+    if let Some(rest) = uri.strip_prefix("file://") {
+        let host = &rest[..rest.find('/')?];
+        let is_local = host.is_empty()
+            || host.eq_ignore_ascii_case("localhost")
+            || (!local_host.is_empty() && host.eq_ignore_ascii_case(local_host));
+        return is_local.then(|| parse_osc7_path(uri.as_bytes())).flatten().map(|path| (path, true));
     }
     let (scheme, _) = uri.split_once(':')?;
     const SCHEMES: [&str; 5] = ["http", "https", "ftp", "ftps", "mailto"];
     SCHEMES.iter().any(|s| s.eq_ignore_ascii_case(scheme)).then(|| (uri.to_string(), false))
+}
+
+/// This machine's hostname as `gethostname` reports it (what `ls --hyperlink`
+/// and shell integrations put in `file://` URIs), or "" if it cannot be read.
+fn local_hostname() -> &'static str {
+    static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HOST.get_or_init(|| {
+        let mut buf = [0u8; 256];
+        // SAFETY: `buf` is valid for `buf.len()` bytes; gethostname NUL-terminates within it or fails.
+        let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
+        let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        if ok { String::from_utf8_lossy(&buf[..len]).into_owned() } else { String::new() }
+    })
 }
 
 /// Drop trailing sentence punctuation from a detected link `chars[start..end]`,

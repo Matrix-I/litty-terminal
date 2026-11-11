@@ -308,8 +308,28 @@ fn osc8_survives_sgr_reset_and_adjacent_links_stay_apart() {
 }
 
 #[test]
+fn osc8_file_links_only_resolve_on_this_host() {
+    use super::links::osc8_target_on;
+    let local = Some(("/tmp/a b.txt".to_string(), true));
+    assert_eq!(osc8_target_on("file:///tmp/a%20b.txt", "mac.local"), local);
+    assert_eq!(osc8_target_on("file://localhost/tmp/a%20b.txt", "mac.local"), local);
+    assert_eq!(osc8_target_on("file://LOCALHOST/tmp/a%20b.txt", "mac.local"), local);
+    assert_eq!(osc8_target_on("file://Mac.Local/tmp/a%20b.txt", "mac.local"), local);
+    // A path on another machine must not open whatever sits at that path here.
+    assert_eq!(osc8_target_on("file://build-server/tmp/a%20b.txt", "mac.local"), None);
+    assert_eq!(osc8_target_on("file://mac.local.evil/tmp/x", "mac.local"), None);
+    // Unknown local hostname: only host-less and localhost links resolve.
+    assert_eq!(osc8_target_on("file://mac.local/tmp/x", ""), None);
+    assert_eq!(osc8_target_on("file:///tmp/x", ""), Some(("/tmp/x".to_string(), true)));
+
+    let mut g = Grid::new(10, 1);
+    feed(&mut g, "\x1b]8;;file://build-server/etc/hosts\x1b\\click\x1b]8;;\x1b\\");
+    assert_eq!(g.find_hyperlink_at(0, 1, None), None);
+}
+
+#[test]
 fn osc8_targets() {
-    assert_eq!(osc8_target("file://host/tmp/a%20b.txt"), Some(("/tmp/a b.txt".into(), true)));
+    assert_eq!(osc8_target("file:///tmp/a%20b.txt"), Some(("/tmp/a b.txt".into(), true)));
     assert_eq!(osc8_target("HTTPS://x.test"), Some(("HTTPS://x.test".into(), false)));
     assert_eq!(osc8_target("mailto:me@x.test"), Some(("mailto:me@x.test".into(), false)));
     assert_eq!(osc8_target("javascript:alert(1)"), None);
