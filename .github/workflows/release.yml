@@ -18,6 +18,10 @@ env:
   ZIG_VERSION: 0.17.1
   ZIG_SHA256: 3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a
   CARGO_ZIGBUILD_VERSION: 0.24.1
+  # Upstream release tarball, verified against the author's signature
+  # (key RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3).
+  MINISIGN_VERSION: '0.12'
+  MINISIGN_SHA256: 9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73
 
 # Build jobs only read the repository; only the `release` job may write, and
 # only it can see the signing secrets (through the `release` environment).
@@ -221,8 +225,18 @@ jobs:
           unzip -p Litty-macos-aarch64.zip Litty.app/Contents/Info.plist | grep -Fq "<string>$VERSION</string>"
           sha256sum "${expected[@]}" > SHA256SUMS.txt
           sha256sum -c SHA256SUMS.txt
-      - name: Install minisign
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+      # From the GitHub release, not apt: a runner whose DNS could not
+      # resolve the Ubuntu mirrors failed the v0.11.1 signing job.
+      - name: Install minisign ${{ env.MINISIGN_VERSION }}
+        timeout-minutes: 3
+        run: |
+          curl -fsSL --retry 3 --max-time 60 -o minisign.tar.gz \
+            "https://github.com/jedisct1/minisign/releases/download/$MINISIGN_VERSION/minisign-$MINISIGN_VERSION-linux.tar.gz"
+          echo "$MINISIGN_SHA256  minisign.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/minisign"
+          tar -xzf minisign.tar.gz -C "$RUNNER_TEMP/minisign" --strip-components=2 minisign-linux/x86_64/minisign
+          rm minisign.tar.gz
+          echo "$RUNNER_TEMP/minisign" >> "$GITHUB_PATH"
       - name: Sign checksums
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
