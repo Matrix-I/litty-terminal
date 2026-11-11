@@ -1437,6 +1437,27 @@ fn clear_screen_and_history_clears_clusters() {
 }
 
 #[test]
+fn osc_title_keeps_semicolons() {
+    let mut g = Grid::new(80, 24);
+    feed(&mut g, "\x1b]0;make; make test\x07");
+    assert_eq!(g.title, "make; make test");
+    assert!(std::mem::take(&mut g.title_changed));
+
+    feed(&mut g, "\x1b]2;  a;;b;  \x1b\\");
+    assert_eq!(g.title, "a;;b;", "empty parts kept, outer whitespace trimmed");
+    assert!(std::mem::take(&mut g.title_changed));
+
+    feed(&mut g, "\x1b]2;a;;b;\x07");
+    assert!(!g.title_changed, "same title is not reported again");
+
+    // Blank or invalid UTF-8 titles are still ignored.
+    feed(&mut g, "\x1b]0;   \x07");
+    assert_eq!(g.title, "a;;b;");
+    feed_fast(&mut g, b"\x1b]0;ok;\xff\x07");
+    assert_eq!(g.title, "a;;b;");
+}
+
+#[test]
 fn full_reset_empties_scrollback_instead_of_blanking_it() {
     let mut g = Grid::new(80, 24);
     for i in 0..3000 {

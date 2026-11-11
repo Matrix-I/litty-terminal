@@ -394,7 +394,16 @@ impl Perform for Grid {
                 self.osc_dynamic_color((code[1] - b'0') as usize, &params[1..], st);
             }
             b"0" | b"2" => {
-                if let Ok(s) = std::str::from_utf8(params[1]) {
+                // vte splits the payload on ';', which is common in titles ("make; make test").
+                // Only rejoin (and allocate) when there was a ';'.
+                let joined;
+                let payload: &[u8] = if params.len() == 2 {
+                    params[1]
+                } else {
+                    joined = params[1..].join(&b';');
+                    &joined
+                };
+                if let Ok(s) = std::str::from_utf8(payload) {
                     let trimmed = s.trim();
                     if !trimmed.is_empty() && self.title != trimmed {
                         self.title.clear();
