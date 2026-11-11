@@ -26,6 +26,9 @@ pub struct VulkanCore {
     pub(super) image_desc_pool: VkDescriptorPool,
     /// Descriptor pools are not thread safe; guards `image_desc_pool`.
     pub(super) image_pool_lock: parking_lot::Mutex<()>,
+    /// Shared upload staging buffer. Its lock is held for a whole upload, so
+    /// it also serialises every use of `upload_cmd` outside a frame.
+    pub(super) staging: parking_lot::Mutex<super::resources::Staging>,
     pub(super) shader_mod: VkShaderModule,
     pub(super) image_mod: VkShaderModule,
     #[allow(dead_code)]
@@ -585,6 +588,7 @@ impl VulkanCore {
                 desc_pool,
                 image_desc_pool,
                 image_pool_lock: parking_lot::Mutex::new(()),
+                staging: parking_lot::Mutex::new(super::resources::Staging::empty()),
                 shader_mod,
                 image_mod,
                 cells_dset_layout,
