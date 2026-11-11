@@ -5,22 +5,22 @@ avoid scanning scrollback for every new cluster. Existing clusters remain
 available; new clusters may temporarily lose combining marks until a later
 collection reclaims unused entries.
 
-Measured on 2026-11-09: Litty 0.11.0 release build (`cargo build --release`),
+Measured on 2026-11-11: Litty 0.11.1 release build (`cargo build --release`),
 Apple M1 Pro, macOS 27.2, one 2590 × 1492 px Retina window.
 
 | Metric | Result | How it was measured |
 | :--- | :---: | :--- |
 | Idle footprint, 1 window | **61 MB** | `litty +bench-ram`, step 1 (1 window, 1 tab, idle shell) |
-| Idle RSS, 1 window | 92 MB | Same run |
-| Idle footprint, all windows closed | **28 MB** | Shell exits so the only window closes; `footprint` 20 s later, 4 runs |
+| Idle RSS, 1 window | 91 MB | Same run |
+| Idle footprint, all windows closed | **28 MB** (28–33 MB; 47 MB in 7 of 18 earlier runs, not reproduced since) | Shell exits so the only window closes; `footprint` 20 s later, 10 runs |
 | Idle CPU | **0.0%** | 1 window, idle shell: no CPU time used over 30 s (`ps -o time`) |
-| Startup to first frame | **136–148 ms** p50 warm, 130–175 ms first run (2 runs of 10) | `litty +bench-first-frame 10`: process spawn → GPU-completed first frame |
-| Keystroke to frame | **3.1–3.6 ms** p50, 8.3–9.0 ms p95 (3 runs) | `litty +bench-input-latency`: synthetic key → GPU-completed frame showing the echo; excludes the OS input stack and display scanout |
+| Startup to first frame | **162–169 ms** p50 warm, 150–160 ms first run (2 runs of 10, machine under load) | `litty +bench-first-frame 10`: process spawn → GPU-completed first frame |
+| Keystroke to frame | **6.6–7.1 ms** p50, 15.8–16.0 ms p95 (3 runs, machine under load; v0.11.0 measured 6.35–6.75 ms p50 alternating in the same conditions, 3.1–3.6 ms on an idle machine) | `litty +bench-input-latency`: synthetic key → GPU-completed frame showing the echo; excludes the OS input stack and display scanout |
 | Binary size | **2.2 MB** | `target/release/litty` |
 
 Two drawables at Retina size (15 MB each) make up about half of the
 1-window footprint; they are freed when the window is occluded or closed.
-Startup is dominated by `init` (~106 ms p50: font loading and the Metal
+Startup is dominated by `init` (~138–145 ms p50 under load: font loading and the Metal
 device, overlapped). Comparisons with other terminals are not listed: they
 have not been measured on this setup.
 
