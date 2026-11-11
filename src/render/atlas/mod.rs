@@ -130,6 +130,33 @@ const GLYPH_PIECE: u32 = 0x0800_0000;
 /// Shaped key for a cell whose glyph has no ink (a ligature spacer).
 pub const SHAPED_BLANK: u32 = u32::MAX;
 
+/// Hasher for atlas slot keys (a code point plus flag bits). The keys are
+/// bounded by the slot count and evicted LRU, so SipHash's flood resistance
+/// buys nothing here. One multiply, folded so the flag bits in the high half
+/// of the key reach the low bits the table indexes with.
+#[derive(Default, Clone, Copy)]
+pub(super) struct SlotKeyHasher(u64);
+
+impl std::hash::Hasher for SlotKeyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_u32(u32::from(byte));
+        }
+    }
+
+    fn write_u32(&mut self, key: u32) {
+        const GOLDEN_RATIO_64: u64 = 0x9E37_79B9_7F4A_7C15;
+        let hash = (self.0 ^ u64::from(key)).wrapping_mul(GOLDEN_RATIO_64);
+        self.0 = hash ^ (hash >> 32);
+    }
+}
+
+type SlotMap = HashMap<u32, u16, std::hash::BuildHasherDefault<SlotKeyHasher>>;
+
 pub struct Atlas {
     fonts: Arc<FontSet>,
     px: f32,
@@ -143,7 +170,7 @@ pub struct Atlas {
     next_free: u32,
 
     ascii: [u16; 128],
-    map: HashMap<u32, u16>,
+    map: SlotMap,
     slot_cp: Vec<u32>,
     slot_used: Vec<u64>,
     lru_head: u16,
@@ -248,7 +275,7 @@ impl Atlas {
             n_slots,
             next_free: 1,
             ascii: [BLANK_SLOT; 128],
-            map: HashMap::with_capacity(n_slots as usize),
+            map: SlotMap::with_capacity_and_hasher(n_slots as usize, Default::default()),
             slot_cp: vec![0; n_slots as usize],
             slot_used: vec![0; n_slots as usize],
             lru_head: 0,
