@@ -14,27 +14,10 @@ Cross-platform, zero-latency GPU terminal emulator (macOS Metal / Linux Vulkan, 
 
 ## Keybinding & Platform Parity
 - **Modifier Rules**: macOS uses `Cmd`. Linux terminal actions (Copy, Paste, Tab, Quit) **MUST** use `Ctrl+Shift` (or `Super`) to avoid clashing with shell/readline control characters (`Ctrl+C/V/W/N/T`). Navigation/UI can use `Ctrl` or `Alt`.
-- **Primary Bindings Matrix (macOS vs Linux)**:
-  - Copy / Paste: `Cmd+C` / `Cmd+V` ↔ `Ctrl+Shift+C` / `Ctrl+Shift+V`
-  - Tabs (New / Close): `Cmd+T` / `Cmd+W` ↔ `Ctrl+Shift+T` / `Ctrl+Shift+W`
-  - Window (New / Quit): `Cmd+N` / `Cmd+Q` ↔ `Ctrl+Shift+N` / `Ctrl+Shift+Q`
-  - Splits (V / H): `Cmd+D` / `Cmd+Shift+D` ↔ `Ctrl+Shift+D` / `Ctrl+Shift+E` (or `Super+Shift+D`)
-  - Clear Scrollback: `Cmd+K` ↔ `Ctrl+Shift+K`
-  - Quick Zoom: `Cmd + / - / 0` ↔ `Ctrl + / - / 0`
-  - Tabs 1..9: `Cmd+1..9` ↔ `Ctrl+1..9` / `Alt+1..9`
-  - Jump Word: `Opt+Left/Right` ↔ `Ctrl+Left/Right` (avoid macOS Mission Control collision)
-  - Search / History: `Cmd+F` ↔ `Ctrl+Shift+F`; `Ctrl+R` fuzzy search (preserve vim redo in alt screen)
-  - UI hints: macOS renders `⌘`, Linux renders `^` or `Alt+`.
 
 ## Architecture & Modules
 Layers (enforced by `src/layering_tests.rs`): `terminal` → nothing; `render` → `terminal`; `platform` → nothing; `app` and crate-root modules → anything. Exceptions are listed in `TOLERATED` with their reason.
-- `src/main.rs`: crate root and CLI dispatch (`src/cli.rs`); starts `app::run`.
-- `src/app/`: winit loop and per-window `State`; input (`keyboard`, `pointer`, `ime`), `tabs`, `actions`, `window_event` / `user_event` handlers.
-- `src/paste.rs`: pure paste / shell-quote payloads.
-- `src/keymap.rs`: Pure key-to-byte / shortcut resolution for `Platform::MacOs` & `Platform::Linux` + Kitty protocol.
-- `src/split.rs`: Pane tree layout management.
 - `src/terminal/`: `grid/` (12-byte `Cell`, scrollback ring, `vte::Perform`; responses (DSR, DA) go to `Grid::response`), `pty.rs` (`openpty` + `fork`/`execve`, reader thread pushing bytes to grid), search, shell history, bidi, graphics, shell integration.
-- `src/render/`: `renderer/` and `atlas/` (wgpu pipelines, one instanced cell draw per layer (`shaders/shader.wgsl`), glyph cache, CoreText / non-macOS rasterizers), fontdb, postfx, image layer, frame metrics.
 - `src/platform/`: one API (`platform::*`, listed by name in `platform/mod.rs`) implemented by `macos/` and `linux/` with identical file and function names; plus clipboard, detached processes (`open` / `xdg-open`, notifications, sounds).
 
 ## Workflow & PR Checklist
