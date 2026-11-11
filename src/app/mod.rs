@@ -35,6 +35,7 @@ use window::create_window;
 use window::create_window_for_tab;
 use window::cursor_blinks;
 use window::reload_config;
+use window::sync_all_tabs;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -480,6 +481,12 @@ impl EventHandler<AppEvent> for App {
         for s in &mut self.windows {
             if let Some(next_prune) = s.renderer.prune_idle_images(now) {
                 deadline = Some(deadline.map_or(next_prune, |d| d.min(next_prune)));
+            }
+            if s.background_resize.take_due(now) {
+                sync_all_tabs(s);
+            }
+            if let Some(settle) = s.background_resize.deadline() {
+                deadline = Some(deadline.map_or(settle, |d| d.min(settle)));
             }
             if let Some(panes) = s.winch.take_due(now) {
                 for pane in s.tabs.iter().flat_map(|t| &t.panes).filter(|p| panes.contains(&p.id)) {

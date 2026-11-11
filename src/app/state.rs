@@ -54,6 +54,8 @@ pub(super) struct State {
     pub(super) sync_pending: bool,
     /// Panes to send SIGWINCH again once a resize burst settles.
     pub(super) winch: super::winch::WinchResignal,
+    /// Tabs not shown are resized once a resize burst settles.
+    pub(super) background_resize: super::winch::BackgroundResize,
     /// When tab titles were last recomputed (they also refresh on OSC 0/2/7).
     pub(super) titles_refreshed_at: std::time::Instant,
     /// The tab whose title the window title currently shows.
