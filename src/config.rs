@@ -143,7 +143,7 @@ pub struct Config {
     /// `custom-shader-animation`: `None` = never, `Some(false)` = while
     /// focused (`true`), `Some(true)` = `always`.
     pub custom_shader_animation: Option<bool>,
-    /// `scrollback-limit` in bytes (Ghostty semantics); `None` = 5000 lines.
+    /// `scrollback-limit` in bytes (Ghostty semantics); `None` = 10,000,000.
     pub scrollback_limit: Option<usize>,
     /// `grapheme-width-method = unicode` (true, default) starts terminals with
     /// DEC mode 2027 on; `legacy` gives every codepoint its own width.

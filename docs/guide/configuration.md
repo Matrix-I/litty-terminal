@@ -47,7 +47,7 @@ Litty reads its configuration from:
 | | `clipboard-write` | `true`, `allow`, `false`, `deny` | `true` | Allow programs to write to system clipboard via OSC 52 |
 | **Shell Integration** | `shell-integration` | `detect`, `zsh`, `bash`, `fish`, `nushell`, `elvish`, `none` | `detect` | Automatic shell prompt mark and CWD reporting injection |
 | | `shell-integration-features` | Comma-separated: `cursor`, `sudo`, `title` (or `no-*`) | `cursor,title` | Injected shell features (`cursor` sets bar prompt cursor; `title` reports CWD) |
-| **Splits & Scrollback** | `scrollback-limit` | Integer (bytes) | 5000 lines | Total scrollback buffer memory limit in bytes |
+| **Splits & Scrollback** | `scrollback-limit` | Integer (bytes) | `10000000` | Scrollback memory per terminal in bytes, as in Ghostty (about 10,400 lines at 80 columns) |
 | | `unfocused-split-opacity` | Float `0.15` .. `1.0` | `0.7` | Opacity/dim factor applied to inactive split panes |
 | | `unfocused-split-fill` | `#rrggbb` | Background | Color inactive splits fade toward |
 | | `confirm-close-surface` | `true` (`running`), `false` (`never`), `always` | `running` | Ask confirmation before closing a pane with running child process |
@@ -114,7 +114,7 @@ window-padding-balance = true
 # custom-shader = ~/.litty/shaders/crt.glsl   # Ghostty/Shadertoy GLSL; repeat to chain
 # macos-native-tabs = false      # Cmd+T opens native macOS window tabs
 # confirm-close-surface = running # running (default), never, always
-# scrollback-limit = 10000000    # bytes, as in Ghostty (default: 5000 lines)
+# scrollback-limit = 10000000    # bytes, as in Ghostty (default)
 # unfocused-split-opacity = 0.7  # fade inactive splits (0.15 - 1.0)
 # unfocused-split-fill = #000000
 # minimum-contrast = 1.1         # force readable text (1 = off, 21 = black/white)

@@ -5,18 +5,19 @@
 
 use super::*;
 
-/// Number of scrollback lines kept above the visible screen by default.
-pub const SCROLLBACK: usize = 5000;
+/// Default `scrollback-limit`, in bytes (Ghostty's default). A byte budget
+/// keeps the cost of re-wrapping the scrollback independent of the width.
+pub const SCROLLBACK_BYTES_DEFAULT: usize = 10_000_000;
 
 /// Upper bound for a configured scrollback, whatever its byte size.
 pub(super) const MAX_SCROLLBACK: usize = 1_000_000;
 
-/// `scrollback-limit` in bytes (Ghostty semantics); `usize::MAX` = the default
-/// line count. Read when a terminal is created or resized.
-pub(super) static SCROLLBACK_BYTES: AtomicUsize = AtomicUsize::new(usize::MAX);
+/// `scrollback-limit` in bytes (Ghostty semantics). Read when a terminal is
+/// created or resized.
+pub(super) static SCROLLBACK_BYTES: AtomicUsize = AtomicUsize::new(SCROLLBACK_BYTES_DEFAULT);
 
 pub fn set_scrollback_limit(bytes: Option<usize>) {
-    SCROLLBACK_BYTES.store(bytes.unwrap_or(usize::MAX), Ordering::Relaxed);
+    SCROLLBACK_BYTES.store(bytes.unwrap_or(SCROLLBACK_BYTES_DEFAULT), Ordering::Relaxed);
 }
 
 /// Scrollback lines for a terminal `cols` wide.
@@ -25,10 +26,7 @@ pub(super) fn scrollback_lines(cols: usize) -> usize {
 }
 
 pub(super) fn lines_for_bytes(bytes: usize, cols: usize) -> usize {
-    match bytes {
-        usize::MAX => SCROLLBACK,
-        bytes => (bytes / (cols.max(1) * std::mem::size_of::<Cell>())).min(MAX_SCROLLBACK),
-    }
+    (bytes / (cols.max(1) * std::mem::size_of::<Cell>())).min(MAX_SCROLLBACK)
 }
 
 impl Grid {
