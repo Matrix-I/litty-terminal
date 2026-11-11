@@ -62,6 +62,31 @@ static SHARED_VK: parking_lot::Mutex<Option<(Arc<Device>, Arc<Queue>)>> = parkin
 pub(super) static SHARED_PIPES: parking_lot::Mutex<Option<(TextureFormat, RenderPipelines)>> =
     parking_lot::const_mutex(None);
 
+/// Window systems a surface can be created for, in no particular order.
+const WINDOW_SYSTEM_EXTENSIONS: [&CStr; 3] =
+    [c"VK_KHR_wayland_surface", c"VK_KHR_xlib_surface", c"VK_KHR_xcb_surface"];
+
+/// `VK_KHR_surface` plus each window-system extension the loader offers.
+/// Asking for one it lacks fails the whole instance, so only those are
+/// requested. `None` when no window could be presented to at all.
+fn instance_extensions(available: &[&CStr]) -> Option<Vec<&'static CStr>> {
+    let surface = c"VK_KHR_surface";
+    if !available.contains(&surface) {
+        return None;
+    }
+    let mut extensions = vec![surface];
+    extensions.extend(WINDOW_SYSTEM_EXTENSIONS.into_iter().filter(|e| available.contains(e)));
+    (extensions.len() > 1).then_some(extensions)
+}
+
+/// Index of the first queue family that can run graphics commands.
+fn graphics_family(families: &[VkQueueFamilyProperties]) -> Option<u32> {
+    families
+        .iter()
+        .position(|f| f.queue_count > 0 && f.queue_flags & VK_QUEUE_GRAPHICS_BIT != 0)
+        .map(|i| i as u32)
+}
+
 impl VulkanCore {
     #[allow(non_snake_case)]
     // `load_fn!` transmutes to the fn-pointer type of the struct field it initialises; spelling out
@@ -113,14 +138,33 @@ impl VulkanCore {
                 eng_ver: 1,
                 api_ver: 1 << 22,
             };
-            let exts_ws = [
-                c"VK_KHR_surface".as_ptr(),
-                c"VK_KHR_wayland_surface".as_ptr(),
-                c"VK_KHR_xlib_surface".as_ptr(),
-                c"VK_KHR_xcb_surface".as_ptr(),
-            ];
+            let vkEnumerateInstanceExtensionProperties: unsafe extern "C" fn(
+                *const c_char,
+                *mut u32,
+                *mut VkExtensionProperties,
+            ) -> i32 = {
+                let p = vkGetInstanceProcAddr(std::ptr::null_mut(), c"vkEnumerateInstanceExtensionProperties".as_ptr());
+                if p.is_null() {
+                    return None;
+                }
+                std::mem::transmute(p)
+            };
+            let mut ext_count = 0u32;
+            vkEnumerateInstanceExtensionProperties(std::ptr::null(), &mut ext_count, std::ptr::null_mut());
+            let mut ext_props =
+                vec![VkExtensionProperties { extension_name: [0; 256], spec_version: 0 }; ext_count as usize];
+            vkEnumerateInstanceExtensionProperties(std::ptr::null(), &mut ext_count, ext_props.as_mut_ptr());
+            ext_props.truncate(ext_count as usize);
+            // SAFETY: the loader NUL-terminates every name within its 256 bytes.
+            let available: Vec<&CStr> =
+                ext_props.iter().map(|p| CStr::from_ptr(p.extension_name.as_ptr())).collect();
+            let Some(extensions) = instance_extensions(&available) else {
+                eprintln!("litty: the Vulkan loader offers no window-system surface extension");
+                return None;
+            };
+            let exts_ws: Vec<*const c_char> = extensions.iter().map(|e| e.as_ptr()).collect();
             let mut instance: VkInstance = std::ptr::null_mut();
-            let mut inst_info = InstInfo {
+            let inst_info = InstInfo {
                 s_type: VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
                 p_next: std::ptr::null(),
                 flags: 0,
@@ -131,11 +175,8 @@ impl VulkanCore {
                 pp_exts: exts_ws.as_ptr(),
             };
             if vkCreateInstance(&inst_info as *const _ as *const c_void, std::ptr::null(), &mut instance) != VK_SUCCESS {
-                inst_info.ext_count = 0;
-                inst_info.pp_exts = std::ptr::null();
-                if vkCreateInstance(&inst_info as *const _ as *const c_void, std::ptr::null(), &mut instance) != VK_SUCCESS {
-                    return None;
-                }
+                eprintln!("litty: could not create a Vulkan instance");
+                return None;
             }
 
             macro_rules! load_fn {
@@ -172,7 +213,27 @@ impl VulkanCore {
             }
             let mut pds = vec![std::ptr::null_mut(); pd_count as usize];
             vkEnumeratePhysicalDevices(instance, &mut pd_count, pds.as_mut_ptr());
-            let phys = pds[0];
+            let vkGetPhysicalDeviceQueueFamilyProperties: unsafe extern "C" fn(
+                VkPhysicalDevice,
+                *mut u32,
+                *mut VkQueueFamilyProperties,
+            ) = load_fn!(vkGetPhysicalDeviceQueueFamilyProperties);
+            let mut chosen = None;
+            for &candidate in &pds {
+                let mut family_count = 0u32;
+                vkGetPhysicalDeviceQueueFamilyProperties(candidate, &mut family_count, std::ptr::null_mut());
+                let mut families = vec![VkQueueFamilyProperties::default(); family_count as usize];
+                vkGetPhysicalDeviceQueueFamilyProperties(candidate, &mut family_count, families.as_mut_ptr());
+                families.truncate(family_count as usize);
+                if let Some(family) = graphics_family(&families) {
+                    chosen = Some((candidate, family));
+                    break;
+                }
+            }
+            let Some((phys, queue_family)) = chosen else {
+                eprintln!("litty: no Vulkan device with a graphics queue");
+                return None;
+            };
 
             let vkGetPhysicalDeviceMemoryProperties: unsafe extern "C" fn(
                 VkPhysicalDevice,
@@ -214,7 +275,7 @@ impl VulkanCore {
                 s_type: VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
                 p_next: std::ptr::null(),
                 flags: 0,
-                queue_family_index: 0,
+                queue_family_index: queue_family,
                 queue_count: 1,
                 p_priorities: &prio,
             };
@@ -309,7 +370,7 @@ impl VulkanCore {
             };
 
             let mut queue: VkQueue = std::ptr::null_mut();
-            (lib.vkGetDeviceQueue)(device, 0, 0, &mut queue);
+            (lib.vkGetDeviceQueue)(device, queue_family, 0, &mut queue);
 
             #[repr(C)]
             struct PoolInfo {
@@ -322,7 +383,7 @@ impl VulkanCore {
                 s_type: VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                 p_next: std::ptr::null(),
                 flags: 2,
-                queue_family_index: 0,
+                queue_family_index: queue_family,
             };
             let mut cmd_pool = 0u64;
             (lib.vkCreateCommandPool)(device, &pool_info as *const _ as *const c_void, std::ptr::null(), &mut cmd_pool);
@@ -1072,5 +1133,34 @@ mod tests {
         let device = Device { vk: None };
         let err = device.create_postfx_pipeline("void mainImage() {}", TextureFormat::Bgra8Unorm).err();
         assert_eq!(err.as_deref(), Some("custom shaders are not supported on Linux yet"));
+    }
+
+    #[test]
+    fn instance_extensions_take_only_what_the_loader_offers() {
+        // A driver build without Wayland support still gets X11 surfaces.
+        let x11_only = [c"VK_KHR_surface", c"VK_KHR_xlib_surface", c"VK_KHR_xcb_surface", c"VK_EXT_debug_utils"];
+        assert_eq!(
+            instance_extensions(&x11_only),
+            Some(vec![c"VK_KHR_surface", c"VK_KHR_xlib_surface", c"VK_KHR_xcb_surface"])
+        );
+        let wayland_only = [c"VK_KHR_wayland_surface", c"VK_KHR_surface"];
+        assert_eq!(instance_extensions(&wayland_only), Some(vec![c"VK_KHR_surface", c"VK_KHR_wayland_surface"]));
+    }
+
+    #[test]
+    fn instance_extensions_need_a_surface_and_a_window_system() {
+        assert_eq!(instance_extensions(&[c"VK_KHR_xlib_surface"]), None, "no VK_KHR_surface");
+        assert_eq!(instance_extensions(&[c"VK_KHR_surface"]), None, "headless driver");
+        assert_eq!(instance_extensions(&[]), None);
+    }
+
+    #[test]
+    fn graphics_family_skips_families_that_cannot_draw() {
+        let family = |queue_flags, queue_count| VkQueueFamilyProperties { queue_flags, queue_count, ..Default::default() };
+        // Compute-only first, then an empty graphics family, then a usable one.
+        let families = [family(2, 1), family(VK_QUEUE_GRAPHICS_BIT, 0), family(VK_QUEUE_GRAPHICS_BIT | 2, 4)];
+        assert_eq!(graphics_family(&families), Some(2));
+        assert_eq!(graphics_family(&families[..2]), None);
+        assert_eq!(graphics_family(&[]), None);
     }
 }

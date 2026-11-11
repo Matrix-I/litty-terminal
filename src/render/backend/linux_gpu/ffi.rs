@@ -258,6 +258,24 @@ pub(super) struct VkSurfaceCapabilitiesKHR {
     pub supported_usage_flags: VkFlags,
 }
 
+pub(super) const VK_QUEUE_GRAPHICS_BIT: u32 = 0x0000_0001;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub(super) struct VkExtensionProperties {
+    pub extension_name: [c_char; 256],
+    pub spec_version: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub(super) struct VkQueueFamilyProperties {
+    pub queue_flags: VkFlags,
+    pub queue_count: u32,
+    pub timestamp_valid_bits: u32,
+    pub min_image_transfer_granularity: VkExtent3D,
+}
+
 /// Dynamically loaded Vulkan function table (`libvulkan.so.1`).
 #[allow(non_snake_case, dead_code)]
 pub(super) struct VkLib {
