@@ -2,7 +2,7 @@
 //! `vte::Perform` implementation that turns the PTY byte stream into grid state.
 //!
 //! Memory layout: the whole scrollback + screen lives in one flat `Vec<Cell>`
-//! (`cols * (SCROLLBACK + rows)`), allocated with `alloc_zeroed` so the OS only
+//! (`cols * (scrollback + rows)`), allocated with `alloc_zeroed` so the OS only
 //! commits pages once history actually reaches them. Scrolling the full screen
 //! is O(1): bump `top` and clear one row in place. Nothing is allocated while
 //! printing or scrolling; allocation only happens on window resize.
@@ -196,7 +196,7 @@ impl Grid {
         let rows = rows.max(1);
         let scrollback = scrollback_lines(cols);
         let max_cap = scrollback + rows;
-        // Start lean: allocate only 2x rows (minimum 64) instead of the full 5000+ scrollback ring.
+        // Start lean: allocate only 2x rows (minimum 64) instead of the full scrollback ring.
         // The ring buffer doubles dynamically on demand up to max_cap when lines scroll off screen.
         let cap = (rows * 2).max(64).min(max_cap);
         Grid {

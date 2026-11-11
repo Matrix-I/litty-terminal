@@ -4,7 +4,10 @@
 use super::*;
 use super::colors::{default_bg, default_fg, palette, parse_x11_color, palette_with};
 use super::links::osc8_target;
-use super::storage::{MAX_SCROLLBACK, SCROLLBACK, lines_for_bytes};
+use super::storage::{MAX_SCROLLBACK, SCROLLBACK_BYTES_DEFAULT, lines_for_bytes};
+
+/// A width whose default scrollback (416 lines) is small enough to fill in a test.
+const WIDE_COLS: usize = 2_000;
 
 fn feed(g: &mut Grid, s: &str) {
     let mut p = vte::Parser::new();
@@ -310,7 +313,7 @@ fn osc8_repeating_known_links_allocates_nothing() {
             g.feed_byte(p, b);
         }
     };
-    // Fill the scrollback ring so scrolling stops allocating too.
+    // Grow the scrollback ring so scrolling stops allocating in the measured pass.
     for _ in 0..120 {
         feed_all(&mut g, &mut p);
     }
@@ -552,11 +555,19 @@ fn kitty_stack_is_bounded_and_does_not_restore_the_cursor() {
 
 #[test]
 fn scrollback_limit_is_bytes_per_width() {
-    assert_eq!(lines_for_bytes(usize::MAX, 80), SCROLLBACK);
+    assert_eq!(SCROLLBACK_BYTES_DEFAULT, 10_000_000, "Ghostty's default");
+    assert_eq!(lines_for_bytes(SCROLLBACK_BYTES_DEFAULT, 80), 10_416);
+    assert_eq!(lines_for_bytes(SCROLLBACK_BYTES_DEFAULT, 200), 4_166);
     assert_eq!(lines_for_bytes(80 * 12 * 100, 80), 100);
     assert_eq!(lines_for_bytes(80 * 12 * 100, 160), 50);
     assert_eq!(lines_for_bytes(0, 80), 0);
-    assert_eq!(lines_for_bytes(usize::MAX - 1, 1), MAX_SCROLLBACK);
+    assert_eq!(lines_for_bytes(usize::MAX, 1), MAX_SCROLLBACK);
+}
+
+#[test]
+fn a_new_grid_uses_the_default_byte_limit() {
+    assert_eq!(Grid::new(80, 24).scrollback, 10_416);
+    assert_eq!(Grid::new(200, 50).scrollback, 4_166);
 }
 
 #[test]
@@ -1319,17 +1330,20 @@ fn rows_only_resize_matches_reflow() {
     // The alternate screen is active while the main screen is resized.
     assert_rows_only_resize_matches_reflow(10, 5, &format!("{}\x1b[?1049hALT\x1b[3;2H", numbered(20)), &[3, 9, 5]);
     // Scrollback at its limit.
-    assert_rows_only_resize_matches_reflow(4, 5, &numbered(SCROLLBACK + 50), &[3, 7, 2]);
+    let limit = lines_for_bytes(SCROLLBACK_BYTES_DEFAULT, WIDE_COLS);
+    assert_rows_only_resize_matches_reflow(WIDE_COLS, 5, &numbered(limit + 50), &[3, 7, 2]);
 }
 
 #[test]
 fn shrinking_rows_with_full_scrollback_keeps_history_within_its_limit() {
-    let mut g = Grid::new(4, 50);
-    feed(&mut g, &"x\r\n".repeat(SCROLLBACK + 100));
-    assert_eq!(g.history, SCROLLBACK);
-    g.resize(4, 10);
+    let limit = lines_for_bytes(SCROLLBACK_BYTES_DEFAULT, WIDE_COLS);
+    assert_eq!(limit, 416);
+    let mut g = Grid::new(WIDE_COLS, 50);
+    feed(&mut g, &"x\r\n".repeat(limit + 100));
+    assert_eq!(g.history, limit);
+    g.resize(WIDE_COLS, 10);
     feed(&mut g, &"y\r\n".repeat(200));
-    assert_eq!(g.history, SCROLLBACK);
+    assert_eq!(g.history, limit);
 }
 
 #[test]
