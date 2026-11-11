@@ -101,6 +101,17 @@ pub fn ensure_window_delegate_class() {
         }
         class_addMethod(cls, sel(c"windowDidResize:"), window_did_resize as *const (), c"v@:@".as_ptr() as *const _);
 
+        // windowWillStartLiveResize: / windowDidEndLiveResize: let the loop keep
+        // handling events while AppKit's resize tracking loop holds it.
+        extern "C" fn window_will_start_live_resize(_this: Id, _cmd: Id, _notification: Id) {
+            super::app::live_resize_started();
+        }
+        class_addMethod(cls, sel(c"windowWillStartLiveResize:"), window_will_start_live_resize as *const (), c"v@:@".as_ptr() as *const _);
+        extern "C" fn window_did_end_live_resize(_this: Id, _cmd: Id, _notification: Id) {
+            super::app::live_resize_ended();
+        }
+        class_addMethod(cls, sel(c"windowDidEndLiveResize:"), window_did_end_live_resize as *const (), c"v@:@".as_ptr() as *const _);
+
         // windowDidChangeBackingProperties:
         extern "C" fn window_did_change_backing_properties(_this: Id, _cmd: Id, notification: Id) {
             unsafe {

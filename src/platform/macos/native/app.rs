@@ -1,5 +1,6 @@
 //! Native macOS Application and Event Loop implementation.
 
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -16,6 +17,117 @@ use super::view::{ensure_litty_view_class, set_event_callback};
 unsafe extern "C" {
     fn CFRunLoopGetMain() -> *mut c_void;
     fn CFRunLoopWakeUp(rl: *mut c_void);
+    fn CFRunLoopObserverCreate(
+        allocator: *const c_void,
+        activities: usize,
+        repeats: bool,
+        order: isize,
+        callout: unsafe extern "C" fn(*mut c_void, usize, *mut c_void),
+        context: *mut CFRunLoopObserverContext,
+    ) -> *mut c_void;
+    fn CFRunLoopAddObserver(rl: *mut c_void, observer: *mut c_void, mode: *const c_void);
+    fn CFRunLoopObserverInvalidate(observer: *mut c_void);
+    fn CFRelease(cf: *const c_void);
+    static kCFRunLoopCommonModes: *const c_void;
+}
+
+#[repr(C)]
+struct CFRunLoopObserverContext {
+    version: isize,
+    info: *mut c_void,
+    retain: *const c_void,
+    release: *const c_void,
+    copy_description: *const c_void,
+}
+
+/// `kCFRunLoopBeforeWaiting`: the run loop has handled its sources and is about to sleep.
+const CF_RUN_LOOP_BEFORE_WAITING: usize = 1 << 5;
+
+thread_local! {
+    /// Windows of ours in a live resize. AppKit runs the drag in a tracking loop
+    /// nested inside `sendEvent:`, so our loop does not cycle until the mouse is
+    /// released; while this is non-zero a run-loop observer runs the handlers.
+    static LIVE_RESIZES: Cell<u32> = const { Cell::new(0) };
+}
+
+/// A window began a live resize (`windowWillStartLiveResize:`).
+pub fn live_resize_started() {
+    LIVE_RESIZES.with(|n| n.set(n.get() + 1));
+}
+
+/// A window ended a live resize (`windowDidEndLiveResize:`).
+pub fn live_resize_ended() {
+    LIVE_RESIZES.with(|n| n.set(n.get().saturating_sub(1)));
+}
+
+/// Run `f` on the handler when a live resize holds our loop inside AppKit's
+/// tracking loop and no handler call is already in progress (the observer can
+/// fire while a handler call spins the run loop). Returns whether it ran.
+fn pump_live<H>(handler: &RefCell<H>, f: impl FnOnce(&mut H)) -> bool {
+    if LIVE_RESIZES.with(Cell::get) == 0 {
+        return false;
+    }
+    let Ok(mut h) = handler.try_borrow_mut() else { return false };
+    f(&mut h);
+    true
+}
+
+/// What the live-resize observer needs to run the handlers; lives on
+/// `run_native`'s stack for as long as the observer is registered.
+struct LivePump<'a, 'b, T, H> {
+    handler: &'a RefCell<H>,
+    loop_ctx: &'a LoopCtx<'b>,
+    rx: &'a Receiver<T>,
+}
+
+unsafe extern "C" fn live_pump_callout<T: 'static, H: EventHandler<T>>(_observer: *mut c_void, _activity: usize, info: *mut c_void) {
+    // SAFETY: `info` is the `LivePump` registered by `LiveResizeObserver::add`,
+    // which outlives the observer.
+    let pump = unsafe { &*(info as *const LivePump<'_, '_, T, H>) };
+    pump_live(pump.handler, |h| run_handlers(h, pump.loop_ctx, pump.rx));
+}
+
+/// The registered live-resize observer; invalidated and released on drop.
+struct LiveResizeObserver(*mut c_void);
+
+impl LiveResizeObserver {
+    /// # Safety
+    /// `pump` must outlive the returned observer.
+    unsafe fn add<T: 'static, H: EventHandler<T>>(pump: &LivePump<'_, '_, T, H>) -> Option<Self> {
+        let mut context = CFRunLoopObserverContext {
+            version: 0,
+            info: pump as *const LivePump<'_, '_, T, H> as *mut c_void,
+            retain: std::ptr::null(),
+            release: std::ptr::null(),
+            copy_description: std::ptr::null(),
+        };
+        unsafe {
+            let observer = CFRunLoopObserverCreate(
+                std::ptr::null(),
+                CF_RUN_LOOP_BEFORE_WAITING,
+                true,
+                0,
+                live_pump_callout::<T, H>,
+                &mut context,
+            );
+            if observer.is_null() {
+                return None;
+            }
+            // Common modes include the event-tracking mode AppKit's resize loop runs in.
+            CFRunLoopAddObserver(CFRunLoopGetMain(), observer, kCFRunLoopCommonModes);
+            Some(Self(observer))
+        }
+    }
+}
+
+impl Drop for LiveResizeObserver {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` is a live observer this value owns.
+        unsafe {
+            CFRunLoopObserverInvalidate(self.0);
+            CFRelease(self.0);
+        }
+    }
 }
 
 /// Wake the main loop. Called from PTY reader threads through
@@ -176,7 +288,9 @@ unsafe fn litty_window_id(win: Id) -> Option<WindowId> {
 /// every event then goes through AppKit, which runs key events through the menu's
 /// key equivalents and `LittyView`'s input method. Whatever the view and delegate
 /// queued is delivered before the next event, so input keeps its order.
-unsafe fn dispatch_event<T: 'static, H: EventHandler<T>>(app: Id, event: Id, handler: &mut H, loop_ctx: &LoopCtx) {
+/// The handler is borrowed only around each call into it, never across `sendEvent:`,
+/// which may run a live resize whose observer borrows it.
+unsafe fn dispatch_event<T: 'static, H: EventHandler<T>>(app: Id, event: Id, handler: &RefCell<H>, loop_ctx: &LoopCtx) {
     unsafe {
         let event_type = msg_send!(event, c"type"; -> usize);
         if event_type == NS_EVENT_APPLICATION_DEFINED {
@@ -187,7 +301,7 @@ unsafe fn dispatch_event<T: 'static, H: EventHandler<T>>(app: Id, event: Id, han
             // NSApplication never forwards a Cmd key-up to the key window.
             let win = msg_send!(event, c"window"; -> Id);
             if let Some(id) = litty_window_id(win) {
-                handler.window_event(loop_ctx, id, WindowEvent::Key(convert_key_event(event, false)));
+                handler.borrow_mut().window_event(loop_ctx, id, WindowEvent::Key(convert_key_event(event, false)));
             }
             return;
         }
@@ -196,14 +310,15 @@ unsafe fn dispatch_event<T: 'static, H: EventHandler<T>>(app: Id, event: Id, han
             if let Some(id) = litty_window_id(win) {
                 let view = msg_send!(win, c"contentView"; -> Id);
                 let scale = msg_send!(win, c"backingScaleFactor"; -> f64);
+                let mut h = handler.borrow_mut();
                 process_ns_event(event, win, view, scale, |wev| {
-                    handler.window_event(loop_ctx, id, wev);
+                    h.window_event(loop_ctx, id, wev);
                 });
             }
         }
         msg_send!(app, c"sendEvent:", event => Id);
         msg_send!(app, c"updateWindows");
-        deliver_pending_events(handler, loop_ctx);
+        deliver_pending_events(&mut *handler.borrow_mut(), loop_ctx);
     }
 }
 
@@ -249,7 +364,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
 
         let (tx, rx): (Sender<T>, Receiver<T>) = channel();
         let proxy = EventProxy::from_native(tx);
-        let mut handler = make(proxy);
+        let handler = RefCell::new(make(proxy));
 
         set_event_callback(|id, ev| {
             queue_event(id, ev);
@@ -260,7 +375,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         // `resumed` creates the first window outside the loop's per-cycle pools:
         // without a pool of its own, everything it autoreleases leaks, leaving
         // that NSWindow with hundreds of retains it can never shed.
-        autoreleasepool(|| handler.resumed(&loop_ctx));
+        autoreleasepool(|| handler.borrow_mut().resumed(&loop_ctx));
         // Bring the first window to the front with keyboard focus, as winit did:
         // launched from a shell, the app is otherwise left behind it.
         crate::platform::macos::app::activate_app();
@@ -268,10 +383,14 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         let date_cls = class(c"NSDate").expect("NSDate");
         let default_run_loop_mode = ns_string("kCFRunLoopDefaultMode").expect("NSDefaultRunLoopMode");
 
+        let live_pump = LivePump { handler: &handler, loop_ctx: &loop_ctx, rx: &rx };
+        // Declared after `live_pump` so it is removed before the pump is dropped.
+        let _live_resize_observer = LiveResizeObserver::add(&live_pump);
+
         while !native_ctx.exit_flag.load(Ordering::SeqCst) {
             let pool = msg_send!(class(c"NSAutoreleasePool").unwrap(), c"new"; -> Id);
 
-            run_handlers(&mut handler, &loop_ctx, &rx);
+            run_handlers(&mut *handler.borrow_mut(), &loop_ctx, &rx);
 
             // 4. Wait / poll for Cocoa events
             let flow_mode = native_ctx.flow_mode.load(Ordering::SeqCst);
@@ -317,7 +436,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
                     break;
                 }
                 until = std::ptr::null_mut();
-                dispatch_event(app, event, &mut handler, &loop_ctx);
+                dispatch_event(app, event, &handler, &loop_ctx);
             }
 
             msg_send!(pool, c"drain");
@@ -383,6 +502,24 @@ mod tests {
             let run = |weak: &mut Id| run_handlers(&mut AutoreleasesOnWait(weak), &loop_ctx, &rx);
             assert!(!survives(run), "freed when the handlers return");
         });
+    }
+
+    #[test]
+    fn live_pump_runs_only_during_a_live_resize_with_the_handler_free() {
+        let handler = std::cell::RefCell::new(0u32);
+        let pump = || pump_live(&handler, |n| *n += 1);
+        assert!(!pump(), "no live resize: the loop itself runs the handlers");
+        live_resize_started();
+        assert!(pump(), "inside AppKit's resize tracking loop");
+        {
+            let _busy = handler.borrow_mut();
+            assert!(!pump(), "a handler call already in progress is not re-entered");
+        }
+        live_resize_ended();
+        assert!(!pump());
+        live_resize_ended();
+        assert!(!pump(), "an unmatched end does not underflow into a live resize");
+        assert_eq!(*handler.borrow(), 1);
     }
 
     /// Wake-up events are created on PTY reader threads, which have no run
