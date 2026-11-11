@@ -14,6 +14,24 @@ pub struct Reply {
     pub status: u16,
     pub body: String,
 }
+/// A failed attempt. `retry` is set only for failures another attempt can fix
+/// (the network), never for ones that repeat identically (no curl, bad reply).
+#[derive(Debug)]
+struct Failure {
+    message: String,
+    retry: bool,
+}
+fn fatal(message: &str) -> Failure {
+    Failure { message: message.into(), retry: false }
+}
+/// curl exit codes that describe the network at this moment: name resolution
+/// (5, 6), connect (7), HTTP/2 framing (16), partial transfer (18), timeout
+/// (28), TLS handshake (35), empty reply (52), send / receive (55, 56), HTTP/2
+/// stream reset (92). Anything else (bad URL, `--proto`, `--max-filesize`, a
+/// signal) fails the same way on every attempt.
+fn transient_curl_exit(code: Option<i32>) -> bool {
+    matches!(code, Some(5 | 6 | 7 | 16 | 18 | 28 | 35 | 52 | 55 | 56 | 92))
+}
 fn cancelled(flag: &AtomicBool) -> Result<(), String> {
     if flag.load(Ordering::Acquire) {
         Err("Cancelled".into())
@@ -34,8 +52,8 @@ fn once(
     headers: &[String],
     body: Option<&str>,
     cancel: &Arc<AtomicBool>,
-) -> Result<Reply, String> {
-    cancelled(cancel)?;
+) -> Result<Reply, Failure> {
+    cancelled(cancel).map_err(|e| fatal(&e))?;
     let mut config = format!("url = {}\n", quote(url));
     for h in headers {
         config.push_str(&format!("header = {}\n", quote(h)));
@@ -73,10 +91,10 @@ fn once(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|_| "Cannot start curl".to_string())?;
-    let mut stdin = child.stdin.take().ok_or("curl stdin unavailable")?;
-    let stdout = child.stdout.take().ok_or("curl stdout unavailable")?;
-    let stderr = child.stderr.take().ok_or("curl stderr unavailable")?;
+        .map_err(|_| fatal("Cannot start curl"))?;
+    let mut stdin = child.stdin.take().ok_or_else(|| fatal("curl stdin unavailable"))?;
+    let stdout = child.stdout.take().ok_or_else(|| fatal("curl stdout unavailable"))?;
+    let stderr = child.stderr.take().ok_or_else(|| fatal("curl stderr unavailable"))?;
     // Drain both pipes concurrently: large requests/responses must not deadlock.
     let writer = std::thread::spawn(move || stdin.write_all(config.as_bytes()));
     let reader = std::thread::spawn(move || {
@@ -97,7 +115,7 @@ fn once(
             let _ = writer.join();
             let _ = reader.join();
             let _ = errors.join();
-            return Err("Cancelled".into());
+            return Err(fatal("Cancelled"));
         }
         match child.try_wait() {
             Ok(Some(s)) => break s,
@@ -108,30 +126,30 @@ fn once(
                 let _ = writer.join();
                 let _ = reader.join();
                 let _ = errors.join();
-                return Err("Cannot wait for curl".into());
+                return Err(fatal("Cannot wait for curl"));
             }
         }
     };
-    let written = writer.join().map_err(|_| "curl writer failed")?;
+    let written = writer.join().map_err(|_| fatal("curl writer failed"))?;
     let bytes = reader
         .join()
-        .map_err(|_| "curl reader failed")?
-        .map_err(|_| "Cannot read curl response")?;
+        .map_err(|_| fatal("curl reader failed"))?
+        .map_err(|_| fatal("Cannot read curl response"))?;
     let _ = errors.join();
-    cancelled(cancel)?;
+    cancelled(cancel).map_err(|e| fatal(&e))?;
     if !status.success() || written.is_err() {
-        return Err(format!(
-            "AI transport failed (curl exit {:?})",
-            status.code()
-        ));
+        return Err(Failure {
+            message: format!("AI transport failed (curl exit {:?})", status.code()),
+            retry: transient_curl_exit(status.code()),
+        });
     }
     if bytes.len() as u64 > MAX_RESPONSE {
-        return Err("AI response exceeds 8 MiB limit".into());
+        return Err(fatal("AI response exceeds 8 MiB limit"));
     }
-    let text = String::from_utf8(bytes).map_err(|_| "AI response is not UTF-8")?;
-    let (body, code) = text.rsplit_once('\n').ok_or("Missing HTTP status")?;
+    let text = String::from_utf8(bytes).map_err(|_| fatal("AI response is not UTF-8"))?;
+    let (body, code) = text.rsplit_once('\n').ok_or_else(|| fatal("Missing HTTP status"))?;
     Ok(Reply {
-        status: code.parse().map_err(|_| "Invalid HTTP status")?,
+        status: code.parse().map_err(|_| fatal("Invalid HTTP status"))?,
         body: body.into(),
     })
 }
@@ -161,8 +179,8 @@ pub fn request(
                 }
                 e
             }
-            Err(e) if e == "Cancelled" => return Err(e),
-            Err(e) => e,
+            Err(failure) if !failure.retry => return Err(failure.message),
+            Err(failure) => failure.message,
         };
         if attempt == 9 {
             return Err(error);
@@ -216,7 +234,7 @@ mod cancellation_tests {
         });
         let start = Instant::now();
         let result = once(&url, &[], Some("{}"), &cancel);
-        assert_eq!(result.err().as_deref(), Some("Cancelled"));
+        assert_eq!(result.err().map(|f| f.message).as_deref(), Some("Cancelled"));
         assert!(start.elapsed() < Duration::from_secs(1));
         server.join().unwrap();
     }
@@ -281,5 +299,74 @@ mod body_tests {
     #[test]
     fn plain_payload_is_sent_verbatim() {
         assert_eq!(capture_body("{\"a\":\"b\\n\"}"), "{\"a\":\"b\\n\"}");
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn permanent_transport_errors_are_not_retried() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            // Non-blocking accept with a deadline: if curl never connects the
+            // test fails instead of hanging.
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                if let Ok((s, _)) = listener.accept() {
+                    break s;
+                }
+                assert!(Instant::now() < deadline, "curl never connected");
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = stream.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..n]);
+            }
+            // A body that is not UTF-8: no later attempt can change that.
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\n\xff")
+                .unwrap();
+        });
+        let cancel = Arc::new(AtomicBool::new(false));
+        let statuses = std::sync::Mutex::new(Vec::new());
+        let mut last = String::new();
+        let result = request(
+            &url,
+            &[],
+            None,
+            &cancel,
+            &|text| {
+                statuses.lock().unwrap().push(text);
+                // A retry would back off for seconds; cancel so unfixed code fails fast.
+                cancel.store(true, Ordering::Release);
+            },
+            &mut last,
+        );
+        server.join().unwrap();
+        assert_eq!(result.err().as_deref(), Some("AI response is not UTF-8"));
+        assert!(statuses.lock().unwrap().is_empty(), "a retry was announced: {:?}", statuses.lock().unwrap());
+    }
+
+    #[test]
+    fn only_network_curl_exits_are_transient() {
+        for code in [5, 6, 7, 16, 18, 28, 35, 52, 55, 56, 92] {
+            assert!(transient_curl_exit(Some(code)), "{code}");
+        }
+        // Success with a failed stdin write, unsupported protocol, malformed
+        // URL, write error, --max-filesize, killed by a signal.
+        for code in [Some(0), Some(1), Some(3), Some(23), Some(63), None] {
+            assert!(!transient_curl_exit(code), "{code:?}");
+        }
     }
 }
