@@ -108,6 +108,7 @@ pub(super) const VK_DESCRIPTOR_TYPE_SAMPLER: u32 = 0;
 pub(super) const VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE: u32 = 2;
 pub(super) const VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER: u32 = 6;
 pub(super) const VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: u32 = 7;
+pub(super) const VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT: u32 = 0x0000_0001;
 
 pub(super) const VK_BUFFER_USAGE_TRANSFER_SRC_BIT: u32 = 0x0000_0001;
 pub(super) const VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT: u32 = 0x0000_0010;
@@ -308,6 +309,7 @@ pub(super) struct VkLib {
     pub vkCreateDescriptorPool: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkDescriptorPool) -> i32,
     pub vkAllocateDescriptorSets: unsafe extern "C" fn(VkDevice, *const c_void, *mut VkDescriptorSet) -> i32,
     pub vkUpdateDescriptorSets: unsafe extern "C" fn(VkDevice, u32, *const c_void, u32, *const c_void),
+    pub vkFreeDescriptorSets: unsafe extern "C" fn(VkDevice, VkDescriptorPool, u32, *const VkDescriptorSet) -> i32,
     pub vkCreateFramebuffer: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkFramebuffer) -> i32,
     pub vkDestroyFramebuffer: unsafe extern "C" fn(VkDevice, VkFramebuffer, *const c_void),
     pub vkCreateCommandPool: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkCommandPool) -> i32,

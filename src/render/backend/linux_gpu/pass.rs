@@ -270,21 +270,24 @@ impl RenderPass {
         pipeline: &ObjPtr,
         quads: &HostBuffer<Q>,
         uniforms: &U,
-        _texture: &Texture,
+        texture: &Texture,
         _sampler: SamplerHandle,
         instance_idx: u32,
     ) {
         let Some(vk) = &self.vk else { return };
-        if pipeline.0 == 0 {
+        let dset = texture.image_dset();
+        if pipeline.0 == 0 || dset == 0 {
             return;
         }
         unsafe {
+            // Every image of a frame shares these uniforms (target size, flip).
             std::ptr::copy_nonoverlapping(
                 uniforms as *const U as *const u8,
                 vk.image_ubuf.1,
                 std::mem::size_of::<U>(),
             );
             (vk.lib.vkCmdBindPipeline)(vk.upload_cmd, 0, pipeline.0);
+            (vk.lib.vkCmdBindDescriptorSets)(vk.upload_cmd, 0, vk.image_pipe_layout, 0, 1, &dset, 0, std::ptr::null());
             let vbuf = quads.raw_ptr();
             let offset = 0u64;
             (vk.lib.vkCmdBindVertexBuffers)(vk.upload_cmd, 0, 1, &vbuf, &offset);
@@ -299,6 +302,10 @@ impl RenderPass {
         }
         unsafe {
             (vk.lib.vkCmdBindPipeline)(vk.upload_cmd, 0, pipeline.0);
+            // An image draw leaves an image-layout set bound; the corner shader
+            // reads the cell uniforms the frame's first `draw_cells` wrote.
+            let dset = vk.cells_dsets[0];
+            (vk.lib.vkCmdBindDescriptorSets)(vk.upload_cmd, 0, vk.cells_pipe_layout, 0, 1, &dset, 0, std::ptr::null());
             (vk.lib.vkCmdDraw)(vk.upload_cmd, 4, 1, 0, 0);
         }
     }
