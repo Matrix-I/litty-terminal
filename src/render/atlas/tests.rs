@@ -440,3 +440,24 @@ fn an_emoji_creates_the_color_texture() {
     assert!(atlas.is_color(left));
     assert_eq!(color_side(&atlas), atlas.size);
 }
+
+#[test]
+fn slot_key_hasher_spreads_style_and_width_flags() {
+    use std::hash::{BuildHasher, BuildHasherDefault};
+    let build = BuildHasherDefault::<SlotKeyHasher>::default();
+    let flags = [0, STYLE_BOLD, STYLE_ITALIC, STYLE_BOLD | STYLE_ITALIC, WIDE_LEFT, WIDE_RIGHT, CLUSTER_KEY, GLYPH_PIECE];
+    // The table indexes with the low bits and tags entries with the top 7.
+    let mut buckets = [0u16; 4096];
+    let mut tags = [0u16; 128];
+    for cp in 0x21u32..0x221 {
+        for flag in flags {
+            let hash = build.hash_one(cp | flag);
+            assert_eq!(hash, build.hash_one(cp | flag), "deterministic");
+            buckets[(hash & 4095) as usize] += 1;
+            tags[(hash >> 57) as usize] += 1;
+        }
+    }
+    assert_eq!(buckets.iter().map(|&n| n as usize).sum::<usize>(), 4096);
+    assert!(*buckets.iter().max().unwrap() <= 8, "bucket load {:?}", buckets.iter().max());
+    assert!(*tags.iter().max().unwrap() <= 48, "tag load {:?}", tags.iter().max());
+}
