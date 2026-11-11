@@ -89,16 +89,16 @@ impl Perform for Grid {
         self.wrap_pending = false;
 
         match action {
-            'A' => self.cur.row = self.cur.row.saturating_sub(arg(0, 1)),
-            'B' | 'e' => self.cur.row = (self.cur.row + arg(0, 1)).min(rows - 1),
+            'A' => self.cursor_up(arg(0, 1)),
+            'B' | 'e' => self.cursor_down(arg(0, 1)),
             'C' | 'a' => self.cur.col = (self.cur.col + arg(0, 1)).min(cols - 1),
             'D' => self.cur.col = self.cur.col.saturating_sub(arg(0, 1)),
             'E' => {
-                self.cur.row = (self.cur.row + arg(0, 1)).min(rows - 1);
+                self.cursor_down(arg(0, 1));
                 self.cur.col = 0;
             }
             'F' => {
-                self.cur.row = self.cur.row.saturating_sub(arg(0, 1));
+                self.cursor_up(arg(0, 1));
                 self.cur.col = 0;
             }
             'G' | '`' => self.cur.col = (arg(0, 1) - 1).min(cols - 1),
@@ -280,7 +280,12 @@ impl Perform for Grid {
                 5 => self.response.extend_from_slice(b"\x1b[0n"),
                 996 if private => self.response.extend_from_slice(color_scheme_report()),
                 6 => {
-                    let row = if self.cur.origin_mode { self.cur.row - self.scroll_top } else { self.cur.row } + 1;
+                    // Saturate: a restored cursor (DECRC) can still sit above a newer region.
+                    let row = if self.cur.origin_mode {
+                        self.cur.row.saturating_sub(self.scroll_top)
+                    } else {
+                        self.cur.row
+                    } + 1;
                     let q = if private { "?" } else { "" };
                     let _ = write!(self.response, "\x1b[{q}{row};{}R", self.cur.col + 1);
                 }

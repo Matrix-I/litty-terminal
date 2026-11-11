@@ -626,8 +626,8 @@ impl Grid {
         let (rows, cols) = (self.rows, self.cols);
         self.wrap_pending = false;
         match action {
-            b'A' => self.cur.row = self.cur.row.saturating_sub(arg(0, 1)),
-            b'B' => self.cur.row = (self.cur.row + arg(0, 1)).min(rows - 1),
+            b'A' => self.cursor_up(arg(0, 1)),
+            b'B' => self.cursor_down(arg(0, 1)),
             b'C' => self.cur.col = (self.cur.col + arg(0, 1)).min(cols - 1),
             b'D' => self.cur.col = self.cur.col.saturating_sub(arg(0, 1)),
             b'G' => self.cur.col = (arg(0, 1) - 1).min(cols - 1),
@@ -895,6 +895,18 @@ impl Grid {
         } else {
             self.cur.row = (row_param - 1).min(self.rows - 1);
         }
+    }
+
+    /// CUU / CPL: stop at the top margin when starting at or below it, as xterm does.
+    fn cursor_up(&mut self, n: usize) {
+        let top = if self.cur.row >= self.scroll_top { self.scroll_top } else { 0 };
+        self.cur.row = self.cur.row.saturating_sub(n).max(top);
+    }
+
+    /// CUD / CNL / VPR: stop at the bottom margin when starting at or above it.
+    fn cursor_down(&mut self, n: usize) {
+        let bot = if self.cur.row <= self.scroll_bot { self.scroll_bot } else { self.rows - 1 };
+        self.cur.row = (self.cur.row + n).min(bot);
     }
 
     fn clamp_cursor(&mut self) {
