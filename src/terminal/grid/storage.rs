@@ -200,7 +200,10 @@ impl Grid {
                 if self.history + self.rows >= self.cap && self.cap < self.scrollback + self.rows {
                     self.grow_capacity();
                 }
-                if self.history == self.cap - self.rows {
+                // A rows-only resize keeps the ring, so it may hold more rows than
+                // the scrollback limit allows.
+                let max_history = (self.cap - self.rows).min(self.scrollback);
+                if self.history == max_history {
                     let evicted_row = (self.top + self.cap - self.history) % self.cap;
                     let start = evicted_row * self.cols;
                     let end = start + self.cols;
@@ -216,7 +219,7 @@ impl Grid {
                 }
                 self.top = (self.top + 1) % self.cap;
                 self.lines_pushed += 1;
-                if self.history < self.cap - self.rows {
+                if self.history < max_history {
                     self.history += 1;
                 }
                 self.clear_cols(self.rows - 1, 0, self.cols);
