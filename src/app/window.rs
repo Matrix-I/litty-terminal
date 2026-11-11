@@ -202,6 +202,7 @@ fn build_window(
         first_frame: true,
         ime: ImeState { preedit: String::new(), cursor_cell: None },
         sync_pending: false,
+        winch: super::winch::WinchResignal::default(),
         titles_refreshed_at: std::time::Instant::now(),
         titled_tab: 0,
         requests: WindowRequests {
@@ -574,6 +575,7 @@ pub(super) fn sync_size(s: &mut State) {
     let bands = s.bands();
     let (total_cols, total_rows) = s.renderer.grid_size_for_tabs(bands);
     let (cw, ch) = s.renderer.cell_size();
+    let now = std::time::Instant::now();
     for tab in &mut s.tabs {
         let rects = tab.compute_pane_rects(total_cols, total_rows);
         for rect in rects {
@@ -590,6 +592,7 @@ pub(super) fn sync_size(s: &mut State) {
                 };
                 if changed {
                     p.pty.resize(rect.cols as u16, rect.rows as u16, cw, ch);
+                    s.winch.resized(p.id, now);
                 }
             }
         }

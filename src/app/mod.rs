@@ -20,6 +20,7 @@ mod terminal_io;
 mod user_event;
 mod window;
 mod window_event;
+mod winch;
 
 use actions::run_action;
 use ai_bridge::handle_ai_requests;
@@ -479,6 +480,14 @@ impl EventHandler<AppEvent> for App {
         for s in &mut self.windows {
             if let Some(next_prune) = s.renderer.prune_idle_images(now) {
                 deadline = Some(deadline.map_or(next_prune, |d| d.min(next_prune)));
+            }
+            if let Some(panes) = s.winch.take_due(now) {
+                for pane in s.tabs.iter().flat_map(|t| &t.panes).filter(|p| panes.contains(&p.id)) {
+                    pane.pty.resignal_winch();
+                }
+            }
+            if let Some(settle) = s.winch.deadline() {
+                deadline = Some(deadline.map_or(settle, |d| d.min(settle)));
             }
             if s.sync_pending {
                 let sync = now + std::time::Duration::from_millis(16);
