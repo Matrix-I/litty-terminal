@@ -53,7 +53,7 @@ follow-ups are in v0.8.0; shipped refactor results are in v0.7.1.
   - Found in the 2026-11-11 performance review: no platform sends `WindowEvent::Occluded`, so `State::occluded` is always `false`. Covered or minimized windows keep rendering on PTY output and their drawables are never shrunk. Needs an emitter in `src/platform/{macos,linux}/` and its own plan. See [finding 2](./docs/validation/2026-11-11-perf-review.md).
 
 - [ ] **Plans B and C of the 2026-11-11 review (Vulkan) need a run on real Linux hardware**
-  - The code is done and passes in an x86_64 container (lavapipe, Xvfb, validation layers); the manual checklists in [plan B](./docs/plans/2026-11-11-review-fixes-b-vulkan-robustness.md) and [plan C](./docs/plans/2026-11-11-review-fixes-c-vulkan-images.md) are open. Also open: the `yo` retry check of plan A (no attempt line appeared in the container) and the scrollback check of the perf plan.
+  - The code is done and passes in an x86_64 container (lavapipe, Xvfb, validation layers); the manual checklists in [plan B](./docs/plans/2026-11-11-review-fixes-b-vulkan-robustness.md) and [plan C](./docs/plans/2026-11-11-review-fixes-c-vulkan-images.md) are open. Also open: the macOS GUI runs of the perf plan's Step 3 items 1–4 and plan A's Task 5 Step 5, which need Accessibility and Screen Recording permission to automate.
 
 - [ ] **LLM assistant release validation on additional environments**
   - Implementation is complete (see [implementation record](./docs/plans/yosh_implementation_plan.md#implementation-record-2026-11-01)); mock provider/tool/continuation/cancellation/compaction tests and isolated zsh/Bash 3.2 smoke tests pass.
