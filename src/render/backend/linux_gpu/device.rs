@@ -294,6 +294,8 @@ impl VulkanCore {
                 vkCreateFence: load_fn!(vkCreateFence),
                 vkWaitForFences: load_fn!(vkWaitForFences),
                 vkResetFences: load_fn!(vkResetFences),
+                vkDestroySemaphore: load_fn!(vkDestroySemaphore),
+                vkDestroyFence: load_fn!(vkDestroyFence),
                 vkCreateWaylandSurfaceKHR: load_opt_fn!(vkCreateWaylandSurfaceKHR),
                 vkCreateXlibSurfaceKHR: load_opt_fn!(vkCreateXlibSurfaceKHR),
                 vkCreateXcbSurfaceKHR: load_opt_fn!(vkCreateXcbSurfaceKHR),
@@ -303,6 +305,7 @@ impl VulkanCore {
                 vkGetSwapchainImagesKHR: load_fn!(vkGetSwapchainImagesKHR),
                 vkAcquireNextImageKHR: load_fn!(vkAcquireNextImageKHR),
                 vkQueuePresentKHR: load_fn!(vkQueuePresentKHR),
+                vkDestroySurfaceKHR: load_fn!(vkDestroySurfaceKHR),
             };
 
             let mut queue: VkQueue = std::ptr::null_mut();
