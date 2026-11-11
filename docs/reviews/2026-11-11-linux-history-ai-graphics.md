@@ -29,6 +29,8 @@ where a test is impossible) before it is fixed.
 
 ### 1. Inline images never bind their texture on Vulkan
 
+**Status:** fixed by [plan C](../plans/2026-11-11-review-fixes-c-vulkan-images.md); Linux run pending user verification. Batching a frame's glyph uploads into one submission remains a roadmap follow-up.
+
 - **Where:** `src/render/backend/linux_gpu/pass.rs:268` (`draw_image_quad`)
 - **Defect:** `_texture` and `_sampler` are ignored. No descriptor set is ever
   allocated for `image_pipe_layout`, and `image_ubuf` is written but attached
@@ -149,6 +151,8 @@ where a test is impossible) before it is fixed.
   windows closed.
 
 ### 9. Partial atlas uploads transition from `UNDEFINED`
+
+**Status:** fixed by [plan C](../plans/2026-11-11-review-fixes-c-vulkan-images.md); Linux run pending user verification. Batching a frame's glyph uploads into one submission remains a roadmap follow-up.
 
 - **Where:** `src/render/backend/linux_gpu/resources.rs:420` (`write_rect`)
 - **Defect:** `old_layout` is always `VK_IMAGE_LAYOUT_UNDEFINED`, which allows
