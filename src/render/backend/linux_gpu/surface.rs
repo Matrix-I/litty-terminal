@@ -410,6 +410,12 @@ impl Surface {
     }
 
     pub fn shrink_drawables(&mut self, _device: &Device, _queue: &Queue) {
+        self.release_swapchain();
+    }
+
+    /// Destroy the framebuffers, image views and swapchain. The surface, the
+    /// semaphores and the fence stay, so `configure` can build a new swapchain.
+    fn release_swapchain(&mut self) {
         let Some(vk) = &self.vk else { return };
         unsafe {
             (vk.lib.vkDeviceWaitIdle)(vk.device);
@@ -425,6 +431,32 @@ impl Surface {
             if self.swapchain != 0 {
                 (vk.lib.vkDestroySwapchainKHR)(vk.device, self.swapchain, std::ptr::null());
                 self.swapchain = 0;
+            }
+        }
+    }
+}
+
+/// A closed window must give back its swapchain images: they are the largest
+/// allocation a window owns. The renderer is dropped before its window
+/// (`app::State` field order), so the display connection is still open here.
+impl Drop for Surface {
+    fn drop(&mut self) {
+        self.release_swapchain();
+        let Some(vk) = &self.vk else { return };
+        // SAFETY: the handles were created from `vk` by `Surface::new`, the
+        // device is idle (`release_swapchain`) and nothing else refers to them.
+        unsafe {
+            if self.image_avail_sem != 0 {
+                (vk.lib.vkDestroySemaphore)(vk.device, self.image_avail_sem, std::ptr::null());
+            }
+            if self.render_done_sem != 0 {
+                (vk.lib.vkDestroySemaphore)(vk.device, self.render_done_sem, std::ptr::null());
+            }
+            if self.fence != 0 {
+                (vk.lib.vkDestroyFence)(vk.device, self.fence, std::ptr::null());
+            }
+            if self.surface_khr != 0 {
+                (vk.lib.vkDestroySurfaceKHR)(vk.instance, self.surface_khr, std::ptr::null());
             }
         }
     }

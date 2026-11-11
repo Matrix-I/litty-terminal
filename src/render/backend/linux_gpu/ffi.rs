@@ -314,6 +314,8 @@ pub(super) struct VkLib {
     pub vkCreateFence: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkFence) -> i32,
     pub vkWaitForFences: unsafe extern "C" fn(VkDevice, u32, *const VkFence, VkBool32, u64) -> i32,
     pub vkResetFences: unsafe extern "C" fn(VkDevice, u32, *const VkFence) -> i32,
+    pub vkDestroySemaphore: unsafe extern "C" fn(VkDevice, VkSemaphore, *const c_void),
+    pub vkDestroyFence: unsafe extern "C" fn(VkDevice, VkFence, *const c_void),
     pub vkCreateWaylandSurfaceKHR: Option<unsafe extern "C" fn(VkInstance, *const c_void, *const c_void, *mut VkSurfaceKHR) -> i32>,
     pub vkCreateXlibSurfaceKHR: Option<unsafe extern "C" fn(VkInstance, *const c_void, *const c_void, *mut VkSurfaceKHR) -> i32>,
     pub vkCreateXcbSurfaceKHR: Option<unsafe extern "C" fn(VkInstance, *const c_void, *const c_void, *mut VkSurfaceKHR) -> i32>,
@@ -323,6 +325,7 @@ pub(super) struct VkLib {
     pub vkGetSwapchainImagesKHR: unsafe extern "C" fn(VkDevice, VkSwapchainKHR, *mut u32, *mut VkImage) -> i32,
     pub vkAcquireNextImageKHR: unsafe extern "C" fn(VkDevice, VkSwapchainKHR, u64, VkSemaphore, VkFence, *mut u32) -> i32,
     pub vkQueuePresentKHR: unsafe extern "C" fn(VkQueue, *const c_void) -> i32,
+    pub vkDestroySurfaceKHR: unsafe extern "C" fn(VkInstance, VkSurfaceKHR, *const c_void),
 }
 
 unsafe impl Send for VkLib {}
