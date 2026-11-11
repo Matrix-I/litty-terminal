@@ -203,6 +203,7 @@ fn build_window(
         ime: ImeState { preedit: String::new(), cursor_cell: None },
         sync_pending: false,
         winch: super::winch::WinchResignal::default(),
+        background_resize: super::winch::BackgroundResize::default(),
         titles_refreshed_at: std::time::Instant::now(),
         titled_tab: 0,
         requests: WindowRequests {
@@ -571,35 +572,74 @@ pub(super) fn render_active(s: &mut State) {
     }
 }
 
+/// Bring every pane of `tab` to its rect for a window of `size` cells.
+/// Returns whether a grid changed size.
+fn resize_tab(
+    tab: &Tab,
+    size: (usize, usize),
+    cell: (u32, u32),
+    winch: &mut super::winch::WinchResignal,
+    now: std::time::Instant,
+) -> bool {
+    let (cw, ch) = cell;
+    let mut any = false;
+    for rect in tab.compute_pane_rects(size.0, size.1) {
+        let Some(p) = tab.panes.iter().find(|p| p.id == rect.id) else { continue };
+        let changed = {
+            let mut g = p.grid.lock();
+            g.cell_px = (cw as u16, ch as u16);
+            if (g.cols, g.rows) == (rect.cols, rect.rows) {
+                false
+            } else {
+                g.resize(rect.cols, rect.rows);
+                true
+            }
+        };
+        if changed {
+            p.pty.resize(rect.cols as u16, rect.rows as u16, cw, ch);
+            winch.resized(p.id, now);
+            any = true;
+        }
+    }
+    any
+}
+
+/// Resize the visible tab now; the others follow once the burst settles
+/// (`sync_all_tabs`), so a window drag re-wraps one tab per step.
 pub(super) fn sync_size(s: &mut State) {
     let bands = s.bands();
-    let (total_cols, total_rows) = s.renderer.grid_size_for_tabs(bands);
-    let (cw, ch) = s.renderer.cell_size();
+    let size = s.renderer.grid_size_for_tabs(bands);
+    let cell = s.renderer.cell_size();
     let now = std::time::Instant::now();
-    for tab in &mut s.tabs {
-        let rects = tab.compute_pane_rects(total_cols, total_rows);
-        for rect in rects {
-            if let Some(p) = tab.panes.iter().find(|p| p.id == rect.id) {
-                let changed = {
-                    let mut g = p.grid.lock();
-                    g.cell_px = (cw as u16, ch as u16);
-                    if (g.cols, g.rows) == (rect.cols, rect.rows) {
-                        false
-                    } else {
-                        g.resize(rect.cols, rect.rows);
-                        true
-                    }
-                };
-                if changed {
-                    p.pty.resize(rect.cols as u16, rect.rows as u16, cw, ch);
-                    s.winch.resized(p.id, now);
-                }
-            }
-        }
+    if let Some(tab) = s.tabs.get(s.active) {
+        resize_tab(tab, size, cell, &mut s.winch, now);
+    }
+    if s.tabs.len() > 1 {
+        s.background_resize.schedule(now);
     }
     // Reflow cleared the matches.
     if s.search.is_open {
         refresh_search(s);
+    }
+}
+
+/// The resize burst settled: bring every tab to the window size. A no-op
+/// for panes already there, the visible tab included.
+pub(super) fn sync_all_tabs(s: &mut State) {
+    let bands = s.bands();
+    let size = s.renderer.grid_size_for_tabs(bands);
+    let cell = s.renderer.cell_size();
+    let now = std::time::Instant::now();
+    let mut visible_changed = false;
+    for (i, tab) in s.tabs.iter().enumerate() {
+        let changed = resize_tab(tab, size, cell, &mut s.winch, now);
+        visible_changed |= changed && i == s.active;
+    }
+    if visible_changed {
+        if s.search.is_open {
+            refresh_search(s);
+        }
+        s.window.request_redraw();
     }
 }
 
@@ -659,5 +699,39 @@ mod title_tests {
     fn unknown_user_or_host_leaves_the_title_alone() {
         assert_eq!(title_with_host("~/x", "", "box"), "~/x");
         assert_eq!(title_with_host("~/x", "me", ""), "~/x");
+    }
+}
+
+#[cfg(test)]
+mod resize_tests {
+    use super::resize_tab;
+    use crate::app::winch::WinchResignal;
+    use crate::terminal::grid::Grid;
+    use crate::terminal::pty::Pty;
+    use crate::{next_id, Pane, Tab};
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+
+    fn tab(cols: usize, rows: usize) -> Tab {
+        let pty = Pty::spawn_program("/bin/cat", &["cat"], &[], (cols as u16, rows as u16), (8, 16)).expect("spawn pty");
+        Tab::new(next_id(), Pane::new(next_id(), Arc::new(Mutex::new(Grid::new(cols, rows))), pty))
+    }
+
+    fn size(tab: &Tab) -> (usize, usize) {
+        let g = tab.panes[0].grid.lock();
+        (g.cols, g.rows)
+    }
+
+    #[test]
+    fn resize_tab_resizes_that_tab_only_and_reports_changes() {
+        let (shown, hidden) = (tab(80, 24), tab(80, 24));
+        let mut winch = WinchResignal::default();
+        let now = std::time::Instant::now();
+        assert!(resize_tab(&shown, (100, 30), (8, 16), &mut winch, now));
+        assert_eq!(size(&shown), (100, 30));
+        assert_eq!(size(&hidden), (80, 24), "a background tab keeps its size until the burst settles");
+        assert!(!resize_tab(&shown, (100, 30), (8, 16), &mut winch, now), "already at that size");
+        assert!(resize_tab(&hidden, (100, 30), (8, 16), &mut winch, now));
+        assert_eq!(size(&hidden), (100, 30));
     }
 }

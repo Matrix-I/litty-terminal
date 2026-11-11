@@ -137,6 +137,7 @@ pub(super) fn select_tab(s: &mut State, idx: usize) {
     if idx < s.tabs.len() && idx != s.active {
         s.active = idx;
         s.tabs[idx].bell = false;
+        sync_size(s);
         refresh_tab_titles(s);
         s.renderer.invalidate();
         s.window.request_redraw();

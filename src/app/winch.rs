@@ -44,6 +44,35 @@ impl WinchResignal {
     }
 }
 
+/// Background tabs are brought to the window size once a resize burst
+/// settles, not on every step: a width change re-wraps the whole scrollback
+/// of every pane on the UI thread.
+#[derive(Default)]
+pub(super) struct BackgroundResize {
+    due: Option<Instant>,
+}
+
+impl BackgroundResize {
+    /// The visible tab was just resized: (re)start the settle timer.
+    pub(super) fn schedule(&mut self, now: Instant) {
+        self.due = Some(now + SETTLE);
+    }
+
+    /// When the event loop must wake to resize the other tabs, if pending.
+    pub(super) fn deadline(&self) -> Option<Instant> {
+        self.due
+    }
+
+    /// True once, when the burst has settled by `now`.
+    pub(super) fn take_due(&mut self, now: Instant) -> bool {
+        if !self.due.is_some_and(|due| now >= due) {
+            return false;
+        }
+        self.due = None;
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +125,23 @@ mod tests {
         w.resized(3, t0 + SETTLE * 5);
         w.resized(3, t0 + SETTLE * 5);
         assert_eq!(w.take_due(t0 + SETTLE * 6), Some(vec![3]), "counts restart per burst");
+    }
+
+    #[test]
+    fn background_tabs_wait_for_the_burst_to_settle() {
+        let mut b = BackgroundResize::default();
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        assert_eq!(b.deadline(), None);
+        assert!(!b.take_due(t0 + SETTLE * 10), "nothing scheduled");
+        for step in 0..10u32 {
+            b.schedule(t0 + ms(16) * step);
+        }
+        let last = t0 + ms(16) * 9;
+        assert_eq!(b.deadline(), Some(last + SETTLE), "each resize restarts the timer");
+        assert!(!b.take_due(last + SETTLE - ms(1)), "not before it settles");
+        assert!(b.take_due(last + SETTLE));
+        assert_eq!(b.deadline(), None);
+        assert!(!b.take_due(last + SETTLE * 2), "due only once per burst");
     }
 }
