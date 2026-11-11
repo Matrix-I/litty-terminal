@@ -63,6 +63,8 @@ where a test is impossible) before it is fixed.
 
 ### 3. Failed swapchain creation leaves a destroyed handle in use
 
+**Status:** fixed by [plan B](../plans/2026-11-11-review-fixes-b-vulkan-robustness.md); Linux run pending user verification.
+
 - **Where:** `src/render/backend/linux_gpu/surface.rs:263`
 - **Defect:** when `vkCreateSwapchainKHR` fails, `self.swapchain` still equals
   `old_sc`, which is destroyed on the next line. The `== 0` guard does not
@@ -76,6 +78,8 @@ where a test is impossible) before it is fixed.
 
 ### 4. `custom-shader` on Linux runs with fake Vulkan handles
 
+**Status:** fixed by [plan B](../plans/2026-11-11-review-fixes-b-vulkan-robustness.md); Linux run pending user verification.
+
 - **Where:** `src/render/backend/linux_gpu/device.rs:1045`
   (`create_postfx_pipeline`), used by `src/render/postfx.rs`
 - **Defect:** the function returns `Ok(ObjPtr(4))`, so `PostFx` is enabled on
@@ -88,6 +92,8 @@ where a test is impossible) before it is fixed.
   yet")` until the path is implemented, and say so in `README.md`.
 
 ### 5. Instance creation requires all three WSI extensions at once
+
+**Status:** fixed by [plan B](../plans/2026-11-11-review-fixes-b-vulkan-robustness.md); Linux run pending user verification.
 
 - **Where:** `src/render/backend/linux_gpu/device.rs:116`
 - **Defect:** `VK_KHR_wayland_surface`, `VK_KHR_xlib_surface` and
@@ -131,6 +137,8 @@ where a test is impossible) before it is fixed.
 - **Decision (user, 2026-11-11):** every occurrence is removed.
 
 ### 8. `Surface` has no `Drop`
+
+**Status:** fixed by [plan B](../plans/2026-11-11-review-fixes-b-vulkan-robustness.md); Linux run pending user verification.
 
 - **Where:** `src/render/backend/linux_gpu/surface.rs:33`
 - **Defect:** framebuffers, image views, the swapchain, both semaphores, the
