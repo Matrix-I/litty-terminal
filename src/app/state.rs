@@ -52,6 +52,8 @@ pub(super) struct State {
     pub(super) ime: ImeState,
     /// A frame was skipped because an application is in synchronized output.
     pub(super) sync_pending: bool,
+    /// Panes to send SIGWINCH again once a resize burst settles.
+    pub(super) winch: super::winch::WinchResignal,
     /// When tab titles were last recomputed (they also refresh on OSC 0/2/7).
     pub(super) titles_refreshed_at: std::time::Instant,
     /// The tab whose title the window title currently shows.

@@ -450,6 +450,19 @@ impl Pty {
         pid_cwd(self.pid)
     }
 
+    /// Send SIGWINCH to the foreground job again, as `TIOCSWINSZ` does on a size
+    /// change, so a program that missed the last one re-reads the size.
+    pub fn resignal_winch(&self) {
+        // SAFETY: `tcgetpgrp` only reads the terminal's foreground group.
+        let pgrp = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
+        if pgrp > 0 {
+            // SAFETY: plain signal send; a group that just exited makes it fail with ESRCH.
+            unsafe {
+                libc::kill(-pgrp, libc::SIGWINCH);
+            }
+        }
+    }
+
     pub fn resize(&self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) {
         let ws = winsize(cols, rows, cell_w, cell_h);
         // SAFETY: valid fd and pointer; the kernel sends SIGWINCH to the shell.
@@ -884,6 +897,35 @@ mod tests {
         let r = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
         assert_eq!(r, -1);
         assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ECHILD));
+    }
+
+    #[test]
+    fn resignal_winch_reaches_the_foreground_program() {
+        // With job control (`set -m`) the inner shell is the foreground job in a
+        // process group of its own, like vim started from an interactive shell; the
+        // outer shell, `self.pid`, leaves SIGWINCH at its default (ignore).
+        let script = "set -m; sh -c \"trap 'printf %s%s WIN CHED' WINCH; printf %s%s REA DY; while :; do sleep 0.02; done\"";
+        let pty = Pty::spawn_program("/bin/sh", &["sh", "-c", script], &[], (80, 24), (8, 16)).expect("spawn sh");
+        let grid = Arc::new(Mutex::new(Grid::new(80, 24)));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let notify_grid = grid.clone();
+        pty.spawn_reader(grid, move || {
+            let g = notify_grid.lock();
+            let _ = tx.send(g.display_row(0).iter().filter_map(|c| char::from_u32(c.codepoint)).collect::<String>());
+        }, || {})
+        .expect("spawn reader");
+        let wait_for = |text: &str| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while let Ok(row) = rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+                if row.contains(text) {
+                    return true;
+                }
+            }
+            false
+        };
+        assert!(wait_for("READY"), "the trap is installed");
+        pty.resignal_winch();
+        assert!(wait_for("WINCHED"), "SIGWINCH delivered without a size change");
     }
 
     #[test]
