@@ -74,7 +74,7 @@ No persisted data, API or message format changes. The config format is unchanged
 
 ## Task 0: Branch
 
-- [ ] **Step 1.** Create the branch from `main`:
+- [x] **Step 1.** Create the branch from `main`:
 
   ```bash
   git switch -c fix/perf-review-fixes main
@@ -98,7 +98,7 @@ No persisted data, API or message format changes. The config format is unchanged
 - Unchanged: `pub(super) const MAX_SCROLLBACK: usize = 1_000_000;`, `pub fn set_scrollback_limit(bytes: Option<usize>)`, `pub(super) fn scrollback_lines(cols: usize) -> usize`, `pub(super) fn lines_for_bytes(bytes: usize, cols: usize) -> usize`
 - Removes: `pub const SCROLLBACK: usize = 5000;` (used only by the tests changed here and one doc comment)
 
-- [ ] **Step 1 — failing test.** In `src/terminal/grid/tests.rs`, change line 7 to:
+- [x] **Step 1 — failing test.** In `src/terminal/grid/tests.rs`, change line 7 to:
 
   ```rust
   use super::storage::{MAX_SCROLLBACK, SCROLLBACK_BYTES_DEFAULT, lines_for_bytes};
@@ -152,7 +152,7 @@ No persisted data, API or message format changes. The config format is unchanged
       assert_eq!(g.history, limit);
   ```
 
-- [ ] **Step 2 — run, expect FAIL.**
+- [x] **Step 2 — run, expect FAIL.**
 
   ```bash
   cargo test scrollback
@@ -160,7 +160,7 @@ No persisted data, API or message format changes. The config format is unchanged
 
   Expected: compile error, `unresolved import super::storage::SCROLLBACK_BYTES_DEFAULT`.
 
-- [ ] **Step 3 — implementation.** In `src/terminal/grid/storage.rs` replace lines 8–32 (from the `SCROLLBACK` doc comment through the end of `lines_for_bytes`) with:
+- [x] **Step 3 — implementation.** In `src/terminal/grid/storage.rs` replace lines 8–32 (from the `SCROLLBACK` doc comment through the end of `lines_for_bytes`) with:
 
   ```rust
   /// Default `scrollback-limit`, in bytes (Ghostty's default). A byte budget
@@ -195,7 +195,7 @@ No persisted data, API or message format changes. The config format is unchanged
   - `src/config.rs:146`: replace the doc comment with `` /// `scrollback-limit` in bytes (Ghostty semantics); `None` = 10,000,000. ``
   - `src/terminal/grid/tests.rs:313`: the comment `Fill the scrollback ring so scrolling stops allocating too.` becomes `Grow the scrollback ring so scrolling stops allocating in the measured pass.` (at 80 columns the ring no longer fills in 120 rounds).
 
-- [ ] **Step 4 — run, expect PASS.**
+- [x] **Step 4 — run, expect PASS.**
 
   ```bash
   cargo test scrollback
@@ -205,7 +205,7 @@ No persisted data, API or message format changes. The config format is unchanged
   cargo test grid::
   ```
 
-- [ ] **Step 5 — docs.** In `docs/guide/configuration.md`:
+- [x] **Step 5 — docs.** In `docs/guide/configuration.md`:
 
   - Line 50, the `scrollback-limit` row: default `10000000`, description `Scrollback memory per terminal in bytes, as in Ghostty (about 10,400 lines at 80 columns)`.
   - Line 117: `# scrollback-limit = 10000000    # bytes, as in Ghostty (default)`
@@ -233,7 +233,7 @@ No persisted data, API or message format changes. The config format is unchanged
   - `pub(super) fn sync_all_tabs(s: &mut State)` in `src/app/window.rs`
   - `State::background_resize: super::winch::BackgroundResize`
 
-- [ ] **Step 1 — failing tests.** In `src/app/winch.rs`, add to `mod tests`:
+- [x] **Step 1 — failing tests.** In `src/app/winch.rs`, add to `mod tests`:
 
   ```rust
   #[test]
@@ -293,7 +293,7 @@ No persisted data, API or message format changes. The config format is unchanged
   }
   ```
 
-- [ ] **Step 2 — run, expect FAIL.**
+- [x] **Step 2 — run, expect FAIL.**
 
   ```bash
   cargo test app::
@@ -301,7 +301,7 @@ No persisted data, API or message format changes. The config format is unchanged
 
   Expected: compile errors, `cannot find type BackgroundResize` and `unresolved import super::resize_tab`.
 
-- [ ] **Step 3 — implementation.**
+- [x] **Step 3 — implementation.**
 
   `src/app/winch.rs`, after the `impl WinchResignal` block:
 
@@ -437,7 +437,7 @@ No persisted data, API or message format changes. The config format is unchanged
               }
   ```
 
-- [ ] **Step 4 — run, expect PASS.**
+- [x] **Step 4 — run, expect PASS.**
 
   ```bash
   cargo test app::
@@ -459,7 +459,7 @@ No persisted data, API or message format changes. The config format is unchanged
 - Consumes: key flags `STYLE_BOLD`, `STYLE_ITALIC`, `WIDE_LEFT`, `WIDE_RIGHT`, `CLUSTER_KEY`, `GLYPH_PIECE` (`src/render/atlas/mod.rs:97-129`)
 - Produces: `pub(super) struct SlotKeyHasher(u64)` implementing `std::hash::Hasher` and `Default`; `type SlotMap = HashMap<u32, u16, std::hash::BuildHasherDefault<SlotKeyHasher>>;`
 
-- [ ] **Step 1 — baseline number.** Before any other change, add this temporary test at the end of `src/render/atlas/tests.rs`, run it, note the `std` line, and keep the test for Step 5:
+- [x] **Step 1 — baseline number.** Before any other change, add this temporary test at the end of `src/render/atlas/tests.rs`, run it, note the `std` line, and keep the test for Step 5:
 
   ```rust
   #[test]
@@ -491,7 +491,7 @@ No persisted data, API or message format changes. The config format is unchanged
   cargo test --release tmp_slot_map_lookup_cost -- --nocapture
   ```
 
-- [ ] **Step 2 — failing test.** At the end of `src/render/atlas/tests.rs`:
+- [x] **Step 2 — failing test.** At the end of `src/render/atlas/tests.rs`:
 
   ```rust
   #[test]
@@ -518,7 +518,7 @@ No persisted data, API or message format changes. The config format is unchanged
 
   (Computed for this hash over these 4,096 keys: largest bucket 7, largest tag 35.)
 
-- [ ] **Step 3 — run, expect FAIL.**
+- [x] **Step 3 — run, expect FAIL.**
 
   ```bash
   cargo test slot_key_hasher
@@ -526,7 +526,7 @@ No persisted data, API or message format changes. The config format is unchanged
 
   Expected: compile error, `cannot find type SlotKeyHasher`.
 
-- [ ] **Step 4 — implementation.** In `src/render/atlas/mod.rs`, above `pub struct Atlas`:
+- [x] **Step 4 — implementation.** In `src/render/atlas/mod.rs`, above `pub struct Atlas`:
 
   ```rust
   /// Hasher for atlas slot keys (a code point plus flag bits). The keys are
@@ -559,7 +559,7 @@ No persisted data, API or message format changes. The config format is unchanged
 
   Change the field `map: HashMap<u32, u16>,` to `map: SlotMap,` and the constructor line `map: HashMap::with_capacity(n_slots as usize),` to `map: SlotMap::with_capacity_and_hasher(n_slots as usize, Default::default()),`. `cluster_ids: HashMap<Box<str>, u32>` keeps the default hasher. (`src/render/atlas/run_cache.rs` has a `PreHashed` hasher for keys that are already hashes; these keys are not, so it is not reused.)
 
-- [ ] **Step 5 — run, expect PASS; record the after number.** Append to `tmp_slot_map_lookup_cost`:
+- [x] **Step 5 — run, expect PASS; record the after number.** Append to `tmp_slot_map_lookup_cost`:
 
   ```rust
       eprintln!("SLOTMAP mul_us_per_8000={:.1}", lookup_us::<std::hash::BuildHasherDefault<SlotKeyHasher>>());
@@ -581,7 +581,7 @@ No persisted data, API or message format changes. The config format is unchanged
 
 ## Task 4: Verification & Docs
 
-- [ ] **Step 1 — full verification** (each must pass; quote the result):
+- [x] **Step 1 — full verification** (each must pass; quote the result):
 
   ```bash
   cargo check
@@ -603,7 +603,7 @@ No persisted data, API or message format changes. The config format is unchanged
   git diff --check
   ```
 
-- [ ] **Step 2 — before/after for the reflow.** Add this temporary test to `src/terminal/grid/tests.rs` without committing it, run it on the branch, then on `main` (`git stash`, `git switch main`, `git stash pop`; switch back the same way), then delete it:
+- [x] **Step 2 — before/after for the reflow.** Add this temporary test to `src/terminal/grid/tests.rs` without committing it, run it on the branch, then on `main` (`git stash`, `git switch main`, `git stash pop`; switch back the same way), then delete it:
 
   ```rust
   #[test]
@@ -625,7 +625,7 @@ No persisted data, API or message format changes. The config format is unchanged
 
   Expected history: 5,000 on `main`, 4,166 on the branch.
 
-- [ ] **Step 3 — end-to-end, needs a display.** `cargo build --release`, then with `target/release/litty`:
+- [ ] **Step 3 — end-to-end, needs a display.** _(2026-11-12: item 5 run, no regression; items 1–4 not run, they need interactive window resizing)_ `cargo build --release`, then with `target/release/litty`:
 
   1. Scrollback: in an 80-column window run `seq 1 30000`, scroll to the top. Expected first line near `19585` (10,416 lines kept).
   2. Background tabs: open three tabs, run `sh -c 'trap "stty size" WINCH; while :; do sleep 1; done'` in tabs 2 and 3, select tab 1, drag the window edge for two seconds. Expected: tabs 2 and 3 each print the final size once, not one line per drag step.
@@ -633,13 +633,13 @@ No persisted data, API or message format changes. The config format is unchanged
   4. Styled text: `printf '\033[1mbold \033[3mbold italic\033[0m\n'` renders as before.
   5. `target/release/litty +bench-ram` and `target/release/litty +bench-pty-throughput 16`: no regression against `docs/development/performance.md`.
 
-- [ ] **Step 4 — record results.** Append a `## Fixes` section to `docs/validation/2026-11-11-perf-review.md` with: the commit of each task, the `SLOTMAP` before/after lines, the `REFLOW` before/after lines, the Step 3 observations, and every Step 3 item that could not run.
+- [x] **Step 4 — record results.** Append a `## Fixes` section to `docs/validation/2026-11-11-perf-review.md` with: the commit of each task, the `SLOTMAP` before/after lines, the `REFLOW` before/after lines, the Step 3 observations, and every Step 3 item that could not run.
 
-- [ ] **Step 5 — final gate** (global rules): read the full diff for unrelated changes, leftover temporary tests and debug output; rerun Step 1 after the last edit; run the self-review checklist; get an independent review of the diff against this plan.
+- [x] **Step 5 — final gate** (global rules): read the full diff for unrelated changes, leftover temporary tests and debug output; rerun Step 1 after the last edit; run the self-review checklist; get an independent review of the diff against this plan.
 
 - [ ] **Step 6 — commit checkpoint.** Ready to commit: `docs/validation/2026-11-11-perf-review.md` — `docs(validation): record the perf review fixes`
 
-- [ ] **Step 7 — follow-up.** Leave the `ROADMAP.md` entry "Occlusion events are never emitted" unchecked: finding 2 is not fixed by this plan.
+- [x] **Step 7 — follow-up.** Leave the `ROADMAP.md` entry "Occlusion events are never emitted" unchecked: finding 2 is not fixed by this plan.
 
 **Verification gaps the executor must report:**
 
