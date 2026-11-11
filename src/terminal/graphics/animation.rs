@@ -95,7 +95,9 @@ impl Image {
         let (Some(started), true, true) = (a.started, n > 1, cycle > 0) else { return (a.current.min(n - 1), None) };
         let plays = if a.state == 2 { 1 } else { a.plays };
         let elapsed = now.saturating_duration_since(started).as_millis() as u64;
-        if plays != 0 && elapsed >= cycle * plays as u64 {
+        // Gaps and the loop count come from program output: their product can
+        // exceed u64, which must read as "not finished yet", not wrap around.
+        if plays != 0 && elapsed >= cycle.saturating_mul(plays as u64) {
             return (n - 1, None);
         }
         let mut t = elapsed % cycle;
