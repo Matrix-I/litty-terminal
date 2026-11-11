@@ -44,6 +44,8 @@ where a test is impossible) before it is fixed.
 
 ### 2. Animation loop length overflows (`cycle * plays`) — corrected
 
+**Status:** fixed by [plan A](../plans/2026-11-11-review-fixes-a-graphics-history-ai.md).
+
 > **Correction (2026-11-11).** This finding first claimed that
 > `now - Duration::from_millis(..)` at `animation.rs:253` panics. That was
 > wrong: checked on macOS with rustc 1.99.1, `Instant::now() - 13.6 years`
@@ -103,6 +105,8 @@ where a test is impossible) before it is fixed.
 
 ### 6. Fish history unescape order corrupts an escaped backslash before `n`
 
+**Status:** fixed by [plan A](../plans/2026-11-11-review-fixes-a-graphics-history-ai.md).
+
 - **Where:** `src/terminal/history.rs:351`
 - **Defect:** `.replace("\\n", "\n").replace("\\\\", "\\")` handles the newline
   escape before the backslash escape.
@@ -114,6 +118,8 @@ where a test is impossible) before it is fixed.
 
 ### 7. A deleted history entry reappears when it has duplicates
 
+**Status:** fixed by [plan A](../plans/2026-11-11-review-fixes-a-graphics-history-ai.md).
+
 - **Where:** `src/terminal/history.rs:485` (`strip_command_entries`)
 - **Defect:** only the latest occurrence is removed from disk (pinned by the
   test `removal_only_deletes_single_latest_occurrence`), while the in-memory
@@ -122,9 +128,7 @@ where a test is impossible) before it is fixed.
 - **Failure:** a command containing a secret that was run three times must be
   deleted three times, and is still on disk after the first delete while the UI
   showed it as gone.
-- **Open question:** is "single occurrence" intended? If the feature exists to
-  scrub secrets, all occurrences should go. This is a behaviour decision, not
-  only a bug fix.
+- **Decision (user, 2026-11-11):** every occurrence is removed.
 
 ### 8. `Surface` has no `Drop`
 
@@ -151,6 +155,8 @@ where a test is impossible) before it is fixed.
   buffer and batch the uploads of a frame into one submission.
 
 ### 10. Non-retryable transport errors are retried ten times
+
+**Status:** fixed by [plan A](../plans/2026-11-11-review-fixes-a-graphics-history-ai.md).
 
 - **Where:** `src/ai/http.rs:164`
 - **Defect:** every `Err` except `"Cancelled"` is retried, including

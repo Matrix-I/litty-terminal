@@ -51,7 +51,8 @@ checklist and independent review before reporting done.
 
 - Finding 2 as written (a panic from `Instant - Duration`) was **not reproducible**: on macOS (rustc 1.99.1) `Instant::now() - 13.6 years` succeeds, because the Unix `Instant` may go below its origin. No change is made for it (no speculative fix). What does reproduce is an overflow of `cycle * plays` in `Image::frame_at`: a panic in debug builds, a wrapped product (wrong frame) in release builds, which have no overflow checks. Task 1 fixes that.
 - `cycle * plays` uses `saturating_mul` — same result for every representable product.
-- Only curl exit codes that describe the network are retried: 5 and 6 (name resolution), 7 (connect), 18 (partial transfer), 28 (timeout), 35 (TLS handshake), 52 (empty reply), 55 and 56 (send / receive). Every other failure is fatal at once: any other curl exit (malformed URL, `--proto`, `--max-filesize`, killed by a signal), curl cannot be started or waited for, pipe errors, a response over 8 MiB, a non-UTF-8 body, a missing or invalid status line. HTTP status handling (408, 429, 5xx retried) is unchanged.
+- Only curl exit codes that describe the network are retried: 5 and 6 (name resolution), 7 (connect), 16 (HTTP/2 framing), 18 (partial transfer), 28 (timeout), 35 (TLS handshake), 52 (empty reply), 55 and 56 (send / receive), 92 (HTTP/2 stream not closed cleanly). 16 and 92 are included because LLM APIs are reached over HTTPS with HTTP/2, where a reset stream is transient. Every other failure is fatal at once: any other curl exit (malformed URL, `--proto`, `--max-filesize`, killed by a signal), curl cannot be started or waited for, pipe errors, a response over 8 MiB, a non-UTF-8 body, a missing or invalid status line. HTTP status handling (408, 429, 5xx retried) is unchanged.
+- Behaviour change: curl exiting 0 while writing its stdin config failed (`written.is_err()`) was retried before and is now fatal (`transient_curl_exit(Some(0))` is false). curl read its whole config before a successful exit, so this cannot be a network failure; it is rare and not worth a retry.
 - An unknown fish escape (`\x`) is kept verbatim as backslash + character, as the current code does.
 
 ## Risks & Rollback
@@ -78,7 +79,7 @@ is `cycle * plays` in `Image::frame_at`.
 
 **Interfaces:** Consumes `Store::kitty_animate(&mut self, cmd: &KittyCommand, now: Instant) -> Result<(), String>`, `Image::frame_at(&self, now: Instant) -> (usize, Option<Instant>)` and the test helper `run(store: &mut Store, cmd: &str) -> Option<String>`. Produces no new symbol.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `src/terminal/graphics/tests.rs`:
 
@@ -101,12 +102,12 @@ fn kitty_animation_loop_length_does_not_overflow() {
 }
 ```
 
-- [ ] **Step 2: Run it and confirm the failure**
+- [x] **Step 2: Run it and confirm the failure**
 
 Run: `cargo test --lib kitty_animation_loop_length_does_not_overflow`
 Expected: FAIL with a panic `attempt to multiply with overflow` at `animation.rs:98` (test builds have overflow checks).
 
-- [ ] **Step 3: Fix**
+- [x] **Step 3: Fix**
 
 In `src/terminal/graphics/animation.rs`, inside `Image::frame_at`, replace
 
@@ -122,7 +123,7 @@ with
         if plays != 0 && elapsed >= cycle.saturating_mul(plays as u64) {
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test --lib graphics`
 Expected: PASS, including `kitty_animation_frames_play_from_the_clock`.
@@ -141,7 +142,7 @@ Ready to commit: `src/terminal/graphics/animation.rs`, `src/terminal/graphics/te
 
 **Interfaces:** Produces `fn unescape_fish(s: &str) -> String` (private). Consumes the test helpers `temp_history(name: &str, content: &[u8]) -> PathBuf`, `parse_history_file(path: &Path, out: &mut Vec<String>)` and `remove_command_from_file(path: &Path, cmd: &str) -> std::io::Result<bool>`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to the tests module of `src/terminal/history.rs`:
 
@@ -160,12 +161,12 @@ Add to the tests module of `src/terminal/history.rs`:
     }
 ```
 
-- [ ] **Step 2: Run it and confirm the failure**
+- [x] **Step 2: Run it and confirm the failure**
 
 Run: `cargo test --lib fish_escaped_backslash_before_n_stays_a_backslash`
 Expected: FAIL on the first `assert_eq!`: the second element is `"printf 'a\\\nb'"` (backslash, real newline) instead of `"printf 'a\\nb'"`.
 
-- [ ] **Step 3: Fix**
+- [x] **Step 3: Fix**
 
 In `src/terminal/history.rs`, add above `split_fish_entries`:
 
@@ -206,7 +207,7 @@ with
             let cmd = unescape_fish(rest.trim());
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test --lib history`
 Expected: PASS, including `removal_drops_fish_block`.
@@ -225,7 +226,7 @@ Ready to commit: `src/terminal/history.rs` — `fix(history): unescape fish hist
 
 **Interfaces:** `fn strip_command_entries(path: &Path, bytes: &[u8], cmd: &str) -> Option<Vec<u8>>` keeps its signature; `None` still means "nothing matched".
 
-- [ ] **Step 1: Replace the old test with the failing one**
+- [x] **Step 1: Replace the old test with the failing one**
 
 Delete the test `removal_only_deletes_single_latest_occurrence` (it asserts the behaviour confirmed requirement 1 replaces) and add:
 
@@ -241,12 +242,12 @@ Delete the test `removal_only_deletes_single_latest_occurrence` (it asserts the 
     }
 ```
 
-- [ ] **Step 2: Run it and confirm the failure**
+- [x] **Step 2: Run it and confirm the failure**
 
 Run: `cargo test --lib removal_deletes_every_occurrence_with_its_timestamp`
 Expected: FAIL on the first `assert_eq!`: the file still holds `#1\necho repeated\necho first\n#2\necho repeated\necho middle\n`.
 
-- [ ] **Step 3: Fix**
+- [x] **Step 3: Fix**
 
 Replace the whole `strip_command_entries` function (doc comment included) with:
 
@@ -280,7 +281,7 @@ fn strip_command_entries(path: &Path, bytes: &[u8], cmd: &str) -> Option<Vec<u8>
 }
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test --lib history`
 Expected: PASS, including `removal_drops_bash_timestamp_and_keeps_permissions`, `zsh_metafied_entries_decode_and_survive_removal`, `removal_drops_whole_multiline_entry` and `removal_drops_fish_block`.
@@ -302,7 +303,7 @@ Ready to commit: `src/terminal/history.rs` — `fix(history): delete every occur
 - `once` becomes `fn once(url: &str, headers: &[String], body: Option<&str>, cancel: &Arc<AtomicBool>) -> Result<Reply, Failure>`.
 - `request` keeps `pub fn request(url: &str, headers: &[String], body: Option<&str>, cancel: &Arc<AtomicBool>, status: &impl Fn(String), last: &mut String) -> Result<String, String>`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `src/ai/http.rs`:
 
@@ -316,7 +317,18 @@ mod retry_tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            // Non-blocking accept with a deadline: if curl never connects the
+            // test fails instead of hanging.
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                if let Ok((s, _)) = listener.accept() {
+                    break s;
+                }
+                assert!(Instant::now() < deadline, "curl never connected");
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            stream.set_nonblocking(false).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             let mut raw = Vec::new();
             let mut buf = [0u8; 1024];
@@ -351,26 +363,15 @@ mod retry_tests {
         assert_eq!(result.err().as_deref(), Some("AI response is not UTF-8"));
         assert!(statuses.lock().unwrap().is_empty(), "a retry was announced: {:?}", statuses.lock().unwrap());
     }
-
-    #[test]
-    fn only_network_curl_exits_are_transient() {
-        for code in [5, 6, 7, 18, 28, 35, 52, 55, 56] {
-            assert!(transient_curl_exit(Some(code)), "{code}");
-        }
-        // Unsupported protocol, malformed URL, write error, --max-filesize, killed.
-        for code in [Some(1), Some(3), Some(23), Some(63), None] {
-            assert!(!transient_curl_exit(code), "{code:?}");
-        }
-    }
 }
 ```
 
-- [ ] **Step 2: Run it and confirm the failure**
+- [x] **Step 2: Run it and confirm the failure**
 
 Run: `cargo test --lib permanent_transport_errors_are_not_retried`
-Expected: FAIL to compile (`transient_curl_exit` does not exist). With that second test commented out, the first one FAILS with `left: Some("Cancelled")`: the unfixed `request` announces attempt 2, the callback cancels, and the backoff returns `Cancelled`. Restore the second test before Step 3.
+Expected: FAIL with `left: Some("Cancelled")`: the unfixed `request` announces attempt 2, the callback cancels, and the backoff returns `Cancelled`.
 
-- [ ] **Step 3: Fix**
+- [x] **Step 3: Fix**
 
 In `src/ai/http.rs`, add below the `Reply` struct:
 
@@ -386,11 +387,12 @@ fn fatal(message: &str) -> Failure {
     Failure { message: message.into(), retry: false }
 }
 /// curl exit codes that describe the network at this moment: name resolution
-/// (5, 6), connect (7), partial transfer (18), timeout (28), TLS handshake
-/// (35), empty reply (52), send / receive (55, 56). Anything else (bad URL,
-/// `--proto`, `--max-filesize`, a signal) fails the same way on every attempt.
+/// (5, 6), connect (7), HTTP/2 framing (16), partial transfer (18), timeout
+/// (28), TLS handshake (35), empty reply (52), send / receive (55, 56), HTTP/2
+/// stream reset (92). Anything else (bad URL, `--proto`, `--max-filesize`, a
+/// signal) fails the same way on every attempt.
 fn transient_curl_exit(code: Option<i32>) -> bool {
-    matches!(code, Some(5 | 6 | 7 | 18 | 28 | 35 | 52 | 55 | 56))
+    matches!(code, Some(5 | 6 | 7 | 16 | 18 | 28 | 35 | 52 | 55 | 56 | 92))
 }
 ```
 
@@ -531,10 +533,26 @@ with
         assert_eq!(result.err().map(|f| f.message).as_deref(), Some("Cancelled"));
 ```
 
-- [ ] **Step 4: Run the tests**
+Then add this test to `retry_tests`, to pin the retried exit codes:
+
+```rust
+    #[test]
+    fn only_network_curl_exits_are_transient() {
+        for code in [5, 6, 7, 16, 18, 28, 35, 52, 55, 56, 92] {
+            assert!(transient_curl_exit(Some(code)), "{code}");
+        }
+        // Success with a failed stdin write, unsupported protocol, malformed
+        // URL, write error, --max-filesize, killed by a signal.
+        for code in [Some(0), Some(1), Some(3), Some(23), Some(63), None] {
+            assert!(!transient_curl_exit(code), "{code:?}");
+        }
+    }
+```
+
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test --lib ai::`
-Expected: PASS, including `cancels_an_inflight_curl_process`, both `body_tests`, `retry_policy_and_cancelled_backoff` and the three `integration_tests` in `src/ai/mod.rs`.
+Expected: PASS, including `permanent_transport_errors_are_not_retried`, `only_network_curl_exits_are_transient`, `cancels_an_inflight_curl_process`, both `body_tests`, `retry_policy_and_cancelled_backoff` and the three `integration_tests` in `src/ai/mod.rs`.
 
 - [ ] **Step 5: Commit checkpoint**
 
@@ -548,7 +566,7 @@ Ready to commit: `src/ai/http.rs` — `fix(ai): stop retrying transport failures
 - Modify: `ROADMAP.md` (append a section at the end of the file)
 - Modify: `docs/reviews/2026-11-11-linux-history-ai-graphics.md` (status notes)
 
-- [ ] **Step 1: Record the secondary findings in `ROADMAP.md`**
+- [x] **Step 1: Record the secondary findings in `ROADMAP.md`**
 
 Append at the end of `ROADMAP.md`:
 
@@ -572,7 +590,7 @@ From [the 2026-11-11 review](./docs/reviews/2026-11-11-linux-history-ai-graphics
 - [ ] **AI: `last_exit` in the system prompt** invalidates the cached prefix; `cancel_request` records a skipped command when none was suggested.
 ```
 
-- [ ] **Step 2: Mark the fixed findings in the review**
+- [x] **Step 2: Mark the fixed findings in the review**
 
 In `docs/reviews/2026-11-11-linux-history-ai-graphics.md`, add this line directly under each of the headings `### 2.` (already corrected to describe the `cycle * plays` overflow), `### 6.`, `### 7.` and `### 10.`:
 
@@ -588,12 +606,12 @@ and replace the paragraph starting with `- **Open question:**` under `### 7.` wi
 
 `README.md` needs no change: it does not describe how many occurrences a history delete removes, the AI retry policy or animation limits (checked with `grep -n -i "delete" README.md docs/guide/*.md`).
 
-- [ ] **Step 3: Read the full diff**
+- [x] **Step 3: Read the full diff**
 
 Run: `git status --short` and `git diff`
 Expected: only `src/terminal/graphics/animation.rs`, `src/terminal/graphics/tests.rs`, `src/terminal/history.rs`, `src/ai/http.rs`, `ROADMAP.md` and the review file; no debug output, leftover TODOs or commented-out code.
 
-- [ ] **Step 4: Full verification**
+- [x] **Step 4: Full verification**
 
 Run each and quote the result:
 
@@ -607,7 +625,7 @@ git diff --check
 
 Expected: all succeed, zero warnings. `cargo test` must run outside the sandbox (PTY tests need `openpty`).
 
-- [ ] **Step 5: End-to-end check**
+- [ ] **Step 5: End-to-end check** _(2026-11-12: not run; checks 1–3 need the GUI. Covered by unit tests only.)_
 
 Run the app (`cargo run`) and, in a pane:
 
@@ -617,7 +635,7 @@ Run the app (`cargo run`) and, in a pane:
 
 Record what was observed. If the GUI cannot be driven in the execution environment, say so and report the three checks as not run.
 
-- [ ] **Step 6: Self-review and independent review**
+- [x] **Step 6: Self-review and independent review**
 
 Go through the nine-item self-review checklist of the user's global rules with a one-line reason per item, then request an independent review of the diff (`/code-review` or a review subagent given the diff and this plan's Confirmed Requirements). Address or report its findings; if anything changed, repeat from Step 3.
 
