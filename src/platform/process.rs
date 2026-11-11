@@ -98,23 +98,70 @@ pub(crate) fn spawn_detached(cmd: &mut std::process::Command) -> std::io::Result
     Ok(())
 }
 
-#[cfg(unix)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn safe_path_for_linux_open(path: &std::path::Path) -> &std::path::Path {
+/// Extensions a click opens with their default app: viewers and editors that do
+/// not run the file. Everything else (scripts, bundles, `.terminal`, `.webloc`,
+/// installers, web pages) is only revealed, since a program in the terminal
+/// chooses both a link's target and the text shown for it.
+const OPEN_EXTENSIONS: &[&str] = &[
+    // Text, data and source code.
+    "txt", "text", "md", "markdown", "rst", "adoc", "org", "log", "csv", "tsv", "json", "jsonl",
+    "yaml", "yml", "toml", "ini", "cfg", "conf", "xml", "diff", "patch", "lock", "rs", "c", "h",
+    "cc", "cpp", "cxx", "hpp", "hh", "go", "java", "kt", "swift", "cs", "scala", "hs", "zig",
+    "dart", "ts", "tsx", "css", "scss", "sql", "proto", "graphql", "wgsl", "glsl", "metal",
+    // Documents and media.
+    "pdf", "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "heic", "heif", "avif",
+    "ico", "mp3", "wav", "flac", "ogg", "opus", "m4a", "aac", "aif", "aiff", "mp4", "m4v", "mov",
+    "mkv", "webm", "avi",
+];
+
+/// What a click does with a local path.
+#[derive(Debug, PartialEq, Eq)]
+enum PathAction {
+    /// Hand this resolved path to its default app. Opening the path that was
+    /// checked, not the clicked name, means a link swapped after the check
+    /// cannot redirect the open.
+    Open(std::path::PathBuf),
+    /// Show it in its folder without opening it.
+    Reveal,
+}
+
+fn path_action(path: &std::path::Path) -> PathAction {
     use std::os::unix::fs::PermissionsExt;
-    let is_exec = path
-        .metadata()
-        .map(|m| m.is_file() && (m.permissions().mode() & 0o111 != 0))
-        .unwrap_or(false);
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let is_script_ext = matches!(
-        ext.to_ascii_lowercase().as_str(),
-        "sh" | "bash" | "zsh" | "bin" | "run" | "desktop" | "elf" | "py" | "pl" | "command" | "appimage"
-    );
-    if is_exec || is_script_ext {
-        path.parent().unwrap_or(path)
+    let ext = |p: &std::path::Path| p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    let allowed = |e: Option<String>| e.is_some_and(|e| OPEN_EXTENSIONS.contains(&e.as_str()));
+    // The system acts on a symlink's target, so judge the target as well as the name.
+    let Ok(real) = std::fs::canonicalize(path) else { return PathAction::Reveal };
+    let Ok(meta) = real.metadata() else { return PathAction::Reveal };
+    let open = if meta.is_dir() {
+        // On macOS a directory with an extension is a bundle (`.app`, `.workflow`) that `open` runs.
+        !cfg!(target_os = "macos") || (ext(path).is_none() && ext(&real).is_none())
     } else {
-        path
+        meta.is_file() && meta.permissions().mode() & 0o111 == 0 && allowed(ext(path)) && allowed(ext(&real))
+    };
+    if open { PathAction::Open(real) } else { PathAction::Reveal }
+}
+
+/// The command that opens or reveals a clicked local path, never through a shell.
+fn path_command(path: &std::path::Path) -> std::process::Command {
+    let action = path_action(path);
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = std::process::Command::new(system_bin("open"));
+        match &action {
+            PathAction::Open(real) => cmd.arg("--").arg(real),
+            PathAction::Reveal => cmd.arg("-R").arg("--").arg(path),
+        };
+        cmd
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // xdg-open has no reveal, so open the containing folder instead.
+        let target = match (&action, path.parent()) {
+            (PathAction::Open(real), _) => real.as_path(),
+            (PathAction::Reveal, Some(dir)) if !dir.as_os_str().is_empty() => dir,
+            (PathAction::Reveal, _) => std::path::Path::new("."),
+        };
+        linux_open_command(target)
     }
 }
 
@@ -157,29 +204,7 @@ pub(crate) fn open_target(target: &str, is_path: bool, cwd: Option<&std::path::P
             }
         };
 
-        #[cfg(target_os = "macos")]
-        let res = {
-            let mut cmd = std::process::Command::new(system_bin("open"));
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let is_exec = path
-                    .metadata()
-                    .map(|m| m.is_file() && (m.permissions().mode() & 0o111 != 0))
-                    .unwrap_or(false);
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if is_exec || ext.eq_ignore_ascii_case("app") || ext.eq_ignore_ascii_case("command") {
-                    cmd.arg("-R");
-                }
-            }
-            cmd.arg("--").arg(&path);
-            spawn_detached(&mut cmd)
-        };
-        #[cfg(target_os = "linux")]
-        let res = {
-            let open_path = safe_path_for_linux_open(&path);
-            spawn_detached(&mut linux_open_command(open_path))
-        };
+        let res = spawn_detached(&mut path_command(&path));
 
         if let Err(e) = res {
             eprintln!("litty: failed to open path {path:?}: {e}");
@@ -245,7 +270,8 @@ mod tests {
         let wanted = [
             spaced.to_str().unwrap().to_owned(),
             dir.to_str().unwrap().to_owned(),
-            "./-dash.txt".to_owned(),
+            // Opened by its resolved absolute path, so no `./` guard is needed.
+            dir.join("-dash.txt").to_str().unwrap().to_owned(),
             url.to_owned(),
         ];
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -276,33 +302,98 @@ mod tests {
         IN_FLIGHT_DETACHED.store(0, Ordering::SeqCst);
     }
 
+    /// Files and links in a fresh temp directory, removed on drop.
+    struct Fixture(std::path::PathBuf);
+
+    impl Fixture {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("litty-open-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn file(&self, name: &str, mode: u32) -> std::path::PathBuf {
+            use std::os::unix::fs::PermissionsExt;
+            let path = self.0.join(name);
+            std::fs::write(&path, "x").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            path
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
-    #[cfg(unix)]
-    fn safe_path_for_linux_open_guards_executables() {
-        use super::safe_path_for_linux_open;
-        use std::path::Path;
+    fn clicked_paths_open_only_allowlisted_documents() {
+        use super::{PathAction::{Open, Reveal}, path_action};
+        let fx = Fixture::new("allowlist");
+        for name in ["notes.txt", "README.md", "main.rs", "photo.PNG", "clip.mov", "paper.pdf"] {
+            let path = fx.file(name, 0o644);
+            assert_eq!(path_action(&path), Open(std::fs::canonicalize(&path).unwrap()), "{name}");
+        }
+        // Types whose default handler runs code or opens a URL or installer.
+        for name in [
+            "x.terminal", "x.webloc", "x.inetloc", "x.fileloc", "x.jar", "x.pkg", "x.command",
+            "x.sh", "x.py", "x.desktop", "x.bin", "x.html", "x.svg", "Makefile", "X.TERMINAL",
+        ] {
+            assert_eq!(path_action(&fx.file(name, 0o644)), Reveal, "{name}");
+        }
+        assert_eq!(path_action(&fx.file("run.txt", 0o755)), Reveal, "executable bit");
+        assert_eq!(path_action(&fx.0.join("missing.txt")), Reveal);
 
-        // Script extensions should resolve to parent directory
-        let script = Path::new("/home/user/project/setup.sh");
-        assert_eq!(safe_path_for_linux_open(script), Path::new("/home/user/project"));
+        // A symlink is judged by both its own name and its target.
+        let evil = fx.file("payload.terminal", 0o644);
+        let disguised = fx.0.join("innocent.txt");
+        std::os::unix::fs::symlink(&evil, &disguised).unwrap();
+        assert_eq!(path_action(&disguised), Reveal);
+        let renamed = fx.0.join("alias.terminal");
+        std::os::unix::fs::symlink(fx.0.join("notes.txt"), &renamed).unwrap();
+        assert_eq!(path_action(&renamed), Reveal);
+        // The resolved target is what gets opened, not the clicked name.
+        let doc = fx.0.join("doc-link.md");
+        std::os::unix::fs::symlink(fx.0.join("README.md"), &doc).unwrap();
+        assert_eq!(path_action(&doc), Open(std::fs::canonicalize(fx.0.join("README.md")).unwrap()));
 
-        let desktop = Path::new("/usr/share/applications/editor.desktop");
-        assert_eq!(safe_path_for_linux_open(desktop), Path::new("/usr/share/applications"));
+        let src = fx.0.join("src");
+        std::fs::create_dir(&src).unwrap();
+        assert_eq!(path_action(&src), Open(std::fs::canonicalize(&src).unwrap()));
+        // On macOS `open` launches a directory with an extension as a bundle,
+        // also when it is reached through a symlink with a plain name.
+        let app = fx.0.join("Tool.app");
+        std::fs::create_dir(&app).unwrap();
+        let tool = fx.0.join("tool");
+        std::os::unix::fs::symlink(&app, &tool).unwrap();
+        for path in [&app, &tool] {
+            let bundle = if cfg!(target_os = "macos") { Reveal } else { Open(std::fs::canonicalize(&app).unwrap()) };
+            assert_eq!(path_action(path), bundle, "{path:?}");
+        }
+    }
 
-        let bin_ext = Path::new("/tmp/installer.bin");
-        assert_eq!(safe_path_for_linux_open(bin_ext), Path::new("/tmp"));
-
-        // Regular non-executable documents should open directly
-        let doc = Path::new("/home/user/notes.txt");
-        assert_eq!(safe_path_for_linux_open(doc), doc);
-
-        let img = Path::new("/home/user/picture.png");
-        assert_eq!(safe_path_for_linux_open(img), img);
-
-        // Real filesystem executable file (e.g. /bin/sh or /bin/ls)
-        let sh_bin = Path::new("/bin/sh");
-        if sh_bin.exists() {
-            assert_eq!(safe_path_for_linux_open(sh_bin), Path::new("/bin"));
+    #[test]
+    fn clicked_path_commands_reveal_instead_of_open() {
+        let fx = Fixture::new("commands");
+        let doc = fx.file("notes.txt", 0o644);
+        let evil = fx.file("x.webloc", 0o644);
+        let args = |path: &std::path::Path| -> Vec<std::ffi::OsString> {
+            super::path_command(path).get_args().map(Into::into).collect()
+        };
+        #[cfg(target_os = "macos")]
+        {
+            let real = std::fs::canonicalize(&doc).unwrap();
+            assert_eq!(args(&doc), [std::ffi::OsString::from("--"), real.into()]);
+            assert_eq!(args(&evil), [std::ffi::OsString::from("-R"), "--".into(), evil.clone().into()]);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(args(&doc), [std::fs::canonicalize(&doc).unwrap().into_os_string()]);
+            assert_eq!(args(&evil), [fx.0.clone().into_os_string()]);
+            // A bare relative name reveals the current directory, not an empty argument.
+            assert_eq!(args(std::path::Path::new("x.webloc")), [std::ffi::OsString::from(".")]);
         }
     }
 }
