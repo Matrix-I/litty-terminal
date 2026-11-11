@@ -141,19 +141,14 @@ impl Grid {
     /// Point the pen at `extra` with its underline color replaced.
     pub(super) fn set_underline_color(&mut self, extra: u8, color: u32) {
         let link = self.extra_at(extra).and_then(|e| e.link.clone());
-        let old = self.cur.pen.extra;
-        self.cur.pen.extra = self.intern_extra(CellExtra { link, underline_color: color });
-        if old != 0 && self.cur.pen.extra != old {
-            self.extras_dirty = true;
-        }
+        let new = self.intern_extra(CellExtra { link, underline_color: color });
+        self.set_pen_extra(new);
     }
 
-    /// Point the pen at the current extra with its hyperlink replaced.
-    pub(super) fn set_link(&mut self, link: Option<OscLink>) {
-        let underline_color = self.extra_at(self.cur.pen.extra).map_or(0, |e| e.underline_color);
+    fn set_pen_extra(&mut self, new: u8) {
         let old = self.cur.pen.extra;
-        self.cur.pen.extra = self.intern_extra(CellExtra { link, underline_color });
-        if old != 0 && self.cur.pen.extra != old {
+        self.cur.pen.extra = new;
+        if old != 0 && new != old {
             self.extras_dirty = true;
         }
     }
@@ -165,14 +160,60 @@ impl Grid {
         if extra == CellExtra::default() {
             return 0;
         }
-        if let Some(i) = self.extras.iter().position(|e| e.as_ref() == Some(&extra)) {
-            return i as u8;
+        let hash = match &extra.link {
+            Some(link) => extra_hash(link.id.as_bytes(), &[link.uri.as_bytes()], extra.underline_color),
+            None => extra_hash(b"", &[], extra.underline_color),
+        };
+        if let Some(i) = self.find_extra(hash, |e| *e == extra) {
+            return i;
         }
+        match self.free_extra_slot() {
+            Some(slot) => self.store_extra(slot, hash, extra),
+            None => 0,
+        }
+    }
+
+    /// [`Self::intern_extra`] for an OSC 8 link given as its raw parameters: the
+    /// `uri` pieces vte split at ';'. Allocates only when the link is new.
+    fn intern_link(&mut self, id: &[u8], uri: &[&[u8]], underline_color: u32) -> u8 {
+        let hash = extra_hash(id, uri, underline_color);
+        let same = |e: &CellExtra| {
+            e.underline_color == underline_color
+                && e.link.as_ref().is_some_and(|l| l.id.as_bytes() == id && eq_joined(l.uri.as_bytes(), uri))
+        };
+        if let Some(i) = self.find_extra(hash, same) {
+            return i;
+        }
+        // ';' is ASCII, so the joined URI is UTF-8 exactly when every piece is.
+        let (Ok(id), true) = (std::str::from_utf8(id), uri.iter().all(|p| std::str::from_utf8(p).is_ok())) else {
+            return self.intern_extra(CellExtra { link: None, underline_color });
+        };
+        let Some(slot) = self.free_extra_slot() else {
+            return 0;
+        };
+        // Checked above, so the conversion never replaces anything.
+        let uri = String::from_utf8_lossy(&uri.join(&b';')).into_owned();
+        let link = OscLink { id: id.into(), uri: uri.into() };
+        self.store_extra(slot, hash, CellExtra { link: Some(link), underline_color })
+    }
+
+    /// The slot holding an extra `same` accepts. `hash` filters the candidates
+    /// so a miss costs integer compares, not string compares.
+    fn find_extra(&self, hash: u32, same: impl Fn(&CellExtra) -> bool) -> Option<u8> {
+        self.extras
+            .iter()
+            .zip(&self.extras_hash)
+            .position(|(e, &h)| h == hash && e.as_ref().is_some_and(&same))
+            .map(|i| i as u8)
+    }
+
+    /// A slot to store a new extra in: `extras.len()` to append, else a slot no
+    /// cell uses any more. `None` if all 255 slots are still referenced.
+    fn free_extra_slot(&mut self) -> Option<usize> {
         if self.extras.len() <= u8::MAX as usize {
-            self.extras.push(Some(extra));
-            return (self.extras.len() - 1) as u8;
+            return Some(self.extras.len());
         }
-        let free = match self.extras.iter().skip(1).position(Option::is_none) {
+        match self.extras.iter().skip(1).position(Option::is_none) {
             Some(i) => Some(i + 1),
             None if self.extras_full && !self.extras_dirty => None,
             None if self.extras_proven_full() => {
@@ -182,14 +223,17 @@ impl Grid {
                 None
             }
             None => self.collect_extras(),
-        };
-        match free {
-            Some(i) => {
-                self.extras[i] = Some(extra);
-                i as u8
-            }
-            None => 0,
         }
+    }
+
+    fn store_extra(&mut self, slot: usize, hash: u32, extra: CellExtra) -> u8 {
+        if slot == self.extras.len() {
+            self.extras.push(Some(extra));
+        } else {
+            self.extras[slot] = Some(extra);
+        }
+        self.extras_hash[slot] = hash;
+        slot as u8
     }
 
     /// First ring row of the scrollback, and how many ring rows are live
@@ -357,24 +401,50 @@ impl Grid {
 
     /// OSC 8: `8 ; params ; URI` starts a hyperlink, an empty URI ends it.
     pub(super) fn osc8(&mut self, params: &[&[u8]]) {
+        let underline_color = self.extra_at(self.cur.pen.extra).map_or(0, |e| e.underline_color);
         let uri = params.get(2..).unwrap_or_default();
         // The URI may itself contain ';', which vte splits into extra parameters.
         let len = uri.iter().map(|p| p.len() + 1).sum::<usize>().saturating_sub(1);
-        let link = if len == 0 || len > MAX_LINK_LEN {
-            None
+        let new = if len == 0 || len > MAX_LINK_LEN {
+            self.intern_extra(CellExtra { link: None, underline_color })
         } else {
-            let uri = uri.join(&b';');
             let id = params[1]
                 .split(|&b| b == b':')
                 .find_map(|kv| kv.strip_prefix(b"id="))
                 .unwrap_or_default();
-            match (std::str::from_utf8(&uri), std::str::from_utf8(id)) {
-                (Ok(uri), Ok(id)) => Some(OscLink { id: id.into(), uri: uri.into() }),
-                _ => None,
-            }
+            self.intern_link(id, uri, underline_color)
         };
-        self.set_link(link);
+        self.set_pen_extra(new);
     }
+}
+
+/// FNV-1a over `underline_color`, `id` and the `uri` pieces joined by ';', so a
+/// link hashes the same from vte's split parameters and from a stored `OscLink`.
+fn extra_hash(id: &[u8], uri: &[&[u8]], underline_color: u32) -> u32 {
+    const OFFSET_BASIS: u32 = 0x811C_9DC5;
+    const PRIME: u32 = 0x0100_0193;
+    // 0xFF never occurs in UTF-8, so it cannot blur the id / URI boundary.
+    const ID_END: &[u8] = &[0xFF];
+    let separated = uri.iter().enumerate().flat_map(|(k, part)| [if k == 0 { &b""[..] } else { b";" }, part]);
+    [&underline_color.to_le_bytes()[..], id, ID_END]
+        .into_iter()
+        .chain(separated)
+        .flatten()
+        .fold(OFFSET_BASIS, |h, &b| (h ^ u32::from(b)).wrapping_mul(PRIME))
+}
+
+/// `stored == parts.join(";")`, without building the joined string.
+fn eq_joined(stored: &[u8], parts: &[&[u8]]) -> bool {
+    let mut rest = stored;
+    for (k, part) in parts.iter().enumerate() {
+        if k > 0 {
+            let Some(r) = rest.strip_prefix(b";") else { return false };
+            rest = r;
+        }
+        let Some(r) = rest.strip_prefix(*part) else { return false };
+        rest = r;
+    }
+    rest.is_empty()
 }
 
 /// What Cmd/Ctrl+Click on an OSC 8 link opens: `(target, is_path)`. `file://` URIs
