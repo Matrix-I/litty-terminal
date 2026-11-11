@@ -52,6 +52,9 @@ follow-ups are in v0.8.0; shipped refactor results are in v0.7.1.
 - [ ] **Occlusion events are never emitted (macOS and Linux)**
   - Found in the 2026-11-11 performance review: no platform sends `WindowEvent::Occluded`, so `State::occluded` is always `false`. Covered or minimized windows keep rendering on PTY output and their drawables are never shrunk. Needs an emitter in `src/platform/{macos,linux}/` and its own plan. See [finding 2](./docs/validation/2026-11-11-perf-review.md).
 
+- [ ] **Plans B and C of the 2026-11-11 review (Vulkan) need a run on real Linux hardware**
+  - The code is done and passes in an x86_64 container (lavapipe, Xvfb, validation layers); the manual checklists in [plan B](./docs/plans/2026-11-11-review-fixes-b-vulkan-robustness.md) and [plan C](./docs/plans/2026-11-11-review-fixes-c-vulkan-images.md) are open. Also open: the `yo` retry check of plan A (no attempt line appeared in the container) and the scrollback check of the perf plan.
+
 - [ ] **LLM assistant release validation on additional environments**
   - Implementation is complete (see [implementation record](./docs/plans/yosh_implementation_plan.md#implementation-record-2026-11-01)); mock provider/tool/continuation/cancellation/compaction tests and isolated zsh/Bash 3.2 smoke tests pass.
   - Linux feature validation is complete per the user confirmation above. Separate provider/version coverage and quantitative memory measurements remain in the v0.8.0 follow-ups. These are release validation, not unimplemented assistant features.
@@ -67,10 +70,13 @@ From [the 2026-11-11 review](./docs/reviews/2026-11-11-linux-history-ai-graphics
 - [ ] **Linux: Wayland window backend.** `NativeWindow::create` is X11 only; the Wayland surface and clipboard paths are unreachable.
 - [ ] **Linux: IME and dead keys.** `set_ime_allowed` is a no-op and X11 text comes from `XLookupString` without XIM.
 - [ ] **Linux: `_NET_WM_NAME` and `WM_CLASS`.** Non-ASCII titles are garbled and desktops cannot match the window to its `.desktop` entry.
-- [ ] **Linux: per-window Vulkan frame state.** One command buffer, two descriptor sets and the uniform buffers are shared by all windows.
+- [ ] **Linux: per-window Vulkan frame state.** One command buffer, two descriptor sets and the uniform buffers are shared by all windows. The validation layers report the command buffer being reset, begun and submitted while still pending (`VUID-vkResetCommandBuffer-commandBuffer-00045`, `-00049`, `-00071`) when a second window opens (2026-11-12, lavapipe).
 - [ ] **Linux: check `vkQueueSubmit` and creation results**; pick the physical device by present support and device type.
 - [ ] **Linux: custom shaders** (GLSL to SPIR-V, offscreen targets).
-- [ ] **Linux: batch glyph uploads** into one submission per frame.
+- [ ] **Linux: batch glyph uploads** into one submission per frame. A new sampled texture also costs two submissions (layout transition, then the first upload).
+- [ ] **Linux: `shader.spv` needs Vulkan 1.1.** It declares `SPV_KHR_storage_buffer_storage_class` while the instance asks for Vulkan 1.0 without that extension (`VUID-VkShaderModuleCreateInfo-pCode-08742`).
+- [ ] **Linux: `precise_scroll_gpu_pixels` crashes.** The ignored GPU test passes a texture view as a framebuffer and segfaults with a real Vulkan device.
+- [ ] **Linux: `custom-shader` warning.** It is printed once per window and worded as a compile error; say once that the key is unsupported.
 - [ ] **Graphics: Kitty `a=d` selectors** other than `i`/`I` clear everything; confirm the alternate-screen behaviour against the grid caller.
 - [ ] **Graphics: `t=f` replies** still reveal whether a file exists (decode errors differ from `EPERM`).
 - [ ] **Graphics: `I=` replies** carry `i=0` instead of the assigned id; APNG files with partial frames are rejected.

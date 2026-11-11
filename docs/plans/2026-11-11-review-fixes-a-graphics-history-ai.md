@@ -128,7 +128,7 @@ with
 Run: `cargo test --lib graphics`
 Expected: PASS, including `kitty_animation_frames_play_from_the_clock`.
 
-- [ ] **Step 5: Commit checkpoint**
+- [x] **Step 5: Commit checkpoint**
 
 Ready to commit: `src/terminal/graphics/animation.rs`, `src/terminal/graphics/tests.rs` — `fix(graphics): saturate the animation loop length`
 
@@ -212,7 +212,7 @@ with
 Run: `cargo test --lib history`
 Expected: PASS, including `removal_drops_fish_block`.
 
-- [ ] **Step 5: Commit checkpoint**
+- [x] **Step 5: Commit checkpoint**
 
 Ready to commit: `src/terminal/history.rs` — `fix(history): unescape fish history in a single pass`
 
@@ -286,7 +286,7 @@ fn strip_command_entries(path: &Path, bytes: &[u8], cmd: &str) -> Option<Vec<u8>
 Run: `cargo test --lib history`
 Expected: PASS, including `removal_drops_bash_timestamp_and_keeps_permissions`, `zsh_metafied_entries_decode_and_survive_removal`, `removal_drops_whole_multiline_entry` and `removal_drops_fish_block`.
 
-- [ ] **Step 5: Commit checkpoint**
+- [x] **Step 5: Commit checkpoint**
 
 Ready to commit: `src/terminal/history.rs` — `fix(history): delete every occurrence of a removed command`
 
@@ -554,7 +554,7 @@ Then add this test to `retry_tests`, to pin the retried exit codes:
 Run: `cargo test --lib ai::`
 Expected: PASS, including `permanent_transport_errors_are_not_retried`, `only_network_curl_exits_are_transient`, `cancels_an_inflight_curl_process`, both `body_tests`, `retry_policy_and_cancelled_backoff` and the three `integration_tests` in `src/ai/mod.rs`.
 
-- [ ] **Step 5: Commit checkpoint**
+- [x] **Step 5: Commit checkpoint**
 
 Ready to commit: `src/ai/http.rs` — `fix(ai): stop retrying transport failures that cannot succeed`
 
@@ -625,7 +625,7 @@ git diff --check
 
 Expected: all succeed, zero warnings. `cargo test` must run outside the sandbox (PTY tests need `openpty`).
 
-- [ ] **Step 5: End-to-end check** _(2026-11-12: not run; checks 1–3 need the GUI. Covered by unit tests only.)_
+- [ ] **Step 5: End-to-end check** _(2026-11-12: not run on macOS; checks 1–3 need the GUI. Driven with `xdotool` on the Linux X11 debug build in an x86_64 container (lavapipe, Xvfb): check 1 passed (the terminal kept running; it shows the second frame after the root frame's 40 ms gap, as the unit test expects), check 2 passed (`grep -c dup-074` went from 3 to 0, other entries kept; the history file was pre-filled instead of typed). Check 3 not confirmed: `yo hello` returned to the prompt without any attempt line; cause not investigated.)_
 
 Run the app (`cargo run`) and, in a pane:
 
@@ -639,7 +639,7 @@ Record what was observed. If the GUI cannot be driven in the execution environme
 
 Go through the nine-item self-review checklist of the user's global rules with a one-line reason per item, then request an independent review of the diff (`/code-review` or a review subagent given the diff and this plan's Confirmed Requirements). Address or report its findings; if anything changed, repeat from Step 3.
 
-- [ ] **Step 7: Commit checkpoint**
+- [x] **Step 7: Commit checkpoint**
 
 Ready to commit: `ROADMAP.md`, `docs/reviews/2026-11-11-linux-history-ai-graphics.md` — `docs: record review follow-ups and fixed findings`
 
