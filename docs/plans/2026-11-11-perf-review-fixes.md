@@ -210,7 +210,7 @@ No persisted data, API or message format changes. The config format is unchanged
   - Line 50, the `scrollback-limit` row: default `10000000`, description `Scrollback memory per terminal in bytes, as in Ghostty (about 10,400 lines at 80 columns)`.
   - Line 117: `# scrollback-limit = 10000000    # bytes, as in Ghostty (default)`
 
-- [ ] **Step 6 — commit checkpoint.** Ready to commit: `src/terminal/grid/storage.rs src/terminal/grid/tests.rs src/terminal/grid/mod.rs src/config.rs docs/guide/configuration.md` — `feat(grid): default scrollback to a 10 mb byte budget`
+- [x] **Step 6 — commit checkpoint.** Ready to commit: `src/terminal/grid/storage.rs src/terminal/grid/tests.rs src/terminal/grid/mod.rs src/config.rs docs/guide/configuration.md` — `feat(grid): default scrollback to a 10 mb byte budget`
 
 ---
 
@@ -443,7 +443,7 @@ No persisted data, API or message format changes. The config format is unchanged
   cargo test app::
   ```
 
-- [ ] **Step 5 — commit checkpoint.** Ready to commit: `src/app/winch.rs src/app/state.rs src/app/window.rs src/app/tabs.rs src/app/mod.rs` — `perf(app): resize background tabs once a resize burst settles`
+- [x] **Step 5 — commit checkpoint.** Ready to commit: `src/app/winch.rs src/app/state.rs src/app/window.rs src/app/tabs.rs src/app/mod.rs` — `perf(app): resize background tabs once a resize burst settles`
 
 ---
 
@@ -575,7 +575,7 @@ No persisted data, API or message format changes. The config format is unchanged
 
   Note both `SLOTMAP` lines for Task 4, then delete `tmp_slot_map_lookup_cost`. If `mul` is not faster than `std`, stop and report: do not commit this task.
 
-- [ ] **Step 6 — commit checkpoint.** Ready to commit: `src/render/atlas/mod.rs src/render/atlas/tests.rs` — `perf(atlas): hash slot keys with one multiply instead of siphash`
+- [x] **Step 6 — commit checkpoint.** Ready to commit: `src/render/atlas/mod.rs src/render/atlas/tests.rs` — `perf(atlas): hash slot keys with one multiply instead of siphash`
 
 ---
 
@@ -625,7 +625,7 @@ No persisted data, API or message format changes. The config format is unchanged
 
   Expected history: 5,000 on `main`, 4,166 on the branch.
 
-- [ ] **Step 3 — end-to-end, needs a display.** _(2026-11-12: item 5 run, no regression; items 1–4 not run, they need interactive window resizing)_ `cargo build --release`, then with `target/release/litty`:
+- [ ] **Step 3 — end-to-end, needs a display.** _(2026-11-12: item 5 run, no regression. Items 1–4 not run on macOS: they need interactive window resizing. Driven with `xdotool` on the Linux X11 build in an x86_64 container (lavapipe, Xvfb): item 2 passed (60 resize steps in 1.9 s, tabs 2 and 3 each logged the final size once; steps 100 ms apart or more are separate bursts by design), item 3 passed (tab 2 reported the new size 28x111), item 4 rendered. Item 1 inconclusive: 9,000 lines were scrolled back without reaching the top. The macOS live-resize path stays unverified.)_ `cargo build --release`, then with `target/release/litty`:
 
   1. Scrollback: in an 80-column window run `seq 1 30000`, scroll to the top. Expected first line near `19585` (10,416 lines kept).
   2. Background tabs: open three tabs, run `sh -c 'trap "stty size" WINCH; while :; do sleep 1; done'` in tabs 2 and 3, select tab 1, drag the window edge for two seconds. Expected: tabs 2 and 3 each print the final size once, not one line per drag step.
@@ -637,7 +637,7 @@ No persisted data, API or message format changes. The config format is unchanged
 
 - [x] **Step 5 — final gate** (global rules): read the full diff for unrelated changes, leftover temporary tests and debug output; rerun Step 1 after the last edit; run the self-review checklist; get an independent review of the diff against this plan.
 
-- [ ] **Step 6 — commit checkpoint.** Ready to commit: `docs/validation/2026-11-11-perf-review.md` — `docs(validation): record the perf review fixes`
+- [x] **Step 6 — commit checkpoint.** Ready to commit: `docs/validation/2026-11-11-perf-review.md` — `docs(validation): record the perf review fixes`
 
 - [x] **Step 7 — follow-up.** Leave the `ROADMAP.md` entry "Occlusion events are never emitted" unchecked: finding 2 is not fixed by this plan.
 
