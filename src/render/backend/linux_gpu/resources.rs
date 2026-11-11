@@ -225,11 +225,128 @@ impl<T: bytemuck::Pod> Drop for HostBuffer<T> {
     }
 }
 
+/// Where an upload's first barrier starts: `(old_layout, src_access, src_stage)`.
+/// A ready texture is sampled between uploads and keeps its contents; one that
+/// was never made ready starts from `UNDEFINED`.
+fn upload_source(ready: bool) -> (u32, VkFlags, VkFlags) {
+    if ready {
+        (VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
+    } else {
+        (VK_IMAGE_LAYOUT_UNDEFINED, 0, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT)
+    }
+}
+
+/// Start recording a one-off upload into the shared command buffer. Must not
+/// run while a frame is being recorded (see `CommandEncoder`).
+unsafe fn begin_upload(vk: &VulkanCore) {
+    unsafe {
+        #[repr(C)]
+        struct BeginInfo {
+            s_type: u32,
+            p_next: *const c_void,
+            flags: u32,
+            p_inheritance_info: *const c_void,
+        }
+        let b_info = BeginInfo {
+            s_type: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: std::ptr::null(),
+            flags: 1,
+            p_inheritance_info: std::ptr::null(),
+        };
+        (vk.lib.vkResetCommandBuffer)(vk.upload_cmd, 0);
+        (vk.lib.vkBeginCommandBuffer)(vk.upload_cmd, &b_info as *const _ as *const c_void);
+    }
+}
+
+/// Submit the recorded upload and wait for it, so its staging memory can be reused.
+unsafe fn submit_upload(vk: &VulkanCore) {
+    unsafe {
+        (vk.lib.vkEndCommandBuffer)(vk.upload_cmd);
+        #[repr(C)]
+        struct SubmitInfo {
+            s_type: u32,
+            p_next: *const c_void,
+            wait_semaphore_count: u32,
+            p_wait_semaphores: *const VkSemaphore,
+            p_wait_dst_stage_mask: *const VkFlags,
+            command_buffer_count: u32,
+            p_command_buffers: *const VkCommandBuffer,
+            signal_semaphore_count: u32,
+            p_signal_semaphores: *const VkSemaphore,
+        }
+        let s_info = SubmitInfo {
+            s_type: VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            p_next: std::ptr::null(),
+            wait_semaphore_count: 0,
+            p_wait_semaphores: std::ptr::null(),
+            p_wait_dst_stage_mask: std::ptr::null(),
+            command_buffer_count: 1,
+            p_command_buffers: &vk.upload_cmd,
+            signal_semaphore_count: 0,
+            p_signal_semaphores: std::ptr::null(),
+        };
+        (vk.lib.vkQueueSubmit)(vk.queue, 1, &s_info as *const _ as *const c_void, 0);
+        (vk.lib.vkQueueWaitIdle)(vk.queue);
+    }
+}
+
+/// Record a layout transition of the whole color image:
+/// `layouts` = (old, new), `access` = (src, dst), `stages` = (src, dst).
+unsafe fn image_barrier(
+    vk: &VulkanCore,
+    image: VkImage,
+    layouts: (u32, u32),
+    access: (VkFlags, VkFlags),
+    stages: (VkFlags, VkFlags),
+) {
+    unsafe {
+        #[repr(C)]
+        struct ImgBarrier {
+            s_type: u32,
+            p_next: *const c_void,
+            src_access_mask: VkFlags,
+            dst_access_mask: VkFlags,
+            old_layout: u32,
+            new_layout: u32,
+            src_queue_family_index: u32,
+            dst_queue_family_index: u32,
+            image: VkImage,
+            subresource_range: [u32; 5],
+        }
+        let barrier = ImgBarrier {
+            s_type: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            p_next: std::ptr::null(),
+            src_access_mask: access.0,
+            dst_access_mask: access.1,
+            old_layout: layouts.0,
+            new_layout: layouts.1,
+            src_queue_family_index: u32::MAX,
+            dst_queue_family_index: u32::MAX,
+            image,
+            subresource_range: [1, 0, 1, 0, 1],
+        };
+        (vk.lib.vkCmdPipelineBarrier)(
+            vk.upload_cmd,
+            stages.0,
+            stages.1,
+            0,
+            0,
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+            1,
+            &barrier as *const _ as *const c_void,
+        );
+    }
+}
+
 struct TextureInner {
     vk: Option<Arc<VulkanCore>>,
     image: VkImage,
     mem: VkDeviceMemory,
     view: VkImageView,
+    /// In `SHADER_READ_ONLY_OPTIMAL` between uploads (every sampled texture).
+    ready: bool,
 }
 
 impl Drop for TextureInner {
@@ -347,12 +464,27 @@ impl Texture {
                 let mut view = 0u64;
                 (vk.lib.vkCreateImageView)(vk.device, &v_info as *const _ as *const c_void, std::ptr::null(), &mut view);
 
+                // A sampled texture may be bound before anything is uploaded
+                // (the color atlas placeholder): give it a valid layout now.
+                let ready = !render_target;
+                if ready {
+                    begin_upload(vk);
+                    image_barrier(
+                        vk,
+                        image,
+                        (VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+                        (0, VK_ACCESS_SHADER_READ_BIT),
+                        (VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT),
+                    );
+                    submit_upload(vk);
+                }
                 return Self {
                     inner: Arc::new(TextureInner {
                         vk: Some(vk.clone()),
                         image,
                         mem,
                         view,
+                        ready,
                     }),
                 };
             }
@@ -363,6 +495,7 @@ impl Texture {
                 image: 0,
                 mem: 0,
                 view: 0,
+                ready: false,
             }),
         }
     }
@@ -383,58 +516,14 @@ impl Texture {
             );
             std::ptr::copy_nonoverlapping(data.as_ptr(), stg_ptr, data.len());
 
-            #[repr(C)]
-            struct BeginInfo {
-                s_type: u32,
-                p_next: *const c_void,
-                flags: u32,
-                p_inheritance_info: *const c_void,
-            }
-            let b_info = BeginInfo {
-                s_type: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                p_next: std::ptr::null(),
-                flags: 1,
-                p_inheritance_info: std::ptr::null(),
-            };
-            (vk.lib.vkResetCommandBuffer)(vk.upload_cmd, 0);
-            (vk.lib.vkBeginCommandBuffer)(vk.upload_cmd, &b_info as *const _ as *const c_void);
-
-            #[repr(C)]
-            struct ImgBarrier {
-                s_type: u32,
-                p_next: *const c_void,
-                src_access_mask: VkFlags,
-                dst_access_mask: VkFlags,
-                old_layout: u32,
-                new_layout: u32,
-                src_queue_family_index: u32,
-                dst_queue_family_index: u32,
-                image: VkImage,
-                subresource_range: [u32; 5],
-            }
-            let to_dst = ImgBarrier {
-                s_type: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                p_next: std::ptr::null(),
-                src_access_mask: 0,
-                dst_access_mask: VK_ACCESS_TRANSFER_WRITE_BIT,
-                old_layout: VK_IMAGE_LAYOUT_UNDEFINED,
-                new_layout: VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                src_queue_family_index: u32::MAX,
-                dst_queue_family_index: u32::MAX,
-                image: self.inner.image,
-                subresource_range: [1, 0, 1, 0, 1],
-            };
-            (vk.lib.vkCmdPipelineBarrier)(
-                vk.upload_cmd,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                VK_PIPELINE_STAGE_TRANSFER_BIT,
-                0,
-                0,
-                std::ptr::null(),
-                0,
-                std::ptr::null(),
-                1,
-                &to_dst as *const _ as *const c_void,
+            let (old_layout, src_access, src_stage) = upload_source(self.inner.ready);
+            begin_upload(vk);
+            image_barrier(
+                vk,
+                self.inner.image,
+                (old_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL),
+                (src_access, VK_ACCESS_TRANSFER_WRITE_BIT),
+                (src_stage, VK_PIPELINE_STAGE_TRANSFER_BIT),
             );
 
             #[repr(C)]
@@ -463,57 +552,14 @@ impl Texture {
                 &region as *const _ as *const c_void,
             );
 
-            let to_read = ImgBarrier {
-                s_type: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                p_next: std::ptr::null(),
-                src_access_mask: VK_ACCESS_TRANSFER_WRITE_BIT,
-                dst_access_mask: VK_ACCESS_SHADER_READ_BIT,
-                old_layout: VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                new_layout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                src_queue_family_index: u32::MAX,
-                dst_queue_family_index: u32::MAX,
-                image: self.inner.image,
-                subresource_range: [1, 0, 1, 0, 1],
-            };
-            (vk.lib.vkCmdPipelineBarrier)(
-                vk.upload_cmd,
-                VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                0,
-                0,
-                std::ptr::null(),
-                0,
-                std::ptr::null(),
-                1,
-                &to_read as *const _ as *const c_void,
+            image_barrier(
+                vk,
+                self.inner.image,
+                (VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+                (VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT),
+                (VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT),
             );
-
-            (vk.lib.vkEndCommandBuffer)(vk.upload_cmd);
-            #[repr(C)]
-            struct SubmitInfo {
-                s_type: u32,
-                p_next: *const c_void,
-                wait_semaphore_count: u32,
-                p_wait_semaphores: *const VkSemaphore,
-                p_wait_dst_stage_mask: *const VkFlags,
-                command_buffer_count: u32,
-                p_command_buffers: *const VkCommandBuffer,
-                signal_semaphore_count: u32,
-                p_signal_semaphores: *const VkSemaphore,
-            }
-            let s_info = SubmitInfo {
-                s_type: VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                p_next: std::ptr::null(),
-                wait_semaphore_count: 0,
-                p_wait_semaphores: std::ptr::null(),
-                p_wait_dst_stage_mask: std::ptr::null(),
-                command_buffer_count: 1,
-                p_command_buffers: &vk.upload_cmd,
-                signal_semaphore_count: 0,
-                p_signal_semaphores: std::ptr::null(),
-            };
-            (vk.lib.vkQueueSubmit)(vk.queue, 1, &s_info as *const _ as *const c_void, 0);
-            (vk.lib.vkQueueWaitIdle)(vk.queue);
+            submit_upload(vk);
             (vk.lib.vkDestroyBuffer)(vk.device, stg_buf, std::ptr::null());
             (vk.lib.vkFreeMemory)(vk.device, stg_mem, std::ptr::null());
         }
@@ -525,5 +571,22 @@ impl Texture {
     #[inline]
     pub fn raw_ptr(&self) -> RawTexHandle {
         self.inner.view
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uploads_keep_the_contents_of_a_ready_texture() {
+        // A glyph upload writes one cell: starting from UNDEFINED would let the
+        // driver discard every glyph already in the atlas.
+        assert_eq!(
+            upload_source(true),
+            (VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
+        );
+        // A render target has no contents worth keeping before its first upload.
+        assert_eq!(upload_source(false), (VK_IMAGE_LAYOUT_UNDEFINED, 0, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT));
     }
 }
