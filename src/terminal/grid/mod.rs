@@ -981,8 +981,8 @@ impl Grid {
         self.dcs_buf.clear();
         self.dcs_buf.shrink_to_fit();
         self.dcs_start = None;
-        self.release_scrollback_pages();
-        self.all_dirty = true;
+        // Drop the history length with the pages; releasing them alone leaves blank lines.
+        self.clear_history();
     }
 
 }

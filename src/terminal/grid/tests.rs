@@ -1437,6 +1437,23 @@ fn clear_screen_and_history_clears_clusters() {
 }
 
 #[test]
+fn full_reset_empties_scrollback_instead_of_blanking_it() {
+    let mut g = Grid::new(80, 24);
+    for i in 0..3000 {
+        feed(&mut g, &format!("line {i}\r\n"));
+    }
+    g.scroll_display(10);
+    assert!(g.history > 0 && g.display_offset > 0);
+
+    feed(&mut g, "\x1bc");
+    // The pages are released, so any history left behind would read as blank lines.
+    assert_eq!(g.history, 0);
+    assert_eq!(g.display_offset, 0);
+    g.scroll_display(10);
+    assert_eq!(g.display_offset, 0, "nothing to scroll back to after RIS");
+}
+
+#[test]
 fn clear_screen_and_history_trims_extras() {
     let mut g = Grid::new(20, 5);
     feed(&mut g, "\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\\r\n");
