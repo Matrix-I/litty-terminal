@@ -297,6 +297,80 @@ fn osc8_hyperlink_spans_its_cells() {
 }
 
 #[test]
+fn osc8_repeating_known_links_allocates_nothing() {
+    // `ls --hyperlink` style output whose links are already interned.
+    let mut g = Grid::new(80, 24);
+    let mut p = vte::Parser::new();
+    let mut stream = String::new();
+    for i in 0..50 {
+        stream.push_str(&format!("\x1b]8;id=f{i};file:///home/u/dir/file_{i};v=1\x1b\\file_{i}\x1b]8;;\x1b\\\r\n"));
+    }
+    let feed_all = |g: &mut Grid, p: &mut vte::Parser| {
+        for b in stream.bytes() {
+            g.feed_byte(p, b);
+        }
+    };
+    // Fill the scrollback ring so scrolling stops allocating too.
+    for _ in 0..120 {
+        feed_all(&mut g, &mut p);
+    }
+    let allocations = crate::test_alloc::allocations(|| feed_all(&mut g, &mut p));
+    assert_eq!(allocations, 0, "re-setting an interned OSC 8 link must not allocate");
+    let link = g.cell_link(&g.display_row(22)[0]).expect("last line keeps its link");
+    assert_eq!((&*link.id, &*link.uri), ("f49", "file:///home/u/dir/file_49;v=1"));
+}
+
+#[test]
+fn osc8_links_differing_in_id_uri_or_underline_color_stay_distinct() {
+    let mut g = Grid::new(20, 1);
+    feed(
+        &mut g,
+        "\x1b]8;id=a;http://x.test/a;b\x07A\
+         \x1b]8;id=b;http://x.test/a;b\x07B\
+         \x1b]8;id=a;http://x.test/a\x07C\
+         \x1b]8;id=a;http://x.test/a;b\x1b[58;5;2mD\x1b[59m\
+         \x1b]8;id=a;http://x.test/a;b\x07E\x1b]8;;\x07",
+    );
+    let row = g.display_row(0);
+    let extras: Vec<u8> = row[..5].iter().map(|c| c.extra()).collect();
+    assert_eq!(extras[0], extras[4], "the same link and color reuse one slot");
+    for (i, j) in [(0, 1), (0, 2), (0, 3), (1, 2)] {
+        assert_ne!(extras[i], extras[j], "cells {i} and {j}");
+    }
+    let link = |col: usize| g.cell_link(&row[col]).map(|l| (l.id.to_string(), l.uri.to_string()));
+    assert_eq!(link(1), Some(("b".into(), "http://x.test/a;b".into())));
+    assert_eq!(link(2), Some(("a".into(), "http://x.test/a".into())));
+    assert_eq!(link(3), Some(("a".into(), "http://x.test/a;b".into())));
+    assert_eq!(g.underline_color(&row[3]), Some(palette(2)));
+}
+
+#[test]
+fn osc8_finds_a_link_that_sgr_58_interned_with_a_color() {
+    // `set_underline_color` stores {link, color}; a later OSC 8 with that color reuses it.
+    let mut g = Grid::new(20, 1);
+    feed(&mut g, "\x1b]8;id=k;http://x.test/a;b\x07\x1b[58;5;2mA\x1b]8;;\x07B\x1b]8;id=k;http://x.test/a;b\x07C");
+    let row = g.display_row(0);
+    assert_ne!(row[0].extra(), 0);
+    assert_eq!(row[0].extra(), row[2].extra(), "the same link and color share one slot");
+    assert_eq!(g.underline_color(&row[2]), Some(palette(2)));
+}
+
+#[test]
+fn osc8_invalid_utf8_link_keeps_the_underline_color_even_when_slots_are_full() {
+    let mut g = Grid::new(80, 24);
+    saturate_extras(&mut g);
+    // Free slot 1 for a plain underline color; then no slot is left for a new link.
+    feed(&mut g, "\x1b[1;1Hz\x1b[5;1H\x1b[58;5;2mu");
+    let mut p = vte::Parser::new();
+    for &b in b"\x1b]8;;http://x.test/\xff\x1b\\v".iter() {
+        g.feed_byte(&mut p, b);
+    }
+    let cell = g.display_row(4)[1];
+    assert_eq!(g.cell_link(&cell), None);
+    assert_eq!(g.underline_color(&cell), Some(palette(2)));
+}
+
+#[test]
 fn osc8_survives_sgr_reset_and_adjacent_links_stay_apart() {
     let mut g = Grid::new(20, 1);
     feed(&mut g, "\x1b]8;;http://a.test\x07a\x1b[0;1mb\x1b]8;;http://b.test\x07c\x1b]8;;\x07d");

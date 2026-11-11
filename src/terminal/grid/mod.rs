@@ -168,6 +168,9 @@ pub struct Grid {
     /// Hyperlinks and underline colors referenced by `Cell::extra` (index 0 is
     /// reserved for "none"). Slots no cell uses any more are reclaimed when full.
     extras: Vec<Option<CellExtra>>,
+    /// `links::extra_hash` of each `extras` slot's content; meaningless for
+    /// empty slots.
+    extras_hash: [u32; 256],
     extras_dirty: bool,
     extras_full: bool,
     /// Per slot, the `cells` index where the last scan found it in use, or
@@ -271,6 +274,7 @@ impl Grid {
             all_dirty: true,
             response: Vec::with_capacity(256),
             extras: vec![None],
+            extras_hash: [0; 256],
             extras_dirty: true,
             extras_full: false,
             extras_witness: [links::NO_WITNESS; 256],
