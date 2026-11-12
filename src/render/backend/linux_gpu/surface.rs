@@ -486,7 +486,7 @@ impl Surface {
 }
 
 /// A binary semaphore, or 0 when it could not be created.
-fn create_semaphore(vk: &VulkanCore) -> VkSemaphore {
+pub(super) fn create_semaphore(vk: &VulkanCore) -> VkSemaphore {
     #[repr(C)]
     struct SemInfo {
         s_type: u32,

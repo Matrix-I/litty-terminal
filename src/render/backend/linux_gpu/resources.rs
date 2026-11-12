@@ -772,34 +772,49 @@ mod tests {
         _pad: u32,
     }
 
-    /// Draw `texture` over a 16x16 render target and return its pixels.
-    /// `upload` runs before the frame starts (`before`) or while it records.
-    fn draw_uploaded_image(upload_while_recording: bool) -> Option<Vec<u8>> {
+    /// Draw `image` over a 16x16 render target and return its pixels;
+    /// `while_recording` runs once the frame has begun recording.
+    fn draw_image(image: &Texture, while_recording: impl FnOnce()) -> Vec<u8> {
         use super::super::pass::CommandEncoder;
         let (device, queue) = super::super::device::shared_device_and_queue();
-        device.vk.as_ref()?;
         let format = TextureFormat::Rgba8Unorm;
         let pipes = super::super::device::shared_pipelines(&device, format);
         let target = Texture::new(&device, 16, 16, format, true);
-        let image = Texture::new(&device, 4, 4, format, false);
-        let red = [255u8, 0, 0, 255].repeat(16);
         let quads = HostBuffer::from_slice(&device, &[Quad { rect: [0.0, 0.0, 16.0, 16.0], uv: [0.0, 0.0, 1.0, 1.0] }]);
         let uniforms = ImageUniforms { screen: [16.0, 16.0], ..Default::default() };
-        if !upload_while_recording {
-            image.write_rect(&queue, 0, 0, 4, 4, &red, 16);
-        }
         let mut encoder = CommandEncoder::new(&queue);
-        if upload_while_recording {
-            image.write_rect(&queue, 0, 0, 4, 4, &red, 16);
-        }
+        while_recording();
         {
             let mut pass = encoder.begin_render_pass(target.raw_ptr(), Some([0.0, 0.0, 0.0, 1.0]));
-            pass.draw_image_quad(&pipes.image, &quads, &uniforms, &image, device.linear_sampler(), 0);
+            pass.draw_image_quad(&pipes.image, &quads, &uniforms, image, device.linear_sampler(), 0);
         }
         encoder.submit_and_wait();
         let mut pixels = vec![0u8; 16 * 16 * 4];
         target.read_pixels(&mut pixels, 16 * 4);
-        Some(pixels)
+        pixels
+    }
+
+    const RED: [u8; 4] = [255, 0, 0, 255];
+
+    /// The center pixel of `pixels` from `draw_image`.
+    fn center(pixels: &[u8]) -> &[u8] {
+        &pixels[(8 * 16 + 8) * 4..][..4]
+    }
+
+    /// Draw a red 4x4 image uploaded before the frame starts recording, or
+    /// while it records; `None` without a Vulkan device.
+    fn draw_uploaded_image(upload_while_recording: bool) -> Option<Vec<u8>> {
+        let (device, queue) = super::super::device::shared_device_and_queue();
+        device.vk.as_ref()?;
+        let image = Texture::new(&device, 4, 4, TextureFormat::Rgba8Unorm, false);
+        let red = RED.repeat(16);
+        let upload = || image.write_rect(&queue, 0, 0, 4, 4, &red, 16);
+        if upload_while_recording {
+            Some(draw_image(&image, upload))
+        } else {
+            upload();
+            Some(draw_image(&image, || {}))
+        }
     }
 
     /// An inline image uploaded for a frame is drawn by that frame, whether
@@ -809,8 +824,50 @@ mod tests {
     fn an_uploaded_image_is_drawn_in_the_same_frame() {
         for while_recording in [false, true] {
             let Some(pixels) = draw_uploaded_image(while_recording) else { return };
-            assert_eq!(&pixels[(8 * 16 + 8) * 4..][..4], &[255, 0, 0, 255], "upload while recording: {while_recording}");
+            assert_eq!(center(&pixels), RED, "upload while recording: {while_recording}");
         }
+    }
+
+    /// A frame whose commands could not be submitted used to drop the upload
+    /// batch it had taken (the image stayed blank and in `UNDEFINED`), and
+    /// left its fence and acquire semaphore for the next frame to trip on.
+    #[test]
+    #[ignore = "requires a Vulkan device"]
+    fn a_given_up_frame_still_runs_its_uploads_and_signals_its_fence() {
+        let (device, queue) = super::super::device::shared_device_and_queue();
+        let Some(vk) = device.vk.as_ref() else { return };
+        let image = Texture::new(&device, 4, 4, TextureFormat::Rgba8Unorm, false);
+        image.write_rect(&queue, 0, 0, 4, 4, &RED.repeat(16), 16);
+        unsafe {
+            // What `Surface::acquire_frame` hands over: a signaled semaphore and an unsignaled fence.
+            let sem = super::super::surface::create_semaphore(vk);
+            assert_ne!(sem, 0);
+            let signal = super::super::upload::SubmitInfo::signaling(&sem);
+            assert!(vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &signal as *const _ as *const c_void, 0), "vkQueueSubmit"));
+            #[repr(C)]
+            struct FenceInfo {
+                s_type: u32,
+                p_next: *const c_void,
+                flags: u32,
+            }
+            let info = FenceInfo { s_type: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, p_next: std::ptr::null(), flags: 0 };
+            let mut fence = 0u64;
+            assert!(vk_ok((vk.lib.vkCreateFence)(vk.device, &info as *const _ as *const c_void, std::ptr::null(), &mut fence), "vkCreateFence"));
+
+            let batch = vk.uploads.lock().take_for_frame(vk);
+            assert!(batch.is_some(), "the upload is pending");
+            super::super::pass::give_up_frame(vk, batch, sem, fence);
+
+            let waited = (vk.lib.vkWaitForFences)(vk.device, 1, &fence, 1, 5_000_000_000);
+            assert_eq!(waited, VK_SUCCESS, "the next frame's wait for the fence must not hang");
+            // The semaphore wait was consumed: signaling it again is valid
+            // (a validation run reports VUID-vkQueueSubmit-pSignalSemaphores-00067 otherwise).
+            assert!(vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &signal as *const _ as *const c_void, 0), "vkQueueSubmit"));
+            (vk.lib.vkQueueWaitIdle)(vk.queue);
+            (vk.lib.vkDestroyFence)(vk.device, fence, std::ptr::null());
+            (vk.lib.vkDestroySemaphore)(vk.device, sem, std::ptr::null());
+        }
+        assert_eq!(center(&draw_image(&image, || {})), RED, "the batch the frame had taken still ran");
     }
 
     /// Not a check: prints how long a frame with many new glyphs takes

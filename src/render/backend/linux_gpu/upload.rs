@@ -229,15 +229,28 @@ impl SubmitInfo {
         }
     }
 
-    /// Wait for `wait` (at `wait_stage`) before running `cmds`, then signal `signal`.
-    pub(super) fn frame(cmds: &[VkCommandBuffer], wait: &VkSemaphore, wait_stage: &VkFlags, signal: &VkSemaphore) -> Self {
+    /// Signal `signal`, running nothing.
+    #[cfg(test)]
+    pub(super) fn signaling(signal: &VkSemaphore) -> Self {
+        Self { signal_semaphore_count: 1, p_signal_semaphores: signal, ..Self::commands(&[]) }
+    }
+
+    /// Wait for `wait` (at `wait_stage`) before running `cmds`.
+    pub(super) fn waiting(cmds: &[VkCommandBuffer], wait: &VkSemaphore, wait_stage: &VkFlags) -> Self {
         Self {
             wait_semaphore_count: 1,
             p_wait_semaphores: wait,
             p_wait_dst_stage_mask: wait_stage,
+            ..Self::commands(cmds)
+        }
+    }
+
+    /// Wait for `wait` (at `wait_stage`) before running `cmds`, then signal `signal`.
+    pub(super) fn frame(cmds: &[VkCommandBuffer], wait: &VkSemaphore, wait_stage: &VkFlags, signal: &VkSemaphore) -> Self {
+        Self {
             signal_semaphore_count: 1,
             p_signal_semaphores: signal,
-            ..Self::commands(cmds)
+            ..Self::waiting(cmds, wait, wait_stage)
         }
     }
 }
