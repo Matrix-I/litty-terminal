@@ -213,6 +213,7 @@ GitHub adds two source archives automatically; those are not uploaded assets.
 ```bash
 (cd "$OUT" && shasum -a 256 Litty.dmg Litty-macos-aarch64.zip litty-macos-aarch64 \
   litty-linux-x86_64 "litty_${VERSION#v}_amd64.deb" "litty-${VERSION#v}-1.x86_64.rpm" > SHA256SUMS.txt)
+printf '# litty-release: %s\n' "$VERSION" >> "$OUT/SHA256SUMS.txt"
 (cd "$OUT" && shasum -a 256 -c SHA256SUMS.txt)
 ```
 
@@ -223,7 +224,12 @@ against a key pinned at build time (`LITTY_MINISIGN_PUBKEY` or
 command in §4 passes the same key.
 
 `bundle_macos.sh` also signs a macOS-only `dist/SHA256SUMS.txt`; the release
-needs the combined file above signed instead:
+needs the combined file above signed instead. The signed manifest must contain
+exactly one `# litty-release: vX.Y.Z` comment matching the exact GitHub tag,
+including any `-rc.N` suffix. Missing, duplicated or mismatched markers are
+rejected by the updater. For a local prerelease bundle, set
+`LITTY_RELEASE_TAG=vX.Y.Z-rc.N` when invoking `bundle_macos.sh`:
+
 
 ```bash
 minisign -Sm "$OUT/SHA256SUMS.txt"     # produces SHA256SUMS.txt.minisig

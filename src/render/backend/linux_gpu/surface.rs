@@ -9,25 +9,38 @@ use super::device::{shared_pipelines, Device, Queue, VulkanCore};
 use super::ffi::*;
 use crate::render::backend::{SurfaceConfig, TextureFormat};
 
-/// Pixel size of every live swapchain framebuffer. A render pass only gets
-/// the framebuffer handle, and Vulkan needs its extent for the render area,
-/// viewport and scissor (all dynamic in our pipelines). A handful of entries
-/// at most, so a linear scan without allocation on the render path.
-static FB_EXTENTS: parking_lot::Mutex<Vec<(VkFramebuffer, u32, u32)>> = parking_lot::Mutex::new(Vec::new());
+/// What a render pass needs to know about the framebuffer it draws into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct FramebufferTarget {
+    pub width: u32,
+    pub height: u32,
+    /// Render pass that clears the attachment first.
+    pub clear_pass: VkRenderPass,
+    /// Render pass that keeps the attachment's contents.
+    pub load_pass: VkRenderPass,
+}
 
-fn register_framebuffer(fb: VkFramebuffer, width: u32, height: u32) {
-    let mut guard = FB_EXTENTS.lock();
+/// Every live framebuffer: swapchain images and render-target textures. A
+/// render pass only gets the framebuffer handle, and Vulkan needs its extent
+/// for the render area, viewport and scissor (all dynamic in our pipelines)
+/// and a render pass made for its layouts. A handful of entries at most, so a
+/// linear scan without allocation on the render path.
+static FRAMEBUFFERS: parking_lot::Mutex<Vec<(VkFramebuffer, FramebufferTarget)>> = parking_lot::Mutex::new(Vec::new());
+
+pub(super) fn register_framebuffer(fb: VkFramebuffer, target: FramebufferTarget) {
+    let mut guard = FRAMEBUFFERS.lock();
     guard.retain(|e| e.0 != fb);
-    guard.push((fb, width, height));
+    guard.push((fb, target));
 }
 
-fn forget_framebuffer(fb: VkFramebuffer) {
-    FB_EXTENTS.lock().retain(|e| e.0 != fb);
+pub(super) fn forget_framebuffer(fb: VkFramebuffer) {
+    FRAMEBUFFERS.lock().retain(|e| e.0 != fb);
 }
 
-/// Extent of a swapchain framebuffer, or `None` for an unknown handle.
-pub(super) fn framebuffer_extent(fb: VkFramebuffer) -> Option<(u32, u32)> {
-    FB_EXTENTS.lock().iter().find(|e| e.0 == fb).map(|e| (e.1, e.2))
+/// The registered framebuffer `fb`, or `None` for an unknown handle (which
+/// is then not a framebuffer at all and must not be rendered to).
+pub(super) fn framebuffer_target(fb: VkFramebuffer) -> Option<FramebufferTarget> {
+    FRAMEBUFFERS.lock().iter().find(|e| e.0 == fb).map(|e| e.1)
 }
 
 /// The extent a new swapchain must use, or `None` when the surface has no
@@ -56,7 +69,11 @@ pub struct Surface {
     views: Vec<VkImageView>,
     framebuffers: Vec<VkFramebuffer>,
     image_avail_sem: VkSemaphore,
-    render_done_sem: VkSemaphore,
+    /// One per swapchain image: the presentation engine may still wait on
+    /// the semaphore of an image presented earlier, and it is only known to
+    /// be free once that image is acquired again
+    /// (`VUID-vkQueueSubmit-pSignalSemaphores-00067`).
+    render_done_sems: Vec<VkSemaphore>,
     fence: VkFence,
     width: u32,
     height: u32,
@@ -85,7 +102,6 @@ impl Surface {
     pub fn new(window: &Window, device: &Device) -> Self {
         let mut surface_khr = 0u64;
         let mut image_avail_sem = 0u64;
-        let mut render_done_sem = 0u64;
         let mut fence = 0u64;
 
         if let Some(vk) = &device.vk {
@@ -155,16 +171,19 @@ impl Surface {
                         _ => {}
                     }
                 }
-
-                #[repr(C)]
-                struct SemInfo {
-                    s_type: u32,
-                    p_next: *const c_void,
-                    flags: u32,
+                if surface_khr != 0 {
+                    let mut supported: VkBool32 = 0;
+                    let res = (vk.lib.vkGetPhysicalDeviceSurfaceSupportKHR)(vk.phys, vk.queue_family, surface_khr, &mut supported);
+                    if res != VK_SUCCESS || supported == 0 {
+                        // The device was chosen before any window existed; a
+                        // swapchain on a surface it cannot present to is invalid.
+                        eprintln!("litty: the Vulkan device cannot present to this window");
+                        (vk.lib.vkDestroySurfaceKHR)(vk.instance, surface_khr, std::ptr::null());
+                        surface_khr = 0;
+                    }
                 }
-                let sem_info = SemInfo { s_type: VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, p_next: std::ptr::null(), flags: 0 };
-                (vk.lib.vkCreateSemaphore)(vk.device, &sem_info as *const _ as *const c_void, std::ptr::null(), &mut image_avail_sem);
-                (vk.lib.vkCreateSemaphore)(vk.device, &sem_info as *const _ as *const c_void, std::ptr::null(), &mut render_done_sem);
+
+                image_avail_sem = create_semaphore(vk);
 
                 #[repr(C)]
                 struct FenceInfo {
@@ -173,7 +192,9 @@ impl Surface {
                     flags: u32,
                 }
                 let f_info = FenceInfo { s_type: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, p_next: std::ptr::null(), flags: 1 };
-                (vk.lib.vkCreateFence)(vk.device, &f_info as *const _ as *const c_void, std::ptr::null(), &mut fence);
+                if !vk_ok((vk.lib.vkCreateFence)(vk.device, &f_info as *const _ as *const c_void, std::ptr::null(), &mut fence), "vkCreateFence") {
+                    fence = 0;
+                }
             }
         }
 
@@ -184,7 +205,7 @@ impl Surface {
             views: Vec::new(),
             framebuffers: Vec::new(),
             image_avail_sem,
-            render_done_sem,
+            render_done_sems: Vec::new(),
             fence,
             width: 1,
             height: 1,
@@ -214,6 +235,7 @@ impl Surface {
                 (vk.lib.vkDestroyImageView)(vk.device, v, std::ptr::null());
             }
             self.views.clear();
+            destroy_semaphores(vk, &mut self.render_done_sems);
 
             let mut caps = VkSurfaceCapabilitiesKHR::default();
             (vk.lib.vkGetPhysicalDeviceSurfaceCapabilitiesKHR)(vk.phys, self.surface_khr, &mut caps);
@@ -305,9 +327,18 @@ impl Surface {
             let mut img_count = 0u32;
             (vk.lib.vkGetSwapchainImagesKHR)(vk.device, self.swapchain, &mut img_count, std::ptr::null_mut());
             let mut imgs = vec![0u64; img_count as usize];
-            (vk.lib.vkGetSwapchainImagesKHR)(vk.device, self.swapchain, &mut img_count, imgs.as_mut_ptr());
+            if !vk_ok((vk.lib.vkGetSwapchainImagesKHR)(vk.device, self.swapchain, &mut img_count, imgs.as_mut_ptr()), "vkGetSwapchainImagesKHR") {
+                self.release_swapchain();
+                return;
+            }
+            imgs.truncate(img_count as usize);
 
             let pipes = shared_pipelines(device, config.format);
+            self.render_done_sems = imgs.iter().map(|_| create_semaphore(vk)).collect();
+            if self.render_done_sems.contains(&0) {
+                self.release_swapchain();
+                return;
+            }
             for img in imgs {
                 #[repr(C)]
                 struct ViewInfo {
@@ -331,7 +362,11 @@ impl Surface {
                     subresource_range: [1, 0, 1, 0, 1],
                 };
                 let mut view = 0u64;
-                (vk.lib.vkCreateImageView)(vk.device, &v_info as *const _ as *const c_void, std::ptr::null(), &mut view);
+                if !vk_ok((vk.lib.vkCreateImageView)(vk.device, &v_info as *const _ as *const c_void, std::ptr::null(), &mut view), "vkCreateImageView") {
+                    // Every image needs its framebuffer: an acquired image without one could not be drawn or presented.
+                    self.release_swapchain();
+                    return;
+                }
                 self.views.push(view);
 
                 #[repr(C)]
@@ -358,8 +393,19 @@ impl Surface {
                     layers: 1,
                 };
                 let mut fb = 0u64;
-                (vk.lib.vkCreateFramebuffer)(vk.device, &fb_info as *const _ as *const c_void, std::ptr::null(), &mut fb);
-                register_framebuffer(fb, self.width, self.height);
+                if !vk_ok((vk.lib.vkCreateFramebuffer)(vk.device, &fb_info as *const _ as *const c_void, std::ptr::null(), &mut fb), "vkCreateFramebuffer") {
+                    self.release_swapchain();
+                    return;
+                }
+                register_framebuffer(
+                    fb,
+                    FramebufferTarget {
+                        width: self.width,
+                        height: self.height,
+                        clear_pass: pipes.render_pass_clear,
+                        load_pass: pipes.render_pass_load,
+                    },
+                );
                 self.framebuffers.push(fb);
             }
         }
@@ -367,7 +413,8 @@ impl Surface {
 
     pub fn acquire_frame(&mut self) -> Option<SurfaceFrame> {
         let vk = self.vk.as_ref()?;
-        if self.swapchain == 0 || self.framebuffers.is_empty() {
+        // Without its fence or semaphores (creation failed) a frame cannot be synchronised.
+        if self.swapchain == 0 || self.framebuffers.is_empty() || self.fence == 0 || self.image_avail_sem == 0 {
             return None;
         }
         unsafe {
@@ -390,7 +437,7 @@ impl Surface {
                 image_index: idx,
                 framebuffer: *self.framebuffers.get(idx as usize)?,
                 swapchain: self.swapchain,
-                render_done_sem: self.render_done_sem,
+                render_done_sem: *self.render_done_sems.get(idx as usize)?,
                 image_avail_sem: self.image_avail_sem,
                 fence: self.fence,
             })
@@ -429,11 +476,35 @@ impl Surface {
                 (vk.lib.vkDestroyImageView)(vk.device, v, std::ptr::null());
             }
             self.views.clear();
+            destroy_semaphores(vk, &mut self.render_done_sems);
             if self.swapchain != 0 {
                 (vk.lib.vkDestroySwapchainKHR)(vk.device, self.swapchain, std::ptr::null());
                 self.swapchain = 0;
             }
         }
+    }
+}
+
+/// A binary semaphore, or 0 when it could not be created.
+pub(super) fn create_semaphore(vk: &VulkanCore) -> VkSemaphore {
+    #[repr(C)]
+    struct SemInfo {
+        s_type: u32,
+        p_next: *const c_void,
+        flags: u32,
+    }
+    let info = SemInfo { s_type: VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, p_next: std::ptr::null(), flags: 0 };
+    let mut sem = 0u64;
+    // SAFETY: `info` is a valid create info and outlives the call.
+    let created = unsafe { (vk.lib.vkCreateSemaphore)(vk.device, &info as *const _ as *const c_void, std::ptr::null(), &mut sem) };
+    if vk_ok(created, "vkCreateSemaphore") { sem } else { 0 }
+}
+
+/// Destroy and forget `sems`. Callers make sure the device is idle first.
+fn destroy_semaphores(vk: &VulkanCore, sems: &mut Vec<VkSemaphore>) {
+    for sem in sems.drain(..).filter(|&s| s != 0) {
+        // SAFETY: created from `vk.device`; the device is idle.
+        unsafe { (vk.lib.vkDestroySemaphore)(vk.device, sem, std::ptr::null()) };
     }
 }
 
@@ -449,9 +520,6 @@ impl Drop for Surface {
         unsafe {
             if self.image_avail_sem != 0 {
                 (vk.lib.vkDestroySemaphore)(vk.device, self.image_avail_sem, std::ptr::null());
-            }
-            if self.render_done_sem != 0 {
-                (vk.lib.vkDestroySemaphore)(vk.device, self.render_done_sem, std::ptr::null());
             }
             if self.fence != 0 {
                 vk.in_flight.lock().release(self.fence);
@@ -469,16 +537,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn framebuffer_extent_tracks_register_and_forget() {
+    fn framebuffer_target_tracks_register_and_forget() {
         // Handles unlikely to collide with a real framebuffer in other tests.
         let fb = 0xDEAD_0001;
-        assert_eq!(framebuffer_extent(fb), None);
-        register_framebuffer(fb, 968, 620);
-        assert_eq!(framebuffer_extent(fb), Some((968, 620)));
-        register_framebuffer(fb, 1200, 800);
-        assert_eq!(framebuffer_extent(fb), Some((1200, 800)));
+        let target = |width, height| FramebufferTarget { width, height, clear_pass: 7, load_pass: 8 };
+        assert_eq!(framebuffer_target(fb), None);
+        register_framebuffer(fb, target(968, 620));
+        assert_eq!(framebuffer_target(fb), Some(target(968, 620)));
+        register_framebuffer(fb, target(1200, 800));
+        assert_eq!(framebuffer_target(fb), Some(target(1200, 800)));
         forget_framebuffer(fb);
-        assert_eq!(framebuffer_extent(fb), None);
+        assert_eq!(framebuffer_target(fb), None);
     }
 
     fn caps(current: (u32, u32), min: (u32, u32), max: (u32, u32)) -> VkSurfaceCapabilitiesKHR {

@@ -1,4 +1,4 @@
-//! Vulkan 1.0 C ABI types, constants, and dynamically loaded function table (`VkLib`).
+//! Vulkan 1.0/1.1 C ABI types, constants, and dynamically loaded function table (`VkLib`).
 
 use std::ffi::{c_char, c_void};
 
@@ -39,6 +39,25 @@ pub(super) type VkFence = u64;
 
 pub(super) const VK_SUCCESS: i32 = 0;
 pub(super) const VK_SUBOPTIMAL_KHR: i32 = 1000001003;
+pub(super) const VK_ERROR_OUT_OF_DATE_KHR: i32 = -1000001004;
+
+/// Whether a Vulkan call returned `VK_SUCCESS`. Anything else is reported on
+/// stderr: the object it was to create, or the work it was to queue, does
+/// not exist, and callers must not use it.
+pub(super) fn vk_ok(result: i32, what: &str) -> bool {
+    if result == VK_SUCCESS {
+        return true;
+    }
+    eprintln!("litty: {what} failed (VkResult {result})");
+    false
+}
+
+/// Whether a `vkQueuePresentKHR` result is expected: success, or a
+/// swapchain that no longer matches the window, which the next acquire
+/// reports so the renderer rebuilds it. Anything else is reported.
+pub(super) fn present_ok(result: i32) -> bool {
+    matches!(result, VK_SUCCESS | VK_SUBOPTIMAL_KHR | VK_ERROR_OUT_OF_DATE_KHR) || vk_ok(result, "vkQueuePresentKHR")
+}
 
 pub(super) const VK_STRUCTURE_TYPE_APPLICATION_INFO: u32 = 0;
 pub(super) const VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO: u32 = 1;
@@ -74,6 +93,9 @@ pub(super) const VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO: u32 = 40;
 pub(super) const VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO: u32 = 42;
 pub(super) const VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO: u32 = 43;
 pub(super) const VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER: u32 = 45;
+// Read-back only (`Texture::read_pixels`, GPU tests).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const VK_STRUCTURE_TYPE_MEMORY_BARRIER: u32 = 46;
 pub(super) const VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR: u32 = 1000001000;
 pub(super) const VK_STRUCTURE_TYPE_PRESENT_INFO_KHR: u32 = 1000001001;
 pub(super) const VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR: u32 = 1000004000;
@@ -87,6 +109,7 @@ pub(super) const VK_FORMAT_B8G8R8A8_UNORM: u32 = 44;
 pub(super) const VK_IMAGE_LAYOUT_UNDEFINED: u32 = 0;
 pub(super) const VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL: u32 = 2;
 pub(super) const VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: u32 = 5;
+pub(super) const VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL: u32 = 6;
 pub(super) const VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL: u32 = 7;
 pub(super) const VK_IMAGE_LAYOUT_PRESENT_SRC_KHR: u32 = 1000001002;
 
@@ -111,6 +134,9 @@ pub(super) const VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: u32 = 7;
 pub(super) const VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT: u32 = 0x0000_0001;
 
 pub(super) const VK_BUFFER_USAGE_TRANSFER_SRC_BIT: u32 = 0x0000_0001;
+// Read-back only (`Texture::read_pixels`, GPU tests).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const VK_BUFFER_USAGE_TRANSFER_DST_BIT: u32 = 0x0000_0002;
 pub(super) const VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT: u32 = 0x0000_0010;
 pub(super) const VK_BUFFER_USAGE_STORAGE_BUFFER_BIT: u32 = 0x0000_0020;
 pub(super) const VK_BUFFER_USAGE_VERTEX_BUFFER_BIT: u32 = 0x0000_0080;
@@ -146,9 +172,21 @@ pub(super) const VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT: u32 = 0x0000_0001;
 pub(super) const VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT: u32 = 0x0000_0080;
 pub(super) const VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT: u32 = 0x0000_0400;
 pub(super) const VK_PIPELINE_STAGE_TRANSFER_BIT: u32 = 0x0000_1000;
+// Read-back only (`Texture::read_pixels`, GPU tests).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const VK_PIPELINE_STAGE_HOST_BIT: u32 = 0x0000_4000;
 
 pub(super) const VK_ACCESS_TRANSFER_WRITE_BIT: u32 = 0x0000_1000;
 pub(super) const VK_ACCESS_SHADER_READ_BIT: u32 = 0x0000_0020;
+// Read-back only (`Texture::read_pixels`, GPU tests).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT: u32 = 0x0000_0100;
+// Read-back only (`Texture::read_pixels`, GPU tests).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const VK_ACCESS_TRANSFER_READ_BIT: u32 = 0x0000_0800;
+// Read-back only (`Texture::read_pixels`, GPU tests).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const VK_ACCESS_HOST_READ_BIT: u32 = 0x0000_2000;
 
 #[inline]
 pub(super) const fn vk_format(format: TextureFormat) -> u32 {
@@ -261,6 +299,46 @@ pub(super) struct VkSurfaceCapabilitiesKHR {
 
 pub(super) const VK_QUEUE_GRAPHICS_BIT: u32 = 0x0000_0001;
 
+pub(super) const VK_PHYSICAL_DEVICE_TYPE_CPU: u32 = 4;
+
+/// `VK_MAKE_API_VERSION(0, major, minor, 0)`.
+pub(super) const fn vk_api_version(major: u32, minor: u32) -> u32 {
+    (major << 22) | (minor << 12)
+}
+pub(super) const VK_API_VERSION_1_0: u32 = vk_api_version(1, 0);
+pub(super) const VK_API_VERSION_1_1: u32 = vk_api_version(1, 1);
+
+/// `VkPhysicalDeviceProperties`. Only the leading fields are read; `limits`
+/// (504 bytes, 8-byte aligned) and `sparseProperties` (20 bytes) are kept as
+/// opaque storage of the right size and alignment.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub(super) struct VkPhysicalDeviceProperties {
+    pub api_version: u32,
+    pub driver_version: u32,
+    pub vendor_id: u32,
+    pub device_id: u32,
+    pub device_type: u32,
+    pub device_name: [c_char; 256],
+    pub pipeline_cache_uuid: [u8; 16],
+    pub limits_and_sparse: [u64; 66],
+}
+
+impl Default for VkPhysicalDeviceProperties {
+    fn default() -> Self {
+        Self {
+            api_version: 0,
+            driver_version: 0,
+            vendor_id: 0,
+            device_id: 0,
+            device_type: 0,
+            device_name: [0; 256],
+            pipeline_cache_uuid: [0; 16],
+            limits_and_sparse: [0; 66],
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub(super) struct VkExtensionProperties {
@@ -305,6 +383,7 @@ pub(super) struct VkLib {
     pub vkCreateDescriptorSetLayout: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkDescriptorSetLayout) -> i32,
     pub vkCreatePipelineLayout: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkPipelineLayout) -> i32,
     pub vkCreateRenderPass: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkRenderPass) -> i32,
+    pub vkDestroyRenderPass: unsafe extern "C" fn(VkDevice, VkRenderPass, *const c_void),
     pub vkCreateGraphicsPipelines: unsafe extern "C" fn(VkDevice, u64, u32, *const c_void, *const c_void, *mut VkPipeline) -> i32,
     pub vkCreateDescriptorPool: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkDescriptorPool) -> i32,
     pub vkAllocateDescriptorSets: unsafe extern "C" fn(VkDevice, *const c_void, *mut VkDescriptorSet) -> i32,
@@ -327,6 +406,7 @@ pub(super) struct VkLib {
     pub vkCmdDraw: unsafe extern "C" fn(VkCommandBuffer, u32, u32, u32, u32),
     pub vkCmdPipelineBarrier: unsafe extern "C" fn(VkCommandBuffer, VkFlags, VkFlags, VkFlags, u32, *const c_void, u32, *const c_void, u32, *const c_void),
     pub vkCmdCopyBufferToImage: unsafe extern "C" fn(VkCommandBuffer, VkBuffer, VkImage, u32, u32, *const c_void),
+    pub vkCmdCopyImageToBuffer: unsafe extern "C" fn(VkCommandBuffer, VkImage, u32, VkBuffer, u32, *const c_void),
     pub vkQueueSubmit: unsafe extern "C" fn(VkQueue, u32, *const c_void, VkFence) -> i32,
     pub vkQueueWaitIdle: unsafe extern "C" fn(VkQueue) -> i32,
     pub vkDeviceWaitIdle: unsafe extern "C" fn(VkDevice) -> i32,
@@ -339,6 +419,7 @@ pub(super) struct VkLib {
     pub vkCreateWaylandSurfaceKHR: Option<unsafe extern "C" fn(VkInstance, *const c_void, *const c_void, *mut VkSurfaceKHR) -> i32>,
     pub vkCreateXlibSurfaceKHR: Option<unsafe extern "C" fn(VkInstance, *const c_void, *const c_void, *mut VkSurfaceKHR) -> i32>,
     pub vkCreateXcbSurfaceKHR: Option<unsafe extern "C" fn(VkInstance, *const c_void, *const c_void, *mut VkSurfaceKHR) -> i32>,
+    pub vkGetPhysicalDeviceSurfaceSupportKHR: unsafe extern "C" fn(VkPhysicalDevice, u32, VkSurfaceKHR, *mut VkBool32) -> i32,
     pub vkGetPhysicalDeviceSurfaceCapabilitiesKHR: unsafe extern "C" fn(VkPhysicalDevice, VkSurfaceKHR, *mut VkSurfaceCapabilitiesKHR) -> i32,
     pub vkCreateSwapchainKHR: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkSwapchainKHR) -> i32,
     pub vkDestroySwapchainKHR: unsafe extern "C" fn(VkDevice, VkSwapchainKHR, *const c_void),
@@ -350,3 +431,25 @@ pub(super) struct VkLib {
 
 unsafe impl Send for VkLib {}
 unsafe impl Sync for VkLib {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_vk_success_counts_as_created() {
+        assert!(vk_ok(VK_SUCCESS, "test"));
+        // VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_ERROR_DEVICE_LOST, VK_INCOMPLETE.
+        assert!(!vk_ok(-2, "test"));
+        assert!(!vk_ok(-4, "test"));
+        assert!(!vk_ok(5, "test"));
+    }
+
+    #[test]
+    fn a_stale_swapchain_is_an_expected_present_result() {
+        assert!(present_ok(VK_SUCCESS));
+        assert!(present_ok(VK_SUBOPTIMAL_KHR));
+        assert!(present_ok(VK_ERROR_OUT_OF_DATE_KHR));
+        assert!(!present_ok(-4), "device lost is reported");
+    }
+}

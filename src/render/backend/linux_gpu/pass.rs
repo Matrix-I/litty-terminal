@@ -3,19 +3,22 @@
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use super::device::{Queue, VulkanCore, SHARED_PIPES};
+use super::device::{Queue, VulkanCore};
 use super::ffi::*;
 use super::resources::{HostBuffer, Texture};
 use super::surface::SurfaceFrame;
+use super::upload::SubmitInfo;
 
 pub struct CommandEncoder {
     vk: Option<Arc<VulkanCore>>,
-    width: u32,
-    height: u32,
+    /// Whether the frame's command buffer began recording. When it did not,
+    /// nothing is recorded and the frame is given up (`give_up_frame`).
+    recording: bool,
 }
 
 impl CommandEncoder {
     pub fn new(queue: &Queue) -> Self {
+        let mut recording = false;
         if let Some(vk) = &queue.vk {
             unsafe {
                 #[repr(C)]
@@ -32,112 +35,103 @@ impl CommandEncoder {
                     p_inheritance_info: std::ptr::null(),
                 };
                 vk.wait_for_last_frame();
+                // Every submitted frame has run, and with it every upload batch.
+                vk.uploads.lock().free_retired(vk);
                 (vk.lib.vkResetCommandBuffer)(vk.upload_cmd, 0);
-                (vk.lib.vkBeginCommandBuffer)(vk.upload_cmd, &b_info as *const _ as *const c_void);
+                recording = vk_ok((vk.lib.vkBeginCommandBuffer)(vk.upload_cmd, &b_info as *const _ as *const c_void), "vkBeginCommandBuffer");
             }
         }
-        Self {
-            vk: queue.vk.clone(),
-            width: 1,
-            height: 1,
-        }
+        Self { vk: queue.vk.clone(), recording }
     }
 
+    /// Begin drawing into `target_fb`, a swapchain framebuffer
+    /// (`SurfaceFrame::texture_ptr`) or a render target (`Texture::raw_ptr`).
+    /// Any other handle records nothing: the returned pass draws nothing.
     pub fn begin_render_pass(&mut self, target_fb: RawTexHandle, clear_rgba: Option<[f64; 4]>) -> RenderPass {
-        if let Some(vk) = &self.vk
-            && target_fb != 0
-        {
-            let guard = SHARED_PIPES.lock();
-            if let Some((_, ref pipes)) = *guard {
-                unsafe {
-                    #[repr(C)]
-                    struct RpBegin {
-                        s_type: u32,
-                        p_next: *const c_void,
-                        render_pass: VkRenderPass,
-                        framebuffer: VkFramebuffer,
-                        render_area: VkRect2D,
-                        clear_value_count: u32,
-                        p_clear_values: *const VkClearColorValue,
-                    }
-                    if let Some((w, h)) = super::surface::framebuffer_extent(target_fb) {
-                        self.width = w;
-                        self.height = h;
-                    }
-                    let (width, height) = (self.width.max(1), self.height.max(1));
-                    let [r, g, b, a] = clear_rgba.unwrap_or([0.0, 0.0, 0.0, 1.0]);
-                    let cv = VkClearColorValue {
-                        float32: [r as f32, g as f32, b as f32, a as f32],
-                    };
-                    let rp = if clear_rgba.is_some() { pipes.render_pass_clear } else { pipes.render_pass_load };
-                    let begin = RpBegin {
-                        s_type: VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-                        p_next: std::ptr::null(),
-                        render_pass: rp,
-                        framebuffer: target_fb,
-                        render_area: VkRect2D {
-                            offset: VkOffset2D { x: 0, y: 0 },
-                            extent: VkExtent2D { width, height },
-                        },
-                        clear_value_count: 1,
-                        p_clear_values: &cv,
-                    };
-                    (vk.lib.vkCmdBeginRenderPass)(vk.upload_cmd, &begin as *const _ as *const c_void, 0);
-                    // Viewport and scissor are dynamic state: without them
-                    // nothing outside the render area's first pixel is drawn.
-                    let viewport = VkViewport {
-                        x: 0.0,
-                        y: 0.0,
-                        width: width as f32,
-                        height: height as f32,
-                        min_depth: 0.0,
-                        max_depth: 1.0,
-                    };
-                    (vk.lib.vkCmdSetViewport)(vk.upload_cmd, 0, 1, &viewport);
-                    (vk.lib.vkCmdSetScissor)(vk.upload_cmd, 0, 1, &begin.render_area);
+        let target = super::surface::framebuffer_target(target_fb);
+        let vk = match (&self.vk, target) {
+            (Some(vk), Some(_)) if self.recording => Some(vk.clone()),
+            _ => None,
+        };
+        if let (Some(vk), Some(target)) = (&vk, target) {
+            unsafe {
+                #[repr(C)]
+                struct RpBegin {
+                    s_type: u32,
+                    p_next: *const c_void,
+                    render_pass: VkRenderPass,
+                    framebuffer: VkFramebuffer,
+                    render_area: VkRect2D,
+                    clear_value_count: u32,
+                    p_clear_values: *const VkClearColorValue,
                 }
+                let (width, height) = (target.width.max(1), target.height.max(1));
+                let [r, g, b, a] = clear_rgba.unwrap_or([0.0, 0.0, 0.0, 1.0]);
+                let cv = VkClearColorValue {
+                    float32: [r as f32, g as f32, b as f32, a as f32],
+                };
+                let rp = if clear_rgba.is_some() { target.clear_pass } else { target.load_pass };
+                let begin = RpBegin {
+                    s_type: VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                    p_next: std::ptr::null(),
+                    render_pass: rp,
+                    framebuffer: target_fb,
+                    render_area: VkRect2D {
+                        offset: VkOffset2D { x: 0, y: 0 },
+                        extent: VkExtent2D { width, height },
+                    },
+                    clear_value_count: 1,
+                    p_clear_values: &cv,
+                };
+                (vk.lib.vkCmdBeginRenderPass)(vk.upload_cmd, &begin as *const _ as *const c_void, 0);
+                // Viewport and scissor are dynamic state: without them
+                // nothing outside the render area's first pixel is drawn.
+                let viewport = VkViewport {
+                    x: 0.0,
+                    y: 0.0,
+                    width: width as f32,
+                    height: height as f32,
+                    min_depth: 0.0,
+                    max_depth: 1.0,
+                };
+                (vk.lib.vkCmdSetViewport)(vk.upload_cmd, 0, 1, &viewport);
+                (vk.lib.vkCmdSetScissor)(vk.upload_cmd, 0, 1, &begin.render_area);
             }
         }
-        RenderPass {
-            vk: self.vk.clone(),
-            call_idx: 0,
-        }
+        // `vk` is `None` unless a render pass was begun, so draws and `Drop`
+        // never record into a pass that does not exist.
+        RenderPass { vk, call_idx: 0 }
     }
 
     pub fn present_and_submit(self, frame: SurfaceFrame) {
         let Some(vk) = &self.vk else { return };
         unsafe {
-            (vk.lib.vkEndCommandBuffer)(vk.upload_cmd);
-            #[repr(C)]
-            struct SubmitInfo {
-                s_type: u32,
-                p_next: *const c_void,
-                wait_semaphore_count: u32,
-                p_wait_semaphores: *const VkSemaphore,
-                p_wait_dst_stage_mask: *const VkFlags,
-                command_buffer_count: u32,
-                p_command_buffers: *const VkCommandBuffer,
-                signal_semaphore_count: u32,
-                p_signal_semaphores: *const VkSemaphore,
-            }
-            let wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            let submit = SubmitInfo {
-                s_type: VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                p_next: std::ptr::null(),
-                wait_semaphore_count: 1,
-                p_wait_semaphores: &frame.image_avail_sem,
-                p_wait_dst_stage_mask: &wait_stage,
-                command_buffer_count: 1,
-                p_command_buffers: &vk.upload_cmd,
-                signal_semaphore_count: 1,
-                p_signal_semaphores: &frame.render_done_sem,
+            // Pending uploads run first, in the same submission.
+            let mut uploads = vk.uploads.lock();
+            let batch = uploads.take_for_frame(vk);
+            let mut cmds = [std::ptr::null_mut(); 2];
+            let count = match batch {
+                Some(batch) => {
+                    cmds = [batch, vk.upload_cmd];
+                    2
+                }
+                None => {
+                    cmds[0] = vk.upload_cmd;
+                    1
+                }
             };
-            let submitted = (vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, frame.fence);
-            // A failed submit never signals the fence; recording it would make
-            // every other window wait for it forever.
-            if submitted == VK_SUCCESS {
-                vk.in_flight.lock().submitted(frame.fence);
+            let wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            let submit = SubmitInfo::frame(&cmds[..count], &frame.image_avail_sem, &wait_stage, &frame.render_done_sem);
+            let submitted = self.recording
+                && vk_ok((vk.lib.vkEndCommandBuffer)(vk.upload_cmd), "vkEndCommandBuffer")
+                && vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, frame.fence), "vkQueueSubmit");
+            if !submitted {
+                give_up_frame(vk, batch, frame.image_avail_sem, frame.fence);
+                return;
             }
+            vk.in_flight.lock().submitted(frame.fence);
+            // Presenting can block on the display; uploads need not wait for it.
+            drop(uploads);
 
             #[repr(C)]
             struct PresentInfo {
@@ -160,16 +154,49 @@ impl CommandEncoder {
                 p_image_indices: &frame.image_index,
                 p_results: std::ptr::null_mut(),
             };
-            (vk.lib.vkQueuePresentKHR)(vk.queue, &present as *const _ as *const c_void);
+            // Out of date or suboptimal: the next acquire fails or the
+            // renderer reconfigures, so only unexpected errors are reported.
+            present_ok((vk.lib.vkQueuePresentKHR)(vk.queue, &present as *const _ as *const c_void));
         }
     }
 
+    /// Submit the recorded passes and wait until the GPU has run them.
     #[cfg(test)]
     pub fn submit_and_wait(self) {
         let Some(vk) = &self.vk else { return };
         unsafe {
-            (vk.lib.vkEndCommandBuffer)(vk.upload_cmd);
+            let mut uploads = vk.uploads.lock();
+            let batch = uploads.take_for_frame(vk);
+            let cmds: Vec<VkCommandBuffer> = batch.into_iter().chain([vk.upload_cmd]).collect();
+            assert!(vk_ok((vk.lib.vkEndCommandBuffer)(vk.upload_cmd), "vkEndCommandBuffer"));
+            let submit = SubmitInfo::commands(&cmds);
+            assert!(vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, 0), "vkQueueSubmit"));
             (vk.lib.vkQueueWaitIdle)(vk.queue);
+            uploads.free_retired(vk);
+        }
+    }
+}
+
+/// Settle a frame whose commands could not be submitted. It is not presented
+/// (its image was never drawn), but what the next frames rely on still runs:
+/// the upload `batch`, so textures get their contents and layouts; a wait on
+/// `image_avail_sem`, which the acquire signaled and must be consumed before
+/// it is acquired with again (`VUID-vkAcquireNextImageKHR-semaphore-01286`);
+/// and `fence`, which the surface waits for before its next frame.
+///
+/// # Safety
+/// `batch` has ended recording; the semaphore and fence belong to `vk.device`.
+pub(super) unsafe fn give_up_frame(vk: &VulkanCore, batch: Option<VkCommandBuffer>, image_avail_sem: VkSemaphore, fence: VkFence) {
+    let cmds: &[VkCommandBuffer] = match &batch {
+        Some(batch) => std::slice::from_ref(batch),
+        None => &[],
+    };
+    let wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    let submit = SubmitInfo::waiting(cmds, &image_avail_sem, &wait_stage);
+    unsafe {
+        if !vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, fence), "vkQueueSubmit") {
+            // Still signal the fence so the next frame's wait cannot hang.
+            (vk.lib.vkQueueSubmit)(vk.queue, 0, std::ptr::null(), fence);
         }
     }
 }
@@ -206,7 +233,9 @@ impl RenderPass {
         instance_count: u32,
     ) {
         let Some(vk) = &self.vk else { return };
-        if instance_count == 0 || pipeline.0 == 0 {
+        // A 0 handle is an object that could not be created; binding it is invalid.
+        let handles = [pipeline.0, instances.raw_ptr(), viewports.raw_ptr(), atlas.raw_ptr(), color_atlas.raw_ptr(), sampler];
+        if instance_count == 0 || handles.contains(&0) {
             return;
         }
         let slot = self.call_idx & 1;
@@ -282,7 +311,7 @@ impl RenderPass {
     ) {
         let Some(vk) = &self.vk else { return };
         let dset = texture.image_dset();
-        if pipeline.0 == 0 || dset == 0 {
+        if pipeline.0 == 0 || dset == 0 || quads.raw_ptr() == 0 {
             return;
         }
         unsafe {
@@ -341,5 +370,35 @@ impl Drop for RenderPass {
                 (vk.lib.vkCmdEndRenderPass)(vk.upload_cmd);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An image view passed as a render target used to be handed to
+    /// `vkCmdBeginRenderPass` as a framebuffer and crashed the driver.
+    #[test]
+    fn an_unknown_target_records_no_render_pass() {
+        let (_device, queue) = super::super::device::shared_device_and_queue();
+        let mut encoder = CommandEncoder::new(&queue);
+        let pass = encoder.begin_render_pass(0xDEAD_0002, Some([0.0; 4]));
+        assert!(pass.vk.is_none(), "no pass begun, so draws and Drop record nothing");
+    }
+
+    /// When `vkBeginCommandBuffer` failed, a render pass recorded into the
+    /// command buffer anyway (it is not recording: undefined behavior).
+    #[test]
+    fn a_frame_that_did_not_begin_records_no_render_pass() {
+        let (_device, queue) = super::super::device::shared_device_and_queue();
+        let fb = 0xDEAD_0003;
+        let target = super::super::surface::FramebufferTarget { width: 4, height: 4, clear_pass: 7, load_pass: 8 };
+        super::super::surface::register_framebuffer(fb, target);
+        // As `CommandEncoder::new` leaves it after a failed begin.
+        let mut encoder = CommandEncoder { vk: queue.vk.clone(), recording: false };
+        let pass = encoder.begin_render_pass(fb, Some([0.0; 4]));
+        super::super::surface::forget_framebuffer(fb);
+        assert!(pass.vk.is_none(), "no pass begun on a command buffer that is not recording");
     }
 }

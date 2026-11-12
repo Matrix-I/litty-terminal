@@ -17,8 +17,23 @@ pub(super) struct HistorySearch {
 }
 
 impl HistorySearch {
-    pub(super) fn new() -> Self {
-        Self::with_store(HistoryStore::new())
+    pub(super) fn new(waker: crate::Waker) -> Self {
+        let mut store = HistoryStore::new();
+        if store.set_wake(std::sync::Arc::new(move || waker.wake())).is_err() {
+            crate::platform::alert("History unavailable", "Unable to start the history worker.");
+        }
+        Self::with_store(store)
+    }
+
+    fn show_error(&mut self) {
+        if let Some(error) = self.store.take_error() {
+            crate::platform::alert("History operation failed", error);
+        }
+    }
+
+    pub(super) fn poll(&mut self) {
+        if self.store.poll() { self.refilter(); }
+        self.show_error();
     }
 
     fn with_store(store: HistoryStore) -> Self {
@@ -52,6 +67,7 @@ impl HistorySearch {
     /// the search query is pre-populated and filtered immediately, matching fzf's `--query`.
     pub(super) fn open(&mut self, initial_query: Option<&str>) {
         self.store.reload_if_changed();
+        self.show_error();
         self.is_open = true;
         self.query = initial_query.unwrap_or("").trim().to_string();
         self.selected = 0;
@@ -93,7 +109,9 @@ impl HistorySearch {
     /// Delete the currently selected command from memory and disk history.
     pub(super) fn delete_selected(&mut self) -> Option<String> {
         let item_idx = self.filtered.get(self.selected)?.item_index;
-        let removed_cmd = self.store.remove(item_idx)?;
+        let result = self.store.remove(item_idx);
+        self.show_error();
+        let removed_cmd = result?;
         self.refilter();
         if self.selected >= self.filtered.len() {
             self.selected = self.filtered.len().saturating_sub(1);
@@ -209,7 +227,7 @@ mod tests {
 
     fn search(items: &[&str]) -> HistorySearch {
         // Recorded oldest first so `items` ends up newest first, in the given order.
-        let mut store = HistoryStore::new();
+        let mut store = HistoryStore::isolated();
         for cmd in items.iter().rev() {
             store.add_session_command(cmd);
         }

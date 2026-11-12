@@ -15,6 +15,8 @@ pub struct VulkanCore {
     pub(super) phys: VkPhysicalDevice,
     pub(super) device: VkDevice,
     pub(super) queue: VkQueue,
+    /// Family of `queue`; a window's surface must support presenting from it.
+    pub(super) queue_family: u32,
     pub(super) mem_props: VkPhysicalDeviceMemoryProperties,
     #[allow(dead_code)]
     pub(super) cmd_pool: VkCommandPool,
@@ -26,9 +28,9 @@ pub struct VulkanCore {
     pub(super) image_desc_pool: VkDescriptorPool,
     /// Descriptor pools are not thread safe; guards `image_desc_pool`.
     pub(super) image_pool_lock: parking_lot::Mutex<()>,
-    /// Shared upload staging buffer. Its lock is held for a whole upload, so
-    /// it also serialises every use of `upload_cmd` outside a frame.
-    pub(super) staging: parking_lot::Mutex<super::resources::Staging>,
+    /// Pending texture uploads, submitted with the next frame. Lock order:
+    /// `uploads` before `in_flight`.
+    pub(super) uploads: parking_lot::Mutex<super::upload::Uploads>,
     pub(super) shader_mod: VkShaderModule,
     pub(super) image_mod: VkShaderModule,
     #[allow(dead_code)]
@@ -140,6 +142,57 @@ fn instance_extensions(available: &[&CStr]) -> Option<Vec<&'static CStr>> {
     (extensions.len() > 1).then_some(extensions)
 }
 
+const SWAPCHAIN_EXTENSION: &CStr = c"VK_KHR_swapchain";
+/// `shader.spv` declares `SPV_KHR_storage_buffer_storage_class`, which needs
+/// Vulkan 1.1 or this extension (`VUID-VkShaderModuleCreateInfo-pCode-08742`).
+const STORAGE_BUFFER_CLASS_EXTENSION: &CStr = c"VK_KHR_storage_buffer_storage_class";
+
+/// The API version to ask the instance for: 1.1 when the loader has it.
+/// A 1.0 loader (no `vkEnumerateInstanceVersion`) rejects anything higher.
+fn instance_api_version(loader: Option<u32>) -> u32 {
+    match loader {
+        Some(v) if v >= VK_API_VERSION_1_1 => VK_API_VERSION_1_1,
+        _ => VK_API_VERSION_1_0,
+    }
+}
+
+/// What device selection needs to know about one physical device.
+#[derive(Clone, Copy, Debug)]
+struct DeviceInfo {
+    device_type: u32,
+    api_version: u32,
+    graphics_family: Option<u32>,
+    swapchain: bool,
+    storage_buffer_class: bool,
+}
+
+/// Device extensions to enable on `info`, or `None` when it cannot present
+/// or cannot run `shader.spv`. The usable version is the lower of the
+/// instance's and the device's.
+fn device_extensions(info: &DeviceInfo, instance_api: u32) -> Option<Vec<&'static CStr>> {
+    if info.graphics_family.is_none() || !info.swapchain {
+        return None;
+    }
+    if instance_api.min(info.api_version) >= VK_API_VERSION_1_1 {
+        Some(vec![SWAPCHAIN_EXTENSION])
+    } else if info.storage_buffer_class {
+        Some(vec![SWAPCHAIN_EXTENSION, STORAGE_BUFFER_CLASS_EXTENSION])
+    } else {
+        None
+    }
+}
+
+/// The device to use: the first usable GPU in enumeration order, else the
+/// first usable software renderer (lavapipe). The loader and Mesa's
+/// device-select layer already put the system's preferred GPU first (and
+/// honour `MESA_VK_DEVICE_SELECT`), so only CPU devices are moved back.
+fn pick_device(infos: &[DeviceInfo], instance_api: u32) -> Option<usize> {
+    let usable = |i: &usize| device_extensions(&infos[*i], instance_api).is_some();
+    let is_cpu = |i: &usize| infos[*i].device_type == VK_PHYSICAL_DEVICE_TYPE_CPU;
+    let all = || (0..infos.len()).filter(usable);
+    all().find(|i| !is_cpu(i)).or_else(|| all().next())
+}
+
 /// Index of the first queue family that can run graphics commands.
 fn graphics_family(families: &[VkQueueFamilyProperties]) -> Option<u32> {
     families
@@ -190,6 +243,17 @@ impl VulkanCore {
                 ext_count: u32,
                 pp_exts: *const *const c_char,
             }
+            let loader_version = {
+                let p = vkGetInstanceProcAddr(std::ptr::null_mut(), c"vkEnumerateInstanceVersion".as_ptr());
+                if p.is_null() {
+                    None
+                } else {
+                    let enumerate: unsafe extern "C" fn(*mut u32) -> i32 = std::mem::transmute(p);
+                    let mut version = 0u32;
+                    (enumerate(&mut version) == VK_SUCCESS).then_some(version)
+                }
+            };
+            let instance_api = instance_api_version(loader_version);
             let app_info = AppInfo {
                 s_type: VK_STRUCTURE_TYPE_APPLICATION_INFO,
                 p_next: std::ptr::null(),
@@ -197,7 +261,7 @@ impl VulkanCore {
                 app_ver: 1,
                 p_eng_name: c"litty".as_ptr(),
                 eng_ver: 1,
-                api_ver: 1 << 22,
+                api_ver: instance_api,
             };
             let vkEnumerateInstanceExtensionProperties: unsafe extern "C" fn(
                 *const c_char,
@@ -273,28 +337,63 @@ impl VulkanCore {
                 return None;
             }
             let mut pds = vec![std::ptr::null_mut(); pd_count as usize];
-            vkEnumeratePhysicalDevices(instance, &mut pd_count, pds.as_mut_ptr());
+            if vkEnumeratePhysicalDevices(instance, &mut pd_count, pds.as_mut_ptr()) < VK_SUCCESS {
+                return None;
+            }
+            pds.truncate(pd_count as usize);
             let vkGetPhysicalDeviceQueueFamilyProperties: unsafe extern "C" fn(
                 VkPhysicalDevice,
                 *mut u32,
                 *mut VkQueueFamilyProperties,
             ) = load_fn!(vkGetPhysicalDeviceQueueFamilyProperties);
-            let mut chosen = None;
-            for &candidate in &pds {
-                let mut family_count = 0u32;
-                vkGetPhysicalDeviceQueueFamilyProperties(candidate, &mut family_count, std::ptr::null_mut());
-                let mut families = vec![VkQueueFamilyProperties::default(); family_count as usize];
-                vkGetPhysicalDeviceQueueFamilyProperties(candidate, &mut family_count, families.as_mut_ptr());
-                families.truncate(family_count as usize);
-                if let Some(family) = graphics_family(&families) {
-                    chosen = Some((candidate, family));
-                    break;
-                }
-            }
-            let Some((phys, queue_family)) = chosen else {
-                eprintln!("litty: no Vulkan device with a graphics queue");
+            let vkGetPhysicalDeviceProperties: unsafe extern "C" fn(VkPhysicalDevice, *mut VkPhysicalDeviceProperties) =
+                load_fn!(vkGetPhysicalDeviceProperties);
+            let vkEnumerateDeviceExtensionProperties: unsafe extern "C" fn(
+                VkPhysicalDevice,
+                *const c_char,
+                *mut u32,
+                *mut VkExtensionProperties,
+            ) -> i32 = load_fn!(vkEnumerateDeviceExtensionProperties);
+            let infos: Vec<DeviceInfo> = pds
+                .iter()
+                .map(|&candidate| {
+                    let mut props = VkPhysicalDeviceProperties::default();
+                    vkGetPhysicalDeviceProperties(candidate, &mut props);
+                    let mut family_count = 0u32;
+                    vkGetPhysicalDeviceQueueFamilyProperties(candidate, &mut family_count, std::ptr::null_mut());
+                    let mut families = vec![VkQueueFamilyProperties::default(); family_count as usize];
+                    vkGetPhysicalDeviceQueueFamilyProperties(candidate, &mut family_count, families.as_mut_ptr());
+                    families.truncate(family_count as usize);
+                    let mut ext_count = 0u32;
+                    vkEnumerateDeviceExtensionProperties(candidate, std::ptr::null(), &mut ext_count, std::ptr::null_mut());
+                    let mut exts =
+                        vec![VkExtensionProperties { extension_name: [0; 256], spec_version: 0 }; ext_count as usize];
+                    if vkEnumerateDeviceExtensionProperties(candidate, std::ptr::null(), &mut ext_count, exts.as_mut_ptr())
+                        < VK_SUCCESS
+                    {
+                        ext_count = 0;
+                    }
+                    exts.truncate(ext_count as usize);
+                    // SAFETY: the driver NUL-terminates every name within its 256 bytes.
+                    let has = |name: &CStr| exts.iter().any(|e| CStr::from_ptr(e.extension_name.as_ptr()) == name);
+                    DeviceInfo {
+                        device_type: props.device_type,
+                        api_version: props.api_version,
+                        graphics_family: graphics_family(&families),
+                        swapchain: has(SWAPCHAIN_EXTENSION),
+                        storage_buffer_class: has(STORAGE_BUFFER_CLASS_EXTENSION),
+                    }
+                })
+                .collect();
+            let Some(chosen) = pick_device(&infos, instance_api) else {
+                eprintln!("litty: no Vulkan device can present and run the shaders (graphics queue, VK_KHR_swapchain, Vulkan 1.1)");
                 return None;
             };
+            let phys = pds[chosen];
+            let info = &infos[chosen];
+            // `pick_device` only returns devices with both.
+            let queue_family = info.graphics_family?;
+            let dev_ext_names = device_extensions(info, instance_api)?;
 
             let vkGetPhysicalDeviceMemoryProperties: unsafe extern "C" fn(
                 VkPhysicalDevice,
@@ -340,8 +439,8 @@ impl VulkanCore {
                 queue_count: 1,
                 p_priorities: &prio,
             };
-            let dev_exts = [c"VK_KHR_swapchain".as_ptr()];
-            let mut dev_info = DevInfo {
+            let dev_exts: Vec<*const c_char> = dev_ext_names.iter().map(|e| e.as_ptr()).collect();
+            let dev_info = DevInfo {
                 s_type: VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
                 p_next: std::ptr::null(),
                 flags: 0,
@@ -349,17 +448,16 @@ impl VulkanCore {
                 p_queue_infos: &q_info,
                 layer_count: 0,
                 pp_layers: std::ptr::null(),
-                ext_count: 1,
+                ext_count: dev_exts.len() as u32,
                 pp_exts: dev_exts.as_ptr(),
                 p_features: std::ptr::null(),
             };
             let mut device: VkDevice = std::ptr::null_mut();
+            // Without VK_KHR_swapchain nothing could ever be presented, so a
+            // device created without it would only fail later.
             if vkCreateDevice(phys, &dev_info as *const _ as *const c_void, std::ptr::null(), &mut device) != VK_SUCCESS {
-                dev_info.ext_count = 0;
-                dev_info.pp_exts = std::ptr::null();
-                if vkCreateDevice(phys, &dev_info as *const _ as *const c_void, std::ptr::null(), &mut device) != VK_SUCCESS {
-                    return None;
-                }
+                eprintln!("litty: could not create the Vulkan device");
+                return None;
             }
 
             let lib = VkLib {
@@ -388,6 +486,7 @@ impl VulkanCore {
                 vkCreateDescriptorSetLayout: load_fn!(vkCreateDescriptorSetLayout),
                 vkCreatePipelineLayout: load_fn!(vkCreatePipelineLayout),
                 vkCreateRenderPass: load_fn!(vkCreateRenderPass),
+                vkDestroyRenderPass: load_fn!(vkDestroyRenderPass),
                 vkCreateGraphicsPipelines: load_fn!(vkCreateGraphicsPipelines),
                 vkCreateDescriptorPool: load_fn!(vkCreateDescriptorPool),
                 vkAllocateDescriptorSets: load_fn!(vkAllocateDescriptorSets),
@@ -410,6 +509,7 @@ impl VulkanCore {
                 vkCmdDraw: load_fn!(vkCmdDraw),
                 vkCmdPipelineBarrier: load_fn!(vkCmdPipelineBarrier),
                 vkCmdCopyBufferToImage: load_fn!(vkCmdCopyBufferToImage),
+                vkCmdCopyImageToBuffer: load_fn!(vkCmdCopyImageToBuffer),
                 vkQueueSubmit: load_fn!(vkQueueSubmit),
                 vkQueueWaitIdle: load_fn!(vkQueueWaitIdle),
                 vkDeviceWaitIdle: load_fn!(vkDeviceWaitIdle),
@@ -422,6 +522,7 @@ impl VulkanCore {
                 vkCreateWaylandSurfaceKHR: load_opt_fn!(vkCreateWaylandSurfaceKHR),
                 vkCreateXlibSurfaceKHR: load_opt_fn!(vkCreateXlibSurfaceKHR),
                 vkCreateXcbSurfaceKHR: load_opt_fn!(vkCreateXcbSurfaceKHR),
+                vkGetPhysicalDeviceSurfaceSupportKHR: load_fn!(vkGetPhysicalDeviceSurfaceSupportKHR),
                 vkGetPhysicalDeviceSurfaceCapabilitiesKHR: load_fn!(vkGetPhysicalDeviceSurfaceCapabilitiesKHR),
                 vkCreateSwapchainKHR: load_fn!(vkCreateSwapchainKHR),
                 vkDestroySwapchainKHR: load_fn!(vkDestroySwapchainKHR),
@@ -448,7 +549,12 @@ impl VulkanCore {
                 queue_family_index: queue_family,
             };
             let mut cmd_pool = 0u64;
-            (lib.vkCreateCommandPool)(device, &pool_info as *const _ as *const c_void, std::ptr::null(), &mut cmd_pool);
+            // A failure from here on leaves the app without a GPU (`vk: None`),
+            // which draws nothing, instead of using null handles. What was
+            // created is leaked: this runs once per process.
+            if !vk_ok((lib.vkCreateCommandPool)(device, &pool_info as *const _ as *const c_void, std::ptr::null(), &mut cmd_pool), "vkCreateCommandPool") {
+                return None;
+            }
 
             #[repr(C)]
             struct CmdAlloc {
@@ -463,15 +569,22 @@ impl VulkanCore {
                 p_next: std::ptr::null(),
                 command_pool: cmd_pool,
                 level: 0,
-                count: 1,
+                count: 2,
             };
-            let mut upload_cmd: VkCommandBuffer = std::ptr::null_mut();
-            (lib.vkAllocateCommandBuffers)(device, &cmd_alloc as *const _ as *const c_void, &mut upload_cmd);
+            // The frame's command buffer and the upload batch's.
+            let mut cmds: [VkCommandBuffer; 2] = [std::ptr::null_mut(); 2];
+            if !vk_ok((lib.vkAllocateCommandBuffers)(device, &cmd_alloc as *const _ as *const c_void, cmds.as_mut_ptr()), "vkAllocateCommandBuffers") {
+                return None;
+            }
+            let [upload_cmd, batch_cmd] = cmds;
 
             let shader_mod = create_shader_module(&lib, device, SHADER_SPV);
             let image_mod = create_shader_module(&lib, device, IMAGE_SPV);
             let nearest_sampler = create_vk_sampler(&lib, device, VK_FILTER_NEAREST);
             let linear_sampler = create_vk_sampler(&lib, device, VK_FILTER_LINEAR);
+            if [shader_mod, image_mod, nearest_sampler, linear_sampler].contains(&0) {
+                return None;
+            }
 
             #[repr(C)]
             #[derive(Copy, Clone)]
@@ -505,7 +618,9 @@ impl VulkanCore {
                 p_bindings: cells_bindings.as_ptr(),
             };
             let mut cells_dset_layout = 0u64;
-            (lib.vkCreateDescriptorSetLayout)(device, &cells_dl_info as *const _ as *const c_void, std::ptr::null(), &mut cells_dset_layout);
+            if !vk_ok((lib.vkCreateDescriptorSetLayout)(device, &cells_dl_info as *const _ as *const c_void, std::ptr::null(), &mut cells_dset_layout), "vkCreateDescriptorSetLayout") {
+                return None;
+            }
 
             let image_bindings = [
                 Binding { binding: 0, descriptor_type: VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, descriptor_count: 1, stage_flags: VK_SHADER_STAGE_ALL_GRAPHICS, p_immutable_samplers: std::ptr::null() },
@@ -520,7 +635,9 @@ impl VulkanCore {
                 p_bindings: image_bindings.as_ptr(),
             };
             let mut image_dset_layout = 0u64;
-            (lib.vkCreateDescriptorSetLayout)(device, &image_dl_info as *const _ as *const c_void, std::ptr::null(), &mut image_dset_layout);
+            if !vk_ok((lib.vkCreateDescriptorSetLayout)(device, &image_dl_info as *const _ as *const c_void, std::ptr::null(), &mut image_dset_layout), "vkCreateDescriptorSetLayout") {
+                return None;
+            }
 
             #[repr(C)]
             struct PipeLayoutInfo {
@@ -542,7 +659,9 @@ impl VulkanCore {
                 push_constant_range_count: 0,
                 p_push_constant_ranges: std::ptr::null(),
             };
-            (lib.vkCreatePipelineLayout)(device, &c_pl_info as *const _ as *const c_void, std::ptr::null(), &mut cells_pipe_layout);
+            if !vk_ok((lib.vkCreatePipelineLayout)(device, &c_pl_info as *const _ as *const c_void, std::ptr::null(), &mut cells_pipe_layout), "vkCreatePipelineLayout") {
+                return None;
+            }
 
             let mut image_pipe_layout = 0u64;
             let i_pl_info = PipeLayoutInfo {
@@ -554,7 +673,9 @@ impl VulkanCore {
                 push_constant_range_count: 0,
                 p_push_constant_ranges: std::ptr::null(),
             };
-            (lib.vkCreatePipelineLayout)(device, &i_pl_info as *const _ as *const c_void, std::ptr::null(), &mut image_pipe_layout);
+            if !vk_ok((lib.vkCreatePipelineLayout)(device, &i_pl_info as *const _ as *const c_void, std::ptr::null(), &mut image_pipe_layout), "vkCreatePipelineLayout") {
+                return None;
+            }
 
             #[repr(C)]
             struct PoolSize {
@@ -585,7 +706,9 @@ impl VulkanCore {
                 p_pool_sizes: pool_sizes.as_ptr(),
             };
             let mut desc_pool = 0u64;
-            (lib.vkCreateDescriptorPool)(device, &dp_info as *const _ as *const c_void, std::ptr::null(), &mut desc_pool);
+            if !vk_ok((lib.vkCreateDescriptorPool)(device, &dp_info as *const _ as *const c_void, std::ptr::null(), &mut desc_pool), "vkCreateDescriptorPool") {
+                return None;
+            }
             let image_pool_sizes = [
                 PoolSize { ty: VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count: IMAGE_DESCRIPTOR_SETS },
                 PoolSize { ty: VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count: IMAGE_DESCRIPTOR_SETS },
@@ -600,7 +723,9 @@ impl VulkanCore {
                 p_pool_sizes: image_pool_sizes.as_ptr(),
             };
             let mut image_desc_pool = 0u64;
-            (lib.vkCreateDescriptorPool)(device, &image_dp_info as *const _ as *const c_void, std::ptr::null(), &mut image_desc_pool);
+            if !vk_ok((lib.vkCreateDescriptorPool)(device, &image_dp_info as *const _ as *const c_void, std::ptr::null(), &mut image_desc_pool), "vkCreateDescriptorPool") {
+                return None;
+            }
 
             #[repr(C)]
             struct DsetAlloc {
@@ -619,11 +744,13 @@ impl VulkanCore {
                 descriptor_set_count: 2,
                 p_set_layouts: layouts.as_ptr(),
             };
-            (lib.vkAllocateDescriptorSets)(device, &ds_alloc as *const _ as *const c_void, cells_dsets.as_mut_ptr());
+            if !vk_ok((lib.vkAllocateDescriptorSets)(device, &ds_alloc as *const _ as *const c_void, cells_dsets.as_mut_ptr()), "vkAllocateDescriptorSets") {
+                return None;
+            }
 
-            let (ubuf0, _, uptr0) = super::resources::alloc_host_buffer(&lib, device, &mem_props, 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-            let (ubuf1, _, uptr1) = super::resources::alloc_host_buffer(&lib, device, &mem_props, 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-            let (iubuf, _, iuptr) = super::resources::alloc_host_buffer(&lib, device, &mem_props, 64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+            let (ubuf0, _, uptr0) = super::resources::alloc_host_buffer(&lib, device, &mem_props, 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)?;
+            let (ubuf1, _, uptr1) = super::resources::alloc_host_buffer(&lib, device, &mem_props, 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)?;
+            let (iubuf, _, iuptr) = super::resources::alloc_host_buffer(&lib, device, &mem_props, 64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)?;
 
             Some(Arc::new(Self {
                 lib,
@@ -631,13 +758,14 @@ impl VulkanCore {
                 phys,
                 device,
                 queue,
+                queue_family,
                 mem_props,
                 cmd_pool,
                 upload_cmd,
                 desc_pool,
                 image_desc_pool,
                 image_pool_lock: parking_lot::Mutex::new(()),
-                staging: parking_lot::Mutex::new(super::resources::Staging::empty()),
+                uploads: parking_lot::Mutex::new(super::upload::Uploads::new(batch_cmd)),
                 shader_mod,
                 image_mod,
                 cells_dset_layout,
@@ -674,7 +802,9 @@ unsafe fn create_shader_module(lib: &VkLib, device: VkDevice, spv: &[u8]) -> VkS
             p_code: aligned.as_ptr(),
         };
         let mut module = 0u64;
-        (lib.vkCreateShaderModule)(device, &info as *const _ as *const c_void, std::ptr::null(), &mut module);
+        if !vk_ok((lib.vkCreateShaderModule)(device, &info as *const _ as *const c_void, std::ptr::null(), &mut module), "vkCreateShaderModule") {
+            return 0;
+        }
         module
     }
 }
@@ -723,12 +853,41 @@ unsafe fn create_vk_sampler(lib: &VkLib, device: VkDevice, filter: u32) -> VkSam
             unnormalized_coordinates: 0,
         };
         let mut sampler = 0u64;
-        (lib.vkCreateSampler)(device, &info as *const _ as *const c_void, std::ptr::null(), &mut sampler);
+        if !vk_ok((lib.vkCreateSampler)(device, &info as *const _ as *const c_void, std::ptr::null(), &mut sampler), "vkCreateSampler") {
+            return 0;
+        }
         sampler
     }
 }
 
-unsafe fn create_render_pass(lib: &VkLib, device: VkDevice, format: TextureFormat, clear: bool) -> VkRenderPass {
+/// What a render pass draws into; it sets the layouts around the pass.
+/// Passes differing only in layouts and load op are compatible, so the
+/// pipelines built for the swapchain passes work in offscreen ones.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PassTarget {
+    /// A swapchain image, presented afterwards.
+    Swapchain,
+    /// A render-target texture, copied from afterwards (`read_pixels`).
+    Offscreen,
+}
+
+/// `(initial, final)` layouts of the color attachment. A clearing pass
+/// discards the old contents, so it starts from `UNDEFINED`.
+fn pass_layouts(target: PassTarget, clear: bool) -> (u32, u32) {
+    let after = match target {
+        PassTarget::Swapchain => VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        PassTarget::Offscreen => VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    };
+    (if clear { VK_IMAGE_LAYOUT_UNDEFINED } else { after }, after)
+}
+
+unsafe fn create_render_pass(
+    lib: &VkLib,
+    device: VkDevice,
+    format: TextureFormat,
+    target: PassTarget,
+    clear: bool,
+) -> VkRenderPass {
     unsafe {
         #[repr(C)]
         struct AttDesc {
@@ -772,6 +931,7 @@ unsafe fn create_render_pass(lib: &VkLib, device: VkDevice, format: TextureForma
             dependency_count: u32,
             p_dependencies: *const c_void,
         }
+        let (initial_layout, final_layout) = pass_layouts(target, clear);
         let att = AttDesc {
             flags: 0,
             format: vk_format(format),
@@ -780,8 +940,8 @@ unsafe fn create_render_pass(lib: &VkLib, device: VkDevice, format: TextureForma
             store_op: VK_ATTACHMENT_STORE_OP_STORE,
             stencil_load_op: VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             stencil_store_op: 1,
-            initial_layout: if clear { VK_IMAGE_LAYOUT_UNDEFINED } else { VK_IMAGE_LAYOUT_PRESENT_SRC_KHR },
-            final_layout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            initial_layout,
+            final_layout,
         };
         let color_ref = AttRef { attachment: 0, layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
         let subpass = SubpassDesc {
@@ -808,7 +968,9 @@ unsafe fn create_render_pass(lib: &VkLib, device: VkDevice, format: TextureForma
             p_dependencies: std::ptr::null(),
         };
         let mut rp = 0u64;
-        (lib.vkCreateRenderPass)(device, &rp_info as *const _ as *const c_void, std::ptr::null(), &mut rp);
+        if !vk_ok((lib.vkCreateRenderPass)(device, &rp_info as *const _ as *const c_void, std::ptr::null(), &mut rp), "vkCreateRenderPass") {
+            return 0;
+        }
         rp
     }
 }
@@ -1101,7 +1263,13 @@ unsafe fn create_graphics_pipeline(
             base_pipeline_index: -1,
         };
         let mut pipe = 0u64;
-        (lib.vkCreateGraphicsPipelines)(device, 0, 1, &pipe_info as *const _ as *const c_void, std::ptr::null(), &mut pipe);
+        // A pipeline handle of 0 makes every draw with it a no-op.
+        if !vk_ok(
+            (lib.vkCreateGraphicsPipelines)(device, 0, 1, &pipe_info as *const _ as *const c_void, std::ptr::null(), &mut pipe),
+            "vkCreateGraphicsPipelines",
+        ) {
+            return 0;
+        }
         pipe
     }
 }
@@ -1127,8 +1295,8 @@ pub fn shared_pipelines(device: &Device, format: TextureFormat) -> RenderPipelin
     }
     let pipes = if let Some(vk) = &device.vk {
         unsafe {
-            let rp_clear = create_render_pass(&vk.lib, vk.device, format, true);
-            let rp_load = create_render_pass(&vk.lib, vk.device, format, false);
+            let rp_clear = create_render_pass(&vk.lib, vk.device, format, PassTarget::Swapchain, true);
+            let rp_load = create_render_pass(&vk.lib, vk.device, format, PassTarget::Swapchain, false);
             let cells = create_graphics_pipeline(
                 &vk.lib,
                 vk.device,
@@ -1185,6 +1353,54 @@ pub fn shared_pipelines(device: &Device, format: TextureFormat) -> RenderPipelin
     *guard = Some((format, pipes.clone()));
     pipes
 }
+
+/// Offscreen render passes per format, `(format, clear, load)`; at most one
+/// entry per `TextureFormat`, created on first use and kept, like the pipelines.
+static OFFSCREEN_PASSES: parking_lot::Mutex<Vec<(TextureFormat, VkRenderPass, VkRenderPass)>> =
+    parking_lot::const_mutex(Vec::new());
+
+/// `(clear, load)` render passes for drawing into a `format` render target,
+/// or `None` (reported) when they could not be created.
+pub(super) fn offscreen_render_passes(vk: &VulkanCore, format: TextureFormat) -> Option<(VkRenderPass, VkRenderPass)> {
+    // SAFETY: `vk.device` is a live device and `vk.lib` its function table;
+    // a pass being destroyed was just created and never used.
+    cached_passes(
+        &mut OFFSCREEN_PASSES.lock(),
+        format,
+        || unsafe {
+            (
+                create_render_pass(&vk.lib, vk.device, format, PassTarget::Offscreen, true),
+                create_render_pass(&vk.lib, vk.device, format, PassTarget::Offscreen, false),
+            )
+        },
+        |rp| unsafe { (vk.lib.vkDestroyRenderPass)(vk.device, rp, std::ptr::null()) },
+    )
+}
+
+/// The cached `(clear, load)` passes of `format`, else `create` them. Only a
+/// complete pair is cached; a half-made pair is destroyed, so a failure is
+/// retried on the next render target instead of handing out a null pass.
+fn cached_passes(
+    cache: &mut Vec<(TextureFormat, VkRenderPass, VkRenderPass)>,
+    format: TextureFormat,
+    create: impl FnOnce() -> (VkRenderPass, VkRenderPass),
+    mut destroy: impl FnMut(VkRenderPass),
+) -> Option<(VkRenderPass, VkRenderPass)> {
+    if let Some(&(_, clear, load)) = cache.iter().find(|p| p.0 == format) {
+        return Some((clear, load));
+    }
+    let (clear, load) = create();
+    if clear == 0 || load == 0 {
+        [clear, load].into_iter().filter(|&rp| rp != 0).for_each(&mut destroy);
+        return None;
+    }
+    cache.push((format, clear, load));
+    Some((clear, load))
+}
+
+/// `custom-shader` needs GLSL to SPIR-V translation and offscreen passes,
+/// which this backend does not have yet.
+pub const CUSTOM_SHADERS_SUPPORTED: bool = false;
 
 impl Device {
     /// Custom shaders need GLSL to SPIR-V translation and offscreen targets,
@@ -1243,6 +1459,96 @@ mod tests {
         assert_eq!(graphics_family(&families), Some(2));
         assert_eq!(graphics_family(&families[..2]), None);
         assert_eq!(graphics_family(&[]), None);
+    }
+
+    #[test]
+    fn only_complete_offscreen_pass_pairs_are_cached() {
+        let mut cache = Vec::new();
+        let format = TextureFormat::Rgba8Unorm;
+        let mut destroyed = Vec::new();
+        // The load pass failed: the clear pass is destroyed, nothing is kept.
+        assert_eq!(cached_passes(&mut cache, format, || (7, 0), |rp| destroyed.push(rp)), None);
+        assert_eq!(destroyed, [7]);
+        assert!(cache.is_empty(), "a null pass must never be handed out later");
+        // The next render target retries, and that pair is reused.
+        assert_eq!(cached_passes(&mut cache, format, || (8, 9), |_| unreachable!()), Some((8, 9)));
+        assert_eq!(cached_passes(&mut cache, format, || unreachable!(), |_| unreachable!()), Some((8, 9)));
+    }
+
+    #[test]
+    fn render_targets_end_ready_to_be_read_back() {
+        // A render target's pass must not leave it in PRESENT_SRC_KHR, which
+        // is only valid for swapchain images; `read_pixels` copies from it.
+        assert_eq!(pass_layouts(PassTarget::Offscreen, true), (VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL));
+        assert_eq!(
+            pass_layouts(PassTarget::Offscreen, false),
+            (VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+        );
+        assert_eq!(pass_layouts(PassTarget::Swapchain, true), (VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR));
+        assert_eq!(
+            pass_layouts(PassTarget::Swapchain, false),
+            (VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+        );
+    }
+
+    #[test]
+    fn device_properties_match_the_c_layout() {
+        // `vkGetPhysicalDeviceProperties` writes 824 bytes on LP64 targets.
+        assert_eq!(std::mem::size_of::<VkPhysicalDeviceProperties>(), 824);
+        assert_eq!(std::mem::offset_of!(VkPhysicalDeviceProperties, limits_and_sparse), 296);
+    }
+
+    #[test]
+    fn the_instance_asks_for_vulkan_1_1_only_when_the_loader_has_it() {
+        assert_eq!(instance_api_version(None), VK_API_VERSION_1_0, "1.0 loader");
+        assert_eq!(instance_api_version(Some(VK_API_VERSION_1_0 | 250)), VK_API_VERSION_1_0);
+        assert_eq!(instance_api_version(Some(VK_API_VERSION_1_1)), VK_API_VERSION_1_1);
+        assert_eq!(instance_api_version(Some(vk_api_version(1, 4) | 341)), VK_API_VERSION_1_1);
+    }
+
+    fn info(device_type: u32, api_version: u32) -> DeviceInfo {
+        DeviceInfo { device_type, api_version, graphics_family: Some(0), swapchain: true, storage_buffer_class: false }
+    }
+
+    /// `shader.spv` uses `SPV_KHR_storage_buffer_storage_class`
+    /// (`VUID-VkShaderModuleCreateInfo-pCode-08742`).
+    #[test]
+    fn shaders_get_vulkan_1_1_or_the_storage_buffer_extension() {
+        let gpu = info(1, vk_api_version(1, 3));
+        assert_eq!(device_extensions(&gpu, VK_API_VERSION_1_1), Some(vec![SWAPCHAIN_EXTENSION]));
+        // A 1.0 instance caps the device at 1.0, so the extension is needed.
+        let gpu_with_ext = DeviceInfo { storage_buffer_class: true, ..gpu };
+        assert_eq!(
+            device_extensions(&gpu_with_ext, VK_API_VERSION_1_0),
+            Some(vec![SWAPCHAIN_EXTENSION, STORAGE_BUFFER_CLASS_EXTENSION])
+        );
+        assert_eq!(device_extensions(&gpu, VK_API_VERSION_1_0), None, "no way to run the shaders");
+        assert_eq!(device_extensions(&info(1, VK_API_VERSION_1_0), VK_API_VERSION_1_1), None, "1.0 device");
+    }
+
+    #[test]
+    fn devices_that_cannot_draw_or_present_are_unusable() {
+        let gpu = info(1, VK_API_VERSION_1_1);
+        assert_eq!(device_extensions(&DeviceInfo { swapchain: false, ..gpu }, VK_API_VERSION_1_1), None);
+        assert_eq!(device_extensions(&DeviceInfo { graphics_family: None, ..gpu }, VK_API_VERSION_1_1), None);
+    }
+
+    #[test]
+    fn a_gpu_is_picked_over_a_software_renderer() {
+        const INTEGRATED: u32 = 1;
+        const DISCRETE: u32 = 2;
+        let api = VK_API_VERSION_1_1;
+        let lavapipe = info(VK_PHYSICAL_DEVICE_TYPE_CPU, api);
+        // lavapipe enumerated first must not win over the real GPU.
+        assert_eq!(pick_device(&[lavapipe, info(INTEGRATED, api)], api), Some(1));
+        // Among GPUs the enumeration order (the system's preference) is kept.
+        assert_eq!(pick_device(&[info(DISCRETE, api), info(INTEGRATED, api)], api), Some(0));
+        assert_eq!(pick_device(&[info(INTEGRATED, api), info(DISCRETE, api)], api), Some(0));
+        // An unusable GPU is skipped; software rendering is the last resort.
+        let broken = DeviceInfo { swapchain: false, ..info(DISCRETE, api) };
+        assert_eq!(pick_device(&[broken, lavapipe], api), Some(1));
+        assert_eq!(pick_device(&[broken], api), None);
+        assert_eq!(pick_device(&[], api), None);
     }
 
     /// Window B must not reuse the shared command buffer while window A's

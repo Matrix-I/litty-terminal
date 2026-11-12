@@ -35,3 +35,6 @@ pub(crate) use types::{ColorSpace, EventSink, MenuCommand, PlatformEvent, Window
 // Only the macOS backend delivers events from OS callbacks through a slot.
 #[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
 pub(crate) use types::SinkSlot;
+
+#[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
+pub(crate) use imp::exchange_directories;

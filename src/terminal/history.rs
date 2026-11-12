@@ -17,7 +17,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::sync::{Arc, mpsc::{self, Receiver, SyncSender}};
 
 /// Maximum number of unique history commands to keep in memory.
 const MAX_HISTORY_ITEMS: usize = 10_000;
@@ -72,12 +72,19 @@ pub struct HistoryStore {
     /// Unique commands, newest first.
     pub items: VecDeque<String>,
     pub session_commands: VecDeque<String>,
-    file_mtimes: Vec<(PathBuf, Option<SystemTime>)>,
+    worker: Option<HistoryWorker>,
+    revision: u64,
+    error: Option<&'static str>,
 }
 
 impl HistoryStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn isolated() -> Self {
+        Self { worker: Some(HistoryWorker::start_with(Arc::new(|| {}), Vec::new, Vec::new).unwrap()), ..Self::default() }
     }
 
     /// Record a newly executed command from the active shell session.
@@ -107,58 +114,73 @@ impl HistoryStore {
         }
     }
 
-    /// Delete `items[item_index]` from memory and disk history.
+    /// Set the completion notifier without giving the terminal layer UI dependencies.
+    pub fn set_wake(&mut self, wake: Arc<dyn Fn() + Send + Sync>) -> std::io::Result<()> {
+        self.worker = Some(HistoryWorker::start(wake)?);
+        Ok(())
+    }
+
+    fn enqueue(&mut self, request: HistoryRequest) -> bool {
+        if self.worker.is_none() {
+            match HistoryWorker::start(Arc::new(|| {})) {
+                Ok(worker) => self.worker = Some(worker),
+                Err(_) => { self.error = Some("Unable to start the history worker."); return false; }
+            }
+        }
+        let worker = self.worker.as_ref().unwrap();
+        match worker.requests.try_send(HistoryOperation { request, results: worker.reply.clone(), wake: worker.wake.clone() }) {
+            Ok(()) => true,
+            Err(mpsc::TrySendError::Full(_)) => {
+                self.error = Some("History is busy. Try again after pending work finishes.");
+                false
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                self.error = Some("The history worker is unavailable.");
+                false
+            }
+        }
+    }
+
+    /// Preserve the selected entry unless its deletion was accepted by the worker.
     pub fn remove(&mut self, item_index: usize) -> Option<String> {
-        let removed_cmd = self.items.remove(item_index)?;
-        self.session_commands.retain(|c| c != &removed_cmd);
-
-        // Remove from primary disk history file off the main UI thread
-        remove_from_disk_history(&removed_cmd);
-        Some(removed_cmd)
+        let command = self.items.get(item_index)?.clone();
+        if !self.enqueue(HistoryRequest::Delete(command.clone())) { return None; }
+        self.revision = self.revision.wrapping_add(1);
+        self.items.remove(item_index);
+        self.session_commands.retain(|c| c != &command);
+        Some(command)
     }
 
-    /// Reload history files if modification times on disk changed.
+    /// Discovery, metadata and file reads all execute on the ordered worker.
     pub fn reload_if_changed(&mut self) {
-        let mut changed = false;
-        for (path, last_mtime) in &self.file_mtimes {
-            let cur_mtime = get_mtime(path);
-            if cur_mtime != *last_mtime {
-                changed = true;
-                break;
-            }
-        }
-        if changed || self.file_mtimes.is_empty() || self.items.is_empty() {
-            self.reload();
-        }
+        self.reload();
     }
 
-    /// Force reload history from disk files.
     pub fn reload(&mut self) {
-        let files = candidate_history_files();
-        let mut new_mtimes = Vec::with_capacity(files.len());
-        let mut seen: HashSet<Box<str>> = HashSet::with_capacity(MAX_HISTORY_ITEMS);
-        let mut unique_items: VecDeque<String> = VecDeque::with_capacity(MAX_HISTORY_ITEMS);
+        let revision = self.revision.wrapping_add(1);
+        if self.enqueue(HistoryRequest::Reload(revision)) { self.revision = revision; }
+    }
 
-        // Include current in-session commands at the top
-        for cmd in &self.session_commands {
-            if seen.insert(cmd.as_str().into()) {
-                unique_items.push_back(cmd.clone());
-                if unique_items.len() >= MAX_HISTORY_ITEMS {
-                    break;
+    pub fn take_error(&mut self) -> Option<&'static str> { self.error.take() }
+
+    /// Apply only current snapshots, retaining commands recorded since the request.
+    pub fn poll(&mut self) -> bool {
+        let mut changed = false;
+        while let Some(result) = self.worker.as_ref().and_then(|w| w.results.try_recv().ok()) {
+            match result {
+                HistoryResult::Reload(revision, Ok(snapshot)) if revision == self.revision => {
+                    if snapshot.read_failed { self.error = Some("Some shell history files could not be read."); }
+                    let mut seen = HashSet::new();
+                    self.items = self.session_commands.iter().cloned().chain(snapshot.items)
+                        .filter(|c| seen.insert(c.clone())).take(MAX_HISTORY_ITEMS).collect();
+                    changed = true;
                 }
+                HistoryResult::Reload(_, Err(())) => self.error = Some("Unable to read shell history."),
+                HistoryResult::Delete(Err(())) => self.error = Some("Unable to save the history deletion. Reopen history to refresh."),
+                _ => {}
             }
         }
-
-        for file in &files {
-            let mtime = get_mtime(file);
-            new_mtimes.push((file.clone(), mtime));
-            if unique_items.len() < MAX_HISTORY_ITEMS && file.exists() {
-                parse_history_file_dedup(file, &mut seen, &mut unique_items, MAX_HISTORY_ITEMS);
-            }
-        }
-
-        self.file_mtimes = new_mtimes;
-        self.items = unique_items;
+        changed
     }
 
     /// Items matching `query` under the FZF rules, ordered by `sort`. An empty
@@ -195,9 +217,117 @@ impl HistoryStore {
     }
 }
 
-/// Retrieve file modification time if accessible.
-fn get_mtime(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+const HISTORY_QUEUE_CAPACITY: usize = 16;
+
+enum HistoryRequest { Reload(u64), Delete(String) }
+enum HistoryResult { Reload(u64, Result<HistorySnapshot, ()>), Delete(Result<(), ()>) }
+#[derive(Clone)]
+struct HistorySnapshot {
+    items: VecDeque<String>,
+    read_failed: bool,
+}
+struct HistoryCache {
+    fingerprint: Vec<(PathBuf, Option<(std::time::SystemTime, u64)>)>,
+    snapshot: HistorySnapshot,
+}
+struct HistoryOperation {
+    request: HistoryRequest,
+    results: SyncSender<HistoryResult>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+}
+struct HistoryWorker {
+    requests: SyncSender<HistoryOperation>,
+    results: Receiver<HistoryResult>,
+    reply: SyncSender<HistoryResult>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+}
+impl std::fmt::Debug for HistoryWorker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("HistoryWorker") }
+}
+impl HistoryWorker {
+    fn start(wake: Arc<dyn Fn() + Send + Sync>) -> std::io::Result<Self> {
+        // All windows share one writer: independently renaming the same history
+        // file can otherwise undo another window's accepted deletion.
+        static REQUESTS: std::sync::OnceLock<std::io::Result<SyncSender<HistoryOperation>>> = std::sync::OnceLock::new();
+        let requests = REQUESTS.get_or_init(|| Self::spawn_service(candidate_history_files, active_shell_history_files))
+            .as_ref().map_err(|error| std::io::Error::new(error.kind(), "history worker unavailable"))?.clone();
+        Ok(Self::client(requests, wake))
+    }
+
+    fn client(requests: SyncSender<HistoryOperation>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
+        let (reply, results) = mpsc::sync_channel(HISTORY_QUEUE_CAPACITY);
+        Self { requests, results, reply, wake }
+    }
+
+    #[cfg(test)]
+    fn start_with(wake: Arc<dyn Fn() + Send + Sync>, discover: impl Fn() -> Vec<PathBuf> + Send + 'static, deletion_files: impl Fn() -> Vec<PathBuf> + Send + 'static) -> std::io::Result<Self> {
+        Ok(Self::client(Self::spawn_service(discover, deletion_files)?, wake))
+    }
+
+    fn spawn_service(
+        discover: impl Fn() -> Vec<PathBuf> + Send + 'static,
+        deletion_files: impl Fn() -> Vec<PathBuf> + Send + 'static,
+    ) -> std::io::Result<SyncSender<HistoryOperation>> {
+        Self::spawn_service_using(discover, deletion_files, |work| std::thread::Builder::new().name("litty-history".into()).stack_size(128 * 1024).spawn(work).map(|_| ()))
+    }
+
+    fn spawn_service_using(
+        discover: impl Fn() -> Vec<PathBuf> + Send + 'static,
+        deletion_files: impl Fn() -> Vec<PathBuf> + Send + 'static,
+        spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
+    ) -> std::io::Result<SyncSender<HistoryOperation>> {
+        let (requests, rx) = mpsc::sync_channel::<HistoryOperation>(HISTORY_QUEUE_CAPACITY);
+        spawn(Box::new(move || {
+            let mut cache = None;
+            while let Ok(operation) = rx.recv() {
+                let result = match operation.request {
+                    HistoryRequest::Reload(revision) => HistoryResult::Reload(revision, load_history(discover(), &mut cache).map_err(|_| ())),
+                    HistoryRequest::Delete(command) => {
+                        cache = None;
+                        let result = deletion_files().iter().try_for_each(|path| remove_command_from_file(path, &command).map(|_| ()));
+                        HistoryResult::Delete(result.map_err(|_| ()))
+                    }
+                };
+                if operation.results.send(result).is_ok() { (operation.wake)(); }
+            }
+        }))?;
+        Ok(requests)
+    }
+}
+
+fn load_history(files: Vec<PathBuf>, cache: &mut Option<HistoryCache>) -> std::io::Result<HistorySnapshot> {
+    let mut fingerprint = Vec::with_capacity(files.len());
+    let mut first_error = None;
+    for file in files {
+        let metadata = match std::fs::metadata(&file).and_then(|metadata| metadata.modified().map(|mtime| (mtime, metadata.len()))) {
+            Ok(metadata) => Some(metadata),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => { first_error.get_or_insert(error); continue; }
+        };
+        fingerprint.push((file, metadata));
+    }
+    if first_error.is_none()
+        && let Some(previous) = cache.as_ref().filter(|previous| previous.fingerprint == fingerprint) {
+            return Ok(previous.snapshot.clone());
+        }
+    let mut snapshot = HistorySnapshot { items: VecDeque::new(), read_failed: false };
+    let mut seen = HashSet::new();
+    for (file, metadata) in &fingerprint {
+        if metadata.is_some() && snapshot.items.len() < MAX_HISTORY_ITEMS
+            && let Err(error) = parse_history_file_dedup(file, &mut seen, &mut snapshot.items, MAX_HISTORY_ITEMS) {
+                first_error.get_or_insert(error);
+            }
+    }
+    if let Some(error) = first_error {
+        // Optional unreadable files must not hide successfully loaded history.
+        // Retry partial snapshots next time instead of caching them as clean.
+        *cache = None;
+        if snapshot.items.is_empty() { return Err(error); }
+        snapshot.read_failed = true;
+    } else {
+        *cache = Some(HistoryCache { fingerprint, snapshot: snapshot.clone() });
+    }
+    Ok(snapshot)
 }
 
 /// Candidate history file locations ordered by priority.
@@ -420,8 +550,8 @@ fn parse_history_file_dedup(
     seen: &mut HashSet<Box<str>>,
     out: &mut VecDeque<String>,
     max_items: usize,
-) {
-    let Ok(bytes) = std::fs::read(path) else { return };
+) -> std::io::Result<()> {
+    let bytes = std::fs::read(path)?;
     if is_fish_history(path) {
         for entry in split_fish_entries(&bytes).into_iter().rev() {
             if let Some(cmd) = entry.command
@@ -433,7 +563,7 @@ fn parse_history_file_dedup(
                     }
                 }
         }
-        return;
+        return Ok(());
     }
 
     let zsh = is_zsh_history(path);
@@ -490,6 +620,7 @@ fn parse_history_file_dedup(
                 }
             }
     }
+    Ok(())
 }
 
 /// Parse shell history file into commands (appends in reverse-chronological order).
@@ -619,39 +750,6 @@ fn active_shell_history_files() -> Vec<PathBuf> {
             files.push(f);
         }
     files
-}
-
-/// Remove a deleted command from the active shell's history file on a background thread
-/// so `sync_all()` (`fsync`) never stalls the main UI thread.
-fn remove_from_disk_history(cmd_to_remove: &str) {
-    let files = active_shell_history_files();
-    if files.is_empty() {
-        return;
-    }
-    let cmd = cmd_to_remove.to_string();
-    static IN_FLIGHT_HISTORY_DEL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    if IN_FLIGHT_HISTORY_DEL.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 4 {
-        IN_FLIGHT_HISTORY_DEL.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-        return;
-    }
-    if std::thread::Builder::new()
-        .name("history-del".into())
-        .stack_size(64 * 1024)
-        .spawn(move || {
-            for path in files {
-                if !path.exists() {
-                    continue;
-                }
-                if let Err(e) = remove_command_from_file(&path, &cmd) {
-                    eprintln!("litty: failed to update history file {path:?}: {e}");
-                }
-            }
-            IN_FLIGHT_HISTORY_DEL.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-        })
-        .is_err()
-    {
-        IN_FLIGHT_HISTORY_DEL.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-    }
 }
 
 /// Parse an FZF query string into individual match terms.
@@ -1069,6 +1167,155 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reload_does_not_perform_filesystem_work_on_the_caller() {
+        let mut store = HistoryStore::new();
+        store.reload_if_changed();
+        assert!(store.items.is_empty(), "reload must enqueue work instead of discovering/statting history on the UI thread");
+    }
+
+    #[test]
+    fn blocked_discovery_never_blocks_ui_work_and_completion_wakes_the_consumer() {
+        let path = temp_history(".bash_history", b"disk command\n");
+        let read_path = path.clone();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let mut store = HistoryStore::new();
+        store.worker = Some(HistoryWorker::start_with(Arc::new(move || { let _ = wake_tx.send(()); }), move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            vec![read_path.clone()]
+        }, Vec::new).unwrap());
+        store.reload_if_changed();
+        entered_rx.recv().unwrap();
+        store.add_session_command("UI remains responsive");
+        assert_eq!(store.items[0], "UI remains responsive");
+        release_tx.send(()).unwrap();
+        wake_rx.recv().unwrap();
+        assert!(store.poll());
+        assert_eq!(store.items, ["UI remains responsive", "disk command"]);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn closing_a_client_with_a_full_reply_queue_does_not_strand_the_service() {
+        let requests = HistoryWorker::spawn_service(Vec::new, Vec::new).unwrap();
+        let first = HistoryWorker::client(requests.clone(), Arc::new(|| {}));
+        for revision in 0..=HISTORY_QUEUE_CAPACITY {
+            requests.send(HistoryOperation { request: HistoryRequest::Reload(revision as u64), results: first.reply.clone(), wake: first.wake.clone() }).unwrap();
+        }
+        drop(first);
+        let second = HistoryWorker::client(requests.clone(), Arc::new(|| {}));
+        requests.send(HistoryOperation { request: HistoryRequest::Reload(99), results: second.reply.clone(), wake: second.wake.clone() }).unwrap();
+        assert!(matches!(second.results.recv_timeout(std::time::Duration::from_secs(3)).unwrap(), HistoryResult::Reload(99, Ok(_))));
+    }
+
+    #[test]
+    fn ordered_worker_keeps_both_deletions_and_discovers_off_the_caller() {
+        let path = temp_history(".bash_history", b"first\nsecond\nkeep\n");
+        let read_path = path.clone();
+        let delete_path = path.clone();
+        let caller = std::thread::current().id();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let requests = HistoryWorker::spawn_service(move || {
+            assert_ne!(std::thread::current().id(), caller);
+            vec![read_path.clone()]
+        }, move || vec![delete_path.clone()]).unwrap();
+        let mut first = HistoryStore::new();
+        let mut second = HistoryStore::new();
+        let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || { let _ = wake_tx.send(()); });
+        first.worker = Some(HistoryWorker::client(requests.clone(), notify.clone()));
+        second.worker = Some(HistoryWorker::client(requests, notify));
+        first.items = VecDeque::from(["first".into(), "second".into(), "keep".into()]);
+        second.items = first.items.clone();
+        first.reload(); // This snapshot must not resurrect the next deletion.
+        assert_eq!(first.remove(0).as_deref(), Some("first"));
+        assert_eq!(second.remove(1).as_deref(), Some("second"));
+        first.reload();
+        first.add_session_command("new session");
+        for _ in 0..4 { wake_rx.recv().unwrap(); }
+        assert!(first.poll());
+        second.poll();
+        assert_eq!(first.items, ["new session", "keep"]);
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep\n");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn history_worker_spawn_failure_is_reported_without_filesystem_work() {
+        let result = HistoryWorker::spawn_service_using(|| panic!("discovery must not run"), || panic!("deletion must not run"), |_| Err(std::io::Error::other("injected spawn failure")));
+        assert!(matches!(result, Err(error) if error.to_string() == "injected spawn failure"));
+    }
+
+    #[test]
+    fn rejected_deletion_preserves_the_entry_and_reports_full_or_disconnected() {
+        let (requests, receiver) = mpsc::sync_channel(HISTORY_QUEUE_CAPACITY);
+        let mut store = HistoryStore::new();
+        store.worker = Some(HistoryWorker::client(requests, Arc::new(|| {})));
+        store.add_session_command("preserved");
+        for _ in 0..HISTORY_QUEUE_CAPACITY { store.reload(); }
+        assert_eq!(store.remove(0), None);
+        assert_eq!(store.items[0], "preserved");
+        assert_eq!(store.session_commands[0], "preserved");
+        assert!(store.take_error().unwrap().contains("busy"));
+        drop(receiver);
+        assert_eq!(store.remove(0), None);
+        assert!(store.take_error().unwrap().contains("unavailable"));
+        assert_eq!(store.items[0], "preserved");
+    }
+
+    #[test]
+    fn stale_snapshot_cannot_resurrect_an_accepted_deletion() {
+        let (requests, _receiver) = mpsc::sync_channel(HISTORY_QUEUE_CAPACITY);
+        let mut store = HistoryStore::new();
+        store.worker = Some(HistoryWorker::client(requests, Arc::new(|| {})));
+        store.add_session_command("deleted");
+        store.reload();
+        let revision = store.revision;
+        store.worker.as_ref().unwrap().reply.send(HistoryResult::Reload(revision, Ok(HistorySnapshot { items: VecDeque::from(["deleted".into()]), read_failed: false }))).unwrap();
+        assert_eq!(store.remove(0).as_deref(), Some("deleted"));
+        assert!(!store.poll());
+        assert!(store.items.is_empty());
+    }
+
+    #[test]
+    fn unreadable_optional_history_preserves_readable_candidates_and_reports_partial_failure() {
+        let path = temp_history(".zsh_history", b"readable command\n");
+        let paths = vec![path.parent().unwrap().to_owned(), path.clone()];
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let mut store = HistoryStore::new();
+        store.worker = Some(HistoryWorker::start_with(Arc::new(move || { let _ = wake_tx.send(()); }), move || paths.clone(), Vec::new).unwrap());
+        store.reload();
+        wake_rx.recv().unwrap();
+        store.poll();
+        assert_eq!(store.items, ["readable command"], "an unreadable optional candidate must not hide valid history");
+        assert!(store.take_error().unwrap().contains("read"));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn worker_io_errors_complete_and_notify_without_logging_commands() {
+        let path = temp_history(".bash_history", b"private command\n");
+        let invalid = path.parent().unwrap().to_owned(); // Reading a directory fails on both supported OSes.
+        let invalid_delete = invalid.clone();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let mut store = HistoryStore::new();
+        store.worker = Some(HistoryWorker::start_with(Arc::new(move || { let _ = wake_tx.send(()); }), move || vec![invalid.clone()], move || vec![invalid_delete.clone()]).unwrap());
+        store.add_session_command("private command");
+        store.reload();
+        wake_rx.recv().unwrap();
+        assert!(!store.poll());
+        assert_eq!(store.take_error(), Some("Unable to read shell history."));
+        store.remove(0).unwrap();
+        wake_rx.recv().unwrap();
+        store.poll();
+        let error = store.take_error().unwrap();
+        assert!(error.contains("Unable to save"));
+        assert!(!error.contains("private command"));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn parse_fzf_query_tokens() {
         let terms = parse_fzf_query("^git 'status !commit feat$");
         assert_eq!(
@@ -1252,16 +1499,17 @@ mod tests {
 
     #[test]
     fn reload_if_changed_with_session_command() {
+        let path = temp_history(".bash_history", b"disk command\n");
+        let files = vec![path.clone()];
+        let (wake_tx, wake_rx) = mpsc::sync_channel(1);
         let mut store = HistoryStore::new();
-        store.add_session_command("prompt_command_before_open");
-        assert_eq!(store.items.len(), 1);
-        assert!(store.file_mtimes.is_empty());
-
+        store.worker = Some(HistoryWorker::start_with(Arc::new(move || { wake_tx.send(()).unwrap(); }), move || files.clone(), Vec::new).unwrap());
         store.reload_if_changed();
-        // file_mtimes is now populated
-        assert!(!store.file_mtimes.is_empty());
-        // prompt command is still preserved at the top
-        assert_eq!(store.items[0], "prompt_command_before_open");
+        store.add_session_command("prompt_command_before_open");
+        wake_rx.recv().unwrap();
+        assert!(store.poll());
+        assert_eq!(store.items, ["prompt_command_before_open", "disk command"]);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]

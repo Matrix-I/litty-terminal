@@ -379,6 +379,7 @@ impl EventHandler<AppEvent> for App {
             AppEvent::WakeUp => {
                 self.waker.rearm();
                 for s in &mut self.windows {
+                    s.history_search.poll();
                     handle_terminal_requests(s);
                     handle_ai_requests(s, &self.waker);
                     // An occluded window draws again once it is shown (`Occluded(false)`).
