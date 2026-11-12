@@ -7,12 +7,14 @@
 //! - `resources`: Host-visible coherent `HostBuffer<T>` and 2D `Texture`.
 //! - `surface`: Wayland / X11 `VkSurfaceKHR`, `VkSwapchainKHR` (`FIFO`, `minImageCount = 2`), and `shrink_drawables`.
 //! - `pass`: `CommandEncoder` and `RenderPass` draw encoding.
+//! - `upload`: texture uploads batched into the next frame's submission.
 
 mod device;
 mod ffi;
 mod pass;
 mod resources;
 mod surface;
+mod upload;
 
 pub use device::{shared_device_and_queue, shared_pipelines, Device, Queue, RenderPipelines, CUSTOM_SHADERS_SUPPORTED};
 pub use ffi::ObjPtr;

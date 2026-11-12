@@ -7,6 +7,7 @@ use super::device::{Queue, VulkanCore};
 use super::ffi::*;
 use super::resources::{HostBuffer, Texture};
 use super::surface::SurfaceFrame;
+use super::upload::SubmitInfo;
 
 pub struct CommandEncoder {
     vk: Option<Arc<VulkanCore>>,
@@ -30,6 +31,8 @@ impl CommandEncoder {
                     p_inheritance_info: std::ptr::null(),
                 };
                 vk.wait_for_last_frame();
+                // Every submitted frame has run, and with it every upload batch.
+                vk.uploads.lock().free_retired(vk);
                 (vk.lib.vkResetCommandBuffer)(vk.upload_cmd, 0);
                 (vk.lib.vkBeginCommandBuffer)(vk.upload_cmd, &b_info as *const _ as *const c_void);
             }
@@ -99,38 +102,28 @@ impl CommandEncoder {
     pub fn present_and_submit(self, frame: SurfaceFrame) {
         let Some(vk) = &self.vk else { return };
         unsafe {
-            if !vk_ok((vk.lib.vkEndCommandBuffer)(vk.upload_cmd), "vkEndCommandBuffer") {
-                return;
-            }
-            #[repr(C)]
-            struct SubmitInfo {
-                s_type: u32,
-                p_next: *const c_void,
-                wait_semaphore_count: u32,
-                p_wait_semaphores: *const VkSemaphore,
-                p_wait_dst_stage_mask: *const VkFlags,
-                command_buffer_count: u32,
-                p_command_buffers: *const VkCommandBuffer,
-                signal_semaphore_count: u32,
-                p_signal_semaphores: *const VkSemaphore,
-            }
-            let wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            let submit = SubmitInfo {
-                s_type: VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                p_next: std::ptr::null(),
-                wait_semaphore_count: 1,
-                p_wait_semaphores: &frame.image_avail_sem,
-                p_wait_dst_stage_mask: &wait_stage,
-                command_buffer_count: 1,
-                p_command_buffers: &vk.upload_cmd,
-                signal_semaphore_count: 1,
-                p_signal_semaphores: &frame.render_done_sem,
+            // Pending uploads run first, in the same submission.
+            let mut uploads = vk.uploads.lock();
+            let mut cmds = [std::ptr::null_mut(); 2];
+            let count = match uploads.take_for_frame(vk) {
+                Some(batch) => {
+                    cmds = [batch, vk.upload_cmd];
+                    2
+                }
+                None => {
+                    cmds[0] = vk.upload_cmd;
+                    1
+                }
             };
-            let submitted = (vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, frame.fence);
-            // A failed submit never signals the fence or `render_done_sem`:
-            // recording the fence would make every other window wait for it
-            // forever, and presenting would wait on the semaphore forever.
-            if !vk_ok(submitted, "vkQueueSubmit") {
+            let wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            let submit = SubmitInfo::frame(&cmds[..count], &frame.image_avail_sem, &wait_stage, &frame.render_done_sem);
+            let submitted = vk_ok((vk.lib.vkEndCommandBuffer)(vk.upload_cmd), "vkEndCommandBuffer")
+                && vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, frame.fence), "vkQueueSubmit");
+            // A frame that was not submitted never signals the fence or
+            // `render_done_sem`: recording the fence would make every other
+            // window wait for it forever, and presenting would wait on the
+            // semaphore forever.
+            if !submitted {
                 // The surface waits for this fence before its next frame; an
                 // empty submit signals it so that wait cannot hang.
                 (vk.lib.vkQueueSubmit)(vk.queue, 0, std::ptr::null(), frame.fence);
@@ -170,32 +163,14 @@ impl CommandEncoder {
     pub fn submit_and_wait(self) {
         let Some(vk) = &self.vk else { return };
         unsafe {
-            (vk.lib.vkEndCommandBuffer)(vk.upload_cmd);
-            #[repr(C)]
-            struct SubmitInfo {
-                s_type: u32,
-                p_next: *const c_void,
-                wait_semaphore_count: u32,
-                p_wait_semaphores: *const VkSemaphore,
-                p_wait_dst_stage_mask: *const VkFlags,
-                command_buffer_count: u32,
-                p_command_buffers: *const VkCommandBuffer,
-                signal_semaphore_count: u32,
-                p_signal_semaphores: *const VkSemaphore,
-            }
-            let submit = SubmitInfo {
-                s_type: VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                p_next: std::ptr::null(),
-                wait_semaphore_count: 0,
-                p_wait_semaphores: std::ptr::null(),
-                p_wait_dst_stage_mask: std::ptr::null(),
-                command_buffer_count: 1,
-                p_command_buffers: &vk.upload_cmd,
-                signal_semaphore_count: 0,
-                p_signal_semaphores: std::ptr::null(),
-            };
+            let mut uploads = vk.uploads.lock();
+            let batch = uploads.take_for_frame(vk);
+            let cmds: Vec<VkCommandBuffer> = batch.into_iter().chain([vk.upload_cmd]).collect();
+            assert!(vk_ok((vk.lib.vkEndCommandBuffer)(vk.upload_cmd), "vkEndCommandBuffer"));
+            let submit = SubmitInfo::commands(&cmds);
             assert!(vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, 0), "vkQueueSubmit"));
             (vk.lib.vkQueueWaitIdle)(vk.queue);
+            uploads.free_retired(vk);
         }
     }
 }
