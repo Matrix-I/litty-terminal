@@ -74,6 +74,9 @@ pub(super) const VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO: u32 = 40;
 pub(super) const VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO: u32 = 42;
 pub(super) const VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO: u32 = 43;
 pub(super) const VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER: u32 = 45;
+// Read-back only (`Texture::read_pixels`, GPU tests).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const VK_STRUCTURE_TYPE_MEMORY_BARRIER: u32 = 46;
 pub(super) const VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR: u32 = 1000001000;
 pub(super) const VK_STRUCTURE_TYPE_PRESENT_INFO_KHR: u32 = 1000001001;
 pub(super) const VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR: u32 = 1000004000;
@@ -87,6 +90,7 @@ pub(super) const VK_FORMAT_B8G8R8A8_UNORM: u32 = 44;
 pub(super) const VK_IMAGE_LAYOUT_UNDEFINED: u32 = 0;
 pub(super) const VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL: u32 = 2;
 pub(super) const VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: u32 = 5;
+pub(super) const VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL: u32 = 6;
 pub(super) const VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL: u32 = 7;
 pub(super) const VK_IMAGE_LAYOUT_PRESENT_SRC_KHR: u32 = 1000001002;
 
@@ -111,6 +115,9 @@ pub(super) const VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: u32 = 7;
 pub(super) const VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT: u32 = 0x0000_0001;
 
 pub(super) const VK_BUFFER_USAGE_TRANSFER_SRC_BIT: u32 = 0x0000_0001;
+// Read-back only (`Texture::read_pixels`, GPU tests).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const VK_BUFFER_USAGE_TRANSFER_DST_BIT: u32 = 0x0000_0002;
 pub(super) const VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT: u32 = 0x0000_0010;
 pub(super) const VK_BUFFER_USAGE_STORAGE_BUFFER_BIT: u32 = 0x0000_0020;
 pub(super) const VK_BUFFER_USAGE_VERTEX_BUFFER_BIT: u32 = 0x0000_0080;
@@ -146,9 +153,21 @@ pub(super) const VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT: u32 = 0x0000_0001;
 pub(super) const VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT: u32 = 0x0000_0080;
 pub(super) const VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT: u32 = 0x0000_0400;
 pub(super) const VK_PIPELINE_STAGE_TRANSFER_BIT: u32 = 0x0000_1000;
+// Read-back only (`Texture::read_pixels`, GPU tests).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const VK_PIPELINE_STAGE_HOST_BIT: u32 = 0x0000_4000;
 
 pub(super) const VK_ACCESS_TRANSFER_WRITE_BIT: u32 = 0x0000_1000;
 pub(super) const VK_ACCESS_SHADER_READ_BIT: u32 = 0x0000_0020;
+// Read-back only (`Texture::read_pixels`, GPU tests).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT: u32 = 0x0000_0100;
+// Read-back only (`Texture::read_pixels`, GPU tests).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const VK_ACCESS_TRANSFER_READ_BIT: u32 = 0x0000_0800;
+// Read-back only (`Texture::read_pixels`, GPU tests).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) const VK_ACCESS_HOST_READ_BIT: u32 = 0x0000_2000;
 
 #[inline]
 pub(super) const fn vk_format(format: TextureFormat) -> u32 {
@@ -367,6 +386,7 @@ pub(super) struct VkLib {
     pub vkCmdDraw: unsafe extern "C" fn(VkCommandBuffer, u32, u32, u32, u32),
     pub vkCmdPipelineBarrier: unsafe extern "C" fn(VkCommandBuffer, VkFlags, VkFlags, VkFlags, u32, *const c_void, u32, *const c_void, u32, *const c_void),
     pub vkCmdCopyBufferToImage: unsafe extern "C" fn(VkCommandBuffer, VkBuffer, VkImage, u32, u32, *const c_void),
+    pub vkCmdCopyImageToBuffer: unsafe extern "C" fn(VkCommandBuffer, VkImage, u32, VkBuffer, u32, *const c_void),
     pub vkQueueSubmit: unsafe extern "C" fn(VkQueue, u32, *const c_void, VkFence) -> i32,
     pub vkQueueWaitIdle: unsafe extern "C" fn(VkQueue) -> i32,
     pub vkDeviceWaitIdle: unsafe extern "C" fn(VkDevice) -> i32,
