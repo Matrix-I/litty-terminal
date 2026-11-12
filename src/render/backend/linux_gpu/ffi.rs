@@ -383,6 +383,7 @@ pub(super) struct VkLib {
     pub vkCreateDescriptorSetLayout: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkDescriptorSetLayout) -> i32,
     pub vkCreatePipelineLayout: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkPipelineLayout) -> i32,
     pub vkCreateRenderPass: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkRenderPass) -> i32,
+    pub vkDestroyRenderPass: unsafe extern "C" fn(VkDevice, VkRenderPass, *const c_void),
     pub vkCreateGraphicsPipelines: unsafe extern "C" fn(VkDevice, u64, u32, *const c_void, *const c_void, *mut VkPipeline) -> i32,
     pub vkCreateDescriptorPool: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkDescriptorPool) -> i32,
     pub vkAllocateDescriptorSets: unsafe extern "C" fn(VkDevice, *const c_void, *mut VkDescriptorSet) -> i32,
