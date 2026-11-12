@@ -46,7 +46,8 @@ follow-ups are in v0.8.0; shipped refactor results are in v0.7.1.
   - All features have been tested on Linux and run stably. Linux runtime/desktop verification is closed and is no longer technical debt.
   - This supersedes the outstanding Kitty lock modifier, Quick Terminal (X11/Wayland), real `xdg-open`, and fish-on-Linux checks. See the [validation status](./docs/validation/linux-status-2026-11-04.md) for evidence scope.
 
-- [ ] **Intermittent 47 MB footprint with all windows closed (macOS)**
+- [x] **Intermittent 47 MB footprint with all windows closed (macOS)**
+  - Closed as not reproduced (2026-11-12): 20 more runs at `a307298` under load 10–26 gave 31 MB (16), 33 MB (2) and 40 MB (2, at the two highest loads), never 47 MB; all under the 50 MB budget. Reopen if a 0-window run exceeds 50 MB. See the [close-out report](./docs/validation/2026-11-12-macos-closeout.md).
   - During v0.11.1 validation (2026-11-11) the 0-window footprint stayed at 47 MB in 7 of 18 runs of the release build, the level from before the drawable fix `79d44ef`; v0.11.0 gave 28–32 MB in 8 alternating runs. 78 later runs (v0.11.0, `15bca71`, `d37a085`, `a0f7ebc`, `86967b8` and the release build) never showed it, so it is not reproduced and no fix was made. Suspected timing under system load. Method and data: [validation report](./docs/validation/release-0.11.1.md).
 
 - [ ] **Occlusion events are never emitted (macOS and Linux)**
