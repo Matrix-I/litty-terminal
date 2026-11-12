@@ -184,13 +184,13 @@ impl NativeWindow {
         }
     }
 
-    /// No app action calls this yet: fullscreen is entered from the window
-    /// manager, and its state arrives through `observe`.
+    /// Ask the window manager for fullscreen. No app action calls this
+    /// yet. The state is only recorded when the window manager reports it
+    /// through `observe`: it may refuse or ignore the request.
     #[allow(dead_code)]
     pub fn set_fullscreen(&self, fullscreen: bool) {
-        let mut guard = self.inner.lock();
-        guard.fullscreen = fullscreen;
-        if let Some(x11) = &guard.x11_window {
+        let x11 = self.inner.lock().x11_window.clone();
+        if let Some(x11) = x11 {
             x11.set_fullscreen(fullscreen);
         }
     }
@@ -359,6 +359,18 @@ mod tests {
         assert!(!win.is_maximized());
         win.observe(&WindowEvent::StateChanged { maximized: true, fullscreen: true });
         assert!(win.is_maximized());
+        assert!(win.is_fullscreen());
+    }
+
+    /// Fullscreen is the window manager's to grant: a refused or ignored
+    /// request (tiling WM, unmapped window) must not report fullscreen, or
+    /// the next toggle asks to leave a state the window never entered.
+    #[test]
+    fn requesting_fullscreen_waits_for_the_window_manager() {
+        let win = detached(800, 600);
+        win.set_fullscreen(true);
+        assert!(!win.is_fullscreen());
+        win.observe(&WindowEvent::StateChanged { maximized: false, fullscreen: true });
         assert!(win.is_fullscreen());
     }
 
