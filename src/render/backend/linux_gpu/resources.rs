@@ -21,13 +21,15 @@ pub(super) unsafe fn find_memory_type(
     0
 }
 
+/// A mapped host-visible coherent buffer of at least `byte_len` zeroed
+/// bytes, or `None` (reported, nothing leaked) when it cannot be made.
 pub(super) unsafe fn alloc_host_buffer(
     lib: &VkLib,
     device: VkDevice,
     mem_props: &VkPhysicalDeviceMemoryProperties,
     byte_len: usize,
     usage: VkFlags,
-) -> (VkBuffer, VkDeviceMemory, *mut u8) {
+) -> Option<(VkBuffer, VkDeviceMemory, *mut u8)> {
     unsafe {
         #[repr(C)]
         struct BufInfo {
@@ -51,7 +53,9 @@ pub(super) unsafe fn alloc_host_buffer(
             p_queue_family_indices: std::ptr::null(),
         };
         let mut buf = 0u64;
-        (lib.vkCreateBuffer)(device, &b_info as *const _ as *const c_void, std::ptr::null(), &mut buf);
+        if !vk_ok((lib.vkCreateBuffer)(device, &b_info as *const _ as *const c_void, std::ptr::null(), &mut buf), "vkCreateBuffer") {
+            return None;
+        }
         let mut req = VkMemoryRequirements::default();
         (lib.vkGetBufferMemoryRequirements)(device, buf, &mut req);
         let mem_type = find_memory_type(
@@ -73,12 +77,20 @@ pub(super) unsafe fn alloc_host_buffer(
             memory_type_index: mem_type,
         };
         let mut mem = 0u64;
-        (lib.vkAllocateMemory)(device, &m_alloc as *const _ as *const c_void, std::ptr::null(), &mut mem);
-        (lib.vkBindBufferMemory)(device, buf, mem, 0);
         let mut ptr: *mut c_void = std::ptr::null_mut();
-        (lib.vkMapMemory)(device, mem, 0, req.size, 0, &mut ptr);
+        let ready = vk_ok((lib.vkAllocateMemory)(device, &m_alloc as *const _ as *const c_void, std::ptr::null(), &mut mem), "vkAllocateMemory")
+            && vk_ok((lib.vkBindBufferMemory)(device, buf, mem, 0), "vkBindBufferMemory")
+            && vk_ok((lib.vkMapMemory)(device, mem, 0, req.size, 0, &mut ptr), "vkMapMemory")
+            && !ptr.is_null();
+        if !ready {
+            (lib.vkDestroyBuffer)(device, buf, std::ptr::null());
+            if mem != 0 {
+                (lib.vkFreeMemory)(device, mem, std::ptr::null());
+            }
+            return None;
+        }
         std::ptr::write_bytes(ptr as *mut u8, 0, byte_len);
-        (buf, mem, ptr as *mut u8)
+        Some((buf, mem, ptr as *mut u8))
     }
 }
 
@@ -103,17 +115,12 @@ impl<T: bytemuck::Pod> HostBuffer<T> {
         let cap = capacity.max(1);
         let elem_size = std::mem::size_of::<T>().max(1);
         let byte_len = cap * elem_size;
+        // Without GPU memory the contents live in `fallback`, with `buf` 0:
+        // draws skip a buffer they cannot bind.
         if let Some(vk) = &device.vk {
-            unsafe {
-                let (buf, mem, ptr) = alloc_host_buffer(
-                    &vk.lib,
-                    vk.device,
-                    &vk.mem_props,
-                    byte_len,
-                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
-                        | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-                        | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                );
+            let usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            // SAFETY: `vk` is a live device and its function table.
+            if let Some((buf, mem, ptr)) = unsafe { alloc_host_buffer(&vk.lib, vk.device, &vk.mem_props, byte_len, usage) } {
                 return Self {
                     vk: Some(vk.clone()),
                     buf,
@@ -312,7 +319,8 @@ unsafe fn submit_upload(vk: &VulkanCore) {
             signal_semaphore_count: 0,
             p_signal_semaphores: std::ptr::null(),
         };
-        (vk.lib.vkQueueSubmit)(vk.queue, 1, &s_info as *const _ as *const c_void, 0);
+        // A failed submit uploads nothing; the texture keeps its old contents.
+        vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &s_info as *const _ as *const c_void, 0), "vkQueueSubmit");
         (vk.lib.vkQueueWaitIdle)(vk.queue);
     }
 }
@@ -634,7 +642,9 @@ impl Texture {
                     initial_layout: VK_IMAGE_LAYOUT_UNDEFINED,
                 };
                 let mut image = 0u64;
-                (vk.lib.vkCreateImage)(vk.device, &img_info as *const _ as *const c_void, std::ptr::null(), &mut image);
+                if !vk_ok((vk.lib.vkCreateImage)(vk.device, &img_info as *const _ as *const c_void, std::ptr::null(), &mut image), "vkCreateImage") {
+                    return Self::unusable(w, h);
+                }
                 let mut req = VkMemoryRequirements::default();
                 (vk.lib.vkGetImageMemoryRequirements)(vk.device, image, &mut req);
                 let mem_type = find_memory_type(&vk.mem_props, req.memory_type_bits, 0);
@@ -652,8 +662,22 @@ impl Texture {
                     memory_type_index: mem_type,
                 };
                 let mut mem = 0u64;
-                (vk.lib.vkAllocateMemory)(vk.device, &m_alloc as *const _ as *const c_void, std::ptr::null(), &mut mem);
-                (vk.lib.vkBindImageMemory)(vk.device, image, mem, 0);
+                // Undo a partly created texture; it is then drawn as nothing.
+                let discard = |mem: VkDeviceMemory, view: VkImageView| {
+                    if view != 0 {
+                        (vk.lib.vkDestroyImageView)(vk.device, view, std::ptr::null());
+                    }
+                    (vk.lib.vkDestroyImage)(vk.device, image, std::ptr::null());
+                    if mem != 0 {
+                        (vk.lib.vkFreeMemory)(vk.device, mem, std::ptr::null());
+                    }
+                    Self::unusable(w, h)
+                };
+                if !(vk_ok((vk.lib.vkAllocateMemory)(vk.device, &m_alloc as *const _ as *const c_void, std::ptr::null(), &mut mem), "vkAllocateMemory")
+                    && vk_ok((vk.lib.vkBindImageMemory)(vk.device, image, mem, 0), "vkBindImageMemory"))
+                {
+                    return discard(mem, 0);
+                }
 
                 #[repr(C)]
                 struct ViewInfo {
@@ -677,7 +701,9 @@ impl Texture {
                     subresource_range: [1, 0, 1, 0, 1],
                 };
                 let mut view = 0u64;
-                (vk.lib.vkCreateImageView)(vk.device, &v_info as *const _ as *const c_void, std::ptr::null(), &mut view);
+                if !vk_ok((vk.lib.vkCreateImageView)(vk.device, &v_info as *const _ as *const c_void, std::ptr::null(), &mut view), "vkCreateImageView") {
+                    return discard(mem, 0);
+                }
 
                 // A sampled texture may be bound before anything is uploaded
                 // (the color atlas placeholder): give it a valid layout now.
@@ -696,6 +722,9 @@ impl Texture {
                 }
                 let image_dset = if ready { alloc_image_dset(vk, view) } else { 0 };
                 let framebuffer = if render_target { create_target_framebuffer(vk, view, format, w, h) } else { 0 };
+                if render_target && framebuffer == 0 {
+                    return discard(mem, view);
+                }
                 return Self {
                     inner: Arc::new(TextureInner {
                         vk: Some(vk.clone()),
@@ -711,6 +740,12 @@ impl Texture {
                 };
             }
         }
+        Self::unusable(w, h)
+    }
+
+    /// A texture without GPU objects (no device, or creating them failed):
+    /// uploads are dropped and draws using it are skipped.
+    fn unusable(width: u32, height: u32) -> Self {
         Self {
             inner: Arc::new(TextureInner {
                 vk: None,
@@ -720,8 +755,8 @@ impl Texture {
                 ready: false,
                 image_dset: 0,
                 framebuffer: 0,
-                width: w,
-                height: h,
+                width,
+                height,
             }),
         }
     }
@@ -743,19 +778,24 @@ impl Texture {
                             (vk.lib.vkDestroyBuffer)(vk.device, staging.buf, std::ptr::null());
                             (vk.lib.vkFreeMemory)(vk.device, staging.mem, std::ptr::null());
                         }
-                        let (buf, mem, ptr) =
-                            alloc_host_buffer(&vk.lib, vk.device, &vk.mem_props, cap, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+                        *staging = Staging::empty();
+                        let Some((buf, mem, ptr)) =
+                            alloc_host_buffer(&vk.lib, vk.device, &vk.mem_props, cap, VK_BUFFER_USAGE_TRANSFER_SRC_BIT)
+                        else {
+                            return;
+                        };
                         *staging = Staging { buf, mem, ptr, cap };
                     }
                     None
                 }
-                None => Some(alloc_host_buffer(
-                    &vk.lib,
-                    vk.device,
-                    &vk.mem_props,
-                    data.len(),
-                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                )),
+                None => {
+                    let Some(buf) =
+                        alloc_host_buffer(&vk.lib, vk.device, &vk.mem_props, data.len(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT)
+                    else {
+                        return;
+                    };
+                    Some(buf)
+                }
             };
             let (stg_buf, stg_ptr) = match one_off {
                 Some((buf, _, ptr)) => (buf, ptr),
@@ -817,7 +857,8 @@ impl Texture {
         let len = row * h as usize;
         unsafe {
             let _upload = vk.staging.lock();
-            let (buf, mem, ptr) = alloc_host_buffer(&vk.lib, vk.device, &vk.mem_props, len, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+            let (buf, mem, ptr) = alloc_host_buffer(&vk.lib, vk.device, &vk.mem_props, len, VK_BUFFER_USAGE_TRANSFER_DST_BIT)
+                .expect("read-back buffer");
             begin_upload(vk);
             // Make the render pass's writes visible to the copy.
             image_barrier(

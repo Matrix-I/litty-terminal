@@ -39,6 +39,25 @@ pub(super) type VkFence = u64;
 
 pub(super) const VK_SUCCESS: i32 = 0;
 pub(super) const VK_SUBOPTIMAL_KHR: i32 = 1000001003;
+pub(super) const VK_ERROR_OUT_OF_DATE_KHR: i32 = -1000001004;
+
+/// Whether a Vulkan call returned `VK_SUCCESS`. Anything else is reported on
+/// stderr: the object it was to create, or the work it was to queue, does
+/// not exist, and callers must not use it.
+pub(super) fn vk_ok(result: i32, what: &str) -> bool {
+    if result == VK_SUCCESS {
+        return true;
+    }
+    eprintln!("litty: {what} failed (VkResult {result})");
+    false
+}
+
+/// Whether a `vkQueuePresentKHR` result is expected: success, or a
+/// swapchain that no longer matches the window, which the next acquire
+/// reports so the renderer rebuilds it. Anything else is reported.
+pub(super) fn present_ok(result: i32) -> bool {
+    matches!(result, VK_SUCCESS | VK_SUBOPTIMAL_KHR | VK_ERROR_OUT_OF_DATE_KHR) || vk_ok(result, "vkQueuePresentKHR")
+}
 
 pub(super) const VK_STRUCTURE_TYPE_APPLICATION_INFO: u32 = 0;
 pub(super) const VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO: u32 = 1;
@@ -411,3 +430,25 @@ pub(super) struct VkLib {
 
 unsafe impl Send for VkLib {}
 unsafe impl Sync for VkLib {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_vk_success_counts_as_created() {
+        assert!(vk_ok(VK_SUCCESS, "test"));
+        // VK_ERROR_OUT_OF_DEVICE_MEMORY, VK_ERROR_DEVICE_LOST, VK_INCOMPLETE.
+        assert!(!vk_ok(-2, "test"));
+        assert!(!vk_ok(-4, "test"));
+        assert!(!vk_ok(5, "test"));
+    }
+
+    #[test]
+    fn a_stale_swapchain_is_an_expected_present_result() {
+        assert!(present_ok(VK_SUCCESS));
+        assert!(present_ok(VK_SUBOPTIMAL_KHR));
+        assert!(present_ok(VK_ERROR_OUT_OF_DATE_KHR));
+        assert!(!present_ok(-4), "device lost is reported");
+    }
+}
