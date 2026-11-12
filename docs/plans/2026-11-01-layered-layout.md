@@ -754,7 +754,7 @@ grep -c '^pub fn' src/platform/macos/*.rs | awk -F: '{s+=$2} END {print s}'
 
 Expected: `26`.
 
-- [ ] **Step 4: Manual smoke test (macOS, release build)**
+- [x] **Step 4: Manual smoke test (macOS, release build)** _(2026-11-12: checked by the user on macOS, all items pass.)_
 
 `cargo run --release`, then: menu bar items (including Secure Keyboard Entry check mark), double-click the title bar (zoom / restore), change `background-opacity` / blur in the config and reload, Quick Terminal global hotkey, native tab switching, quit with a running program (confirm dialog), Cmd+Q, reopen from the Dock, toggle system dark/light mode, Cmd+C / Cmd+V.
 
