@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 use parking_lot::Mutex;
 
 use crate::platform::gui::Ime;
+use super::sym;
 use super::x11::{XEvent, XKeyEvent};
 
 type Display = c_void;
@@ -116,10 +117,6 @@ fn xim_lib() -> Option<&'static XimLib> {
             .iter()
             .map(|name| libc::dlopen(name.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL))
             .find(|h| !h.is_null())?;
-        unsafe fn sym<T>(h: *mut c_void, s: &CStr) -> Option<T> {
-            let p = unsafe { libc::dlsym(h, s.as_ptr()) };
-            (!p.is_null()).then(|| unsafe { std::mem::transmute_copy(&p) })
-        }
         Some(XimLib {
             XSupportsLocale: sym(handle, c"XSupportsLocale")?,
             XSetLocaleModifiers: sym(handle, c"XSetLocaleModifiers")?,

@@ -9,6 +9,7 @@ use std::os::fd::RawFd;
 use parking_lot::Mutex;
 
 use crate::platform::gui::Theme;
+use super::sym;
 
 const PORTAL_DEST: &CStr = c"org.freedesktop.portal.Desktop";
 const PORTAL_PATH: &CStr = c"/org/freedesktop/portal/desktop";
@@ -102,10 +103,6 @@ impl DBusLib {
             let handle = libc::dlopen(c"libdbus-1.so.3".as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
             if handle.is_null() {
                 return None;
-            }
-            unsafe fn sym<T>(h: *mut c_void, s: &CStr) -> Option<T> {
-                let p = unsafe { libc::dlsym(h, s.as_ptr()) };
-                (!p.is_null()).then(|| unsafe { std::mem::transmute_copy(&p) })
             }
             Some(Self {
                 _handle: handle,

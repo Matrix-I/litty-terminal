@@ -4,6 +4,7 @@ use std::ffi::{c_char, c_int, c_long, c_ulong, c_void, CStr, CString};
 use std::sync::Arc;
 
 use crate::platform::gui::{CursorIcon, Ime, PhysicalPosition, PhysicalSize, RawHandle, WindowEvent, WindowSpec};
+use super::sym;
 use super::xim::XimContext;
 use super::events::{wm_state_event, WmStateAtoms, convert_linux_key, keysym_char, mods_after_key, mods_from_state, x11_button_event, HeldKeys};
 use crate::platform::input::{Key, KeyLocation, Mods};
@@ -379,11 +380,6 @@ impl X11Lib {
         }
         if handle.is_null() {
             return None;
-        }
-
-        unsafe fn sym<T>(h: *mut c_void, s: &CStr) -> Option<T> {
-            let p = unsafe { libc::dlsym(h, s.as_ptr()) };
-            if p.is_null() { None } else { Some(unsafe { std::mem::transmute_copy(&p) }) }
         }
 
         unsafe {

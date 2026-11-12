@@ -1,10 +1,11 @@
 //! The monitor under an X11 window, through a dynamically loaded
 //! `libXrandr.so.2` (CRTC geometry and the current mode's refresh rate).
 
-use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void, CStr};
+use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void};
 use std::sync::OnceLock;
 
 use crate::platform::gui::{Monitor, PhysicalPosition, PhysicalSize};
+use super::sym;
 
 /// `RR_Interlace` and `RR_DoubleScan` mode flags (`<X11/extensions/randr.h>`).
 const RR_INTERLACE: c_ulong = 0x10;
@@ -74,10 +75,6 @@ fn xrandr() -> Option<&'static XrandrLib> {
         let handle = libc::dlopen(c"libXrandr.so.2".as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
         if handle.is_null() {
             return None;
-        }
-        unsafe fn sym<T>(h: *mut c_void, s: &CStr) -> Option<T> {
-            let p = unsafe { libc::dlsym(h, s.as_ptr()) };
-            (!p.is_null()).then(|| unsafe { std::mem::transmute_copy(&p) })
         }
         Some(XrandrLib {
             XRRGetScreenResourcesCurrent: sym(handle, c"XRRGetScreenResourcesCurrent")?,
