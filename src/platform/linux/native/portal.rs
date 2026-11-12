@@ -22,7 +22,6 @@ member='SettingChanged',path='/org/freedesktop/portal/desktop',arg0='org.freedes
 /// the right theme; a later answer still applies, as a theme change.
 const FIRST_READ_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
 
-const DBUS_BUS_SESSION: c_int = 0;
 const DBUS_TYPE_STRING: c_int = b's' as c_int;
 const DBUS_TYPE_UINT32: c_int = b'u' as c_int;
 const DBUS_TYPE_VARIANT: c_int = b'v' as c_int;
@@ -59,7 +58,8 @@ struct DBusLib {
     _handle: *mut c_void,
     dbus_error_init: unsafe extern "C" fn(*mut DBusError),
     dbus_error_free: unsafe extern "C" fn(*mut DBusError),
-    dbus_bus_get_private: unsafe extern "C" fn(c_int, *mut DBusError) -> *mut Conn,
+    dbus_connection_open_private: unsafe extern "C" fn(*const c_char, *mut DBusError) -> *mut Conn,
+    dbus_bus_register: unsafe extern "C" fn(*mut Conn, *mut DBusError) -> u32,
     dbus_bus_add_match: unsafe extern "C" fn(*mut Conn, *const c_char, *mut DBusError),
     dbus_connection_set_exit_on_disconnect: unsafe extern "C" fn(*mut Conn, u32),
     dbus_connection_close: unsafe extern "C" fn(*mut Conn),
@@ -111,7 +111,8 @@ impl DBusLib {
                 _handle: handle,
                 dbus_error_init: sym(handle, c"dbus_error_init")?,
                 dbus_error_free: sym(handle, c"dbus_error_free")?,
-                dbus_bus_get_private: sym(handle, c"dbus_bus_get_private")?,
+                dbus_connection_open_private: sym(handle, c"dbus_connection_open_private")?,
+                dbus_bus_register: sym(handle, c"dbus_bus_register")?,
                 dbus_bus_add_match: sym(handle, c"dbus_bus_add_match")?,
                 dbus_connection_set_exit_on_disconnect: sym(handle, c"dbus_connection_set_exit_on_disconnect")?,
                 dbus_connection_close: sym(handle, c"dbus_connection_close")?,
@@ -275,6 +276,31 @@ fn theme_from_scheme(scheme: u32) -> Option<Theme> {
     }
 }
 
+/// The session bus address: `DBUS_SESSION_BUS_ADDRESS`, else the systemd
+/// user bus socket `$XDG_RUNTIME_DIR/bus` when it exists. `None` otherwise:
+/// libdbus would then autolaunch a bus (`dbus-launch` through X11), starting
+/// a daemon just to ask for a theme, as over `ssh -X`.
+fn session_bus_address(
+    env_address: Option<std::ffi::OsString>,
+    runtime_dir: Option<std::ffi::OsString>,
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> Option<std::ffi::CString> {
+    use std::os::unix::ffi::OsStrExt;
+    let address = match env_address.filter(|a| !a.is_empty()) {
+        Some(address) => address,
+        None => {
+            let socket = std::path::Path::new(&runtime_dir.filter(|d| !d.is_empty())?).join("bus");
+            if !exists(&socket) {
+                return None;
+            }
+            let mut address = std::ffi::OsString::from("unix:path=");
+            address.push(socket);
+            address
+        }
+    };
+    std::ffi::CString::new(address.as_bytes()).ok()
+}
+
 struct Portal {
     lib: DBusLib,
     conn: *mut Conn,
@@ -290,17 +316,28 @@ unsafe impl Send for Portal {}
 
 impl Portal {
     fn open() -> Option<Self> {
+        let address = session_bus_address(
+            std::env::var_os("DBUS_SESSION_BUS_ADDRESS"),
+            std::env::var_os("XDG_RUNTIME_DIR"),
+            |p| p.exists(),
+        )?;
         let lib = DBusLib::load()?;
         unsafe {
             let mut err = DBusError { name: std::ptr::null(), message: std::ptr::null(), bits: 0, padding: std::ptr::null_mut() };
             (lib.dbus_error_init)(&mut err);
-            let conn = (lib.dbus_bus_get_private)(DBUS_BUS_SESSION, &mut err);
+            let conn = (lib.dbus_connection_open_private)(address.as_ptr(), &mut err);
             if conn.is_null() {
                 (lib.dbus_error_free)(&mut err);
                 return None;
             }
             // libdbus calls `_exit` when a bus connection drops unless told not to.
             (lib.dbus_connection_set_exit_on_disconnect)(conn, 0);
+            if (lib.dbus_bus_register)(conn, &mut err) == 0 {
+                (lib.dbus_error_free)(&mut err);
+                (lib.dbus_connection_close)(conn);
+                (lib.dbus_connection_unref)(conn);
+                return None;
+            }
             let mut fd: c_int = -1;
             if (lib.dbus_connection_get_unix_fd)(conn, &mut fd) == 0 {
                 (lib.dbus_connection_close)(conn);
@@ -485,6 +522,19 @@ mod tests {
         // default on non-GNOME desktops, and GNOME's "Default" appearance).
         assert_eq!(theme_from_scheme(0), None);
         assert_eq!(theme_from_scheme(3), None);
+    }
+
+    #[test]
+    fn the_bus_address_never_needs_autolaunch() {
+        let os = |s: &str| Some(std::ffi::OsString::from(s));
+        let yes = |_: &std::path::Path| true;
+        let no = |_: &std::path::Path| false;
+        assert_eq!(session_bus_address(os("unix:path=/x"), os("/run/user/1"), no).as_deref(), Some(c"unix:path=/x"));
+        assert_eq!(session_bus_address(None, os("/run/user/1"), yes).as_deref(), Some(c"unix:path=/run/user/1/bus"));
+        assert_eq!(session_bus_address(os(""), os("/run/user/1"), yes).as_deref(), Some(c"unix:path=/run/user/1/bus"));
+        // No address and no user bus socket: no portal rather than autolaunch.
+        assert_eq!(session_bus_address(None, os("/run/user/1"), no), None);
+        assert_eq!(session_bus_address(None, None, yes), None);
     }
 
     fn lib() -> Option<DBusLib> {
