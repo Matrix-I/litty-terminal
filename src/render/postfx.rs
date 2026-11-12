@@ -11,6 +11,7 @@
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::render::backend::{CommandEncoder, Device, ObjPtr, Queue, Texture, TextureFormat};
 
@@ -265,9 +266,31 @@ fn uses_time(user: &str) -> bool {
     ["iTime", "iFrame", "iTimeDelta", "iDate"].iter().any(|n| user.contains(n))
 }
 
+/// A warning printed at most once per process, however many windows or
+/// config reloads ask for it.
+struct WarnOnce(AtomicBool);
+
+impl WarnOnce {
+    const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    /// `true` for the first caller only.
+    fn first(&self) -> bool {
+        !self.0.swap(true, Ordering::Relaxed)
+    }
+}
+
+static UNSUPPORTED_WARNING: WarnOnce = WarnOnce::new();
+
+const UNSUPPORTED: &str = "litty: custom-shader is not supported on Linux yet; the setting is ignored";
+
 /// Read, wrap and check every `custom-shader` file; broken ones are reported
 /// and left out. Returns the sources and whether any of them animates.
 pub fn load(paths: &[std::path::PathBuf]) -> (Vec<String>, bool) {
+    if !supported(paths, crate::render::backend::CUSTOM_SHADERS_SUPPORTED, &UNSUPPORTED_WARNING) {
+        return (Vec::new(), false);
+    }
     let mut sources = Vec::new();
     let mut animated = false;
     for path in paths {
@@ -286,6 +309,19 @@ pub fn load(paths: &[std::path::PathBuf]) -> (Vec<String>, bool) {
         }
     }
     (sources, animated)
+}
+
+/// Whether `paths` should be loaded. On a backend without custom shaders
+/// the key is reported once, rather than as a compile error per shader and
+/// window, and nothing is read.
+fn supported(paths: &[std::path::PathBuf], backend_supported: bool, warning: &WarnOnce) -> bool {
+    if paths.is_empty() || backend_supported {
+        return true;
+    }
+    if warning.first() {
+        eprintln!("{UNSUPPORTED}");
+    }
+    false
 }
 
 fn display(path: &Path) -> String {
@@ -410,6 +446,25 @@ fn date_now() -> [f32; 4] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unsupported_custom_shaders_are_skipped_and_reported_once() {
+        let warning = super::WarnOnce::new();
+        let paths = [std::path::PathBuf::from("/nonexistent/crt.glsl")];
+        assert!(!super::supported(&paths, false, &warning), "first window");
+        assert!(!warning.first(), "the first call printed the warning");
+        assert!(!super::supported(&paths, false, &warning), "second window: skipped, not printed again");
+        assert!(super::supported(&paths, true, &super::WarnOnce::new()), "Metal loads them");
+        assert!(super::supported(&[], false, &super::WarnOnce::new()), "nothing configured, nothing to say");
+    }
+
+    #[test]
+    fn a_warning_is_due_only_once() {
+        let warning = super::WarnOnce::new();
+        assert!(warning.first());
+        assert!(!warning.first());
+        assert!(!warning.first());
+    }
+
     use super::*;
 
     #[test]
