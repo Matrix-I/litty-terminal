@@ -239,6 +239,28 @@ fn utf8_text_matches_the_byte_at_a_time_path() {
     check_with(1, 2, b"", "漢é字".as_bytes(), &CHUNKS);
 }
 
+/// Narrow non-ASCII text (Latin-1, Vietnamese, box drawing) mixed with short
+/// ASCII runs: wrapping, wide glyphs under either edge, links and colors.
+#[test]
+fn narrow_unicode_runs_match_the_byte_at_a_time_path() {
+    let viet = "Người dân Việt Nam đã sống ở đây từ rất lâu, nghề nông.";
+    check(viet);
+    check(&format!("\x1b[1;33m{viet}\x1b[0m ─┼─│├┤ ñ ü ß\r\n{viet}"));
+    check("a\u{A0}b\u{A9}c\u{AE}d\u{FE0F} ©\u{FE0F} ® ─┼─ x");
+    check("ễ\u{301}ử\u{308} cafè\u{301} Việt\u{200D}Nam");
+    for n in 1..=7 {
+        let word: String = "ệáàạ─".chars().cycle().take(n).collect();
+        // Colored wide glyphs, so an orphaned half differs from a blank cell.
+        let wide = "\x1b[41m漢字漢字漢字漢字漢字\x1b[0m";
+        check(&format!("{wide}\x1b[1;1H{word}"));
+        check(&format!("{wide}\x1b[1;2H{word}"));
+        check(&format!("{wide}\x1b[1;{}H{word}é", 20 - n));
+        check_after("\x1b]8;;https://a.test\x1b\\linkedlinkedlinked\x1b]8;;\x1b\\", &format!("\x1b[1;{}H{word}ô", 2 * n));
+    }
+    check_with(1, 3, b"", "éa─ệ".as_bytes(), &CHUNKS);
+    check_with(3, 3, b"", "ệệệệ漢ệ\r\nabé".as_bytes(), &CHUNKS);
+}
+
 #[test]
 fn utf8_text_respects_modes_and_line_editor() {
     check("\x1b[4hinsert 漢字 mode é\x1b[1;1H漢字>>\x1b[4l more é");
@@ -298,7 +320,7 @@ impl Rng {
 }
 
 fn random_token(r: &mut Rng) -> Vec<u8> {
-    const WORDS: [&str; 8] = ["hello", "the quick brown fox ", "x", "0123456789", "   ", "abcdefghijklmnopqrstuvwxyzabcdefghijklmnop", "~!@#$%^&*()", "word "];
+    const WORDS: [&str; 10] = ["hello", "the quick brown fox ", "x", "0123456789", "   ", "abcdefghijklmnopqrstuvwxyzabcdefghijklmnop", "~!@#$%^&*()", "word ", "Việt Nam đẹp ", "─┼─│ é"];
     const FINALS: [char; 12] = ['m', 'H', 'J', 'K', 'h', 'l', 'r', 'A', 'B', 'C', 'D', 'G'];
     const RAW: [&[u8]; 5] = [b"\xc3", b"\xe2\x82", b"\x80", b"\xff", b"\xf0\x9f"];
     const ESCS: [&str; 7] = ["\x1b", "\x1b[", "\x1b[3", "\x1b]", "\x1b_", "\x1bP", "\x1b\\"];
