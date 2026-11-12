@@ -285,6 +285,10 @@ pub struct X11WindowInner {
     pub window: c_ulong,
     pub fd: i32,
     pub wm_delete_window: c_ulong,
+    /// `_NET_WM_NAME` and `UTF8_STRING`, interned once: `set_title` runs on
+    /// every OSC title change and interning is a server round trip.
+    pub net_wm_name: c_ulong,
+    pub utf8_string: c_ulong,
     pub root: c_ulong,
     pub screen: c_int,
     pub scale: f64,
@@ -304,6 +308,25 @@ impl Drop for X11WindowInner {
             (self.lib.XDestroyWindow)(self.display, self.window);
             (self.lib.XCloseDisplay)(self.display);
         }
+    }
+}
+
+/// Publish `title` as `WM_NAME` and as `_NET_WM_NAME`. EWMH window
+/// managers read the latter as UTF-8; `WM_NAME` is Latin-1, so non-ASCII
+/// titles show garbled when it is the only one set.
+///
+/// # Safety
+/// `display` and `window` must be live handles from `lib`.
+unsafe fn store_title(lib: &X11Lib, display: *mut c_void, window: c_ulong, net_wm_name: c_ulong, utf8_string: c_ulong, title: &str) {
+    let Ok(c_title) = CString::new(title) else {
+        return;
+    };
+    let Ok(len) = c_int::try_from(title.len()) else {
+        return;
+    };
+    unsafe {
+        (lib.XStoreName)(display, window, c_title.as_ptr());
+        (lib.XChangeProperty)(display, window, net_wm_name, utf8_string, 8, PROP_MODE_REPLACE, title.as_ptr(), len);
     }
 }
 
@@ -362,10 +385,9 @@ impl X11Window {
             let mask = 1 | 2 | 4 | 8 | 64 | 32768 | 131072 | 2097152;
             (lib.XSelectInput)(display, window, mask);
 
-            // Set window title
-            if let Ok(c_title) = CString::new(spec.title) {
-                (lib.XStoreName)(display, window, c_title.as_ptr());
-            }
+            let net_wm_name = (lib.XInternAtom)(display, c"_NET_WM_NAME".as_ptr(), 0);
+            let utf8_string = (lib.XInternAtom)(display, c"UTF8_STRING".as_ptr(), 0);
+            store_title(&lib, display, window, net_wm_name, utf8_string, spec.title);
 
             // Enable graceful close via WM_DELETE_WINDOW
             let wm_delete_window = (lib.XInternAtom)(display, c"WM_DELETE_WINDOW".as_ptr(), 0);
@@ -411,6 +433,8 @@ impl X11Window {
                 window,
                 fd,
                 wm_delete_window,
+                net_wm_name,
+                utf8_string,
                 root,
                 screen,
                 scale,
@@ -435,11 +459,10 @@ impl X11Window {
     }
 
     pub fn set_title(&self, title: &str) {
-        if let Ok(c_title) = CString::new(title) {
-            unsafe {
-                (self.0.lib.XStoreName)(self.0.display, self.0.window, c_title.as_ptr());
-                (self.0.lib.XFlush)(self.0.display);
-            }
+        let w = &self.0;
+        unsafe {
+            store_title(&w.lib, w.display, w.window, w.net_wm_name, w.utf8_string, title);
+            (w.lib.XFlush)(w.display);
         }
     }
 
@@ -727,5 +750,64 @@ mod tests {
         };
         assert_eq!(name.as_deref(), Some(expected));
         assert_eq!(class.as_deref(), Some(expected));
+    }
+
+    /// `_NET_WM_NAME` of `win` as a `UTF8_STRING`, or `None` when unset.
+    fn net_wm_name(win: &X11Window) -> Option<String> {
+        type GetProperty = unsafe extern "C" fn(
+            *mut c_void, c_ulong, c_ulong, c_long, c_long, c_int, c_ulong,
+            *mut c_ulong, *mut c_int, *mut c_ulong, *mut c_ulong, *mut *mut u8,
+        ) -> c_int;
+        let inner = &win.0;
+        unsafe {
+            let h = libc::dlopen(c"libX11.so.6".as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
+            assert!(!h.is_null());
+            let get: GetProperty = std::mem::transmute(libc::dlsym(h, c"XGetWindowProperty".as_ptr()));
+            let free: unsafe extern "C" fn(*mut c_void) -> c_int =
+                std::mem::transmute(libc::dlsym(h, c"XFree".as_ptr()));
+            let name = (inner.lib.XInternAtom)(inner.display, c"_NET_WM_NAME".as_ptr(), 0);
+            let utf8 = (inner.lib.XInternAtom)(inner.display, c"UTF8_STRING".as_ptr(), 0);
+            let (mut actual_type, mut format, mut items, mut after) = (0, 0, 0, 0);
+            let mut data: *mut u8 = std::ptr::null_mut();
+            let status = get(
+                inner.display, inner.window, name, 0, 1024, 0, utf8,
+                &mut actual_type, &mut format, &mut items, &mut after, &mut data,
+            );
+            assert_eq!(status, 0, "XGetWindowProperty failed");
+            if data.is_null() {
+                return None;
+            }
+            let bytes = std::slice::from_raw_parts(data, items as usize).to_vec();
+            free(data.cast());
+            assert_eq!(actual_type, utf8, "_NET_WM_NAME is not a UTF8_STRING");
+            assert_eq!(format, 8);
+            Some(String::from_utf8(bytes).expect("_NET_WM_NAME is valid UTF-8"))
+        }
+    }
+
+    /// Window managers read non-ASCII titles from `_NET_WM_NAME`
+    /// (`UTF8_STRING`); `WM_NAME` alone is Latin-1 and garbles them.
+    #[test]
+    fn titles_are_published_as_utf8_net_wm_name() {
+        if std::env::var_os("DISPLAY").is_none() {
+            eprintln!("no X display; skipping");
+            return;
+        }
+        let spec = WindowSpec {
+            title: "litty — Tiếng Việt ✓",
+            decorations: true,
+            visible: false,
+            transparent: false,
+            inner_size: crate::platform::gui::LogicalSize::new(200.0, 100.0),
+            position: None,
+        };
+        let Some(win) = X11Window::create(&spec) else {
+            eprintln!("X display unavailable; skipping");
+            return;
+        };
+        assert_eq!(net_wm_name(&win).as_deref(), Some("litty — Tiếng Việt ✓"));
+
+        win.set_title("vim ~/日本語.txt");
+        assert_eq!(net_wm_name(&win).as_deref(), Some("vim ~/日本語.txt"));
     }
 }
