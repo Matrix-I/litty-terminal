@@ -108,6 +108,19 @@ main screen, about 0.4 µs in the 19-row region, about 1.8 µs on the alt screen
 
 - Each character goes through `print` and a width lookup; ASCII is batched.
 - Batching runs of same-width characters is possible. Small gain; low priority.
+- Fixed for narrow text (2026-11-13): `feed_bytes` writes a run of
+  one-column characters that cannot join a cluster (printable ASCII,
+  Latin-1, Vietnamese precomposed letters, box drawing) once per row
+  segment. Wide (CJK) and cluster characters still go one at a time.
+  `perf_probe` (macOS arm64, release, best of 7):
+
+  | Case | Before | After |
+  | :--- | ---: | ---: |
+  | `vietnamese` | 9.0 ns/B | 3.4 ns/B |
+  | `unicode_mixed` | 8.1 ns/B | 5.0 ns/B |
+  | `sgr_log` | 2.5 ns/B | 2.3 ns/B |
+  | `cjk` | 7.8 ns/B | 7.8 ns/B |
+  | `emoji_clusters` | 14.4 ns/B | 14.7 ns/B |
 
 ## Measured and fine
 

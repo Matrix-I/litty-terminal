@@ -105,6 +105,24 @@ fn alt_scroll() -> String {
     s
 }
 
+/// Vietnamese prose: precomposed letters mixed with short ASCII runs.
+fn vietnamese() -> String {
+    let mut s = String::new();
+    for i in 0..20_000 {
+        let _ = write!(s, "{i} Người dân Việt Nam đã sống ở đây từ rất lâu, nghề nông và đánh bắt cá.\r\n");
+    }
+    s
+}
+
+/// CJK prose: double-width characters only.
+fn cjk() -> String {
+    let mut s = String::new();
+    for i in 0..20_000 {
+        let _ = write!(s, "{i} 漢字かな交じり文は日本語の表記に使われる一般的な書き方です。\r\n");
+    }
+    s
+}
+
 fn osc8_links() -> String {
     let mut s = String::new();
     for i in 0..20_000 {
@@ -127,7 +145,7 @@ fn osc8_ls() -> String {
 #[test]
 #[ignore = "release-mode performance probe; run explicitly for refactor gates"]
 fn grid_throughput_probe() {
-    let cases: [Case; 9] = [
+    let cases: [Case; 11] = [
         ("ascii_scroll", ascii_scroll),
         ("sgr_log", sgr_log),
         ("unicode_mixed", unicode_mixed),
@@ -135,6 +153,8 @@ fn grid_throughput_probe() {
         ("region_scroll", region_scroll),
         ("alt_redraw", alt_redraw),
         ("alt_scroll", alt_scroll),
+        ("vietnamese", vietnamese),
+        ("cjk", cjk),
         ("osc8_links", osc8_links),
         ("osc8_ls", osc8_ls),
     ];

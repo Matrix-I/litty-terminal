@@ -596,10 +596,15 @@ impl Grid {
                     self.dispatch_simple_csi(&csi_params[..n_params], action);
                     offset += consumed;
                 } else if rem[0].wrapping_sub(0x20) < 0x5f {
-                    // Too short to batch, e.g. the space between two words.
-                    <Self as vte::Perform>::print(self, rem[0] as char);
-                    offset += 1;
+                    // Too short to batch on its own, e.g. the space between
+                    // two words: it may start a run of narrow text.
+                    offset += self.print_narrow_run(rem);
                 } else if let Some(c) = printable_utf8_char(rem) {
+                    if is_narrow_plain(c as u32) {
+                        // Latin-1, Vietnamese, box drawing.
+                        offset += self.print_narrow_run(rem);
+                        continue;
+                    }
                     // What vte's UTF-8 decoder would hand to `print` in ground state.
                     <Self as vte::Perform>::print(self, c);
                     offset += c.len_utf8();
@@ -720,6 +725,60 @@ impl Grid {
             }
             rest = tail;
         }
+    }
+
+    /// Same result as `print` for each character of the leading run of `bytes`
+    /// that `narrow_plain_char` accepts, with the per-cell bookkeeping done
+    /// once per row segment. Returns the bytes consumed. Requires what
+    /// `print_ascii_run` does, plus DEC line drawing off and no pending ZWJ.
+    fn print_narrow_run(&mut self, bytes: &[u8]) -> usize {
+        let (fg, bg) = self.colors();
+        let blank = self.blank();
+        let check_extras = self.extras.len() > 1;
+        let mut off = 0;
+        while narrow_plain_char(&bytes[off..]).is_some() {
+            if self.wrap_pending {
+                self.wrap_pending = false;
+                self.set_wrapped(self.cur.row, true);
+                self.cur.col = 0;
+                self.linefeed();
+            }
+            let (row, col, cols) = (self.cur.row, self.cur.col, self.cols);
+            let r = self.row_mut(row);
+            // The right half of a wide glyph at `col`: its left half goes.
+            let mut prev_extra = false;
+            if col > 0 && r[col].codepoint == 0 && is_wide_cp(r[col - 1].codepoint) {
+                prev_extra |= check_extras && r[col - 1].extra() != 0;
+                r[col - 1] = blank;
+            }
+            let mut end = col;
+            let mut last_old = 0;
+            while end < cols {
+                let Some((cp, len)) = narrow_plain_char(&bytes[off..]) else { break };
+                prev_extra |= check_extras && r[end].extra() != 0;
+                last_old = r[end].codepoint;
+                r[end] = Cell { codepoint: cp, fg, bg };
+                off += len;
+                end += 1;
+            }
+            // The run ended on the left half of a wide glyph: its right half goes.
+            if end < cols && r[end].codepoint == 0 && is_wide_cp(last_old) {
+                prev_extra |= check_extras && r[end].extra() != 0;
+                r[end] = blank;
+            }
+            if prev_extra {
+                self.extras_dirty = true;
+            }
+            if end >= cols {
+                self.set_wrapped(row, false);
+                self.cur.col = cols - 1;
+                self.wrap_pending = true;
+            } else {
+                self.cur.col = end;
+            }
+            self.mark(row);
+        }
+        off
     }
 
     /// Feed one byte from the PTY. APC strings (the Kitty graphics protocol)
@@ -1029,6 +1088,30 @@ mod tests;
 
 /// Shortest printable-ASCII run worth batching; shorter ones cost more to set up.
 const MIN_ASCII_RUN: usize = 4;
+
+/// Characters that are always one column wide and never continue a grapheme
+/// cluster: printable ASCII, Latin-1 supplement (except ©/®, which can join an
+/// emoji sequence), Vietnamese precomposed Latin Extended Additional, and Box
+/// Drawing / Block Elements.
+#[inline]
+pub(super) fn is_narrow_plain(cp: u32) -> bool {
+    (0x20..=0x7E).contains(&cp)
+        || ((0xA0..=0xFF).contains(&cp) && cp != 0xA9 && cp != 0xAE)
+        || (0x1EA0..=0x1EF9).contains(&cp)
+        || (0x2500..=0x259F).contains(&cp)
+}
+
+/// The codepoint and UTF-8 length of the character at the start of `bytes`
+/// when `is_narrow_plain` accepts it and vte would print it.
+#[inline]
+fn narrow_plain_char(bytes: &[u8]) -> Option<(u32, usize)> {
+    let &b0 = bytes.first()?;
+    if b0.wrapping_sub(0x20) < 0x5f {
+        return Some((u32::from(b0), 1));
+    }
+    let c = printable_utf8_char(bytes)?;
+    is_narrow_plain(c as u32).then(|| (c as u32, c.len_utf8()))
+}
 
 /// The complete UTF-8 character at the start of `bytes`, if it is one vte
 /// would print (U+00A0 and up; C1 controls are left to vte). `None` for

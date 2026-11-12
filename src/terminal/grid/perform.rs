@@ -12,16 +12,7 @@ impl Perform for Grid {
         self.ground = true;
         let c = if self.cur.line_drawing { dec_line_drawing(c) } else { c };
         let cp = c as u32;
-        // Fast path: printable ASCII, Latin-1 supplement (except ©/® which
-        // can join an emoji sequence), Vietnamese precomposed Latin Extended,
-        // and Box Drawing / Block Elements are always 1 column wide and cannot
-        // continue a grapheme cluster.
-        let is_narrow_plain = (' '..='~').contains(&c)
-            || ((0xA0..=0xFF).contains(&cp) && cp != 0xA9 && cp != 0xAE)
-            || (0x1EA0..=0x1EF9).contains(&cp)
-            || (0x2500..=0x259F).contains(&cp);
-
-        if is_narrow_plain && !self.joiner {
+        if is_narrow_plain(cp) && !self.joiner {
             self.put_char(cp, 1);
         } else if let Some((codepoint, w)) = self.char_cell(c) {
             self.put_char(codepoint, w);
