@@ -197,7 +197,7 @@ fn build_window(
         locks: 0,
         cursor_blink_epoch: std::time::Instant::now(),
         focused: true,
-        history_search: HistorySearch::new(),
+        history_search: HistorySearch::new(waker.clone()),
         search: SearchBar::new(),
         first_frame: true,
         ime: ImeState { preedit: String::new(), cursor_cell: None },

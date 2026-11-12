@@ -3,11 +3,6 @@
 //! `paste_payload` strips `ESC` so pasted text cannot terminate bracketed
 //! paste (`\x1b[201~`) early.
 
-/// Build the bytes sent to the PTY for a clipboard paste.
-///
-/// ESC (and the 8-bit C1 CSI, U+009B) is stripped so clipboard content can never
-/// smuggle in `\x1b[201~` to terminate bracketed paste early and execute the rest
-/// as typed input, nor inject escape sequences into programs without bracketed paste.
 /// Quote a path for a POSIX shell: bare when it only has safe characters,
 /// otherwise in single quotes (with `'` written as `'\''`).
 pub(crate) fn shell_quote(s: &str) -> String {
@@ -18,14 +13,31 @@ pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Build the bytes sent to the PTY for a clipboard paste.
+///
+/// ESC (and the 8-bit C1 CSI, U+009B) is stripped so clipboard content can never
+/// smuggle in `\x1b[201~` to terminate bracketed paste early and execute the rest
+/// as typed input, nor inject escape sequences into programs without bracketed paste.
+/// LF and CRLF line endings become CR, the PTY Enter byte; lone CR is preserved.
 pub(crate) fn paste_payload(text: &str, bracketed: bool) -> Vec<u8> {
     let mut payload = Vec::with_capacity(text.len() + 12);
     if bracketed {
         payload.extend_from_slice(b"\x1b[200~");
     }
     let mut buf = [0u8; 4];
-    for ch in text.chars().filter(|&c| c != '\x1b' && c != '\u{9b}') {
-        payload.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\x1b' | '\u{9b}' => {}
+            '\r' => {
+                payload.push(b'\r');
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+            }
+            '\n' => payload.push(b'\r'),
+            c => payload.extend_from_slice(c.encode_utf8(&mut buf).as_bytes()),
+        }
     }
     if bracketed {
         payload.extend_from_slice(b"\x1b[201~");
@@ -119,16 +131,36 @@ mod tests {
     }
 
     #[test]
+    fn paste_normalizes_line_endings_without_losing_unicode_or_filtering() {
+        for bracketed in [false, true] {
+            for (input, expected) in [
+                ("a\nb", "a\rb"),
+                ("a\r\nb", "a\rb"),
+                ("a\rb", "a\rb"),
+                ("Việt\n日本\r\n🙂\r", "Việt\r日本\r🙂\r"),
+                ("a\x1b[201~\n\u{9b}b", "a[201~\rb"),
+            ] {
+                let expected = if bracketed {
+                    format!("\x1b[200~{expected}\x1b[201~")
+                } else {
+                    expected.into()
+                };
+                assert_eq!(paste_payload(input, bracketed), expected.as_bytes());
+            }
+        }
+    }
+
+    #[test]
     fn bracketed_paste_wraps_plain_text() {
-        assert_eq!(paste_payload("ls -la\n", true), b"\x1b[200~ls -la\n\x1b[201~");
-        assert_eq!(paste_payload("ls -la\n", false), b"ls -la\n");
+        assert_eq!(paste_payload("ls -la\n", true), b"\x1b[200~ls -la\r\x1b[201~");
+        assert_eq!(paste_payload("ls -la\n", false), b"ls -la\r");
     }
 
     #[test]
     fn bracketed_paste_cannot_be_terminated_early() {
         let evil = "echo hi\x1b[201~rm -rf ~\n";
         let out = paste_payload(evil, true);
-        assert_eq!(out, b"\x1b[200~echo hi[201~rm -rf ~\n\x1b[201~");
+        assert_eq!(out, b"\x1b[200~echo hi[201~rm -rf ~\r\x1b[201~");
         // Exactly one start and one end marker: the injected terminator is neutralized.
         let end_markers = out.windows(6).filter(|w| *w == b"\x1b[201~").count();
         assert_eq!(end_markers, 1);

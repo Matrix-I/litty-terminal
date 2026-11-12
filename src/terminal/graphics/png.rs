@@ -338,7 +338,7 @@ pub(crate) fn crc32(data: &[u8]) -> u32 {
 
 /// Decode a PNG image into `(width, height, rgba)`.
 ///
-/// Validates the PNG header, `IHDR` bounds, and APNG `fcTL` canvas invariants
+/// Validates the PNG header, `IHDR` bounds, and default-image APNG `fcTL` bounds
 /// first, then decodes every standard color type and bit depth (palette and
 /// `tRNS` expansion, 16-bit samples stripped to their high byte, Adam7) with
 /// the built-in RFC 2083 reader, so both platforms produce the same pixels.
@@ -370,12 +370,13 @@ pub fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     }
     let format = Format::new(color_type, bit_depth).ok_or("EINVAL:bad PNG")?;
 
-    // Walk chunks to validate APNG sub-frame bounds and collect IDAT stream.
+    // Validate default-image APNG bounds and collect its IDAT stream.
     let mut pos = 8usize;
     let mut idat = Vec::new();
     let mut plte: &[u8] = &[];
     let mut trns: &[u8] = &[];
     let mut saw_iend = false;
+    let mut saw_idat = false;
     while pos + 12 <= data.len() {
         let len = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
         let ctype = &data[pos + 4..pos + 8];
@@ -394,13 +395,18 @@ pub fn decode_png(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
                 }
                 let fw = u32::from_be_bytes([cdata[4], cdata[5], cdata[6], cdata[7]]);
                 let fh = u32::from_be_bytes([cdata[8], cdata[9], cdata[10], cdata[11]]);
-                if (fw, fh) != (w, h) {
+                // Only fcTL before IDAT describes the default image. Later
+                // animation frames may cover a smaller rectangle; we show IDAT.
+                let x = u32::from_be_bytes([cdata[12], cdata[13], cdata[14], cdata[15]]);
+                let y = u32::from_be_bytes([cdata[16], cdata[17], cdata[18], cdata[19]]);
+                if !saw_idat && ((fw, fh) != (w, h) || x != 0 || y != 0) {
                     return Err("EINVAL:bad PNG".into());
                 }
             }
             b"PLTE" => plte = cdata,
             b"tRNS" => trns = cdata,
             b"IDAT" => {
+                saw_idat = true;
                 if idat.len().saturating_add(cdata.len()) > STORE_LIMIT {
                     return Err("EINVAL:image too large".into());
                 }

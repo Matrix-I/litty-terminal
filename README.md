@@ -24,6 +24,8 @@
 - **Built-in history search, regex find, click-to-position cursor and hyperlink detection.** Cmd/Ctrl+Click opens web links, folders and common text, source, document and media files; other files (scripts, apps, installers, `.terminal`, `.webloc`, files without an extension) are only revealed in their folder, and OSC 8 `file://` links from other hosts are ignored.
 - **Automatic shell integration** (zsh, bash, fish, nushell, elvish) and the **Kitty keyboard / graphics protocols**, Sixel and full Unicode support.
 - **`yo` AI shell assistant** with multiple providers, including local Ollama.
+- **Safer paste and updates**: clipboard LF/CRLF line endings become terminal Enter bytes, while escape filtering remains active. Updates require a signed manifest bound to the exact release tag; macOS app updates stage and sign the complete bundle before an atomic swap. See [Updates](docs/guide/updates-and-cli.md).
+
 
 See [Features](docs/guide/features.md) for the full list. All features have been tested
 on Linux and run stably, as [confirmed by the user on 2026-11-04](docs/validation/linux-status-2026-11-04.md).
