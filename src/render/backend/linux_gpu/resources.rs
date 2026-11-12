@@ -279,6 +279,7 @@ unsafe fn begin_upload(vk: &VulkanCore) {
             flags: 1,
             p_inheritance_info: std::ptr::null(),
         };
+        vk.wait_for_last_frame();
         (vk.lib.vkResetCommandBuffer)(vk.upload_cmd, 0);
         (vk.lib.vkBeginCommandBuffer)(vk.upload_cmd, &b_info as *const _ as *const c_void);
     }

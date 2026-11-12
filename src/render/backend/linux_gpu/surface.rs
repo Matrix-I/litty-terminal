@@ -384,6 +384,7 @@ impl Surface {
             if res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR {
                 return None;
             }
+            vk.in_flight.lock().release(self.fence);
             (vk.lib.vkResetFences)(vk.device, 1, &self.fence);
             Some(SurfaceFrame {
                 image_index: idx,
@@ -453,6 +454,7 @@ impl Drop for Surface {
                 (vk.lib.vkDestroySemaphore)(vk.device, self.render_done_sem, std::ptr::null());
             }
             if self.fence != 0 {
+                vk.in_flight.lock().release(self.fence);
                 (vk.lib.vkDestroyFence)(vk.device, self.fence, std::ptr::null());
             }
             if self.surface_khr != 0 {
