@@ -99,7 +99,9 @@ impl CommandEncoder {
     pub fn present_and_submit(self, frame: SurfaceFrame) {
         let Some(vk) = &self.vk else { return };
         unsafe {
-            (vk.lib.vkEndCommandBuffer)(vk.upload_cmd);
+            if !vk_ok((vk.lib.vkEndCommandBuffer)(vk.upload_cmd), "vkEndCommandBuffer") {
+                return;
+            }
             #[repr(C)]
             struct SubmitInfo {
                 s_type: u32,
@@ -125,11 +127,16 @@ impl CommandEncoder {
                 p_signal_semaphores: &frame.render_done_sem,
             };
             let submitted = (vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, frame.fence);
-            // A failed submit never signals the fence; recording it would make
-            // every other window wait for it forever.
-            if submitted == VK_SUCCESS {
-                vk.in_flight.lock().submitted(frame.fence);
+            // A failed submit never signals the fence or `render_done_sem`:
+            // recording the fence would make every other window wait for it
+            // forever, and presenting would wait on the semaphore forever.
+            if !vk_ok(submitted, "vkQueueSubmit") {
+                // The surface waits for this fence before its next frame; an
+                // empty submit signals it so that wait cannot hang.
+                (vk.lib.vkQueueSubmit)(vk.queue, 0, std::ptr::null(), frame.fence);
+                return;
             }
+            vk.in_flight.lock().submitted(frame.fence);
 
             #[repr(C)]
             struct PresentInfo {
@@ -152,7 +159,9 @@ impl CommandEncoder {
                 p_image_indices: &frame.image_index,
                 p_results: std::ptr::null_mut(),
             };
-            (vk.lib.vkQueuePresentKHR)(vk.queue, &present as *const _ as *const c_void);
+            // Out of date or suboptimal: the next acquire fails or the
+            // renderer reconfigures, so only unexpected errors are reported.
+            present_ok((vk.lib.vkQueuePresentKHR)(vk.queue, &present as *const _ as *const c_void));
         }
     }
 
@@ -185,8 +194,7 @@ impl CommandEncoder {
                 signal_semaphore_count: 0,
                 p_signal_semaphores: std::ptr::null(),
             };
-            let submitted = (vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, 0);
-            assert_eq!(submitted, VK_SUCCESS, "vkQueueSubmit");
+            assert!(vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, 0), "vkQueueSubmit"));
             (vk.lib.vkQueueWaitIdle)(vk.queue);
         }
     }
@@ -224,7 +232,9 @@ impl RenderPass {
         instance_count: u32,
     ) {
         let Some(vk) = &self.vk else { return };
-        if instance_count == 0 || pipeline.0 == 0 {
+        // A 0 handle is an object that could not be created; binding it is invalid.
+        let handles = [pipeline.0, instances.raw_ptr(), viewports.raw_ptr(), atlas.raw_ptr(), color_atlas.raw_ptr(), sampler];
+        if instance_count == 0 || handles.contains(&0) {
             return;
         }
         let slot = self.call_idx & 1;
@@ -300,7 +310,7 @@ impl RenderPass {
     ) {
         let Some(vk) = &self.vk else { return };
         let dset = texture.image_dset();
-        if pipeline.0 == 0 || dset == 0 {
+        if pipeline.0 == 0 || dset == 0 || quads.raw_ptr() == 0 {
             return;
         }
         unsafe {

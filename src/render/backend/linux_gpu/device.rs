@@ -548,7 +548,12 @@ impl VulkanCore {
                 queue_family_index: queue_family,
             };
             let mut cmd_pool = 0u64;
-            (lib.vkCreateCommandPool)(device, &pool_info as *const _ as *const c_void, std::ptr::null(), &mut cmd_pool);
+            // A failure from here on leaves the app without a GPU (`vk: None`),
+            // which draws nothing, instead of using null handles. What was
+            // created is leaked: this runs once per process.
+            if !vk_ok((lib.vkCreateCommandPool)(device, &pool_info as *const _ as *const c_void, std::ptr::null(), &mut cmd_pool), "vkCreateCommandPool") {
+                return None;
+            }
 
             #[repr(C)]
             struct CmdAlloc {
@@ -566,12 +571,17 @@ impl VulkanCore {
                 count: 1,
             };
             let mut upload_cmd: VkCommandBuffer = std::ptr::null_mut();
-            (lib.vkAllocateCommandBuffers)(device, &cmd_alloc as *const _ as *const c_void, &mut upload_cmd);
+            if !vk_ok((lib.vkAllocateCommandBuffers)(device, &cmd_alloc as *const _ as *const c_void, &mut upload_cmd), "vkAllocateCommandBuffers") {
+                return None;
+            }
 
             let shader_mod = create_shader_module(&lib, device, SHADER_SPV);
             let image_mod = create_shader_module(&lib, device, IMAGE_SPV);
             let nearest_sampler = create_vk_sampler(&lib, device, VK_FILTER_NEAREST);
             let linear_sampler = create_vk_sampler(&lib, device, VK_FILTER_LINEAR);
+            if [shader_mod, image_mod, nearest_sampler, linear_sampler].contains(&0) {
+                return None;
+            }
 
             #[repr(C)]
             #[derive(Copy, Clone)]
@@ -605,7 +615,9 @@ impl VulkanCore {
                 p_bindings: cells_bindings.as_ptr(),
             };
             let mut cells_dset_layout = 0u64;
-            (lib.vkCreateDescriptorSetLayout)(device, &cells_dl_info as *const _ as *const c_void, std::ptr::null(), &mut cells_dset_layout);
+            if !vk_ok((lib.vkCreateDescriptorSetLayout)(device, &cells_dl_info as *const _ as *const c_void, std::ptr::null(), &mut cells_dset_layout), "vkCreateDescriptorSetLayout") {
+                return None;
+            }
 
             let image_bindings = [
                 Binding { binding: 0, descriptor_type: VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, descriptor_count: 1, stage_flags: VK_SHADER_STAGE_ALL_GRAPHICS, p_immutable_samplers: std::ptr::null() },
@@ -620,7 +632,9 @@ impl VulkanCore {
                 p_bindings: image_bindings.as_ptr(),
             };
             let mut image_dset_layout = 0u64;
-            (lib.vkCreateDescriptorSetLayout)(device, &image_dl_info as *const _ as *const c_void, std::ptr::null(), &mut image_dset_layout);
+            if !vk_ok((lib.vkCreateDescriptorSetLayout)(device, &image_dl_info as *const _ as *const c_void, std::ptr::null(), &mut image_dset_layout), "vkCreateDescriptorSetLayout") {
+                return None;
+            }
 
             #[repr(C)]
             struct PipeLayoutInfo {
@@ -642,7 +656,9 @@ impl VulkanCore {
                 push_constant_range_count: 0,
                 p_push_constant_ranges: std::ptr::null(),
             };
-            (lib.vkCreatePipelineLayout)(device, &c_pl_info as *const _ as *const c_void, std::ptr::null(), &mut cells_pipe_layout);
+            if !vk_ok((lib.vkCreatePipelineLayout)(device, &c_pl_info as *const _ as *const c_void, std::ptr::null(), &mut cells_pipe_layout), "vkCreatePipelineLayout") {
+                return None;
+            }
 
             let mut image_pipe_layout = 0u64;
             let i_pl_info = PipeLayoutInfo {
@@ -654,7 +670,9 @@ impl VulkanCore {
                 push_constant_range_count: 0,
                 p_push_constant_ranges: std::ptr::null(),
             };
-            (lib.vkCreatePipelineLayout)(device, &i_pl_info as *const _ as *const c_void, std::ptr::null(), &mut image_pipe_layout);
+            if !vk_ok((lib.vkCreatePipelineLayout)(device, &i_pl_info as *const _ as *const c_void, std::ptr::null(), &mut image_pipe_layout), "vkCreatePipelineLayout") {
+                return None;
+            }
 
             #[repr(C)]
             struct PoolSize {
@@ -685,7 +703,9 @@ impl VulkanCore {
                 p_pool_sizes: pool_sizes.as_ptr(),
             };
             let mut desc_pool = 0u64;
-            (lib.vkCreateDescriptorPool)(device, &dp_info as *const _ as *const c_void, std::ptr::null(), &mut desc_pool);
+            if !vk_ok((lib.vkCreateDescriptorPool)(device, &dp_info as *const _ as *const c_void, std::ptr::null(), &mut desc_pool), "vkCreateDescriptorPool") {
+                return None;
+            }
             let image_pool_sizes = [
                 PoolSize { ty: VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count: IMAGE_DESCRIPTOR_SETS },
                 PoolSize { ty: VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count: IMAGE_DESCRIPTOR_SETS },
@@ -700,7 +720,9 @@ impl VulkanCore {
                 p_pool_sizes: image_pool_sizes.as_ptr(),
             };
             let mut image_desc_pool = 0u64;
-            (lib.vkCreateDescriptorPool)(device, &image_dp_info as *const _ as *const c_void, std::ptr::null(), &mut image_desc_pool);
+            if !vk_ok((lib.vkCreateDescriptorPool)(device, &image_dp_info as *const _ as *const c_void, std::ptr::null(), &mut image_desc_pool), "vkCreateDescriptorPool") {
+                return None;
+            }
 
             #[repr(C)]
             struct DsetAlloc {
@@ -719,11 +741,13 @@ impl VulkanCore {
                 descriptor_set_count: 2,
                 p_set_layouts: layouts.as_ptr(),
             };
-            (lib.vkAllocateDescriptorSets)(device, &ds_alloc as *const _ as *const c_void, cells_dsets.as_mut_ptr());
+            if !vk_ok((lib.vkAllocateDescriptorSets)(device, &ds_alloc as *const _ as *const c_void, cells_dsets.as_mut_ptr()), "vkAllocateDescriptorSets") {
+                return None;
+            }
 
-            let (ubuf0, _, uptr0) = super::resources::alloc_host_buffer(&lib, device, &mem_props, 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-            let (ubuf1, _, uptr1) = super::resources::alloc_host_buffer(&lib, device, &mem_props, 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-            let (iubuf, _, iuptr) = super::resources::alloc_host_buffer(&lib, device, &mem_props, 64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+            let (ubuf0, _, uptr0) = super::resources::alloc_host_buffer(&lib, device, &mem_props, 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)?;
+            let (ubuf1, _, uptr1) = super::resources::alloc_host_buffer(&lib, device, &mem_props, 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)?;
+            let (iubuf, _, iuptr) = super::resources::alloc_host_buffer(&lib, device, &mem_props, 64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)?;
 
             Some(Arc::new(Self {
                 lib,
@@ -775,7 +799,9 @@ unsafe fn create_shader_module(lib: &VkLib, device: VkDevice, spv: &[u8]) -> VkS
             p_code: aligned.as_ptr(),
         };
         let mut module = 0u64;
-        (lib.vkCreateShaderModule)(device, &info as *const _ as *const c_void, std::ptr::null(), &mut module);
+        if !vk_ok((lib.vkCreateShaderModule)(device, &info as *const _ as *const c_void, std::ptr::null(), &mut module), "vkCreateShaderModule") {
+            return 0;
+        }
         module
     }
 }
@@ -824,7 +850,9 @@ unsafe fn create_vk_sampler(lib: &VkLib, device: VkDevice, filter: u32) -> VkSam
             unnormalized_coordinates: 0,
         };
         let mut sampler = 0u64;
-        (lib.vkCreateSampler)(device, &info as *const _ as *const c_void, std::ptr::null(), &mut sampler);
+        if !vk_ok((lib.vkCreateSampler)(device, &info as *const _ as *const c_void, std::ptr::null(), &mut sampler), "vkCreateSampler") {
+            return 0;
+        }
         sampler
     }
 }
@@ -937,7 +965,9 @@ unsafe fn create_render_pass(
             p_dependencies: std::ptr::null(),
         };
         let mut rp = 0u64;
-        (lib.vkCreateRenderPass)(device, &rp_info as *const _ as *const c_void, std::ptr::null(), &mut rp);
+        if !vk_ok((lib.vkCreateRenderPass)(device, &rp_info as *const _ as *const c_void, std::ptr::null(), &mut rp), "vkCreateRenderPass") {
+            return 0;
+        }
         rp
     }
 }
@@ -1230,7 +1260,13 @@ unsafe fn create_graphics_pipeline(
             base_pipeline_index: -1,
         };
         let mut pipe = 0u64;
-        (lib.vkCreateGraphicsPipelines)(device, 0, 1, &pipe_info as *const _ as *const c_void, std::ptr::null(), &mut pipe);
+        // A pipeline handle of 0 makes every draw with it a no-op.
+        if !vk_ok(
+            (lib.vkCreateGraphicsPipelines)(device, 0, 1, &pipe_info as *const _ as *const c_void, std::ptr::null(), &mut pipe),
+            "vkCreateGraphicsPipelines",
+        ) {
+            return 0;
+        }
         pipe
     }
 }

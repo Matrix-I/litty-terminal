@@ -192,7 +192,9 @@ impl Surface {
                     flags: u32,
                 }
                 let f_info = FenceInfo { s_type: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, p_next: std::ptr::null(), flags: 1 };
-                (vk.lib.vkCreateFence)(vk.device, &f_info as *const _ as *const c_void, std::ptr::null(), &mut fence);
+                if !vk_ok((vk.lib.vkCreateFence)(vk.device, &f_info as *const _ as *const c_void, std::ptr::null(), &mut fence), "vkCreateFence") {
+                    fence = 0;
+                }
             }
         }
 
@@ -325,10 +327,18 @@ impl Surface {
             let mut img_count = 0u32;
             (vk.lib.vkGetSwapchainImagesKHR)(vk.device, self.swapchain, &mut img_count, std::ptr::null_mut());
             let mut imgs = vec![0u64; img_count as usize];
-            (vk.lib.vkGetSwapchainImagesKHR)(vk.device, self.swapchain, &mut img_count, imgs.as_mut_ptr());
+            if !vk_ok((vk.lib.vkGetSwapchainImagesKHR)(vk.device, self.swapchain, &mut img_count, imgs.as_mut_ptr()), "vkGetSwapchainImagesKHR") {
+                self.release_swapchain();
+                return;
+            }
+            imgs.truncate(img_count as usize);
 
             let pipes = shared_pipelines(device, config.format);
             self.render_done_sems = imgs.iter().map(|_| create_semaphore(vk)).collect();
+            if self.render_done_sems.contains(&0) {
+                self.release_swapchain();
+                return;
+            }
             for img in imgs {
                 #[repr(C)]
                 struct ViewInfo {
@@ -352,7 +362,11 @@ impl Surface {
                     subresource_range: [1, 0, 1, 0, 1],
                 };
                 let mut view = 0u64;
-                (vk.lib.vkCreateImageView)(vk.device, &v_info as *const _ as *const c_void, std::ptr::null(), &mut view);
+                if !vk_ok((vk.lib.vkCreateImageView)(vk.device, &v_info as *const _ as *const c_void, std::ptr::null(), &mut view), "vkCreateImageView") {
+                    // Every image needs its framebuffer: an acquired image without one could not be drawn or presented.
+                    self.release_swapchain();
+                    return;
+                }
                 self.views.push(view);
 
                 #[repr(C)]
@@ -379,7 +393,10 @@ impl Surface {
                     layers: 1,
                 };
                 let mut fb = 0u64;
-                (vk.lib.vkCreateFramebuffer)(vk.device, &fb_info as *const _ as *const c_void, std::ptr::null(), &mut fb);
+                if !vk_ok((vk.lib.vkCreateFramebuffer)(vk.device, &fb_info as *const _ as *const c_void, std::ptr::null(), &mut fb), "vkCreateFramebuffer") {
+                    self.release_swapchain();
+                    return;
+                }
                 register_framebuffer(
                     fb,
                     FramebufferTarget {
@@ -396,7 +413,8 @@ impl Surface {
 
     pub fn acquire_frame(&mut self) -> Option<SurfaceFrame> {
         let vk = self.vk.as_ref()?;
-        if self.swapchain == 0 || self.framebuffers.is_empty() {
+        // Without its fence or semaphores (creation failed) a frame cannot be synchronised.
+        if self.swapchain == 0 || self.framebuffers.is_empty() || self.fence == 0 || self.image_avail_sem == 0 {
             return None;
         }
         unsafe {
@@ -478,8 +496,8 @@ fn create_semaphore(vk: &VulkanCore) -> VkSemaphore {
     let info = SemInfo { s_type: VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, p_next: std::ptr::null(), flags: 0 };
     let mut sem = 0u64;
     // SAFETY: `info` is a valid create info and outlives the call.
-    unsafe { (vk.lib.vkCreateSemaphore)(vk.device, &info as *const _ as *const c_void, std::ptr::null(), &mut sem) };
-    sem
+    let created = unsafe { (vk.lib.vkCreateSemaphore)(vk.device, &info as *const _ as *const c_void, std::ptr::null(), &mut sem) };
+    if vk_ok(created, "vkCreateSemaphore") { sem } else { 0 }
 }
 
 /// Destroy and forget `sems`. Callers make sure the device is idle first.
