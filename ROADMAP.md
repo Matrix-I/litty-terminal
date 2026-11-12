@@ -84,5 +84,6 @@ From [the 2026-11-11 review](./docs/reviews/2026-11-11-linux-history-ai-graphics
 - [ ] **Graphics: `t=f` replies** still reveal whether a file exists (decode errors differ from `EPERM`).
 - [ ] **Graphics: `I=` replies** carry `i=0` instead of the assigned id; APNG files with partial frames are rejected.
 - [ ] **History: reload on the UI thread** when a history file changed; deletes dropped silently when four are in flight.
-- [ ] **Linux: window stubs.** `current_monitor` reports 1920x1080 at 60 Hz, `theme` is always dark, cursor icon, cursor visibility and fullscreen only store a flag.
+- [ ] **Linux: window stubs.** `current_monitor` reports 1920x1080 at 60 Hz, `theme` is always dark, `set_fullscreen` only stores a flag.
+  - Partly fixed (2026-11-12): the X11 window now shows the requested cursor icon (`23ba626`) and hides the pointer while typing (`e30ab0f`); maximize and fullscreen changes made by the window manager are read from `_NET_WM_STATE` (`7652831`).
 - [ ] **AI: `last_exit` in the system prompt** invalidates the cached prefix; `cancel_request` records a skipped command when none was suggested.
