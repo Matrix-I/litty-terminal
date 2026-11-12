@@ -88,10 +88,10 @@ From [the 2026-11-11 review](./docs/reviews/2026-11-11-linux-history-ai-graphics
   - Fixed (2026-11-12, `aa1b7b9`): render-target textures own a framebuffer with offscreen render passes, and an unknown target records no pass. The test segfaulted on `main` and now passes with its pixel checks and no validation errors.
 - [x] **Linux: `custom-shader` warning.** It is printed once per window and worded as a compile error; say once that the key is unsupported.
   - Fixed (2026-11-12, `ab2de85`): one `custom-shader is not supported on Linux yet` line per process, however many windows open.
-- [ ] **Graphics: Kitty `a=d` selectors** other than `i`/`I` clear everything; confirm the alternate-screen behaviour against the grid caller.
-- [ ] **Graphics: `t=f` replies** still reveal whether a file exists (decode errors differ from `EPERM`).
-- [ ] **Graphics: `I=` replies** carry `i=0` instead of the assigned id; APNG files with partial frames are rejected.
+- [x] **Graphics: unsupported Kitty `a=d` selectors** return an error without changing image data or placements (2026-11-12). Existing `a`/`A`, default and `i`/`I` semantics are preserved; alternate-screen scoping remains a separate follow-up.
+- [x] **Graphics: `t=f`/`t=t` failure replies** use the same `EPERM` for read, decompression and image-decoding failures (2026-11-12).
+- [x] **Graphics: `I=` replies and APNG fallback**: numbered transmissions reply with the assigned id; valid APNGs with later partial frames show the full default image while malformed default images remain rejected (2026-11-12).
 - [ ] **History: reload on the UI thread** when a history file changed; deletes dropped silently when four are in flight.
 - [ ] **Linux: window stubs.** `current_monitor` reports 1920x1080 at 60 Hz, `theme` is always dark, `set_fullscreen` only stores a flag.
   - Partly fixed (2026-11-12): the X11 window now shows the requested cursor icon (`23ba626`) and hides the pointer while typing (`e30ab0f`); maximize and fullscreen changes made by the window manager are read from `_NET_WM_STATE` (`7652831`).
-- [ ] **AI: `last_exit` in the system prompt** invalidates the cached prefix; `cancel_request` records a skipped command when none was suggested.
+- [x] **AI: stable system prefix and cancellation**: exit status travels in changing user context, and cancellation records a skipped command only once when a suggestion existed (2026-11-12).

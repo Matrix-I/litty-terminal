@@ -98,12 +98,23 @@ pub struct Pty {
 struct ReapOnDrop {
     pid: libc::pid_t,
     reader_spawned: std::sync::atomic::AtomicBool,
+    reader_failed: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    failure_reaped: Mutex<Option<mpsc::Sender<std::thread::ThreadId>>>,
 }
 
 impl Drop for ReapOnDrop {
     fn drop(&mut self) {
         if !self.reader_spawned.load(std::sync::atomic::Ordering::SeqCst) {
-            reap_child(self.pid);
+            if self.reader_failed.load(std::sync::atomic::Ordering::SeqCst) {
+                reap_failed_reader(FailedReap {
+                    pid: self.pid,
+                    #[cfg(test)]
+                    done: self.failure_reaped.get_mut().take(),
+                });
+            } else {
+                reap_child(self.pid);
+            }
         }
     }
 }
@@ -426,7 +437,7 @@ impl Pty {
                 tx,
                 shutdown_rx,
                 _shutdown_tx: shutdown_tx,
-                reaper: ReapOnDrop { pid, reader_spawned: std::sync::atomic::AtomicBool::new(false) },
+                reaper: ReapOnDrop { pid, reader_spawned: std::sync::atomic::AtomicBool::new(false), reader_failed: std::sync::atomic::AtomicBool::new(false), #[cfg(test)] failure_reaped: Mutex::new(None) },
             })
         }
     }
@@ -487,10 +498,25 @@ impl Pty {
         notify: impl Fn() + Send + 'static,
         on_exit: impl FnOnce() + Send + 'static,
     ) -> io::Result<()> {
-        let fd = match dup_cloexec(self.master.as_raw_fd()) {
+        self.spawn_reader_using(grid, notify, on_exit, dup_cloexec, |task| {
+            std::thread::Builder::new().name("pty-reader".into()).stack_size(256 * 1024).spawn(task)
+        })
+    }
+
+    fn spawn_reader_using(
+        &self,
+        grid: Arc<Mutex<Grid>>,
+        notify: impl Fn() + Send + 'static,
+        on_exit: impl FnOnce() + Send + 'static,
+        duplicate: impl FnOnce(RawFd) -> io::Result<OwnedFd>,
+        spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<std::thread::JoinHandle<()>>,
+    ) -> io::Result<()> {
+        let fd = match duplicate(self.master.as_raw_fd()) {
             Ok(fd) => fd,
             Err(e) => {
-                reap_child(self.pid);
+                // The PTY still owns an open master. Its drop guard reaps only
+                // after all descriptors close; waiting here would stall setup.
+                self.reaper.reader_failed.store(true, std::sync::atomic::Ordering::SeqCst);
                 return Err(e);
             }
         };
@@ -503,10 +529,7 @@ impl Pty {
                 reap_child(self.0);
             }
         }
-        if let Err(e) = std::thread::Builder::new()
-            .name("pty-reader".into())
-            .stack_size(256 * 1024)
-            .spawn(move || {
+        let result = spawn(Box::new(move || {
                 let _reaper = ChildReaper(pid);
                 let raw = fd.as_raw_fd();
                 let mut buf = [0u8; 65536];
@@ -574,9 +597,9 @@ impl Pty {
                 drop(fd);
                 drop(_reaper);
                 on_exit();
-            })
-        {
-            reap_child(self.pid);
+            }));
+        if let Err(e) = result {
+            self.reaper.reader_failed.store(true, std::sync::atomic::Ordering::SeqCst);
             return Err(e);
         }
         self.reaper.reader_spawned.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -645,6 +668,55 @@ fn write_all(fd: RawFd, mut data: &[u8], shutdown: RawFd) -> bool {
         data = &data[n as usize..];
     }
     true
+}
+
+#[derive(Debug)]
+struct FailedReap {
+    pid: libc::pid_t,
+    #[cfg(test)]
+    done: Option<mpsc::Sender<std::thread::ThreadId>>,
+}
+
+/// Failed setup has no reader to drain output or own cleanup. Terminate it
+/// after the master descriptors close, and hand waiting to one bounded worker.
+fn reap_failed_reader(job: FailedReap) {
+    static REAPER: std::sync::OnceLock<Option<mpsc::SyncSender<FailedReap>>> = std::sync::OnceLock::new();
+    const MAX_PENDING_REAPS: usize = 64;
+    let tx = REAPER.get_or_init(|| {
+        let (tx, rx) = mpsc::sync_channel(MAX_PENDING_REAPS);
+        match std::thread::Builder::new().name("pty-failed-reaper".into()).stack_size(32 * 1024).spawn(move || {
+            while let Ok(job) = rx.recv() { wait_killed_child(job); }
+        }) {
+            Ok(_) => Some(tx),
+            Err(e) => { eprintln!("litty: cannot start failed-PTY reaper: {e}"); None }
+        }
+    });
+    // The PID cannot be reused before its unique owner has waited for it.
+    unsafe { libc::kill(job.pid, libc::SIGKILL); }
+    if let Err(job) = handoff_failed_reap(job, tx.as_ref()) {
+        // Under resource exhaustion there may be no worker. The child is already
+        // killed, so cleanup never uses the normal two-second hangup grace.
+        eprintln!("litty: failed-PTY reaper unavailable; collecting terminated child");
+        wait_killed_child(job);
+    }
+}
+
+fn handoff_failed_reap(job: FailedReap, tx: Option<&mpsc::SyncSender<FailedReap>>) -> Result<(), FailedReap> {
+    match tx {
+        Some(tx) => tx.try_send(job).map_err(|e| match e {
+            mpsc::TrySendError::Full(job) | mpsc::TrySendError::Disconnected(job) => job,
+        }),
+        None => Err(job),
+    }
+}
+
+fn wait_killed_child(job: FailedReap) {
+    loop {
+        let result = unsafe { libc::waitpid(job.pid, std::ptr::null_mut(), 0) };
+        if result >= 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted { break; }
+    }
+    #[cfg(test)]
+    if let Some(done) = job.done { let _ = done.send(std::thread::current().id()); }
 }
 
 /// Reap the shell. Give it a moment to exit on hangup, then SIGKILL so a shell that
@@ -862,6 +934,46 @@ mod tests {
         });
         assert!(grid.lock().graphics.image(10).is_none());
         assert!(reply.is_empty());
+    }
+
+    #[test]
+    fn failed_reader_reap_handoff_is_bounded_nonblocking_and_keeps_ownership_on_error() {
+        let job = |pid| FailedReap { pid, done: None };
+        let (tx, rx) = mpsc::sync_channel(1);
+        assert!(handoff_failed_reap(job(123), Some(&tx)).is_ok());
+        assert_eq!(handoff_failed_reap(job(456), Some(&tx)).unwrap_err().pid, 456);
+        assert_eq!(rx.recv().unwrap().pid, 123);
+        assert!(handoff_failed_reap(job(456), Some(&tx)).is_ok());
+        assert_eq!(rx.recv().unwrap().pid, 456);
+        drop(rx);
+        assert_eq!(handoff_failed_reap(job(789), Some(&tx)).unwrap_err().pid, 789);
+        assert_eq!(handoff_failed_reap(job(789), None).unwrap_err().pid, 789);
+    }
+
+    #[test]
+    fn reader_setup_failure_leaves_live_child_owned_by_pty() {
+        for fail_dup in [true, false] {
+            let pty = Pty::spawn_program("/bin/cat", &["cat"], &[], (80, 24), (8, 16)).unwrap();
+            let pid = pty.pid;
+            let error = pty.spawn_reader_using(
+                Arc::new(Mutex::new(Grid::new(80, 24))), || {}, || {},
+                |fd| if fail_dup { Err(io::Error::from_raw_os_error(libc::EMFILE)) } else { dup_cloexec(fd) },
+                |_| Err(io::Error::from_raw_os_error(libc::EAGAIN)),
+            ).unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(if fail_dup { libc::EMFILE } else { libc::EAGAIN }));
+            assert!(!pty.reaper.reader_spawned.load(std::sync::atomic::Ordering::SeqCst));
+            // No elapsed-time assertion: a failed setup must not kill or wait for
+            // the still-owned shell while its master descriptor remains open.
+            assert_eq!(unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) }, 0);
+            let (done, reaped) = mpsc::channel();
+            *pty.reaper.failure_reaped.lock() = Some(done);
+            let caller = std::thread::current().id();
+            drop(pty);
+            assert_ne!(reaped.recv_timeout(std::time::Duration::from_secs(10)).unwrap(), caller,
+                "failed caller cleanup must wait on the reaper worker, not the UI thread");
+            assert_eq!(unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) }, -1);
+            assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ECHILD));
+        }
     }
 
     #[test]

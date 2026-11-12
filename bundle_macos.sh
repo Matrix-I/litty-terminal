@@ -106,10 +106,20 @@ ARCH="$(uname -m)"
 cp "$DIST_DIR/litty-macos" "$DIST_DIR/litty-macos-$ARCH"
 cp "$DIST_DIR/Litty-macos.zip" "$DIST_DIR/Litty-macos-$ARCH.zip"
 
+# A local build defaults to its Cargo version; prerelease bundles must supply
+# the exact tag so their signed manifest cannot be replayed under another tag.
+BUILD_VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+RELEASE_TAG="${LITTY_RELEASE_TAG:-${GITHUB_REF_NAME:-v$BUILD_VERSION}}"
+if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+    echo "ERROR: invalid release tag for signed manifest." >&2
+    exit 1
+fi
+
 echo "==> Writing checksums and minisign signature..."
 SUMS="$DIST_DIR/SHA256SUMS.txt"
 rm -f "$SUMS" "$SUMS.minisig"
 (cd "$DIST_DIR" && shasum -a 256 "$DMG_NAME" "Litty-macos-$ARCH.zip" "litty-macos-$ARCH" > SHA256SUMS.txt)
+printf '# litty-release: %s\n' "$RELEASE_TAG" >> "$SUMS"
 if ! command -v minisign >/dev/null 2>&1; then
     echo "WARNING: minisign not installed (brew install minisign); $SUMS left unsigned." >&2
 elif [ ! -f "$MINISIGN_SEC_FILE" ]; then

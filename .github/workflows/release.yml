@@ -224,6 +224,7 @@ jobs:
           done
           unzip -p Litty-macos-aarch64.zip Litty.app/Contents/Info.plist | grep -Fq "<string>$VERSION</string>"
           sha256sum "${expected[@]}" > SHA256SUMS.txt
+          printf '# litty-release: %s\n' "$GITHUB_REF_NAME" >> SHA256SUMS.txt
           sha256sum -c SHA256SUMS.txt
       # From the GitHub release, not apt: a runner whose DNS could not
       # resolve the Ubuntu mirrors failed the v0.11.1 signing job.

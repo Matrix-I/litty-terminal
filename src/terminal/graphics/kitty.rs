@@ -196,7 +196,11 @@ impl Store {
                     }
                     let id = self.insert(cmd.id, w, h, rgba);
                     let out = if cmd.action == b'T' { KittyOutcome::Place { id } } else { KittyOutcome::None };
-                    (out, kitty_reply(&cmd, "OK"))
+                    let mut reply_cmd = cmd;
+                    if reply_cmd.number != 0 {
+                        reply_cmd.id = id;
+                    }
+                    (out, kitty_reply(&reply_cmd, "OK"))
                 }
                 Err(e) => (KittyOutcome::None, kitty_reply(&cmd, &e)),
             },
@@ -208,6 +212,9 @@ impl Store {
                 }
             }
             b'd' => {
+                if !matches!(cmd.delete, 0 | b'a' | b'A' | b'i' | b'I') {
+                    return (KittyOutcome::None, kitty_reply(&cmd, "EINVAL:unsupported delete selector"));
+                }
                 self.kitty_delete(&cmd);
                 (KittyOutcome::None, None)
             }
@@ -239,8 +246,8 @@ impl Store {
                     self.remove_image(cmd.id, true);
                 }
             }
-            // `a`/`A` (the default) and every selector Litty does not track
-            // individually: all placements.
+            // Only `a`/`A` (and the omitted default) reach this branch;
+            // unsupported selectors are rejected before any mutation.
             _ => {
                 self.placements.clear();
                 self.virtuals.clear();
@@ -273,7 +280,7 @@ fn is_temp_dir(dir: &std::path::Path) -> bool {
     })
 }
 
-/// The one reply for every failed `t=f` / `t=t` read. Distinct errors
+/// The one reply for every failed `t=f` / `t=t` read or decode. Distinct errors
 /// (`ENOENT` vs `EPERM` vs `EINVAL`) let any program that can print to the
 /// terminal probe which private files exist (CWE-200).
 const FILE_DENIED: &str = "EPERM:access denied";
@@ -445,6 +452,13 @@ pub(crate) fn decode_kitty(c: &KittyCommand, payload: &[u8]) -> Result<(u32, u32
         }
         _ => return Err("EINVAL:unsupported transmission medium".into()),
     };
+    decode_kitty_pixels(c, data).map_err(|error| {
+        if matches!(c.medium, b'f' | b't') { FILE_DENIED.to_string() } else { error }
+    })
+}
+
+/// Decode bytes after reading the medium so file failures share one reply.
+fn decode_kitty_pixels(c: &KittyCommand, data: Vec<u8>) -> DecodedImage {
     let data = if c.compression == b'z' {
         super::png::zlib_decompress_with_limit(&data, STORE_LIMIT).map_err(String::from)?
     } else {

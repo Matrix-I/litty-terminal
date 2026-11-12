@@ -55,6 +55,10 @@ pub(super) fn platform_asset_candidates() -> Vec<String> {
 
 /// First candidate the release both ships and lists in its checksum file.
 pub(super) fn pick_asset<'a>(release: &'a ReleaseInfo, sums: &str, candidates: &[String]) -> Result<&'a ReleaseAsset, String> {
+    let mut tags = sums.lines().filter_map(|line| line.strip_prefix("# litty-release: "));
+    if tags.next() != Some(release.tag_name.as_str()) || tags.next().is_some() {
+        return Err(format!("{SUMS_NAME} is not bound to release {}", release.tag_name));
+    }
     candidates
         .iter()
         .find_map(|name| release.assets.iter().find(|a| &a.name == name && expected_hash(sums, name).is_some()))
@@ -161,6 +165,16 @@ pub(crate) fn download_and_verify_in(
     release: &ReleaseInfo,
     candidates: &[String],
 ) -> Result<(PathBuf, String), String> {
+    download_and_verify_with(dir, release, candidates, download_file, verify_signature)
+}
+
+fn download_and_verify_with(
+    dir: &Path,
+    release: &ReleaseInfo,
+    candidates: &[String],
+    download: impl Fn(&str, &Path) -> Result<(), String>,
+    verify: impl Fn(&Path, &Path) -> Result<(), String>,
+) -> Result<(PathBuf, String), String> {
     let release_dir = dir.join(&release.tag_name);
     let sums_path = release_dir.join(SUMS_NAME);
 
@@ -173,7 +187,7 @@ pub(crate) fn download_and_verify_in(
                 && let Some(sig_asset) = signature_asset(release) {
                     let sig_path = release_dir.join(&sig_asset.name);
                     if sig_path.is_file() {
-                        verify_signature(&sums_path, &sig_path)?;
+                        verify(&sums_path, &sig_path)?;
                         return Ok((path, asset.name.clone()));
                     }
                 }
@@ -189,12 +203,12 @@ pub(crate) fn download_and_verify_in(
         format!("release {} is not signed (no {SUMS_NAME}.minisig / .sig / .asc); refusing to install it", release.tag_name)
     })?;
     fs::create_dir_all(&release_dir).map_err(|e| format!("cannot create {}: {e}", release_dir.display()))?;
-    download_file(&sums_asset.download_url, &sums_path)?;
+    download(&sums_asset.download_url, &sums_path)?;
     let sums = fs::read_to_string(&sums_path).map_err(|e| format!("cannot read {SUMS_NAME}: {e}"))?;
 
     let sig_path = release_dir.join(&sig_asset.name);
-    download_file(&sig_asset.download_url, &sig_path)?;
-    if let Err(e) = verify_signature(&sums_path, &sig_path) {
+    download(&sig_asset.download_url, &sig_path)?;
+    if let Err(e) = verify(&sums_path, &sig_path) {
         let _ = fs::remove_file(&sums_path);
         let _ = fs::remove_file(&sig_path);
         return Err(e);
@@ -204,7 +218,7 @@ pub(crate) fn download_and_verify_in(
     let path = release_dir.join(&asset.name);
     // Only a verified file ever carries the final name, so the reuse check above can trust it.
     let partial = release_dir.join(format!("{}.part", asset.name));
-    download_file(&asset.download_url, &partial)?;
+    download(&asset.download_url, &partial)?;
     if let Err(e) = verify_checksum(&sums, &asset.name, &partial) {
         let _ = fs::remove_file(&partial);
         return Err(e);
@@ -259,66 +273,7 @@ pub fn apply_update(downloaded_file: &Path, asset_name: &str) -> Result<(), Stri
     #[cfg(target_os = "macos")]
     if asset_name.ends_with(".zip") {
         let app_path = find_macos_app_bundle().ok_or("Litty is not running from an .app bundle")?;
-        let staging_dir = downloaded_file.with_file_name("staging");
-        let _ = fs::remove_dir_all(&staging_dir);
-        let _ = fs::create_dir_all(&staging_dir);
-
-        struct StagingCleanup<'a>(&'a Path);
-        impl Drop for StagingCleanup<'_> {
-            fn drop(&mut self) {
-                let _ = fs::remove_dir_all(self.0);
-            }
-        }
-        let _guard = StagingCleanup(&staging_dir);
-
-        // Unzip using system ditto for macOS resource fork and symlink fidelity
-        let status = Command::new("/usr/bin/ditto")
-            .args(["-xk"])
-            .arg(downloaded_file)
-            .arg(&staging_dir)
-            .status()
-            .map_err(|e| format!("ditto unpack failed: {e}"))?;
-
-        if !status.success() {
-            return Err(format!("failed to extract {asset_name}"));
-        }
-
-        let staged_app = staging_dir.join("Litty.app");
-        if !staged_app.exists() {
-            return Err("extracted archive did not contain Litty.app".to_string());
-        }
-        let bin_path = staged_app.join("Contents").join("MacOS").join("litty");
-        check_binary_arch(&bin_path)?;
-
-        // Sync updated contents to app_path
-        let status = Command::new("/usr/bin/ditto")
-            .arg(&staged_app)
-            .arg(&app_path)
-            .status()
-            .map_err(|e| format!("failed to overwrite app bundle: {e}"))?;
-
-        if !status.success() {
-            return Err("failed to copy update into application directory (check permissions)".to_string());
-        }
-
-        // Ad-hoc sign so Gatekeeper does not block the updated bundle
-        let sign_status = Command::new(resolve_system_bin("codesign"))
-            .args(["--force", "--deep", "--sign", "-"])
-            .arg(&app_path)
-            .status()
-            .map_err(|e| format!("failed to execute codesign on {app_path:?}: {e}"))?;
-        if !sign_status.success() {
-            return Err(format!("codesign failed on {app_path:?} with exit code {:?}", sign_status.code()));
-        }
-
-        let touch_status = Command::new(resolve_system_bin("touch"))
-            .arg(&app_path)
-            .status()
-            .map_err(|e| format!("failed to execute touch on {app_path:?}: {e}"))?;
-        if !touch_status.success() {
-            return Err(format!("touch failed on {app_path:?} with exit code {:?}", touch_status.code()));
-        }
-        return Ok(());
+        return apply_bundle(downloaded_file, &app_path);
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -356,6 +311,87 @@ pub fn apply_update(downloaded_file: &Path, asset_name: &str) -> Result<(), Stri
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn apply_bundle(downloaded_file: &Path, app_path: &Path) -> Result<(), String> {
+    apply_bundle_with(downloaded_file, app_path, run_bundle_helper, crate::platform::exchange_directories)
+}
+
+#[cfg(target_os = "macos")]
+fn apply_bundle_with(
+    downloaded_file: &Path,
+    app_path: &Path,
+    mut run: impl FnMut(&mut Command) -> Result<(), String>,
+    exchange: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> Result<(), String> {
+    // A sibling staging directory guarantees the exchange stays on one volume.
+    let parent = app_path.parent().ok_or("app bundle has no parent directory")?;
+    let staging_dir = create_bundle_staging(parent)?;
+
+    struct StagingCleanup<'a>(&'a Path);
+    impl Drop for StagingCleanup<'_> {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(self.0);
+        }
+    }
+    let _guard = StagingCleanup(&staging_dir);
+
+    run(Command::new("/usr/bin/ditto")
+        .args(["-xk"]).arg(downloaded_file).arg(&staging_dir))?;
+
+    let staged_app = staging_dir.join("Litty.app");
+    if !staged_app.exists() {
+        return Err("extracted archive did not contain Litty.app".to_string());
+    }
+    let bin_path = staged_app.join("Contents").join("MacOS").join("litty");
+    check_binary_arch(&bin_path)?;
+
+    // Sign the staged tree before publishing it; the running bundle is untouched
+    // until the single exchange below succeeds.
+    run(Command::new(resolve_system_bin("codesign"))
+        .args(["--force", "--deep", "--sign", "-"]).arg(&staged_app))?;
+    run(Command::new(resolve_system_bin("touch")).arg(&staged_app))?;
+    exchange(&staged_app, app_path)
+        .map_err(|e| format!("cannot atomically replace app bundle: {e}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn create_bundle_staging(parent: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::DirBuilderExt;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    for _ in 0..32 {
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = parent.join(format!(".litty-update-{}-{id}", std::process::id()));
+        match fs::DirBuilder::new().mode(0o700).create(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("cannot stage update beside app bundle: {e}")),
+        }
+    }
+    Err("cannot reserve an update staging directory".into())
+}
+
+#[cfg(target_os = "macos")]
+fn run_bundle_helper(cmd: &mut Command) -> Result<(), String> {
+    use std::time::{Duration, Instant};
+    const HELPER_TIMEOUT: Duration = Duration::from_secs(60);
+    let mut child = cmd.spawn().map_err(|e| format!("cannot start bundle helper: {e}"))?;
+    let deadline = Instant::now() + HELPER_TIMEOUT;
+    let result = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break if status.success() { Ok(()) } else { Err(format!("bundle helper failed: {status}")) },
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            Ok(None) => break Err("bundle helper timed out".into()),
+            Err(e) => break Err(format!("cannot wait for bundle helper: {e}")),
+        }
+    };
+    if result.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    result
+}
+
 /// Copies `src` to a fresh executable file at `dest`. A stale or planted entry
 /// at `dest` is unlinked (never followed) and the new file is created with
 /// `O_EXCL | O_NOFOLLOW`, so the copy cannot write through a symlink (CWE-59).
@@ -384,6 +420,92 @@ mod tests {
     use crate::update::{release, temp_dir};
 
     #[test]
+    #[cfg(target_os = "macos")]
+    fn bundle_install_stages_signs_and_exchanges_without_overlay() {
+        let dir = temp_dir("bundle-install");
+        let installed = dir.join("installed.app");
+        fs::create_dir(&installed).unwrap();
+        fs::write(installed.join("obsolete"), "old").unwrap();
+        let source = dir.join("Litty.app");
+        fs::create_dir_all(source.join("Contents/MacOS")).unwrap();
+        fs::copy("/bin/echo", source.join("Contents/MacOS/litty")).unwrap();
+        fs::write(source.join("Contents/Info.plist"), "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>litty</string><key>CFBundleIdentifier</key><string>test.litty.update</string></dict></plist>").unwrap();
+        let archive = dir.join("bundle.zip");
+        run_bundle_helper(Command::new("/usr/bin/ditto").args(["-ck", "--keepParent"]).arg(&source).arg(&archive)).unwrap();
+        for fail_at in 1..=3 {
+            let mut call = 0;
+            let result = apply_bundle_with(&archive, &installed, |command| {
+                let current = call;
+                call += 1;
+                if current == fail_at { return Err("injected helper failure".into()); }
+                if current == 0 { run_bundle_helper(command) } else { Ok(()) }
+            }, |_, _| Err(std::io::Error::other("injected activation failure")));
+            assert!(result.is_err());
+            assert_eq!(fs::read(installed.join("obsolete")).unwrap(), b"old");
+            assert!(!installed.join("Contents").exists());
+            assert_eq!(fs::read_dir(&dir).unwrap().filter_map(Result::ok).filter(|entry| entry.file_name().to_string_lossy().starts_with(".litty-update-")).count(), 0);
+        }
+        assert!(apply_bundle(&archive, &dir.join("missing-parent/installed.app")).is_err());
+        apply_bundle(&archive, &installed).unwrap();
+        assert!(!installed.join("obsolete").exists());
+        let output = Command::new(installed.join("Contents/MacOS/litty")).arg("updated bundle").output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"updated bundle\n");
+        assert!(Command::new("/usr/bin/codesign").args(["--verify", "--deep", "--strict"]).arg(&installed).status().unwrap().success());
+        fs::write(&archive, b"not a zip").unwrap();
+        assert!(apply_bundle(&archive, &installed).is_err());
+        assert!(installed.join("Contents/MacOS/litty").is_file());
+        assert_eq!(fs::read_dir(&dir).unwrap().filter_map(Result::ok).filter(|entry| entry.file_name().to_string_lossy().starts_with(".litty-update-")).count(), 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn fresh_and_cached_downloads_enforce_signed_release_tag() {
+        use std::cell::Cell;
+        for cached in [false, true] {
+            for marker in ["# litty-release: v9.9.9\n", "", "# litty-release: v9.9.8\n", "# litty-release: v9.9.9\n# litty-release: v9.9.9\n"] {
+                let dir = temp_dir("signed-tag-paths");
+                let release = release("v9.9.9", &["litty-test", SUMS_NAME, "SHA256SUMS.txt.minisig"]);
+                let release_dir = dir.join(&release.tag_name);
+                fs::create_dir_all(&release_dir).unwrap();
+                let sums = format!("{marker}{}  litty-test\n", sha256_digest(b"binary"));
+                if cached {
+                    fs::write(release_dir.join(SUMS_NAME), &sums).unwrap();
+                    fs::write(release_dir.join("SHA256SUMS.txt.minisig"), "signature").unwrap();
+                    fs::write(release_dir.join("litty-test"), "binary").unwrap();
+                }
+                let downloads = Cell::new(0);
+                let verifications = Cell::new(0);
+                let result = download_and_verify_with(&dir, &release, &["litty-test".into()], |_, path| {
+                    downloads.set(downloads.get() + 1);
+                    let data = match path.file_name().unwrap().to_str().unwrap() {
+                        SUMS_NAME => sums.as_bytes(),
+                        "SHA256SUMS.txt.minisig" => b"signature",
+                        "litty-test.part" => b"binary",
+                        other => panic!("unexpected download {other}"),
+                    };
+                    fs::write(path, data).map_err(|e| e.to_string())
+                }, |manifest, signature| {
+                    // The verifier is an external process boundary. A successful
+                    // signature must still be checked against the requested tag.
+                    assert_eq!(fs::read_to_string(manifest).unwrap(), sums);
+                    assert_eq!(fs::read(signature).unwrap(), b"signature");
+                    verifications.set(verifications.get() + 1);
+                    Ok(())
+                });
+                assert_eq!(result.is_ok(), marker == "# litty-release: v9.9.9\n");
+                if let Ok((path, name)) = result {
+                    assert_eq!(name, "litty-test");
+                    assert_eq!(fs::read(path).unwrap(), b"binary");
+                    assert_eq!(downloads.get(), if cached { 0 } else { 3 });
+                }
+                assert!(verifications.get() >= 1);
+                fs::remove_dir_all(dir).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn test_asset_candidates_per_arch() {
         assert_eq!(asset_candidates("macos", "aarch64", true), ["Litty-macos-aarch64.zip", "Litty-macos.zip"]);
         assert_eq!(asset_candidates("macos", "x86_64", true), ["Litty-macos-x86_64.zip"]);
@@ -399,12 +521,23 @@ mod tests {
         let r = release("v0.4.0", &["litty-linux-x86_64", "litty-linux", SUMS_NAME]);
         let candidates = asset_candidates("linux", "x86_64", false);
         // Only the legacy name is checksummed, so it wins despite being second.
-        let sums = format!("{hash}  litty-linux\n");
+        let sums = format!("# litty-release: v0.4.0\n{hash}  litty-linux\n");
         assert_eq!(pick_asset(&r, &sums, &candidates).unwrap().name, "litty-linux");
-        let sums = format!("{hash}  litty-linux-x86_64\n{hash} *litty-linux\n");
+        let sums = format!("# litty-release: v0.4.0\n{hash}  litty-linux-x86_64\n{hash} *litty-linux\n");
         assert_eq!(pick_asset(&r, &sums, &candidates).unwrap().name, "litty-linux-x86_64");
         let err = pick_asset(&r, &sums, &asset_candidates("linux", "aarch64", false)).unwrap_err();
         assert!(err.contains("litty-linux-aarch64"), "{err}");
+    }
+
+    #[test]
+    fn manifest_is_bound_to_exact_release_tag() {
+        let release = release("v9.9.9", &["litty-test", SUMS_NAME]);
+        let candidates = ["litty-test".to_string()];
+        let sums = format!("{}  litty-test\n", "a".repeat(64));
+        for marker in ["", "# litty-release: v9.9.8\n", "# litty-release: v9.9.9\n# litty-release: v9.9.9\n"] {
+            assert!(pick_asset(&release, &format!("{marker}{sums}"), &candidates).is_err(), "must reject missing, wrong or duplicate version: {marker:?}");
+        }
+        assert_eq!(pick_asset(&release, &format!("# litty-release: v9.9.9\n{sums}"), &candidates).unwrap().name, "litty-test");
     }
 
     #[test]

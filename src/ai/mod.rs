@@ -146,12 +146,14 @@ impl PaneState {
         self.queue.clear();
         self.overflow = false;
         self.awaiting = false;
-        self.suggestion = None;
+        let had_suggestion = self.suggestion.take().is_some();
         if let Some(result) = &mut self.result {
             result.command = None;
             result.text = "Cancelled".into();
         }
-        if let Some(session) = &mut self.session {
+        if had_suggestion
+            && let Some(session) = &mut self.session
+        {
             session.record_skipped();
         }
     }
@@ -291,7 +293,7 @@ fn run(
         }
         let last_exit = grid.lock().last_exit;
         let system = format!(
-            "{}\nLast shell exit status: {last_exit:?}. Context window: {} tokens.",
+            "{}\nContext window: {} tokens.",
             prompt::system(&context.0, &context.1, &config.model),
             config.context_window
         );
@@ -301,7 +303,8 @@ fn run(
         let style = provider::style(&config);
         compact(&config, &mut session, cancel, status)?;
         let start = session.history.len();
-        session.history.push(provider::message("user", query));
+        let user = format!("Last shell exit status: {last_exit:?}.\n{query}");
+        session.history.push(provider::message("user", &user));
         let turn = (|| -> Result<(), String> {
             for _ in 0..16 {
                 if cancel.load(Ordering::Acquire) {
@@ -616,6 +619,44 @@ mod integration_tests {
         }
     }
     #[test]
+    fn last_exit_changes_user_context_without_changing_system_prefix() {
+        let reply = r#"{"choices":[{"message":{"role":"assistant","content":"Done."}}]}"#;
+        let (url, requests, server) = mock(vec![reply, reply]);
+        let c = config(url);
+        let grid = Arc::new(Mutex::new(Grid::new(80, 12)));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut session = Session::default();
+        for (exit, query) in [(0, "first query"), (7, "next query")] {
+            grid.lock().last_exit = Some(exit);
+            let out = run(
+                || Ok(c.clone()),
+                session,
+                query,
+                &("bash".into(), "/tmp".into()),
+                &grid,
+                &cancel,
+                &|_| {},
+            );
+            assert!(!out.error, "{}", out.text);
+            session = out.session;
+        }
+        server.join().unwrap();
+        let requests = requests.lock();
+        let first = requests[0].get("messages").unwrap().array();
+        let second = requests[1].get("messages").unwrap().array();
+        assert_eq!(first[0], second[0], "system prefix must remain cacheable");
+        assert!(!first[0].text("content").contains("Last shell exit status"));
+        assert_eq!(
+            first[1].text("content"),
+            "Last shell exit status: Some(0).\nfirst query"
+        );
+        assert_eq!(
+            second.last().unwrap().text("content"),
+            "Last shell exit status: Some(7).\nnext query"
+        );
+    }
+
+    #[test]
     fn tool_loop_reads_grid_and_preserves_actual_execution() {
         let (url, requests, server) = mock(vec![
             r#"{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"1","type":"function","function":{"name":"scrollback","arguments":"{\"lines\":200}"}}]}}]}"#,
@@ -779,6 +820,32 @@ mod lifecycle_tests {
             literal: false,
         }
     }
+    #[test]
+    fn cancellation_without_suggestion_does_not_report_skipped_execution() {
+        let mut pane = PaneState::default();
+        pane.cancel_request();
+        pane.cancel_request();
+        assert!(pane.session.as_ref().unwrap().history.is_empty());
+    }
+
+    #[test]
+    fn cancellation_reports_each_suggestion_skipped_only_once() {
+        for pending in [false, true] {
+            let mut pane = PaneState::default();
+            pane.suggestion = Some(("echo suggested".into(), pending));
+            pane.cancel_request();
+            pane.cancel_request();
+            assert!(pane.suggestion.is_none());
+            assert_eq!(
+                pane.session.as_ref().unwrap().history,
+                vec![provider::message(
+                    "user",
+                    "[execution] Suggested command was skipped, not executed."
+                )]
+            );
+        }
+    }
+
     #[test]
     fn cancellation_clears_typing_enter_and_suppresses_late_commands() {
         let mut pane = PaneState::default();

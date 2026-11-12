@@ -12,3 +12,6 @@ mod window;
 pub(crate) mod native;
 
 pub use self::{app::*, dialog::*, input::*, menu::*, native_clipboard::*, tabs::*, window::*};
+
+mod filesystem;
+pub use filesystem::exchange_directories;

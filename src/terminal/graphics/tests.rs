@@ -722,3 +722,167 @@ fn kitty_animation_loop_length_does_not_overflow() {
     assert_eq!(frame, 0, "still inside the first frame of the first play");
     assert_eq!(next, Some(now + Duration::from_millis(40)), "root frame keeps its 40 ms gap");
 }
+
+#[test]
+fn security_task2_unsupported_delete_preserves_images_and_placements() {
+    for selector in b"nNcCpPqQxXyYzZrRfF?" {
+        let mut store = Store::default();
+        store.insert(7, 1, 1, vec![1, 2, 3, 255]);
+        store.place(Placement { image_id: 7, placement_id: 1, line: 0, col: 0, cols: 1, rows: 1, src: [0, 0, 1, 1], z: 0, alt: false, fit: false });
+        store.place_virtual(VirtualPlacement { image_id: 7, placement_id: 2, cols: 1, rows: 1, z: 0, alt: false });
+        let placements = store.placements.clone();
+        let virtuals = store.virtuals.clone();
+        let pixels = Arc::clone(&store.image(7).unwrap().rgba);
+        let body = format!("Ga=d,d={},i=7", char::from(*selector));
+        let (cmd, payload) = parse_kitty(body.as_bytes()).unwrap();
+        let (out, reply) = store.kitty(cmd, payload);
+        assert!(matches!(out, KittyOutcome::None));
+        assert_eq!(store.placements, placements, "selector {}", char::from(*selector));
+        assert_eq!(store.virtuals, virtuals);
+        assert!(Arc::ptr_eq(&store.image(7).unwrap().rgba, &pixels));
+        assert_eq!(reply.as_deref(), Some("i=7;EINVAL:unsupported delete selector"));
+    }
+}
+
+#[test]
+fn security_task2_numbered_transmission_reports_assigned_id() {
+    let mut store = Store::default();
+    for action in *b"tT" {
+        let body = format!("Ga={},f=24,s=1,v=1,I=42,p=3;/wAA", char::from(action));
+        let (cmd, payload) = parse_kitty(body.as_bytes()).unwrap();
+        let (out, reply) = store.kitty(cmd, payload);
+        let id = *store.order.last().unwrap();
+        assert_ne!(id, 0);
+        assert_eq!(reply, Some(format!("i={id},I=42,p=3;OK")));
+        if action == b'T' { assert!(matches!(out, KittyOutcome::Place { id: placed } if placed == id)); }
+        assert_eq!(&store.image(id).unwrap().rgba[..], &[255, 0, 0, 255]);
+    }
+    assert_eq!(store.images.len(), 2, "numbers do not replace earlier transmissions");
+}
+
+fn task2_base64(data: &[u8]) -> Vec<u8> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::new();
+    for chunk in data.chunks(3) {
+        let n = u32::from(chunk[0]) << 16 | u32::from(*chunk.get(1).unwrap_or(&0)) << 8 | u32::from(*chunk.get(2).unwrap_or(&0));
+        for i in 0..=chunk.len() { out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize]); }
+    }
+    out
+}
+
+#[test]
+fn security_task2_file_decode_failures_do_not_reveal_existence() {
+    let root = std::env::temp_dir().join(format!("tty-graphics-protocol-task2-{}", next_key()));
+    std::fs::create_dir(&root).unwrap();
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup { fn drop(&mut self) { std::fs::remove_dir_all(&self.0).expect("remove test directory"); } }
+    let _cleanup = Cleanup(root.clone());
+    for medium in *b"ft" {
+        for (format, compression, bytes) in [
+            (24, 0, vec![1]),
+            (100, 0, b"not a PNG".to_vec()),
+            (24, b'z', b"not zlib".to_vec()),
+            (100, b'z', super::png::zlib_store(b"not a PNG")),
+        ] {
+            let path = root.join("tty-graphics-protocol-image");
+            let payload = task2_base64(path.to_str().unwrap().as_bytes());
+            let cmd = KittyCommand { action: b't', medium, format, compression, width: 1, height: 1, id: 7, ..Default::default() };
+            let missing = decode_kitty(&cmd, &payload).unwrap_err();
+            std::fs::write(&path, bytes).unwrap();
+            let invalid = decode_kitty(&cmd, &payload).unwrap_err();
+            if path.exists() { std::fs::remove_file(&path).unwrap(); }
+            assert_eq!(invalid, missing, "medium {} format {format} compression {compression}", char::from(medium));
+            assert_eq!(invalid, "EPERM:access denied");
+        }
+    }
+}
+
+#[test]
+fn security_task2_png_returns_default_image_with_later_small_animation_frame() {
+    let rgba = [12, 34, 56, 255].repeat(16);
+    let mut png = super::png::encode_test_png(4, 4, 6, &rgba);
+    // Insert acTL immediately after IHDR, then add a separate animation frame after IDAT.
+    let mut actl = Vec::new();
+    super::png::write_png_chunk(&mut actl, b"acTL", &[0, 0, 0, 1, 0, 0, 0, 0]);
+    png.splice(33..33, actl);
+    png.truncate(png.len() - 12);
+    let mut fctl = [0u8; 26];
+    fctl[4..8].copy_from_slice(&2u32.to_be_bytes());
+    fctl[8..12].copy_from_slice(&2u32.to_be_bytes());
+    fctl[12..16].copy_from_slice(&1u32.to_be_bytes());
+    fctl[16..20].copy_from_slice(&1u32.to_be_bytes());
+    fctl[20..22].copy_from_slice(&1u16.to_be_bytes());
+    fctl[22..24].copy_from_slice(&10u16.to_be_bytes());
+    super::png::write_png_chunk(&mut png, b"fcTL", &fctl);
+    let mut fdat = 1u32.to_be_bytes().to_vec();
+    fdat.extend_from_slice(&super::png::zlib_store(&[0, 255, 0, 0, 255, 255, 0, 0, 255].repeat(2)));
+    super::png::write_png_chunk(&mut png, b"fdAT", &fdat);
+    super::png::write_png_chunk(&mut png, b"IEND", &[]);
+    assert_eq!(decode_png(&png).unwrap(), (4, 4, rgba));
+}
+
+#[test]
+fn kitty_supported_delete_selectors_keep_existing_scope() {
+    for selector in [0, b'a', b'A', b'i', b'I'] {
+        let mut store = Store::default();
+        for id in [7, 8] {
+            store.insert(id, 1, 1, vec![id as u8; 4]);
+            for pid in [1, 2] {
+                store.place(Placement { image_id: id, placement_id: pid, line: pid as usize, col: 0, cols: 1, rows: 1, src: [0, 0, 1, 1], z: 0, alt: false, fit: false });
+                store.place_virtual(VirtualPlacement { image_id: id, placement_id: pid, cols: 1, rows: 1, z: 0, alt: false });
+            }
+        }
+        let cmd = KittyCommand { action: b'd', delete: selector, id: 7, placement_id: 1, ..Default::default() };
+        assert!(store.kitty(cmd, &[]).1.is_none());
+        match selector {
+            b'i' => {
+                assert_eq!(store.placements.len(), 3);
+                assert_eq!(store.virtuals.len(), 3);
+                assert_eq!(store.images.len(), 2);
+                assert!(!store.placements.iter().any(|p| p.image_id == 7 && p.placement_id == 1));
+            }
+            b'I' => {
+                assert_eq!(store.images.len(), 1);
+                assert_eq!(store.placements.len(), 2);
+                assert_eq!(store.virtuals.len(), 2);
+                assert!(store.placements.iter().all(|p| p.image_id == 8));
+            }
+            _ => {
+                assert!(store.placements.is_empty());
+                assert!(store.virtuals.is_empty());
+                assert_eq!(store.images.len(), if selector == b'A' { 0 } else { 2 });
+            }
+        }
+    }
+}
+
+#[test]
+fn kitty_numbered_replies_preserve_quiet_explicit_and_anonymous_behavior() {
+    for quiet in [0, 1, 2] {
+        let mut store = Store::default();
+        let cmd = KittyCommand { action: b't', medium: b'd', format: 24, width: 1, height: 1, number: 42, id: 7, quiet, ..Default::default() };
+        let reply = store.kitty(cmd, b"/wAA").1;
+        assert_eq!(reply.as_deref(), if quiet == 0 { Some("i=7,I=42;OK") } else { None });
+        assert!(store.image(7).is_some());
+    }
+    let mut store = Store::default();
+    let (cmd, payload) = parse_kitty(b"Ga=t,f=24,s=1,v=1;/wAA").unwrap();
+    assert!(store.kitty(cmd, payload).1.is_none());
+    let (cmd, payload) = parse_kitty(b"Ga=d,d=z,i=7,q=2").unwrap();
+    assert!(store.kitty(cmd, payload).1.is_none());
+}
+
+#[test]
+fn decode_png_rejects_small_default_and_nonzero_default_offsets() {
+    assert_eq!(decode_png(&sub_frame_apng()).unwrap_err(), "EINVAL:bad PNG");
+    let mut png = super::png::encode_test_png(4, 4, 6, &[255; 64]);
+    let mut chunks = Vec::new();
+    super::png::write_png_chunk(&mut chunks, b"acTL", &[0, 0, 0, 1, 0, 0, 0, 0]);
+    let mut fctl = [0u8; 26];
+    fctl[4..8].copy_from_slice(&4u32.to_be_bytes());
+    fctl[8..12].copy_from_slice(&4u32.to_be_bytes());
+    fctl[12..16].copy_from_slice(&1u32.to_be_bytes());
+    super::png::write_png_chunk(&mut chunks, b"fcTL", &fctl);
+    png.splice(33..33, chunks);
+    assert_eq!(decode_png(&png).unwrap_err(), "EINVAL:bad PNG");
+}
