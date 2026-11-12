@@ -71,6 +71,30 @@ This will:
    a secret key (`~/.minisign/minisign.key`, or `MINISIGN_SECRET_KEY`) are
    available, sign it as `dist/SHA256SUMS.txt.minisig`.
 
+## Linux Bundle (.deb / .rpm)
+
+On Linux x86_64, build and package in one step:
+
+```bash
+./bundle_linux.sh
+```
+
+This will:
+1. Build Litty with `cargo build --release`, baking in the release public key
+   (`resources/minisign.pub`, or `LITTY_MINISIGN_PUBKEY` if set).
+2. Copy the binary to `dist/litty-linux-x86_64`.
+3. Create `dist/litty_<version>_amd64.deb` when `dpkg-deb` is installed and
+   `dist/litty-<version>-1.x86_64.rpm` when `rpmbuild` is installed (a missing
+   tool skips that package with a warning).
+
+The binary links against the build machine's glibc, so these packages suit that
+machine and newer distributions; do not share them with older ones, since
+their declared `glibc >= 2.34` dependency does not reflect it. If `rpmbuild`
+fails (on Debian-family hosts its build-dependency check usually does), the
+`.rpm` is skipped with a warning and the `.deb` is kept. Release packages are built with the glibc 2.34
+baseline instead, as described in the [release process](release.md).
+`bash scripts/linux/test-bundle-linux.sh` checks the script with a stub `cargo`.
+
 ## Linux Debian Package
 
 On Debian, package an existing Linux x86_64 release executable (requires
