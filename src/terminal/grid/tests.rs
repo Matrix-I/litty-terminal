@@ -1244,6 +1244,97 @@ fn alt_screen_restores() {
     assert_eq!(line(&g, 0), "main");
 }
 
+fn screen(g: &Grid) -> Vec<String> {
+    (0..g.rows).map(|r| line(g, r)).collect()
+}
+
+/// Full-screen scrolls on the alternate screen, many times around its height,
+/// mixed with reverse index, region scrolls and line edits, keep every row in
+/// order for display, `line_cells` and later edits.
+#[test]
+fn alt_screen_full_scrolls_keep_row_order() {
+    let mut g = Grid::new(6, 4);
+    feed(&mut g, "main\x1b[?1049h\x1b[4;1H");
+    for i in 0..11 {
+        feed(&mut g, &format!("\r\nl{i}"));
+    }
+    assert_eq!(screen(&g), ["l7", "l8", "l9", "l10"]);
+    let top = g.abs_line(0);
+    let texts: Vec<String> = (0..4)
+        .map(|r| g.line_cells(top + r).unwrap().iter().filter_map(|c| char::from_u32(c.codepoint).filter(|&c| c != '\0')).collect())
+        .collect();
+    assert_eq!(texts, ["l7", "l8", "l9", "l10"], "line_cells follows the scrolled rows");
+
+    // Reverse index at the top scrolls the whole screen down.
+    feed(&mut g, "\x1b[H\x1bMtop\r\x1bMup");
+    assert_eq!(screen(&g), ["up", "top", "l7", "l8"]);
+    // CSI S / CSI T scroll the whole screen without moving the cursor.
+    feed(&mut g, "\x1b[3S");
+    assert_eq!(screen(&g), ["l8", "", "", ""]);
+    feed(&mut g, "\x1b[4;1Ha\r\nb\r\nc\x1b[2T");
+    assert_eq!(screen(&g), ["", "", "", "a"]);
+    feed(&mut g, "\x1b[H\x1b[2J");
+    for i in 0..6 {
+        feed(&mut g, &format!("\x1b[4;1H\r\nr{i}"));
+    }
+    assert_eq!(screen(&g), ["r2", "r3", "r4", "r5"]);
+    // A region scroll and line insert / delete still address the right rows.
+    feed(&mut g, "\x1b[2;3r\x1b[3;1H\nX\x1b[r\x1b[1;1H\x1b[L\x1b[3;1H\x1b[M");
+    assert_eq!(screen(&g), ["", "r2", "X", ""]);
+    feed(&mut g, "\x1b[4;1HZ\x1b[2;2H\x1b[K");
+    assert_eq!(screen(&g), ["", "r", "X", "Z"]);
+
+    feed(&mut g, "\x1b[?1049l");
+    assert_eq!(line(&g, 0), "main");
+}
+
+/// Edge cases of the rotated alternate screen: one row, an explicit
+/// full-screen region, RIS and re-entering it, and images on a scroll down.
+#[test]
+fn alt_screen_rotation_edge_cases() {
+    let mut g = Grid::new(4, 1);
+    feed(&mut g, "\x1b[?1049ha\r\nb\r\nc\r\x1bMd");
+    assert_eq!(screen(&g), ["d"]);
+
+    let mut g = Grid::new(4, 3);
+    feed(&mut g, "\x1b[?1049h\x1b[1;3r\x1b[3;1Ha\r\nb\r\nc\r\nd");
+    assert_eq!(screen(&g), ["b", "c", "d"]);
+    feed(&mut g, "\x1bc");
+    assert!(!g.alt_active);
+    feed(&mut g, "\x1b[?1049h\x1b[3;1Hx\r\ny\x1b[H\x1bMz");
+    assert_eq!(screen(&g), ["z", "", "x"]);
+
+    let mut g = Grid::new(20, 4);
+    g.set_alt(true, false);
+    feed(&mut g, "\x1b[4;1H\r\n\r\n\x1b[H");
+    let id = g.graphics.insert(0, 20, 40, vec![0; 20 * 40 * 4]);
+    g.place_image(id, [0, 0, 20, 40], 2, 2, 0, 1, true, false);
+    let line = g.graphics.placements[0].line;
+    g.scroll_down_in(0, 3, 1);
+    assert_eq!(g.graphics.placements[0].line, line + 1, "image moves down with the rotated rows");
+}
+
+/// Resizing the alternate screen after it has scrolled keeps rows in order.
+#[test]
+fn alt_screen_resize_after_scrolls_keeps_row_order() {
+    for (cols, rows) in [(6, 4), (6, 6), (6, 2), (3, 4), (8, 3)] {
+        let mut g = Grid::new(6, 4);
+        feed(&mut g, "\x1b[?1049h\x1b[4;1H");
+        for i in 0..7 {
+            feed(&mut g, &format!("\r\nrow{i}"));
+        }
+        g.resize(cols, rows);
+        let want: Vec<String> = ["row3", "row4", "row5", "row6", "", ""]
+            .iter()
+            .take(rows)
+            .map(|s| s.chars().take(cols).collect())
+            .collect();
+        assert_eq!(screen(&g), want, "{cols}x{rows}");
+        feed(&mut g, &format!("\x1b[{rows};1H\r\nnew"));
+        assert_eq!(line(&g, rows - 1), "new", "{cols}x{rows}: output after the resize");
+    }
+}
+
 #[test]
 fn scroll_region() {
     let mut g = Grid::new(3, 4);

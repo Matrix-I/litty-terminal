@@ -38,7 +38,7 @@ impl Grid {
     #[inline]
     pub(super) fn row_start(&self, r: usize) -> usize {
         if self.alt_active {
-            r * self.cols
+            ((self.alt_top + r) % self.rows) * self.cols
         } else {
             ((self.top + r) % self.cap) * self.cols
         }
@@ -64,7 +64,7 @@ impl Grid {
     #[inline]
     pub fn display_row(&self, r: usize) -> &[Cell] {
         if self.alt_active {
-            let s = r * self.cols;
+            let s = self.row_start(r);
             &self.alt[s..s + self.cols]
         } else {
             let p = (self.top + self.cap - self.display_offset + r) % self.cap;
@@ -89,7 +89,8 @@ impl Grid {
         let c = self.cols;
         if self.alt_active {
             let r = l.checked_sub(self.lines_pushed).filter(|&r| r < self.rows)?;
-            return Some(&self.alt[r * c..(r + 1) * c]);
+            let s = self.row_start(r);
+            return Some(&self.alt[s..s + c]);
         }
         let i = l.checked_sub(self.lines_pushed - self.history).filter(|&i| i < self.history + self.rows)?;
         let p = (self.top + self.cap - self.history + i) % self.cap;
@@ -181,8 +182,23 @@ impl Grid {
         self.top = self.history;
     }
 
+    /// Rotate the whole alternate screen by `n` rows (up when `up`) and clear
+    /// the `n` rows that come into view: O(n × cols) instead of moving every row.
+    fn rotate_alt(&mut self, n: usize, up: bool) {
+        let rows = self.rows;
+        if up {
+            self.alt_top = (self.alt_top + n) % rows;
+            self.clear_rows(rows - n, rows);
+        } else {
+            self.alt_top = (self.alt_top + rows - n) % rows;
+            self.clear_rows(0, n);
+        }
+        self.all_dirty = true;
+    }
+
     /// Scroll rows `t..=b` up by `n`. When the region is the whole main screen
-    /// and `to_history` is set, this is an O(1) ring rotation into scrollback.
+    /// and `to_history` is set, this is an O(1) ring rotation into scrollback;
+    /// the whole alternate screen rotates in place.
     pub(super) fn scroll_up_in(&mut self, t: usize, b: usize, n: usize, to_history: bool) {
         if t > b || b >= self.rows {
             return;
@@ -240,10 +256,14 @@ impl Grid {
             }
             self.all_dirty = true;
         } else {
-            for r in t..(b + 1 - n) {
-                self.copy_row(r + n, r);
+            if self.alt_active && t == 0 && b == self.rows - 1 {
+                self.rotate_alt(n, true);
+            } else {
+                for r in t..(b + 1 - n) {
+                    self.copy_row(r + n, r);
+                }
+                self.clear_rows(b + 1 - n, b + 1);
             }
-            self.clear_rows(b + 1 - n, b + 1);
             if self.alt_active && !self.graphics.placements.is_empty() {
                 self.graphics.scroll_alt(self.lines_pushed + t, self.lines_pushed + b, n);
             }
@@ -255,10 +275,14 @@ impl Grid {
             return;
         }
         let n = n.min(b - t + 1);
-        for r in (t + n..=b).rev() {
-            self.copy_row(r - n, r);
+        if self.alt_active && t == 0 && b == self.rows - 1 {
+            self.rotate_alt(n, false);
+        } else {
+            for r in (t + n..=b).rev() {
+                self.copy_row(r - n, r);
+            }
+            self.clear_rows(t, t + n);
         }
-        self.clear_rows(t, t + n);
         if self.alt_active && !self.graphics.placements.is_empty() {
             self.graphics.scroll_alt_down(self.lines_pushed + t, self.lines_pushed + b, n);
         }
