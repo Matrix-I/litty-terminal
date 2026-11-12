@@ -184,22 +184,29 @@ impl NativeWindow {
         }
     }
 
+    /// Ask the window manager for fullscreen. No app action calls this
+    /// yet. The state is only recorded when the window manager reports it
+    /// through `observe`: it may refuse or ignore the request.
     #[allow(dead_code)]
     pub fn set_fullscreen(&self, fullscreen: bool) {
-        self.inner.lock().fullscreen = fullscreen;
+        let x11 = self.inner.lock().x11_window.clone();
+        if let Some(x11) = x11 {
+            x11.set_fullscreen(fullscreen);
+        }
     }
 
     pub fn is_fullscreen(&self) -> bool {
         self.inner.lock().fullscreen
     }
 
+    /// The monitor under the window's centre (RandR); `None` when the X
+    /// server has no RandR or the window has no X11 connection.
     pub fn current_monitor(&self) -> Option<Monitor> {
-        let guard = self.inner.lock();
-        Some(Monitor {
-            position: guard.position,
-            size: PhysicalSize::new(1920, 1080),
-            refresh_rate_millihertz: Some(60000),
-        })
+        let (x11, size) = {
+            let guard = self.inner.lock();
+            (guard.x11_window.clone()?, guard.inner_size)
+        };
+        x11.current_monitor(size)
     }
 
     pub fn set_title(&self, title: &str) {
@@ -226,13 +233,25 @@ impl NativeWindow {
         }
     }
 
+    /// The desktop's light/dark preference (settings portal).
     pub fn theme(&self) -> Option<Theme> {
-        Some(Theme::Dark)
+        super::portal::system_theme()
     }
 
-    pub fn set_ime_allowed(&self, _allowed: bool) {}
+    /// Outside the window lock: reaching the input method may reconnect
+    /// it, a round trip to its server.
+    pub fn set_ime_allowed(&self, allowed: bool) {
+        let x11 = self.inner.lock().x11_window.clone();
+        if let Some(x11) = x11 {
+            x11.set_ime_allowed(allowed);
+        }
+    }
 
-    pub fn set_ime_cursor_area(&self, _position: PhysicalPosition<f64>, _size: PhysicalSize<f64>) {}
+    pub fn set_ime_cursor_area(&self, position: PhysicalPosition<f64>, size: PhysicalSize<f64>) {
+        if let Some(x11) = &self.inner.lock().x11_window {
+            x11.set_ime_cursor_area(position, size);
+        }
+    }
 
     pub fn request_attention(&self, requested: bool) {
         if let Some(x11) = &self.inner.lock().x11_window {
@@ -343,6 +362,18 @@ mod tests {
         assert!(!win.is_maximized());
         win.observe(&WindowEvent::StateChanged { maximized: true, fullscreen: true });
         assert!(win.is_maximized());
+        assert!(win.is_fullscreen());
+    }
+
+    /// Fullscreen is the window manager's to grant: a refused or ignored
+    /// request (tiling WM, unmapped window) must not report fullscreen, or
+    /// the next toggle asks to leave a state the window never entered.
+    #[test]
+    fn requesting_fullscreen_waits_for_the_window_manager() {
+        let win = detached(800, 600);
+        win.set_fullscreen(true);
+        assert!(!win.is_fullscreen());
+        win.observe(&WindowEvent::StateChanged { maximized: false, fullscreen: true });
         assert!(win.is_fullscreen());
     }
 

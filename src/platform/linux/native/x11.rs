@@ -3,7 +3,9 @@
 use std::ffi::{c_char, c_int, c_long, c_ulong, c_void, CStr, CString};
 use std::sync::Arc;
 
-use crate::platform::gui::{CursorIcon, PhysicalPosition, PhysicalSize, RawHandle, WindowEvent, WindowSpec};
+use crate::platform::gui::{CursorIcon, Ime, PhysicalPosition, PhysicalSize, RawHandle, WindowEvent, WindowSpec};
+use super::sym;
+use super::xim::XimContext;
 use super::events::{wm_state_event, WmStateAtoms, convert_linux_key, keysym_char, mods_after_key, mods_from_state, x11_button_event, HeldKeys};
 use crate::platform::input::{Key, KeyLocation, Mods};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
@@ -173,6 +175,12 @@ const CURSOR_SLOTS: usize = (XC_NUM_GLYPHS / 2) as usize;
 const NORTH_WEST_GRAVITY: c_int = 1;
 /// `CWBitGravity` value mask bit for `XChangeWindowAttributes`.
 const CW_BIT_GRAVITY: c_ulong = 1 << 4;
+
+/// Events every window selects: KeyPress (1), KeyRelease (2), ButtonPress
+/// (4), ButtonRelease (8), PointerMotion (64), Exposure (32768),
+/// StructureNotify (131072), FocusChange (2097152) and PropertyChange
+/// (4194304) for the WM's `_NET_WM_STATE`.
+const BASE_EVENT_MASK: c_long = 1 | 2 | 4 | 8 | 64 | 32768 | 131072 | 2097152 | 4194304;
 
 /// Pseudo shape for the invisible cursor (outside the cursor font).
 const BLANK_CURSOR: u32 = XC_NUM_GLYPHS;
@@ -347,6 +355,10 @@ pub struct X11Lib {
     pub XFreePixmap: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
     pub XChangeWindowAttributes: unsafe extern "C" fn(*mut c_void, c_ulong, c_ulong, *mut XSetWindowAttributes) -> c_int,
     #[allow(clippy::type_complexity)]
+    pub XTranslateCoordinates: unsafe extern "C" fn(
+        *mut c_void, c_ulong, c_ulong, c_int, c_int, *mut c_int, *mut c_int, *mut c_ulong,
+    ) -> c_int,
+    #[allow(clippy::type_complexity)]
     pub XQueryPointer: unsafe extern "C" fn(
         *mut c_void, c_ulong, *mut c_ulong, *mut c_ulong,
         *mut c_int, *mut c_int, *mut c_int, *mut c_int, *mut std::ffi::c_uint,
@@ -368,11 +380,6 @@ impl X11Lib {
         }
         if handle.is_null() {
             return None;
-        }
-
-        unsafe fn sym<T>(h: *mut c_void, s: &CStr) -> Option<T> {
-            let p = unsafe { libc::dlsym(h, s.as_ptr()) };
-            if p.is_null() { None } else { Some(unsafe { std::mem::transmute_copy(&p) }) }
         }
 
         unsafe {
@@ -405,6 +412,7 @@ impl X11Lib {
                 XIconifyWindow: sym(handle, c"XIconifyWindow")?,
                 XUngrabPointer: sym(handle, c"XUngrabPointer")?,
                 XQueryPointer: sym(handle, c"XQueryPointer")?,
+                XTranslateCoordinates: sym(handle, c"XTranslateCoordinates")?,
                 XResourceManagerString: sym(handle, c"XResourceManagerString")?,
                 XLookupString: sym(handle, c"XLookupString")?,
                 XRefreshKeyboardMapping: sym(handle, c"XRefreshKeyboardMapping")?,
@@ -449,6 +457,8 @@ pub struct X11WindowInner {
     /// Shape the app asked for, shown again when the pointer is unhidden.
     pub wanted_cursor: AtomicU32,
     pub cursor_hidden: AtomicBool,
+    /// Input method connection; `None` only while the window is dropped.
+    pub xim: parking_lot::Mutex<Option<XimContext>>,
 }
 
 unsafe impl Send for X11WindowInner {}
@@ -457,6 +467,8 @@ unsafe impl Sync for X11WindowInner {}
 impl Drop for X11WindowInner {
     fn drop(&mut self) {
         super::app::deregister_display_fd(self.fd);
+        // The input context belongs to the window and the display.
+        drop(self.xim.get_mut().take());
         unsafe {
             let cache = self.cursors.get_mut();
             for &cursor in cache.font.iter().chain([&cache.blank]).filter(|&&c| c != 0) {
@@ -485,6 +497,13 @@ unsafe fn store_title(lib: &X11Lib, display: *mut c_void, window: c_ulong, net_w
         (lib.XStoreName)(display, window, c_title.as_ptr());
         (lib.XChangeProperty)(display, window, net_wm_name, utf8_string, 8, PROP_MODE_REPLACE, title.as_ptr(), len);
     }
+}
+
+/// `_NET_WM_STATE` client message data adding or removing up to two state
+/// atoms (0 for none), from a normal application (source 1).
+fn wm_state_request(add: bool, first: c_long, second: c_long) -> [c_long; 5] {
+    // _NET_WM_STATE_REMOVE = 0, _NET_WM_STATE_ADD = 1
+    [c_long::from(add), first, second, 1, 0]
 }
 
 /// Scale factor from the `Xft.dpi` X resource (96 dpi = 1.0), as GNOME,
@@ -536,12 +555,9 @@ impl X11Window {
                 return None;
             }
 
-            // Select inputs:
-            // KeyPress (1), KeyRelease (2), ButtonPress (4), ButtonRelease (8), PointerMotion (64)
-            // Exposure (32768), StructureNotify (131072), FocusChange (2097152),
-            // PropertyChange (4194304) for the WM's `_NET_WM_STATE`
-            let mask = 1 | 2 | 4 | 8 | 64 | 32768 | 131072 | 2097152 | 4194304;
-            (lib.XSelectInput)(display, window, mask);
+            // Plus whatever the input method needs to see.
+            let mut xim = XimContext::new(display, window);
+            (lib.XSelectInput)(display, window, BASE_EVENT_MASK | xim.filter_events());
 
             // Keep the last frame while the window is resized; the default
             // `ForgetGravity` blanks it until Vulkan presents the next one.
@@ -616,6 +632,7 @@ impl X11Window {
                 defined_cursor: AtomicU32::new(0),
                 wanted_cursor: AtomicU32::new(XC_LEFT_PTR),
                 cursor_hidden: AtomicBool::new(false),
+                xim: parking_lot::Mutex::new(Some(xim)),
             }));
 
             Some(win)
@@ -680,6 +697,30 @@ impl X11Window {
         }
     }
 
+    /// Ask the window manager to enter or leave fullscreen
+    /// (`_NET_WM_STATE_FULLSCREEN`); the resulting state comes back as
+    /// `StateChanged`.
+    pub fn set_fullscreen(&self, fullscreen: bool) {
+        let atom = self.0.wm_state_atoms.fullscreen as c_long;
+        self.send_wm_message(c"_NET_WM_STATE", wm_state_request(fullscreen, atom, 0));
+    }
+
+    /// The monitor under the window's centre, `None` without RandR.
+    /// `size` is the window's current inner size.
+    pub fn current_monitor(&self, size: PhysicalSize<u32>) -> Option<crate::platform::gui::Monitor> {
+        let (mut x, mut y, mut child) = (0, 0, 0);
+        let half = |v: u32| c_int::try_from(v / 2).unwrap_or(c_int::MAX);
+        unsafe {
+            let ok = (self.0.lib.XTranslateCoordinates)(
+                self.0.display, self.0.window, self.0.root, half(size.width), half(size.height), &mut x, &mut y, &mut child,
+            );
+            if ok == 0 {
+                return None;
+            }
+            super::monitor::monitor_for_point(self.0.display, self.0.root, PhysicalPosition::new(x, y))
+        }
+    }
+
     pub fn set_maximized(&self, maximized: bool) {
         let atom = |name: &CStr| unsafe { (self.0.lib.XInternAtom)(self.0.display, name.as_ptr(), 0) as c_long };
         let vert = atom(c"_NET_WM_STATE_MAXIMIZED_VERT");
@@ -729,6 +770,47 @@ impl X11Window {
             (self.0.lib.XIconifyWindow)(self.0.display, self.0.window, self.0.screen);
             (self.0.lib.XFlush)(self.0.display);
         }
+    }
+
+    /// Run `f` on the input method, then select the events a method it
+    /// reconnected to needs: every call into it may reconnect, not only
+    /// filtering. Reading the new mask can itself reconnect, hence the loop.
+    fn with_xim<R>(&self, f: impl FnOnce(&mut XimContext) -> R) -> Option<R> {
+        let mut guard = self.0.xim.lock();
+        let xim = guard.as_mut()?;
+        let result = f(xim);
+        while xim.take_reopened() {
+            let mask = BASE_EVENT_MASK | xim.filter_events();
+            unsafe { (self.0.lib.XSelectInput)(self.0.display, self.0.window, mask) };
+        }
+        Some(result)
+    }
+
+    /// Let the input method compose text while the app allows it.
+    pub fn set_ime_allowed(&self, allowed: bool) {
+        self.with_xim(|xim| xim.set_allowed(allowed));
+    }
+
+    /// Place the input method's candidate window under the text cursor cell.
+    pub fn set_ime_cursor_area(&self, position: PhysicalPosition<f64>, size: PhysicalSize<f64>) {
+        self.with_xim(|xim| xim.set_cursor_area(position.x, position.y, size.height));
+    }
+
+    /// Give `xev` to the input method; `true` when it consumed the event.
+    /// Preedit changes its callbacks made are queued on `events`.
+    fn filter_for_ime(&self, xev: &mut XEvent, events: &mut Vec<WindowEvent>) -> bool {
+        self.with_xim(|xim| {
+            let consumed = xim.filter(xev);
+            xim.shared().drain_into(events);
+            consumed
+        })
+        .unwrap_or(false)
+    }
+
+    /// Text the input method committed with a keycode-0 `KeyPress`.
+    fn ime_commit(&self, kev: &XKeyEvent) -> Option<String> {
+        let mut key = *kev;
+        self.with_xim(|xim| xim.committed_text(&mut key)).flatten()
     }
 
     /// Queue `ModifiersChanged` when the held modifiers differ from the last report.
@@ -857,17 +939,34 @@ impl X11Window {
             while (self.0.lib.XPending)(self.0.display) > 0 {
                 let mut xev: XEvent = std::mem::zeroed();
                 (self.0.lib.XNextEvent)(self.0.display, &mut xev);
+                if self.filter_for_ime(&mut xev, events) {
+                    continue;
+                }
 
                 match xev.type_ {
                     // KeyPress = 2, KeyRelease = 3
                     2 | 3 => {
                         let kev: &XKeyEvent = std::mem::transmute(&xev);
+                        // Keycode 0 is no key: Xlib queues it to deliver
+                        // text the input method composed.
+                        if kev.keycode == 0 {
+                            if let Some(text) = self.ime_commit(kev) {
+                                events.push(WindowEvent::Ime(Ime::Commit(text)));
+                            }
+                            continue;
+                        }
                         let pressed = xev.type_ == 2;
                         // X11 keycodes on Linux are evdev scancode + 8
                         let evdev_code = (kev.keycode as u32).saturating_sub(8);
                         let state = kev.state as u32;
                         self.report_mods(mods_after_key(state, evdev_code, pressed), events);
-                        let repeat = self.0.held.update(kev.keycode as u8, pressed);
+                        let was_held = self.0.held.update(kev.keycode as u8, pressed);
+                        // No press was reported (the input method consumed
+                        // it, or it came before focus): nothing to release.
+                        if !pressed && !was_held {
+                            continue;
+                        }
+                        let repeat = pressed && was_held;
                         let mut key_input = convert_linux_key(evdev_code, state, pressed, repeat);
                         // Keys outside the evdev table (other layouts' extra
                         // keys, remapped keycodes) still produce layout text.
@@ -916,6 +1015,7 @@ impl X11Window {
                     9 | 10 => {
                         // Keys released while unfocused never report a release.
                         self.0.held.clear();
+                        self.with_xim(|xim| xim.set_focused(xev.type_ == 9));
                         events.push(WindowEvent::Focused(xev.type_ == 9));
                     }
                     // PropertyNotify = 28: the WM changed `_NET_WM_STATE`
@@ -1214,5 +1314,128 @@ mod tests {
 
         win.set_title("vim ~/日本語.txt");
         assert_eq!(net_wm_name(&win).as_deref(), Some("vim ~/日本語.txt"));
+    }
+
+    #[test]
+    fn wm_state_requests_add_or_remove_the_atoms() {
+        assert_eq!(wm_state_request(true, 303, 0), [1, 303, 0, 1, 0]);
+        assert_eq!(wm_state_request(false, 303, 0), [0, 303, 0, 1, 0]);
+    }
+
+    /// The monitor is read from RandR: it holds the window, and its refresh
+    /// rate comes from the mode (it was hard-coded to 1920x1080 at 60 Hz).
+    #[test]
+    fn current_monitor_holds_the_window() {
+        let Some(win) = hidden_test_window("litty-monitor-test") else { return };
+        let Some(monitor) = win.current_monitor(PhysicalSize::new(200, 100)) else {
+            eprintln!("no RandR on this X server; skipping");
+            return;
+        };
+        // `hidden_test_window` leaves the window at the default (100, 100).
+        let (x, y) = (100 + 100, 100 + 50);
+        assert!(monitor.position.x <= x && x < monitor.position.x + monitor.size.width as i32, "{monitor:?}");
+        assert!(monitor.position.y <= y && y < monitor.position.y + monitor.size.height as i32, "{monitor:?}");
+        assert!(monitor.refresh_rate_millihertz.is_some_and(|hz| hz > 0), "{monitor:?}");
+    }
+
+    /// Needs a window manager and shows a fullscreen window for a moment,
+    /// so it only runs on request: `cargo test fullscreen -- --ignored`.
+    #[test]
+    #[ignore]
+    fn set_fullscreen_is_reported_back_by_the_window_manager() {
+        let Some(win) = hidden_test_window("litty-fullscreen-test") else { return };
+        win.set_visible(true);
+        let wait_for = |want: bool| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut events = Vec::new();
+            while std::time::Instant::now() < deadline {
+                win.poll_events(&mut events);
+                if events.iter().any(|e| matches!(e, WindowEvent::StateChanged { fullscreen, .. } if *fullscreen == want)) {
+                    return true;
+                }
+                events.clear();
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            false
+        };
+        // Give the WM time to manage the new window before asking.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        win.set_fullscreen(true);
+        assert!(wait_for(true), "window manager never reported fullscreen");
+        win.set_fullscreen(false);
+        assert!(wait_for(false), "window manager never left fullscreen");
+    }
+
+    /// Every window gets an input context: the one `XMODIFIERS` names, or
+    /// Xlib's built-in one for dead keys and Compose.
+    #[test]
+    fn new_window_has_an_input_context() {
+        let Some(win) = hidden_test_window("litty-xim-test") else { return };
+        assert!(win.0.xim.lock().as_ref().is_some_and(XimContext::has_context));
+    }
+
+    /// Every call into the input method may reconnect it, not only
+    /// filtering: the new context's events must be selected right away, or
+    /// the first key reaches it without the events it asked for.
+    #[test]
+    fn a_reconnect_outside_filtering_selects_the_new_methods_events() {
+        let Some(win) = hidden_test_window("litty-xim-reselect-test") else { return };
+        let reopened = |win: &X11Window| win.0.xim.lock().as_mut().is_some_and(XimContext::take_reopened);
+        win.0.xim.lock().as_mut().unwrap().mark_reopened();
+        win.set_ime_allowed(true);
+        assert!(!reopened(&win), "set_ime_allowed left the reconnect unselected");
+        win.0.xim.lock().as_mut().unwrap().mark_reopened();
+        let key: XKeyEvent = unsafe { std::mem::zeroed() };
+        win.ime_commit(&key);
+        assert!(!reopened(&win), "ime_commit left the reconnect unselected");
+    }
+
+    /// Keycode 0 carries input-method text, never a key: without composed
+    /// text it is dropped instead of reaching the keymap as a bogus key.
+    #[test]
+    fn keycode_zero_presses_are_not_keys() {
+        let Some(win) = hidden_test_window("litty-keycode-zero-test") else { return };
+        assert_keycode_zero_is_not_a_key(&win);
+    }
+
+    /// A keycode-0 press another client sends is not looked up. Xlib's
+    /// built-in method would read a compose-tree entry it never initialised;
+    /// the first window's tree sits in fresh zeroed pages, so the second
+    /// window's, on reused heap, is the one that crashes.
+    #[test]
+    fn a_window_after_a_closed_one_still_looks_up_text() {
+        let Some(first) = hidden_test_window("litty-xim-first") else { return };
+        drop(first);
+        let Some(win) = hidden_test_window("litty-xim-second") else { return };
+        assert_keycode_zero_is_not_a_key(&win);
+    }
+
+    /// A synthetic keycode-0 press reaches `Xutf8LookupString` and is no key;
+    /// the press of keycode 38 after it is.
+    fn assert_keycode_zero_is_not_a_key(win: &X11Window) {
+        let lib = &win.0.lib;
+        let send = |keycode: c_int| unsafe {
+            let mut xev: XEvent = std::mem::zeroed();
+            let key = &mut *(&mut xev as *mut XEvent).cast::<XKeyEvent>();
+            key.type_ = 2; // KeyPress
+            key.display = win.0.display;
+            key.window = win.0.window;
+            key.root = win.0.root;
+            key.keycode = keycode;
+            key.same_screen = 1;
+            (lib.XSendEvent)(win.0.display, win.0.window, 1, 1, &mut xev); // KeyPressMask
+        };
+        // evdev KEY_A (30) + 8 marks the end of what was sent.
+        send(0);
+        send(38);
+        unsafe { (lib.XFlush)(win.0.display) };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut events = Vec::new();
+        while !events.iter().any(|e| matches!(e, WindowEvent::Key(_))) && std::time::Instant::now() < deadline {
+            win.poll_events(&mut events);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let keys: Vec<_> = events.iter().filter_map(|e| match e { WindowEvent::Key(k) => Some(k.physical), _ => None }).collect();
+        assert_eq!(keys.len(), 1, "{events:?}");
     }
 }

@@ -225,6 +225,10 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
 
         *WAKE_EVENTFD.lock() = Some(event_fd);
 
+        // Settings portal bus socket: opened before the first window, so
+        // its theme answer arrives while the app starts up.
+        let portal_fd = watch_portal(epoll_fd);
+
         let (tx, rx): (Sender<T>, Receiver<T>) = channel();
         let proxy = EventProxy::from_native_linux(tx, event_fd);
         let mut handler = make(proxy);
@@ -303,6 +307,8 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
                         timer_fired = true;
                     } else if tag == 3 {
                         // X11 display socket readable: events will be drained on the next loop cycle
+                    } else if tag == 4 {
+                        portal_readable(epoll_fd, portal_fd);
                     }
                 }
             }
@@ -317,10 +323,58 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
     }
 }
 
+/// Watch the settings portal's bus socket (event 4). A socket epoll
+/// refuses would never be read: close the portal instead, keeping the theme
+/// it already read, so its signals do not pile up unread.
+fn watch_portal(epoll_fd: RawFd) -> Option<RawFd> {
+    let fd = super::portal::watch_fd()?;
+    let mut ev = libc::epoll_event { events: libc::EPOLLIN as u32, u64: 4 };
+    if unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, fd, &mut ev) } == 0 {
+        return Some(fd);
+    }
+    let err = std::io::Error::last_os_error();
+    eprintln!("litty: cannot watch the settings portal ({err}); light/dark switches are not followed");
+    super::portal::close();
+    None
+}
+
+/// Read the settings portal's bus traffic and report a light/dark switch;
+/// stop watching a bus that went away, or `EPOLLHUP` would spin the loop.
+fn portal_readable(epoll_fd: RawFd, portal_fd: Option<RawFd>) {
+    match super::portal::dispatch() {
+        Ok(Some(theme)) => crate::platform::linux::EVENTS.emit(crate::platform::PlatformEvent::SystemAppearance {
+            dark: theme == crate::platform::gui::Theme::Dark,
+        }),
+        Ok(None) => {}
+        Err(super::portal::Disconnected) => {
+            // Deregister before the socket closes, so a reused fd number is never removed.
+            if let Some(fd) = portal_fd {
+                unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut()) };
+            }
+            super::portal::close();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::platform::linux::native::window::detached;
+
+    /// A bus socket epoll refuses is never read: the portal is closed, so
+    /// its signals do not pile up unread and the failure is not silent.
+    #[test]
+    fn a_portal_socket_epoll_refuses_closes_the_portal() {
+        let _serial = super::super::portal::tests::STATE_TESTS.lock();
+        super::super::portal::reopen_for_test();
+        if super::super::portal::watch_fd().is_none() {
+            eprintln!("no settings portal bus; skipping");
+            return;
+        }
+        assert_eq!(watch_portal(-1), None);
+        assert_eq!(super::super::portal::dispatch(), Err(super::super::portal::Disconnected));
+        super::super::portal::reopen_for_test();
+    }
 
     /// The registry must not keep a window alive: its strong reference kept
     /// closed X11 windows mapped and their connections open (TD-1).
