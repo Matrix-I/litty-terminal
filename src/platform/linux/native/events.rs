@@ -5,6 +5,7 @@ use crate::platform::gui::{
     WindowEvent,
 };
 use crate::platform::input::{Key, KeyCode, KeyInput, KeyLocation, Mods, NamedKey, PhysicalKey};
+use std::ffi::c_ulong;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[allow(dead_code)]
@@ -55,6 +56,24 @@ pub fn convert_raw_event(ev: LinuxRawEvent, scale: f64) -> Option<WindowEvent> {
         LinuxRawEvent::Modifiers { ctrl, alt, shift, sup } => {
             Some(WindowEvent::ModifiersChanged(Mods { ctrl, alt, shift, sup }))
         }
+    }
+}
+
+/// Atoms of the `_NET_WM_STATE` values the app tracks.
+#[derive(Copy, Clone, Debug)]
+pub struct WmStateAtoms {
+    pub max_vert: c_ulong,
+    pub max_horz: c_ulong,
+    pub fullscreen: c_ulong,
+}
+
+/// Window state from a `_NET_WM_STATE` atom list. Maximized needs both axes:
+/// a half-screen tile is vertical only and keeps its free edge resizable.
+pub fn wm_state_event(atoms: &[c_ulong], names: WmStateAtoms) -> WindowEvent {
+    let has = |atom| atoms.contains(&atom);
+    WindowEvent::StateChanged {
+        maximized: has(names.max_vert) && has(names.max_horz),
+        fullscreen: has(names.fullscreen),
     }
 }
 
@@ -361,6 +380,32 @@ impl HeldKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const WM: WmStateAtoms = WmStateAtoms { max_vert: 301, max_horz: 302, fullscreen: 303 };
+
+    fn wm_state(atoms: &[std::ffi::c_ulong]) -> (bool, bool) {
+        match wm_state_event(atoms, WM) {
+            WindowEvent::StateChanged { maximized, fullscreen } => (maximized, fullscreen),
+            other => panic!("expected StateChanged, got {other:?}"),
+        }
+    }
+
+    /// The window manager's `_NET_WM_STATE` is the truth about maximize,
+    /// whoever changed it (title-bar drag, Super+Up, tiling).
+    #[test]
+    fn wm_state_reports_maximized_only_on_both_axes() {
+        assert_eq!(wm_state(&[301, 302]), (true, false));
+        assert_eq!(wm_state(&[999, 302, 301]), (true, false), "other atoms are ignored");
+        // A half-screen tile is vertical only and keeps its free edge resizable.
+        assert_eq!(wm_state(&[301]), (false, false));
+        assert_eq!(wm_state(&[303]), (false, true));
+    }
+
+    /// An empty or deleted property means a plain, restored window.
+    #[test]
+    fn empty_wm_state_is_a_restored_window() {
+        assert_eq!(wm_state(&[]), (false, false));
+    }
 
     const SHIFT: u32 = 1;
     const CTRL: u32 = 4;

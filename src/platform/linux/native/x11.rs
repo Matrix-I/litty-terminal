@@ -4,7 +4,7 @@ use std::ffi::{c_char, c_int, c_long, c_ulong, c_void, CStr, CString};
 use std::sync::Arc;
 
 use crate::platform::gui::{PhysicalPosition, PhysicalSize, RawHandle, WindowEvent, WindowSpec};
-use super::events::{convert_linux_key, keysym_char, mods_after_key, mods_from_state, x11_button_event, HeldKeys};
+use super::events::{wm_state_event, WmStateAtoms, convert_linux_key, keysym_char, mods_after_key, mods_from_state, x11_button_event, HeldKeys};
 use crate::platform::input::{Key, KeyLocation, Mods};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Once, OnceLock};
@@ -103,6 +103,18 @@ pub struct XClientMessageEvent {
 }
 
 #[repr(C)]
+pub struct XPropertyEvent {
+    pub type_: c_int,
+    pub serial: c_ulong,
+    pub send_event: c_int,
+    pub display: *mut c_void,
+    pub window: c_ulong,
+    pub atom: c_ulong,
+    pub time: c_ulong,
+    pub state: c_int,
+}
+
+#[repr(C)]
 pub struct XErrorEvent {
     pub type_: c_int,
     pub display: *mut c_void,
@@ -125,6 +137,10 @@ const XA_WM_CLASS: c_ulong = 67;
 /// `StartupWMClass` and `Icon` in `litty.desktop`, or the desktop cannot
 /// tie the window to the launcher and shows a generic icon.
 const WM_CLASS: &[u8] = b"litty\0litty\0";
+/// Predefined `ATOM` atom (property type of `_NET_WM_STATE`).
+const XA_ATOM: c_ulong = 4;
+/// `_NET_WM_STATE` holds a handful of atoms; more than this is not a real WM.
+const WM_STATE_MAX_ATOMS: c_long = 64;
 
 type XErrorHandler = unsafe extern "C" fn(*mut c_void, *mut XErrorEvent) -> c_int;
 type XIOErrorHandler = unsafe extern "C" fn(*mut c_void) -> c_int;
@@ -213,6 +229,12 @@ pub struct X11Lib {
     pub XLookupString: unsafe extern "C" fn(*mut XKeyEvent, *mut c_char, c_int, *mut c_ulong, *mut c_void) -> c_int,
     pub XRefreshKeyboardMapping: unsafe extern "C" fn(*mut XEvent) -> c_int,
     #[allow(clippy::type_complexity)]
+    pub XGetWindowProperty: unsafe extern "C" fn(
+        *mut c_void, c_ulong, c_ulong, c_long, c_long, c_int, c_ulong,
+        *mut c_ulong, *mut c_int, *mut c_ulong, *mut c_ulong, *mut *mut u8,
+    ) -> c_int,
+    pub XFree: unsafe extern "C" fn(*mut c_void) -> c_int,
+    #[allow(clippy::type_complexity)]
     pub XQueryPointer: unsafe extern "C" fn(
         *mut c_void, c_ulong, *mut c_ulong, *mut c_ulong,
         *mut c_int, *mut c_int, *mut c_int, *mut c_int, *mut std::ffi::c_uint,
@@ -274,6 +296,8 @@ impl X11Lib {
                 XResourceManagerString: sym(handle, c"XResourceManagerString")?,
                 XLookupString: sym(handle, c"XLookupString")?,
                 XRefreshKeyboardMapping: sym(handle, c"XRefreshKeyboardMapping")?,
+                XGetWindowProperty: sym(handle, c"XGetWindowProperty")?,
+                XFree: sym(handle, c"XFree")?,
             })
         }
     }
@@ -289,6 +313,9 @@ pub struct X11WindowInner {
     /// every OSC title change and interning is a server round trip.
     pub net_wm_name: c_ulong,
     pub utf8_string: c_ulong,
+    /// `_NET_WM_STATE`, whose changes report WM-driven maximize/fullscreen.
+    pub net_wm_state: c_ulong,
+    pub wm_state_atoms: WmStateAtoms,
     pub root: c_ulong,
     pub screen: c_int,
     pub scale: f64,
@@ -381,8 +408,9 @@ impl X11Window {
 
             // Select inputs:
             // KeyPress (1), KeyRelease (2), ButtonPress (4), ButtonRelease (8), PointerMotion (64)
-            // Exposure (32768), StructureNotify (131072), FocusChange (2097152)
-            let mask = 1 | 2 | 4 | 8 | 64 | 32768 | 131072 | 2097152;
+            // Exposure (32768), StructureNotify (131072), FocusChange (2097152),
+            // PropertyChange (4194304) for the WM's `_NET_WM_STATE`
+            let mask = 1 | 2 | 4 | 8 | 64 | 32768 | 131072 | 2097152 | 4194304;
             (lib.XSelectInput)(display, window, mask);
 
             let net_wm_name = (lib.XInternAtom)(display, c"_NET_WM_NAME".as_ptr(), 0);
@@ -392,6 +420,13 @@ impl X11Window {
             // Enable graceful close via WM_DELETE_WINDOW
             let wm_delete_window = (lib.XInternAtom)(display, c"WM_DELETE_WINDOW".as_ptr(), 0);
             let mut protocols = [wm_delete_window];
+            let atom = |name: &CStr| (lib.XInternAtom)(display, name.as_ptr(), 0);
+            let net_wm_state = atom(c"_NET_WM_STATE");
+            let wm_state_atoms = WmStateAtoms {
+                max_vert: atom(c"_NET_WM_STATE_MAXIMIZED_VERT"),
+                max_horz: atom(c"_NET_WM_STATE_MAXIMIZED_HORZ"),
+                fullscreen: atom(c"_NET_WM_STATE_FULLSCREEN"),
+            };
             (lib.XSetWMProtocols)(display, window, protocols.as_mut_ptr(), 1);
 
             // Without server decorations the app draws its own title bar
@@ -435,6 +470,8 @@ impl X11Window {
                 wm_delete_window,
                 net_wm_name,
                 utf8_string,
+                net_wm_state,
+                wm_state_atoms,
                 root,
                 screen,
                 scale,
@@ -575,6 +612,30 @@ impl X11Window {
         keysym_text(keysym)
     }
 
+    /// Current `_NET_WM_STATE` as a `StateChanged` event; a missing or
+    /// unreadable property reads as a plain, restored window.
+    fn read_wm_state(&self) -> WindowEvent {
+        let (mut actual_type, mut format, mut count, mut after) = (0, 0, 0, 0);
+        let mut data: *mut u8 = std::ptr::null_mut();
+        let status = unsafe {
+            (self.0.lib.XGetWindowProperty)(
+                self.0.display, self.0.window, self.0.net_wm_state, 0, WM_STATE_MAX_ATOMS, 0, XA_ATOM,
+                &mut actual_type, &mut format, &mut count, &mut after, &mut data,
+            )
+        };
+        // Format-32 properties come back as an array of C longs.
+        let atoms: &[c_ulong] = if status == 0 && !data.is_null() && actual_type == XA_ATOM && format == 32 {
+            unsafe { std::slice::from_raw_parts(data.cast(), count as usize) }
+        } else {
+            &[]
+        };
+        let event = wm_state_event(atoms, self.0.wm_state_atoms);
+        if !data.is_null() {
+            unsafe { (self.0.lib.XFree)(data.cast()) };
+        }
+        event
+    }
+
     pub fn raw_handle(&self) -> RawHandle {
         RawHandle::Xlib {
             display: self.0.display,
@@ -648,6 +709,14 @@ impl X11Window {
                         // Keys released while unfocused never report a release.
                         self.0.held.clear();
                         events.push(WindowEvent::Focused(xev.type_ == 9));
+                    }
+                    // PropertyNotify = 28: the WM changed `_NET_WM_STATE`
+                    // (maximize via title-bar drag, Super+Up, tiling).
+                    28 => {
+                        let pev: &XPropertyEvent = std::mem::transmute(&xev);
+                        if pev.atom == self.0.net_wm_state {
+                            events.push(self.read_wm_state());
+                        }
                     }
                     // MappingNotify = 34: the layout changed; without this
                     // `XLookupString` keeps resolving keysyms from the old map.
