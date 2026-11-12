@@ -117,6 +117,14 @@ pub struct XErrorEvent {
 const PROP_MODE_REPLACE: c_int = 0;
 /// Predefined `CARDINAL` atom.
 const XA_CARDINAL: c_ulong = 6;
+/// Predefined `STRING` atom.
+const XA_STRING: c_ulong = 31;
+/// Predefined `WM_CLASS` atom.
+const XA_WM_CLASS: c_ulong = 67;
+/// `WM_CLASS` value (instance and class, each NUL-terminated). Must match
+/// `StartupWMClass` and `Icon` in `litty.desktop`, or the desktop cannot
+/// tie the window to the launcher and shows a generic icon.
+const WM_CLASS: &[u8] = b"litty\0litty\0";
 
 type XErrorHandler = unsafe extern "C" fn(*mut c_void, *mut XErrorEvent) -> c_int;
 type XIOErrorHandler = unsafe extern "C" fn(*mut c_void) -> c_int;
@@ -379,6 +387,11 @@ impl X11Window {
             let pid_atom = (lib.XInternAtom)(display, c"_NET_WM_PID".as_ptr(), 0);
             let pid = [c_long::from(libc::getpid())];
             (lib.XChangeProperty)(display, window, pid_atom, XA_CARDINAL, 32, PROP_MODE_REPLACE, pid.as_ptr().cast(), 1);
+
+            (lib.XChangeProperty)(
+                display, window, XA_WM_CLASS, XA_STRING, 8, PROP_MODE_REPLACE,
+                WM_CLASS.as_ptr(), WM_CLASS.len() as c_int,
+            );
 
             // Auto-repeat as press, press, ..., release (no fake releases),
             // so repeats are detectable and Kitty sees no spurious releases.
@@ -659,5 +672,60 @@ mod tests {
             return;
         }
         assert!(X11Lib::load().is_some(), "libX11 is installed but a symbol failed to resolve");
+    }
+
+    /// The desktop shows `litty.desktop`'s icon only for windows whose
+    /// `WM_CLASS` matches its `StartupWMClass` (GNOME, KDE, XWayland).
+    #[test]
+    fn new_window_has_the_desktop_entry_wm_class() {
+        #[repr(C)]
+        struct XClassHint {
+            res_name: *mut c_char,
+            res_class: *mut c_char,
+        }
+        if std::env::var_os("DISPLAY").is_none() {
+            eprintln!("no X display; skipping");
+            return;
+        }
+        let spec = WindowSpec {
+            title: "litty-wm-class-test",
+            decorations: true,
+            visible: false,
+            transparent: false,
+            inner_size: crate::platform::gui::LogicalSize::new(200.0, 100.0),
+            position: None,
+        };
+        let Some(win) = X11Window::create(&spec) else {
+            eprintln!("X display unavailable; skipping");
+            return;
+        };
+        let expected = include_str!("../../../../resources/linux/litty.desktop")
+            .lines()
+            .find_map(|l| l.strip_prefix("StartupWMClass="))
+            .expect("litty.desktop sets StartupWMClass");
+        let inner = &win.0;
+        let (name, class) = unsafe {
+            let h = libc::dlopen(c"libX11.so.6".as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
+            assert!(!h.is_null());
+            let get: unsafe extern "C" fn(*mut c_void, c_ulong, *mut XClassHint) -> c_int =
+                std::mem::transmute(libc::dlsym(h, c"XGetClassHint".as_ptr()));
+            let free: unsafe extern "C" fn(*mut c_void) -> c_int =
+                std::mem::transmute(libc::dlsym(h, c"XFree".as_ptr()));
+            let mut hint = XClassHint { res_name: std::ptr::null_mut(), res_class: std::ptr::null_mut() };
+            let found = get(inner.display, inner.window, &mut hint) != 0;
+            let read = |p: *mut c_char| {
+                if p.is_null() {
+                    return None;
+                }
+                let s = CStr::from_ptr(p).to_string_lossy().into_owned();
+                free(p.cast());
+                Some(s)
+            };
+            let (name, class) = (read(hint.res_name), read(hint.res_class));
+            assert!(found, "window has no WM_CLASS");
+            (name, class)
+        };
+        assert_eq!(name.as_deref(), Some(expected));
+        assert_eq!(class.as_deref(), Some(expected));
     }
 }
