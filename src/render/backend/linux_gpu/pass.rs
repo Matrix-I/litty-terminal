@@ -11,10 +11,14 @@ use super::upload::SubmitInfo;
 
 pub struct CommandEncoder {
     vk: Option<Arc<VulkanCore>>,
+    /// Whether the frame's command buffer began recording. When it did not,
+    /// nothing is recorded and the frame is given up (`give_up_frame`).
+    recording: bool,
 }
 
 impl CommandEncoder {
     pub fn new(queue: &Queue) -> Self {
+        let mut recording = false;
         if let Some(vk) = &queue.vk {
             unsafe {
                 #[repr(C)]
@@ -34,10 +38,10 @@ impl CommandEncoder {
                 // Every submitted frame has run, and with it every upload batch.
                 vk.uploads.lock().free_retired(vk);
                 (vk.lib.vkResetCommandBuffer)(vk.upload_cmd, 0);
-                (vk.lib.vkBeginCommandBuffer)(vk.upload_cmd, &b_info as *const _ as *const c_void);
+                recording = vk_ok((vk.lib.vkBeginCommandBuffer)(vk.upload_cmd, &b_info as *const _ as *const c_void), "vkBeginCommandBuffer");
             }
         }
-        Self { vk: queue.vk.clone() }
+        Self { vk: queue.vk.clone(), recording }
     }
 
     /// Begin drawing into `target_fb`, a swapchain framebuffer
@@ -46,7 +50,7 @@ impl CommandEncoder {
     pub fn begin_render_pass(&mut self, target_fb: RawTexHandle, clear_rgba: Option<[f64; 4]>) -> RenderPass {
         let target = super::surface::framebuffer_target(target_fb);
         let vk = match (&self.vk, target) {
-            (Some(vk), Some(_)) => Some(vk.clone()),
+            (Some(vk), Some(_)) if self.recording => Some(vk.clone()),
             _ => None,
         };
         if let (Some(vk), Some(target)) = (&vk, target) {
@@ -104,8 +108,9 @@ impl CommandEncoder {
         unsafe {
             // Pending uploads run first, in the same submission.
             let mut uploads = vk.uploads.lock();
+            let batch = uploads.take_for_frame(vk);
             let mut cmds = [std::ptr::null_mut(); 2];
-            let count = match uploads.take_for_frame(vk) {
+            let count = match batch {
                 Some(batch) => {
                     cmds = [batch, vk.upload_cmd];
                     2
@@ -117,19 +122,16 @@ impl CommandEncoder {
             };
             let wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
             let submit = SubmitInfo::frame(&cmds[..count], &frame.image_avail_sem, &wait_stage, &frame.render_done_sem);
-            let submitted = vk_ok((vk.lib.vkEndCommandBuffer)(vk.upload_cmd), "vkEndCommandBuffer")
+            let submitted = self.recording
+                && vk_ok((vk.lib.vkEndCommandBuffer)(vk.upload_cmd), "vkEndCommandBuffer")
                 && vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, frame.fence), "vkQueueSubmit");
-            // A frame that was not submitted never signals the fence or
-            // `render_done_sem`: recording the fence would make every other
-            // window wait for it forever, and presenting would wait on the
-            // semaphore forever.
             if !submitted {
-                // The surface waits for this fence before its next frame; an
-                // empty submit signals it so that wait cannot hang.
-                (vk.lib.vkQueueSubmit)(vk.queue, 0, std::ptr::null(), frame.fence);
+                give_up_frame(vk, batch, frame.image_avail_sem, frame.fence);
                 return;
             }
             vk.in_flight.lock().submitted(frame.fence);
+            // Presenting can block on the display; uploads need not wait for it.
+            drop(uploads);
 
             #[repr(C)]
             struct PresentInfo {
@@ -171,6 +173,30 @@ impl CommandEncoder {
             assert!(vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, 0), "vkQueueSubmit"));
             (vk.lib.vkQueueWaitIdle)(vk.queue);
             uploads.free_retired(vk);
+        }
+    }
+}
+
+/// Settle a frame whose commands could not be submitted. It is not presented
+/// (its image was never drawn), but what the next frames rely on still runs:
+/// the upload `batch`, so textures get their contents and layouts; a wait on
+/// `image_avail_sem`, which the acquire signaled and must be consumed before
+/// it is acquired with again (`VUID-vkAcquireNextImageKHR-semaphore-01286`);
+/// and `fence`, which the surface waits for before its next frame.
+///
+/// # Safety
+/// `batch` has ended recording; the semaphore and fence belong to `vk.device`.
+pub(super) unsafe fn give_up_frame(vk: &VulkanCore, batch: Option<VkCommandBuffer>, image_avail_sem: VkSemaphore, fence: VkFence) {
+    let cmds: &[VkCommandBuffer] = match &batch {
+        Some(batch) => std::slice::from_ref(batch),
+        None => &[],
+    };
+    let wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    let submit = SubmitInfo::waiting(cmds, &image_avail_sem, &wait_stage);
+    unsafe {
+        if !vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, fence), "vkQueueSubmit") {
+            // Still signal the fence so the next frame's wait cannot hang.
+            (vk.lib.vkQueueSubmit)(vk.queue, 0, std::ptr::null(), fence);
         }
     }
 }
@@ -359,5 +385,20 @@ mod tests {
         let mut encoder = CommandEncoder::new(&queue);
         let pass = encoder.begin_render_pass(0xDEAD_0002, Some([0.0; 4]));
         assert!(pass.vk.is_none(), "no pass begun, so draws and Drop record nothing");
+    }
+
+    /// When `vkBeginCommandBuffer` failed, a render pass recorded into the
+    /// command buffer anyway (it is not recording: undefined behavior).
+    #[test]
+    fn a_frame_that_did_not_begin_records_no_render_pass() {
+        let (_device, queue) = super::super::device::shared_device_and_queue();
+        let fb = 0xDEAD_0003;
+        let target = super::super::surface::FramebufferTarget { width: 4, height: 4, clear_pass: 7, load_pass: 8 };
+        super::super::surface::register_framebuffer(fb, target);
+        // As `CommandEncoder::new` leaves it after a failed begin.
+        let mut encoder = CommandEncoder { vk: queue.vk.clone(), recording: false };
+        let pass = encoder.begin_render_pass(fb, Some([0.0; 4]));
+        super::super::surface::forget_framebuffer(fb);
+        assert!(pass.vk.is_none(), "no pass begun on a command buffer that is not recording");
     }
 }
