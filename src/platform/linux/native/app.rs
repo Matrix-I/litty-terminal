@@ -225,6 +225,10 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
 
         *WAKE_EVENTFD.lock() = Some(event_fd);
 
+        // Settings portal bus socket: opened before the first window, so
+        // its theme answer arrives while the app starts up.
+        let portal_fd = watch_portal(epoll_fd);
+
         let (tx, rx): (Sender<T>, Receiver<T>) = channel();
         let proxy = EventProxy::from_native_linux(tx, event_fd);
         let mut handler = make(proxy);
@@ -232,9 +236,6 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         let native_ctx = NativeLoopCtx::new(timer_fd);
         let loop_ctx = LoopCtx::from_native_linux(&native_ctx);
         handler.resumed(&loop_ctx);
-
-        // Settings portal bus socket (event 4): light/dark changes.
-        let portal_fd = watch_portal(epoll_fd);
 
         let mut events: [libc::epoll_event; 32] = std::mem::zeroed();
         let mut timer_fired = false;

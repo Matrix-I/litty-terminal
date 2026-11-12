@@ -19,9 +19,15 @@ const APPEARANCE_NS: &CStr = c"org.freedesktop.appearance";
 const COLOR_SCHEME_KEY: &CStr = c"color-scheme";
 const CHANGE_MATCH: &CStr = c"type='signal',interface='org.freedesktop.portal.Settings',\
 member='SettingChanged',path='/org/freedesktop/portal/desktop',arg0='org.freedesktop.appearance'";
-/// The first window waits this long for the first answer so it opens in
-/// the right theme; a later answer still applies, as a theme change.
+/// The first window waits up to this long after the portal was opened for
+/// its first answer, so it opens in the right theme; a later answer still
+/// applies, as a theme change.
 const FIRST_READ_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// What is left of `FIRST_READ_WAIT` once `elapsed` passed since opening.
+fn first_read_wait_left(elapsed: std::time::Duration) -> std::time::Duration {
+    FIRST_READ_WAIT.saturating_sub(elapsed)
+}
 
 const DBUS_TYPE_STRING: c_int = b's' as c_int;
 const DBUS_TYPE_UINT32: c_int = b'u' as c_int;
@@ -306,6 +312,8 @@ struct Portal {
     /// The read awaiting its reply: the call's serial and its index in
     /// `READ_METHODS`.
     pending: Option<(u32, usize)>,
+    /// When the first read was sent (`FIRST_READ_WAIT`).
+    opened_at: std::time::Instant,
 }
 
 // The connection is only used under `PORTAL`'s lock.
@@ -344,9 +352,9 @@ impl Portal {
             // Subscribe before reading, so a switch in between is not lost.
             // No error out-parameter: the match is sent without waiting for the reply.
             (lib.dbus_bus_add_match)(conn, CHANGE_MATCH.as_ptr(), std::ptr::null_mut());
-            let mut portal = Self { lib, conn, fd, theme: None, pending: None };
+            let mut portal = Self { lib, conn, fd, theme: None, pending: None, opened_at: std::time::Instant::now() };
+            // Not waited for here: the answer comes while the app starts up.
             portal.send_read(0);
-            portal.wait_for_read(FIRST_READ_WAIT);
             Some(portal)
         }
     }
@@ -376,6 +384,19 @@ impl Portal {
             }
             (lib.dbus_message_unref)(msg);
             (lib.dbus_connection_flush)(self.conn);
+        }
+    }
+
+    /// Take an answer already sent, then wait for one for what is left of
+    /// `FIRST_READ_WAIT`.
+    fn wait_for_first_answer(&mut self) {
+        if self.pending.is_some() {
+            unsafe { (self.lib.dbus_connection_read_write)(self.conn, 0) };
+            self.drain();
+        }
+        let left = first_read_wait_left(self.opened_at.elapsed());
+        if !left.is_zero() {
+            self.wait_for_read(left);
         }
     }
 
@@ -474,7 +495,11 @@ fn with_portal<R>(f: impl FnOnce(&mut Portal) -> R) -> Option<R> {
 /// The desktop's light/dark preference; `None` without a settings portal,
 /// before its first answer, or when it states no preference.
 pub fn system_theme() -> Option<Theme> {
-    with_portal(|p| p.theme).unwrap_or_else(|| match &*PORTAL.lock() {
+    with_portal(|p| {
+        p.wait_for_first_answer();
+        p.theme
+    })
+    .unwrap_or_else(|| match &*PORTAL.lock() {
         State::Closed(theme) => *theme,
         _ => None,
     })
@@ -684,5 +709,35 @@ pub(super) mod tests {
         assert_eq!(system_theme(), Some(Theme::Light));
         assert_eq!(dispatch(), Err(Disconnected));
         *PORTAL.lock() = saved;
+    }
+
+    /// A window that asks after the first wait ran out still gets the
+    /// answer already on the socket, instead of opening in the dark default
+    /// and flipping when the event loop reads it.
+    #[test]
+    fn a_late_first_read_takes_the_answer_already_sent() {
+        let _serial = STATE_TESTS.lock();
+        reopen_for_test();
+        let answered = system_theme();
+        reopen_for_test();
+        if watch_fd().is_none() {
+            eprintln!("no settings portal bus; skipping");
+            return;
+        }
+        std::thread::sleep(FIRST_READ_WAIT * 3);
+        assert_eq!(system_theme(), answered);
+        reopen_for_test();
+    }
+
+    /// The first window waits for the portal's answer only for what is
+    /// left of `FIRST_READ_WAIT` since the loop opened the portal, so the
+    /// wait overlaps startup instead of adding to it.
+    #[test]
+    fn the_first_read_wait_counts_from_opening_the_portal() {
+        use std::time::Duration;
+        assert_eq!(first_read_wait_left(Duration::ZERO), FIRST_READ_WAIT);
+        assert_eq!(first_read_wait_left(Duration::from_millis(30)), FIRST_READ_WAIT - Duration::from_millis(30));
+        assert_eq!(first_read_wait_left(FIRST_READ_WAIT), Duration::ZERO);
+        assert_eq!(first_read_wait_left(Duration::from_secs(5)), Duration::ZERO);
     }
 }
