@@ -15,6 +15,8 @@ pub struct VulkanCore {
     pub(super) phys: VkPhysicalDevice,
     pub(super) device: VkDevice,
     pub(super) queue: VkQueue,
+    /// Family of `queue`; a window's surface must support presenting from it.
+    pub(super) queue_family: u32,
     pub(super) mem_props: VkPhysicalDeviceMemoryProperties,
     #[allow(dead_code)]
     pub(super) cmd_pool: VkCommandPool,
@@ -140,6 +142,57 @@ fn instance_extensions(available: &[&CStr]) -> Option<Vec<&'static CStr>> {
     (extensions.len() > 1).then_some(extensions)
 }
 
+const SWAPCHAIN_EXTENSION: &CStr = c"VK_KHR_swapchain";
+/// `shader.spv` declares `SPV_KHR_storage_buffer_storage_class`, which needs
+/// Vulkan 1.1 or this extension (`VUID-VkShaderModuleCreateInfo-pCode-08742`).
+const STORAGE_BUFFER_CLASS_EXTENSION: &CStr = c"VK_KHR_storage_buffer_storage_class";
+
+/// The API version to ask the instance for: 1.1 when the loader has it.
+/// A 1.0 loader (no `vkEnumerateInstanceVersion`) rejects anything higher.
+fn instance_api_version(loader: Option<u32>) -> u32 {
+    match loader {
+        Some(v) if v >= VK_API_VERSION_1_1 => VK_API_VERSION_1_1,
+        _ => VK_API_VERSION_1_0,
+    }
+}
+
+/// What device selection needs to know about one physical device.
+#[derive(Clone, Copy, Debug)]
+struct DeviceInfo {
+    device_type: u32,
+    api_version: u32,
+    graphics_family: Option<u32>,
+    swapchain: bool,
+    storage_buffer_class: bool,
+}
+
+/// Device extensions to enable on `info`, or `None` when it cannot present
+/// or cannot run `shader.spv`. The usable version is the lower of the
+/// instance's and the device's.
+fn device_extensions(info: &DeviceInfo, instance_api: u32) -> Option<Vec<&'static CStr>> {
+    if info.graphics_family.is_none() || !info.swapchain {
+        return None;
+    }
+    if instance_api.min(info.api_version) >= VK_API_VERSION_1_1 {
+        Some(vec![SWAPCHAIN_EXTENSION])
+    } else if info.storage_buffer_class {
+        Some(vec![SWAPCHAIN_EXTENSION, STORAGE_BUFFER_CLASS_EXTENSION])
+    } else {
+        None
+    }
+}
+
+/// The device to use: the first usable GPU in enumeration order, else the
+/// first usable software renderer (lavapipe). The loader and Mesa's
+/// device-select layer already put the system's preferred GPU first (and
+/// honour `MESA_VK_DEVICE_SELECT`), so only CPU devices are moved back.
+fn pick_device(infos: &[DeviceInfo], instance_api: u32) -> Option<usize> {
+    let usable = |i: &usize| device_extensions(&infos[*i], instance_api).is_some();
+    let is_cpu = |i: &usize| infos[*i].device_type == VK_PHYSICAL_DEVICE_TYPE_CPU;
+    let all = || (0..infos.len()).filter(usable);
+    all().find(|i| !is_cpu(i)).or_else(|| all().next())
+}
+
 /// Index of the first queue family that can run graphics commands.
 fn graphics_family(families: &[VkQueueFamilyProperties]) -> Option<u32> {
     families
@@ -190,6 +243,17 @@ impl VulkanCore {
                 ext_count: u32,
                 pp_exts: *const *const c_char,
             }
+            let loader_version = {
+                let p = vkGetInstanceProcAddr(std::ptr::null_mut(), c"vkEnumerateInstanceVersion".as_ptr());
+                if p.is_null() {
+                    None
+                } else {
+                    let enumerate: unsafe extern "C" fn(*mut u32) -> i32 = std::mem::transmute(p);
+                    let mut version = 0u32;
+                    (enumerate(&mut version) == VK_SUCCESS).then_some(version)
+                }
+            };
+            let instance_api = instance_api_version(loader_version);
             let app_info = AppInfo {
                 s_type: VK_STRUCTURE_TYPE_APPLICATION_INFO,
                 p_next: std::ptr::null(),
@@ -197,7 +261,7 @@ impl VulkanCore {
                 app_ver: 1,
                 p_eng_name: c"litty".as_ptr(),
                 eng_ver: 1,
-                api_ver: 1 << 22,
+                api_ver: instance_api,
             };
             let vkEnumerateInstanceExtensionProperties: unsafe extern "C" fn(
                 *const c_char,
@@ -273,28 +337,63 @@ impl VulkanCore {
                 return None;
             }
             let mut pds = vec![std::ptr::null_mut(); pd_count as usize];
-            vkEnumeratePhysicalDevices(instance, &mut pd_count, pds.as_mut_ptr());
+            if vkEnumeratePhysicalDevices(instance, &mut pd_count, pds.as_mut_ptr()) < VK_SUCCESS {
+                return None;
+            }
+            pds.truncate(pd_count as usize);
             let vkGetPhysicalDeviceQueueFamilyProperties: unsafe extern "C" fn(
                 VkPhysicalDevice,
                 *mut u32,
                 *mut VkQueueFamilyProperties,
             ) = load_fn!(vkGetPhysicalDeviceQueueFamilyProperties);
-            let mut chosen = None;
-            for &candidate in &pds {
-                let mut family_count = 0u32;
-                vkGetPhysicalDeviceQueueFamilyProperties(candidate, &mut family_count, std::ptr::null_mut());
-                let mut families = vec![VkQueueFamilyProperties::default(); family_count as usize];
-                vkGetPhysicalDeviceQueueFamilyProperties(candidate, &mut family_count, families.as_mut_ptr());
-                families.truncate(family_count as usize);
-                if let Some(family) = graphics_family(&families) {
-                    chosen = Some((candidate, family));
-                    break;
-                }
-            }
-            let Some((phys, queue_family)) = chosen else {
-                eprintln!("litty: no Vulkan device with a graphics queue");
+            let vkGetPhysicalDeviceProperties: unsafe extern "C" fn(VkPhysicalDevice, *mut VkPhysicalDeviceProperties) =
+                load_fn!(vkGetPhysicalDeviceProperties);
+            let vkEnumerateDeviceExtensionProperties: unsafe extern "C" fn(
+                VkPhysicalDevice,
+                *const c_char,
+                *mut u32,
+                *mut VkExtensionProperties,
+            ) -> i32 = load_fn!(vkEnumerateDeviceExtensionProperties);
+            let infos: Vec<DeviceInfo> = pds
+                .iter()
+                .map(|&candidate| {
+                    let mut props = VkPhysicalDeviceProperties::default();
+                    vkGetPhysicalDeviceProperties(candidate, &mut props);
+                    let mut family_count = 0u32;
+                    vkGetPhysicalDeviceQueueFamilyProperties(candidate, &mut family_count, std::ptr::null_mut());
+                    let mut families = vec![VkQueueFamilyProperties::default(); family_count as usize];
+                    vkGetPhysicalDeviceQueueFamilyProperties(candidate, &mut family_count, families.as_mut_ptr());
+                    families.truncate(family_count as usize);
+                    let mut ext_count = 0u32;
+                    vkEnumerateDeviceExtensionProperties(candidate, std::ptr::null(), &mut ext_count, std::ptr::null_mut());
+                    let mut exts =
+                        vec![VkExtensionProperties { extension_name: [0; 256], spec_version: 0 }; ext_count as usize];
+                    if vkEnumerateDeviceExtensionProperties(candidate, std::ptr::null(), &mut ext_count, exts.as_mut_ptr())
+                        < VK_SUCCESS
+                    {
+                        ext_count = 0;
+                    }
+                    exts.truncate(ext_count as usize);
+                    // SAFETY: the driver NUL-terminates every name within its 256 bytes.
+                    let has = |name: &CStr| exts.iter().any(|e| CStr::from_ptr(e.extension_name.as_ptr()) == name);
+                    DeviceInfo {
+                        device_type: props.device_type,
+                        api_version: props.api_version,
+                        graphics_family: graphics_family(&families),
+                        swapchain: has(SWAPCHAIN_EXTENSION),
+                        storage_buffer_class: has(STORAGE_BUFFER_CLASS_EXTENSION),
+                    }
+                })
+                .collect();
+            let Some(chosen) = pick_device(&infos, instance_api) else {
+                eprintln!("litty: no Vulkan device can present and run the shaders (graphics queue, VK_KHR_swapchain, Vulkan 1.1)");
                 return None;
             };
+            let phys = pds[chosen];
+            let info = &infos[chosen];
+            // `pick_device` only returns devices with both.
+            let queue_family = info.graphics_family?;
+            let dev_ext_names = device_extensions(info, instance_api)?;
 
             let vkGetPhysicalDeviceMemoryProperties: unsafe extern "C" fn(
                 VkPhysicalDevice,
@@ -340,8 +439,8 @@ impl VulkanCore {
                 queue_count: 1,
                 p_priorities: &prio,
             };
-            let dev_exts = [c"VK_KHR_swapchain".as_ptr()];
-            let mut dev_info = DevInfo {
+            let dev_exts: Vec<*const c_char> = dev_ext_names.iter().map(|e| e.as_ptr()).collect();
+            let dev_info = DevInfo {
                 s_type: VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
                 p_next: std::ptr::null(),
                 flags: 0,
@@ -349,17 +448,16 @@ impl VulkanCore {
                 p_queue_infos: &q_info,
                 layer_count: 0,
                 pp_layers: std::ptr::null(),
-                ext_count: 1,
+                ext_count: dev_exts.len() as u32,
                 pp_exts: dev_exts.as_ptr(),
                 p_features: std::ptr::null(),
             };
             let mut device: VkDevice = std::ptr::null_mut();
+            // Without VK_KHR_swapchain nothing could ever be presented, so a
+            // device created without it would only fail later.
             if vkCreateDevice(phys, &dev_info as *const _ as *const c_void, std::ptr::null(), &mut device) != VK_SUCCESS {
-                dev_info.ext_count = 0;
-                dev_info.pp_exts = std::ptr::null();
-                if vkCreateDevice(phys, &dev_info as *const _ as *const c_void, std::ptr::null(), &mut device) != VK_SUCCESS {
-                    return None;
-                }
+                eprintln!("litty: could not create the Vulkan device");
+                return None;
             }
 
             let lib = VkLib {
@@ -422,6 +520,7 @@ impl VulkanCore {
                 vkCreateWaylandSurfaceKHR: load_opt_fn!(vkCreateWaylandSurfaceKHR),
                 vkCreateXlibSurfaceKHR: load_opt_fn!(vkCreateXlibSurfaceKHR),
                 vkCreateXcbSurfaceKHR: load_opt_fn!(vkCreateXcbSurfaceKHR),
+                vkGetPhysicalDeviceSurfaceSupportKHR: load_fn!(vkGetPhysicalDeviceSurfaceSupportKHR),
                 vkGetPhysicalDeviceSurfaceCapabilitiesKHR: load_fn!(vkGetPhysicalDeviceSurfaceCapabilitiesKHR),
                 vkCreateSwapchainKHR: load_fn!(vkCreateSwapchainKHR),
                 vkDestroySwapchainKHR: load_fn!(vkDestroySwapchainKHR),
@@ -631,6 +730,7 @@ impl VulkanCore {
                 phys,
                 device,
                 queue,
+                queue_family,
                 mem_props,
                 cmd_pool,
                 upload_cmd,
@@ -1243,6 +1343,66 @@ mod tests {
         assert_eq!(graphics_family(&families), Some(2));
         assert_eq!(graphics_family(&families[..2]), None);
         assert_eq!(graphics_family(&[]), None);
+    }
+
+    #[test]
+    fn device_properties_match_the_c_layout() {
+        // `vkGetPhysicalDeviceProperties` writes 824 bytes on LP64 targets.
+        assert_eq!(std::mem::size_of::<VkPhysicalDeviceProperties>(), 824);
+        assert_eq!(std::mem::offset_of!(VkPhysicalDeviceProperties, limits_and_sparse), 296);
+    }
+
+    #[test]
+    fn the_instance_asks_for_vulkan_1_1_only_when_the_loader_has_it() {
+        assert_eq!(instance_api_version(None), VK_API_VERSION_1_0, "1.0 loader");
+        assert_eq!(instance_api_version(Some(VK_API_VERSION_1_0 | 250)), VK_API_VERSION_1_0);
+        assert_eq!(instance_api_version(Some(VK_API_VERSION_1_1)), VK_API_VERSION_1_1);
+        assert_eq!(instance_api_version(Some(vk_api_version(1, 4) | 341)), VK_API_VERSION_1_1);
+    }
+
+    fn info(device_type: u32, api_version: u32) -> DeviceInfo {
+        DeviceInfo { device_type, api_version, graphics_family: Some(0), swapchain: true, storage_buffer_class: false }
+    }
+
+    /// `shader.spv` uses `SPV_KHR_storage_buffer_storage_class`
+    /// (`VUID-VkShaderModuleCreateInfo-pCode-08742`).
+    #[test]
+    fn shaders_get_vulkan_1_1_or_the_storage_buffer_extension() {
+        let gpu = info(1, vk_api_version(1, 3));
+        assert_eq!(device_extensions(&gpu, VK_API_VERSION_1_1), Some(vec![SWAPCHAIN_EXTENSION]));
+        // A 1.0 instance caps the device at 1.0, so the extension is needed.
+        let gpu_with_ext = DeviceInfo { storage_buffer_class: true, ..gpu };
+        assert_eq!(
+            device_extensions(&gpu_with_ext, VK_API_VERSION_1_0),
+            Some(vec![SWAPCHAIN_EXTENSION, STORAGE_BUFFER_CLASS_EXTENSION])
+        );
+        assert_eq!(device_extensions(&gpu, VK_API_VERSION_1_0), None, "no way to run the shaders");
+        assert_eq!(device_extensions(&info(1, VK_API_VERSION_1_0), VK_API_VERSION_1_1), None, "1.0 device");
+    }
+
+    #[test]
+    fn devices_that_cannot_draw_or_present_are_unusable() {
+        let gpu = info(1, VK_API_VERSION_1_1);
+        assert_eq!(device_extensions(&DeviceInfo { swapchain: false, ..gpu }, VK_API_VERSION_1_1), None);
+        assert_eq!(device_extensions(&DeviceInfo { graphics_family: None, ..gpu }, VK_API_VERSION_1_1), None);
+    }
+
+    #[test]
+    fn a_gpu_is_picked_over_a_software_renderer() {
+        const INTEGRATED: u32 = 1;
+        const DISCRETE: u32 = 2;
+        let api = VK_API_VERSION_1_1;
+        let lavapipe = info(VK_PHYSICAL_DEVICE_TYPE_CPU, api);
+        // lavapipe enumerated first must not win over the real GPU.
+        assert_eq!(pick_device(&[lavapipe, info(INTEGRATED, api)], api), Some(1));
+        // Among GPUs the enumeration order (the system's preference) is kept.
+        assert_eq!(pick_device(&[info(DISCRETE, api), info(INTEGRATED, api)], api), Some(0));
+        assert_eq!(pick_device(&[info(INTEGRATED, api), info(DISCRETE, api)], api), Some(0));
+        // An unusable GPU is skipped; software rendering is the last resort.
+        let broken = DeviceInfo { swapchain: false, ..info(DISCRETE, api) };
+        assert_eq!(pick_device(&[broken, lavapipe], api), Some(1));
+        assert_eq!(pick_device(&[broken], api), None);
+        assert_eq!(pick_device(&[], api), None);
     }
 
     /// Window B must not reuse the shared command buffer while window A's

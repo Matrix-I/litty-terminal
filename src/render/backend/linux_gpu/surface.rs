@@ -155,6 +155,17 @@ impl Surface {
                         _ => {}
                     }
                 }
+                if surface_khr != 0 {
+                    let mut supported: VkBool32 = 0;
+                    let res = (vk.lib.vkGetPhysicalDeviceSurfaceSupportKHR)(vk.phys, vk.queue_family, surface_khr, &mut supported);
+                    if res != VK_SUCCESS || supported == 0 {
+                        // The device was chosen before any window existed; a
+                        // swapchain on a surface it cannot present to is invalid.
+                        eprintln!("litty: the Vulkan device cannot present to this window");
+                        (vk.lib.vkDestroySurfaceKHR)(vk.instance, surface_khr, std::ptr::null());
+                        surface_khr = 0;
+                    }
+                }
 
                 #[repr(C)]
                 struct SemInfo {

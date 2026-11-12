@@ -1,4 +1,4 @@
-//! Vulkan 1.0 C ABI types, constants, and dynamically loaded function table (`VkLib`).
+//! Vulkan 1.0/1.1 C ABI types, constants, and dynamically loaded function table (`VkLib`).
 
 use std::ffi::{c_char, c_void};
 
@@ -261,6 +261,46 @@ pub(super) struct VkSurfaceCapabilitiesKHR {
 
 pub(super) const VK_QUEUE_GRAPHICS_BIT: u32 = 0x0000_0001;
 
+pub(super) const VK_PHYSICAL_DEVICE_TYPE_CPU: u32 = 4;
+
+/// `VK_MAKE_API_VERSION(0, major, minor, 0)`.
+pub(super) const fn vk_api_version(major: u32, minor: u32) -> u32 {
+    (major << 22) | (minor << 12)
+}
+pub(super) const VK_API_VERSION_1_0: u32 = vk_api_version(1, 0);
+pub(super) const VK_API_VERSION_1_1: u32 = vk_api_version(1, 1);
+
+/// `VkPhysicalDeviceProperties`. Only the leading fields are read; `limits`
+/// (504 bytes, 8-byte aligned) and `sparseProperties` (20 bytes) are kept as
+/// opaque storage of the right size and alignment.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub(super) struct VkPhysicalDeviceProperties {
+    pub api_version: u32,
+    pub driver_version: u32,
+    pub vendor_id: u32,
+    pub device_id: u32,
+    pub device_type: u32,
+    pub device_name: [c_char; 256],
+    pub pipeline_cache_uuid: [u8; 16],
+    pub limits_and_sparse: [u64; 66],
+}
+
+impl Default for VkPhysicalDeviceProperties {
+    fn default() -> Self {
+        Self {
+            api_version: 0,
+            driver_version: 0,
+            vendor_id: 0,
+            device_id: 0,
+            device_type: 0,
+            device_name: [0; 256],
+            pipeline_cache_uuid: [0; 16],
+            limits_and_sparse: [0; 66],
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub(super) struct VkExtensionProperties {
@@ -339,6 +379,7 @@ pub(super) struct VkLib {
     pub vkCreateWaylandSurfaceKHR: Option<unsafe extern "C" fn(VkInstance, *const c_void, *const c_void, *mut VkSurfaceKHR) -> i32>,
     pub vkCreateXlibSurfaceKHR: Option<unsafe extern "C" fn(VkInstance, *const c_void, *const c_void, *mut VkSurfaceKHR) -> i32>,
     pub vkCreateXcbSurfaceKHR: Option<unsafe extern "C" fn(VkInstance, *const c_void, *const c_void, *mut VkSurfaceKHR) -> i32>,
+    pub vkGetPhysicalDeviceSurfaceSupportKHR: unsafe extern "C" fn(VkPhysicalDevice, u32, VkSurfaceKHR, *mut VkBool32) -> i32,
     pub vkGetPhysicalDeviceSurfaceCapabilitiesKHR: unsafe extern "C" fn(VkPhysicalDevice, VkSurfaceKHR, *mut VkSurfaceCapabilitiesKHR) -> i32,
     pub vkCreateSwapchainKHR: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkSwapchainKHR) -> i32,
     pub vkDestroySwapchainKHR: unsafe extern "C" fn(VkDevice, VkSwapchainKHR, *const c_void),
