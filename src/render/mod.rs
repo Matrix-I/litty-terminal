@@ -7,6 +7,8 @@
 
 pub(crate) mod atlas;
 pub(crate) mod backend;
+#[cfg(target_os = "macos")]
+pub(crate) mod cg;
 pub(crate) mod fontdb;
 pub(crate) mod frame_metrics;
 pub(crate) mod image_layer;
