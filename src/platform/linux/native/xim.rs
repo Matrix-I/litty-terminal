@@ -196,6 +196,10 @@ fn spot_to_send(
 /// leaves or another one starts.
 const MAX_REARMS: u32 = 3;
 
+/// Registrations Xlib may refuse in a row before the waiting contexts stop
+/// asking: a refusal that lasts would otherwise be retried on every event.
+const MAX_REGISTER_FAILURES: u32 = 3;
+
 /// Xlib's input method code keeps process-wide state without locks of its
 /// own (the locale modifiers `XOpenIM` reads, the instantiate-callback list
 /// `XFilterEvent` walks), and every window has its own display on its own
@@ -218,6 +222,8 @@ static NEXT_CONTEXT_ID: AtomicU64 = AtomicU64::new(0);
 struct Watch {
     waiting: Vec<(u64, usize)>,
     registered: Option<(u64, usize)>,
+    /// Registrations refused in a row (`MAX_REGISTER_FAILURES`).
+    failures: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -228,7 +234,7 @@ enum WatchChange {
 
 impl Watch {
     const fn new() -> Self {
-        Self { waiting: Vec::new(), registered: None }
+        Self { waiting: Vec::new(), registered: None, failures: 0 }
     }
 
     /// Context `id` on `display` waits for a server.
@@ -264,6 +270,27 @@ impl Watch {
             .unwrap_or_default()
     }
 
+    /// Register again for the contexts already waiting after Xlib refused
+    /// the last registration, until it has refused too many in a row.
+    fn retry(&mut self) -> Vec<WatchChange> {
+        if self.registered.is_some() || self.failures >= MAX_REGISTER_FAILURES {
+            return Vec::new();
+        }
+        self.registered = self.waiting.first().copied();
+        self.registered.map(|(_, display)| vec![WatchChange::Register(display)]).unwrap_or_default()
+    }
+
+    /// Xlib refused the registration; `true` when this was the last retry.
+    fn register_failed(&mut self) -> bool {
+        self.registered = None;
+        self.failures = self.failures.saturating_add(1);
+        self.failures == MAX_REGISTER_FAILURES
+    }
+
+    fn register_succeeded(&mut self) {
+        self.failures = 0;
+    }
+
     /// Make the registrations `changes` asks for.
     fn apply(&mut self, lib: &XimLib, changes: Vec<WatchChange>) {
         let null = std::ptr::null_mut::<c_void>();
@@ -276,8 +303,11 @@ impl Watch {
                     WatchChange::Register(display) => {
                         let display = display as *mut Display;
                         if (lib.XRegisterIMInstantiateCallback)(display, null, null.cast(), null.cast(), im_instantiated, null) == 0 {
-                            eprintln!("litty: cannot watch for an X input method server");
-                            self.registered = None;
+                            if self.register_failed() {
+                                eprintln!("litty: cannot watch for an X input method server");
+                            }
+                        } else {
+                            self.register_succeeded();
                         }
                     }
                     WatchChange::Unregister(display) => {
@@ -597,6 +627,8 @@ impl XimContext {
             self.start_waiting(lib, watch);
         }
         let Some(seen) = self.waiting else { return };
+        let changes = watch.retry();
+        watch.apply(lib, changes);
         let now = SERVERS_SEEN.load(Relaxed);
         if now == seen {
             return;
@@ -858,6 +890,29 @@ mod tests {
         assert_eq!(w.rearm(), [Unregister(10), Register(10)]);
         assert_eq!(w.registered, Some((1, 10)), "same owner");
         assert_eq!(w.waiting, [(1, 10), (2, 20)]);
+    }
+
+    /// A registration Xlib refused is made again for the contexts already
+    /// waiting, not only when one is added or removed; a lasting refusal is
+    /// given up on instead of being retried on every event.
+    #[test]
+    fn a_refused_registration_is_retried_a_few_times() {
+        let mut w = Watch::new();
+        assert_eq!(w.retry(), [], "nobody waits");
+        w.add(1, 10);
+        w.add(2, 20);
+        assert_eq!(w.retry(), [], "already registered");
+        for attempt in 1..MAX_REGISTER_FAILURES {
+            assert!(!w.register_failed(), "attempt {attempt}");
+            assert_eq!(w.registered, None);
+            assert_eq!(w.retry(), [Register(10)], "attempt {attempt}");
+        }
+        assert!(w.register_failed(), "the last failure gives up");
+        assert_eq!(w.retry(), []);
+        assert_eq!(w.waiting, [(1, 10), (2, 20)], "contexts still wait");
+        // A working registration starts the count again.
+        w.register_succeeded();
+        assert_eq!(w.retry(), [Register(10)]);
     }
 
     #[test]
