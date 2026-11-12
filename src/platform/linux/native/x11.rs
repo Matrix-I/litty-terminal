@@ -3,10 +3,10 @@
 use std::ffi::{c_char, c_int, c_long, c_ulong, c_void, CStr, CString};
 use std::sync::Arc;
 
-use crate::platform::gui::{PhysicalPosition, PhysicalSize, RawHandle, WindowEvent, WindowSpec};
+use crate::platform::gui::{CursorIcon, PhysicalPosition, PhysicalSize, RawHandle, WindowEvent, WindowSpec};
 use super::events::{wm_state_event, WmStateAtoms, convert_linux_key, keysym_char, mods_after_key, mods_from_state, x11_button_event, HeldKeys};
 use crate::platform::input::{Key, KeyLocation, Mods};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::{Once, OnceLock};
 
 #[repr(C)]
@@ -142,6 +142,60 @@ const XA_ATOM: c_ulong = 4;
 /// `_NET_WM_STATE` holds a handful of atoms; more than this is not a real WM.
 const WM_STATE_MAX_ATOMS: c_long = 64;
 
+// X core cursor font shapes (`<X11/cursorfont.h>`). Xlib draws them from the
+// desktop's cursor theme when libXcursor is installed.
+const XC_NUM_GLYPHS: u32 = 154;
+const XC_X_CURSOR: u32 = 0;
+const XC_BOTTOM_LEFT_CORNER: u32 = 12;
+const XC_BOTTOM_RIGHT_CORNER: u32 = 14;
+const XC_BOTTOM_SIDE: u32 = 16;
+const XC_CROSSHAIR: u32 = 34;
+const XC_FLEUR: u32 = 52;
+const XC_HAND1: u32 = 58;
+const XC_HAND2: u32 = 60;
+const XC_LEFT_PTR: u32 = 68;
+const XC_LEFT_SIDE: u32 = 70;
+const XC_PLUS: u32 = 90;
+const XC_QUESTION_ARROW: u32 = 92;
+const XC_RIGHT_SIDE: u32 = 96;
+const XC_SB_H_DOUBLE_ARROW: u32 = 108;
+const XC_SB_V_DOUBLE_ARROW: u32 = 116;
+const XC_TOP_LEFT_CORNER: u32 = 134;
+const XC_TOP_RIGHT_CORNER: u32 = 136;
+const XC_TOP_SIDE: u32 = 138;
+const XC_WATCH: u32 = 150;
+const XC_XTERM: u32 = 152;
+/// Shapes are even numbers below `XC_NUM_GLYPHS`, one cache slot each.
+const CURSOR_SLOTS: usize = (XC_NUM_GLYPHS / 2) as usize;
+
+/// Core cursor font shape for a CSS cursor name; the core font has no
+/// diagonal double arrows, so those use the matching corner.
+fn font_cursor_shape(icon: CursorIcon) -> u32 {
+    use CursorIcon::*;
+    match icon {
+        Default | ContextMenu | Alias | Copy | ZoomIn | ZoomOut => XC_LEFT_PTR,
+        Help => XC_QUESTION_ARROW,
+        Pointer => XC_HAND2,
+        Progress | Wait => XC_WATCH,
+        Cell => XC_PLUS,
+        Crosshair => XC_CROSSHAIR,
+        Text | VerticalText => XC_XTERM,
+        Move | AllScroll | Grabbing => XC_FLEUR,
+        Grab => XC_HAND1,
+        NoDrop | NotAllowed => XC_X_CURSOR,
+        EResize => XC_RIGHT_SIDE,
+        WResize => XC_LEFT_SIDE,
+        NResize => XC_TOP_SIDE,
+        SResize => XC_BOTTOM_SIDE,
+        NeResize => XC_TOP_RIGHT_CORNER,
+        NwResize | NwseResize => XC_TOP_LEFT_CORNER,
+        SeResize => XC_BOTTOM_RIGHT_CORNER,
+        SwResize | NeswResize => XC_BOTTOM_LEFT_CORNER,
+        EwResize | ColResize => XC_SB_H_DOUBLE_ARROW,
+        NsResize | RowResize => XC_SB_V_DOUBLE_ARROW,
+    }
+}
+
 type XErrorHandler = unsafe extern "C" fn(*mut c_void, *mut XErrorEvent) -> c_int;
 type XIOErrorHandler = unsafe extern "C" fn(*mut c_void) -> c_int;
 
@@ -234,6 +288,9 @@ pub struct X11Lib {
         *mut c_ulong, *mut c_int, *mut c_ulong, *mut c_ulong, *mut *mut u8,
     ) -> c_int,
     pub XFree: unsafe extern "C" fn(*mut c_void) -> c_int,
+    pub XCreateFontCursor: unsafe extern "C" fn(*mut c_void, std::ffi::c_uint) -> c_ulong,
+    pub XDefineCursor: unsafe extern "C" fn(*mut c_void, c_ulong, c_ulong) -> c_int,
+    pub XFreeCursor: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
     #[allow(clippy::type_complexity)]
     pub XQueryPointer: unsafe extern "C" fn(
         *mut c_void, c_ulong, *mut c_ulong, *mut c_ulong,
@@ -298,6 +355,9 @@ impl X11Lib {
                 XRefreshKeyboardMapping: sym(handle, c"XRefreshKeyboardMapping")?,
                 XGetWindowProperty: sym(handle, c"XGetWindowProperty")?,
                 XFree: sym(handle, c"XFree")?,
+                XCreateFontCursor: sym(handle, c"XCreateFontCursor")?,
+                XDefineCursor: sym(handle, c"XDefineCursor")?,
+                XFreeCursor: sym(handle, c"XFreeCursor")?,
             })
         }
     }
@@ -323,6 +383,10 @@ pub struct X11WindowInner {
     pub mods: AtomicU8,
     /// Keys held down, to flag auto-repeat presses.
     pub held: HeldKeys,
+    /// Font cursors created so far, by shape / 2 (0 = not yet created).
+    pub cursors: parking_lot::Mutex<[c_ulong; CURSOR_SLOTS]>,
+    /// Shape + 1 of the cursor defined on the window, 0 for none.
+    pub defined_cursor: AtomicU32,
 }
 
 unsafe impl Send for X11WindowInner {}
@@ -332,6 +396,9 @@ impl Drop for X11WindowInner {
     fn drop(&mut self) {
         super::app::deregister_display_fd(self.fd);
         unsafe {
+            for &cursor in self.cursors.get_mut().iter().filter(|&&c| c != 0) {
+                (self.lib.XFreeCursor)(self.display, cursor);
+            }
             (self.lib.XDestroyWindow)(self.display, self.window);
             (self.lib.XCloseDisplay)(self.display);
         }
@@ -477,6 +544,8 @@ impl X11Window {
                 scale,
                 mods: AtomicU8::new(0),
                 held: HeldKeys::default(),
+                cursors: parking_lot::Mutex::new([0; CURSOR_SLOTS]),
+                defined_cursor: AtomicU32::new(0),
             }));
 
             Some(win)
@@ -636,6 +705,40 @@ impl X11Window {
         event
     }
 
+    /// Show `icon` over this window. Pointer motion repeats the same icon,
+    /// so an unchanged one costs no X request.
+    pub fn set_cursor(&self, icon: CursorIcon) {
+        let shape = font_cursor_shape(icon);
+        if self.0.defined_cursor.swap(shape + 1, Ordering::Relaxed) == shape + 1 {
+            return;
+        }
+        let cursor = self.cached_cursor(shape);
+        if cursor == 0 {
+            // Leave the slot free so a later call retries.
+            self.0.defined_cursor.store(0, Ordering::Relaxed);
+            return;
+        }
+        unsafe {
+            (self.0.lib.XDefineCursor)(self.0.display, self.0.window, cursor);
+            (self.0.lib.XFlush)(self.0.display);
+        }
+    }
+
+    /// The font cursor for `shape`, created on first use; 0 if X refused it.
+    fn cached_cursor(&self, shape: u32) -> c_ulong {
+        let mut cursors = self.0.cursors.lock();
+        let slot = &mut cursors[(shape / 2) as usize];
+        if *slot == 0 {
+            *slot = unsafe { (self.0.lib.XCreateFontCursor)(self.0.display, shape) };
+        }
+        *slot
+    }
+
+    #[cfg(test)]
+    fn defined_cursor_shape(&self) -> Option<u32> {
+        self.0.defined_cursor.load(Ordering::Relaxed).checked_sub(1)
+    }
+
     pub fn raw_handle(&self) -> RawHandle {
         RawHandle::Xlib {
             display: self.0.display,
@@ -740,6 +843,60 @@ impl X11Window {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The resize edges must show resize arrows, not the default pointer.
+    #[test]
+    fn resize_edges_map_to_their_side_and_corner_cursors() {
+        use crate::platform::gui::CursorIcon::*;
+        assert_eq!(font_cursor_shape(NResize), XC_TOP_SIDE);
+        assert_eq!(font_cursor_shape(SResize), XC_BOTTOM_SIDE);
+        assert_eq!(font_cursor_shape(EResize), XC_RIGHT_SIDE);
+        assert_eq!(font_cursor_shape(WResize), XC_LEFT_SIDE);
+        assert_eq!(font_cursor_shape(NeResize), XC_TOP_RIGHT_CORNER);
+        assert_eq!(font_cursor_shape(NwResize), XC_TOP_LEFT_CORNER);
+        assert_eq!(font_cursor_shape(SeResize), XC_BOTTOM_RIGHT_CORNER);
+        assert_eq!(font_cursor_shape(SwResize), XC_BOTTOM_LEFT_CORNER);
+    }
+
+    #[test]
+    fn common_cursors_map_to_their_x_shapes() {
+        use crate::platform::gui::CursorIcon::*;
+        assert_eq!(font_cursor_shape(Default), XC_LEFT_PTR);
+        assert_eq!(font_cursor_shape(Text), XC_XTERM);
+        assert_eq!(font_cursor_shape(Pointer), XC_HAND2);
+    }
+
+    /// Setting a cursor must reach the X server: the window's cursor is
+    /// the requested shape, and a repeat costs no new cursor.
+    #[test]
+    fn set_cursor_defines_the_window_cursor() {
+        use crate::platform::gui::CursorIcon;
+        if std::env::var_os("DISPLAY").is_none() {
+            eprintln!("no X display; skipping");
+            return;
+        }
+        let spec = WindowSpec {
+            title: "litty-cursor-test",
+            decorations: true,
+            visible: false,
+            transparent: false,
+            inner_size: crate::platform::gui::LogicalSize::new(200.0, 100.0),
+            position: None,
+        };
+        let Some(win) = X11Window::create(&spec) else {
+            eprintln!("X display unavailable; skipping");
+            return;
+        };
+        assert_eq!(win.defined_cursor_shape(), None);
+        win.set_cursor(CursorIcon::EResize);
+        assert_eq!(win.defined_cursor_shape(), Some(XC_RIGHT_SIDE));
+        let cursor = win.cached_cursor(XC_RIGHT_SIDE);
+        assert_ne!(cursor, 0, "XCreateFontCursor failed");
+        win.set_cursor(CursorIcon::Text);
+        win.set_cursor(CursorIcon::EResize);
+        assert_eq!(win.cached_cursor(XC_RIGHT_SIDE), cursor, "cursors are created once");
+        assert_eq!(win.defined_cursor_shape(), Some(XC_RIGHT_SIDE));
+    }
 
     #[test]
     fn scale_comes_from_xft_dpi() {
