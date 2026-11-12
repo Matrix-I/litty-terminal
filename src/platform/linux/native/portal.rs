@@ -496,6 +496,12 @@ pub fn dispatch() -> Result<Option<Theme>, Disconnected> {
     }
 }
 
+/// Forget the connection state, so the next call opens the portal again.
+#[cfg(test)]
+pub fn reopen_for_test() {
+    *PORTAL.lock() = State::Unopened;
+}
+
 /// Drop the connection (and its socket), keeping the last known theme.
 pub fn close() {
     let mut state = PORTAL.lock();
@@ -508,7 +514,7 @@ pub fn close() {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     #[test]
@@ -665,10 +671,14 @@ mod tests {
         }
     }
 
+    /// Tests that swap the process-wide `PORTAL` state run one at a time.
+    pub(in crate::platform::linux::native) static STATE_TESTS: Mutex<()> = Mutex::new(());
+
     /// A bus that went away keeps the theme it last reported instead of
     /// flipping the windows back to dark.
     #[test]
     fn closing_keeps_the_last_theme() {
+        let _serial = STATE_TESTS.lock();
         let saved = std::mem::replace(&mut *PORTAL.lock(), State::Closed(Some(Theme::Light)));
         close();
         assert_eq!(system_theme(), Some(Theme::Light));

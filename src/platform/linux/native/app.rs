@@ -234,11 +234,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         handler.resumed(&loop_ctx);
 
         // Settings portal bus socket (event 4): light/dark changes.
-        let portal_fd = super::portal::watch_fd();
-        if let Some(fd) = portal_fd {
-            let mut ev_portal = libc::epoll_event { events: libc::EPOLLIN as u32, u64: 4 };
-            libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, fd, &mut ev_portal);
-        }
+        let portal_fd = watch_portal(epoll_fd);
 
         let mut events: [libc::epoll_event; 32] = std::mem::zeroed();
         let mut timer_fired = false;
@@ -326,6 +322,21 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
     }
 }
 
+/// Watch the settings portal's bus socket (event 4). A socket epoll
+/// refuses would never be read: close the portal instead, keeping the theme
+/// it already read, so its signals do not pile up unread.
+fn watch_portal(epoll_fd: RawFd) -> Option<RawFd> {
+    let fd = super::portal::watch_fd()?;
+    let mut ev = libc::epoll_event { events: libc::EPOLLIN as u32, u64: 4 };
+    if unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, fd, &mut ev) } == 0 {
+        return Some(fd);
+    }
+    let err = std::io::Error::last_os_error();
+    eprintln!("litty: cannot watch the settings portal ({err}); light/dark switches are not followed");
+    super::portal::close();
+    None
+}
+
 /// Read the settings portal's bus traffic and report a light/dark switch;
 /// stop watching a bus that went away, or `EPOLLHUP` would spin the loop.
 fn portal_readable(epoll_fd: RawFd, portal_fd: Option<RawFd>) {
@@ -348,6 +359,21 @@ fn portal_readable(epoll_fd: RawFd, portal_fd: Option<RawFd>) {
 mod tests {
     use super::*;
     use crate::platform::linux::native::window::detached;
+
+    /// A bus socket epoll refuses is never read: the portal is closed, so
+    /// its signals do not pile up unread and the failure is not silent.
+    #[test]
+    fn a_portal_socket_epoll_refuses_closes_the_portal() {
+        let _serial = super::super::portal::tests::STATE_TESTS.lock();
+        super::super::portal::reopen_for_test();
+        if super::super::portal::watch_fd().is_none() {
+            eprintln!("no settings portal bus; skipping");
+            return;
+        }
+        assert_eq!(watch_portal(-1), None);
+        assert_eq!(super::super::portal::dispatch(), Err(super::super::portal::Disconnected));
+        super::super::portal::reopen_for_test();
+    }
 
     /// The registry must not keep a window alive: its strong reference kept
     /// closed X11 windows mapped and their connections open (TD-1).
