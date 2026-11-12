@@ -91,7 +91,7 @@ From [the 2026-11-11 review](./docs/reviews/2026-11-11-linux-history-ai-graphics
 - [x] **Graphics: unsupported Kitty `a=d` selectors** return an error without changing image data or placements (2026-11-12). Existing `a`/`A`, default and `i`/`I` semantics are preserved; alternate-screen scoping remains a separate follow-up.
 - [x] **Graphics: `t=f`/`t=t` failure replies** use the same `EPERM` for read, decompression and image-decoding failures (2026-11-12).
 - [x] **Graphics: `I=` replies and APNG fallback**: numbered transmissions reply with the assigned id; valid APNGs with later partial frames show the full default image while malformed default images remain rejected (2026-11-12).
-- [ ] **History: reload on the UI thread** when a history file changed; deletes dropped silently when four are in flight.
+- [x] **History: background reload and bounded deletes**: history reloads offload to a background worker; deletions are queued and processed sequentially without silent drops or corrupting rewrites (2026-11-12).
 - [ ] **Linux: window stubs.** `current_monitor` reports 1920x1080 at 60 Hz, `theme` is always dark, `set_fullscreen` only stores a flag.
   - Partly fixed (2026-11-12): the X11 window now shows the requested cursor icon (`23ba626`) and hides the pointer while typing (`e30ab0f`); maximize and fullscreen changes made by the window manager are read from `_NET_WM_STATE` (`7652831`).
 - [x] **AI: stable system prefix and cancellation**: exit status travels in changing user context, and cancellation records a skipped command only once when a suggestion existed (2026-11-12).

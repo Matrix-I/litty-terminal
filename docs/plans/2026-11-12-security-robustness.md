@@ -41,44 +41,44 @@ Required final gate, after the last edit: read full diff and untracked files; `c
 
 Files: `src/paste.rs`, `src/ai/mod.rs` (including their existing tests).
 Interfaces: `paste_payload(&str, bool) -> Vec<u8>`; `PaneState::cancel_request(&mut self)`; `run` builds provider messages.
-- [ ] Add failing observable payload tests for LF, CRLF, lone CR, Unicode, and bracketed escape filtering; cancellation tests with and without a suggestion; provider request test showing last-exit updates do not mutate the system prefix.
-- [ ] Run focused tests and record exact baseline failures.
-- [ ] Normalize newlines, move paste rustdoc, record skipped only for a pending suggestion, and move last-exit context into the changing user message.
-- [ ] Run subsystem suites and review diff. Ready to commit (only when asked): `fix(paste): normalize newlines and correct ai cancellation context`.
+- [x] Add failing observable payload tests for LF, CRLF, lone CR, Unicode, and bracketed escape filtering; cancellation tests with and without a suggestion; provider request test showing last-exit updates do not mutate the system prefix.
+- [x] Run focused tests and record exact baseline failures.
+- [x] Normalize newlines, move paste rustdoc, record skipped only for a pending suggestion, and move last-exit context into the changing user message.
+- [x] Run subsystem suites and review diff. Ready to commit (only when asked): `fix(paste): normalize newlines and correct ai cancellation context`.
 
 ## Task 2: Kitty and APNG
 
 Files: `src/terminal/graphics/{kitty.rs,png.rs,tests.rs}`.
 Interfaces: `Store::finish_kitty`, `decode_kitty`, `decode_png` retain their existing signatures.
-- [ ] Reproduce unsupported delete clearing, image-number i=0 reply, file decode error discrepancy, and a valid APNG with a full default image followed by a smaller animation frame.
-- [ ] Add regression tests, confirm failures, and record output.
-- [ ] Reject unsupported selectors before mutation; return assigned image id; normalize file decode failures; allow valid later APNG frames while retaining default-image bounds validation.
-- [ ] Run graphics suites and review. Ready to commit: `fix(graphics): preserve images and harden protocol responses`.
+- [x] Reproduce unsupported delete clearing, image-number i=0 reply, file decode error discrepancy, and a valid APNG with a full default image followed by a smaller animation frame.
+- [x] Add regression tests, confirm failures, and record output.
+- [x] Reject unsupported selectors before mutation; return assigned image id; normalize file decode failures; allow valid later APNG frames while retaining default-image bounds validation.
+- [x] Run graphics suites and review. Ready to commit: `fix(graphics): preserve images and harden protocol responses`.
 
 ## Task 3: Update authenticity and atomic installation
 
 Files: `src/update/{install.rs,verify.rs}`, `.github/workflows/release.yml`, updater tests.
 Interfaces: `download_and_verify_in` and `apply_update` keep their signatures; new internal helpers may receive injected filesystem/process boundaries for deterministic tests.
-- [ ] Test manifest missing/mismatched/duplicate version, exact matching version, cached and fresh downloads; reproduce directory overlay leaving old contents.
-- [ ] Confirm failures; add version validation on both verified download paths and signed tag comment in release workflow.
-- [ ] Stage and sign a complete sibling bundle and atomically exchange directories on macOS; test success/failure preserving the installed bundle with temporary fixture bundles. Never install over the user's actual app.
-- [ ] Run update suites and review. Ready to commit: `fix(update): bind manifests to tags and exchange staged bundles`.
+- [x] Test manifest missing/mismatched/duplicate version, exact matching version, cached and fresh downloads; reproduce directory overlay leaving old contents.
+- [x] Confirm failures; add version validation on both verified download paths and signed tag comment in release workflow.
+- [x] Stage and sign a complete sibling bundle and atomically exchange directories on macOS; test success/failure preserving the installed bundle with temporary fixture bundles. Never install over the user's actual app.
+- [x] Run update suites and review. Ready to commit: `fix(update): bind manifests to tags and exchange staged bundles`.
 
 ## Task 4: Bounded asynchronous history and clipboard; PTY failure
 
 Files: `src/platform/clipboard.rs`, `src/terminal/{history.rs,pty.rs}`, `src/app/history_ui.rs`, and only necessary event-loop integration callers.
 Interfaces: preserve public platform API; internal history APIs may expose acceptance/error state to the popup. Follow existing event proxy/waker patterns.
-- [ ] Reproduce saturation drops and reader-setup synchronous reap through injected true boundaries, not timing/sleep assertions; prove history filesystem work executes on a worker.
-- [ ] Capture failures, then implement bounded acceptance with explicit diagnostics, preserve rejected deletions, background reload with stale-result protection, and leave reaping ownership with the PTY on failed reader setup.
-- [ ] Exercise acceptance, full/disconnected queues, spawn/I/O failures and stale reload completion in deterministic tests; run full affected suites.
-- [ ] Review. Ready to commit: `fix(history): bound background work without silent request loss`.
+- [x] Reproduce saturation drops and reader-setup synchronous reap through injected true boundaries, not timing/sleep assertions; prove history filesystem work executes on a worker.
+- [x] Capture failures, then implement bounded acceptance with explicit diagnostics, preserve rejected deletions, background reload with stale-result protection, and leave reaping ownership with the PTY on failed reader setup.
+- [x] Exercise acceptance, full/disconnected queues, spawn/I/O failures and stale reload completion in deterministic tests; run full affected suites.
+- [x] Review. Ready to commit: `fix(history): bound background work without silent request loss`.
 
 ## Task 5: Verification and documentation
 
-- [ ] Update README user-visible behavior, update guide manifest compatibility, and ROADMAP completed findings only after verification.
-- [ ] Run the complete final gate above and record exact results in this plan.
-- [ ] Independently review full diff and requirements; address findings and repeat final gate after edits.
-- [ ] Report nine checklist items with concrete reasons and all incomplete/unverified checks, including real GUI/release gaps. Do not commit.
+- [x] Update README user-visible behavior, update guide manifest compatibility, and ROADMAP completed findings only after verification.
+- [x] Run the complete final gate above and record exact results in this plan.
+- [x] Independently review full diff and requirements; address findings and repeat final gate after edits.
+- [x] Report nine checklist items with concrete reasons and all incomplete/unverified checks, including real GUI/release gaps. Do not commit.
 
 ## Evidence and deviations
 
