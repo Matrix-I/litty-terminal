@@ -167,6 +167,13 @@ const XC_WATCH: u32 = 150;
 const XC_XTERM: u32 = 152;
 /// Shapes are even numbers below `XC_NUM_GLYPHS`, one cache slot each.
 const CURSOR_SLOTS: usize = (XC_NUM_GLYPHS / 2) as usize;
+/// `NorthWestGravity`: on resize the X server keeps the window's pixels
+/// anchored top-left instead of discarding them (`ForgetGravity`, the
+/// default), so the old frame stays up until the new one is presented.
+const NORTH_WEST_GRAVITY: c_int = 1;
+/// `CWBitGravity` value mask bit for `XChangeWindowAttributes`.
+const CW_BIT_GRAVITY: c_ulong = 1 << 4;
+
 /// Pseudo shape for the invisible cursor (outside the cursor font).
 const BLANK_CURSOR: u32 = XC_NUM_GLYPHS;
 
@@ -180,6 +187,27 @@ pub struct XColor {
     blue: u16,
     flags: c_char,
     pad: c_char,
+}
+
+/// Xlib `XSetWindowAttributes`; only the fields named by the value mask are read.
+#[repr(C)]
+#[derive(Default)]
+pub struct XSetWindowAttributes {
+    background_pixmap: c_ulong,
+    background_pixel: c_ulong,
+    border_pixmap: c_ulong,
+    border_pixel: c_ulong,
+    bit_gravity: c_int,
+    win_gravity: c_int,
+    backing_store: c_int,
+    backing_planes: c_ulong,
+    backing_pixel: c_ulong,
+    save_under: c_int,
+    event_mask: c_long,
+    do_not_propagate_mask: c_long,
+    override_redirect: c_int,
+    colormap: c_ulong,
+    cursor: c_ulong,
 }
 
 /// Cursors this window created; 0 = not yet created.
@@ -317,6 +345,7 @@ pub struct X11Lib {
         *mut c_void, c_ulong, c_ulong, *mut XColor, *mut XColor, std::ffi::c_uint, std::ffi::c_uint,
     ) -> c_ulong,
     pub XFreePixmap: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
+    pub XChangeWindowAttributes: unsafe extern "C" fn(*mut c_void, c_ulong, c_ulong, *mut XSetWindowAttributes) -> c_int,
     #[allow(clippy::type_complexity)]
     pub XQueryPointer: unsafe extern "C" fn(
         *mut c_void, c_ulong, *mut c_ulong, *mut c_ulong,
@@ -387,6 +416,7 @@ impl X11Lib {
                 XCreateBitmapFromData: sym(handle, c"XCreateBitmapFromData")?,
                 XCreatePixmapCursor: sym(handle, c"XCreatePixmapCursor")?,
                 XFreePixmap: sym(handle, c"XFreePixmap")?,
+                XChangeWindowAttributes: sym(handle, c"XChangeWindowAttributes")?,
             })
         }
     }
@@ -512,6 +542,11 @@ impl X11Window {
             // PropertyChange (4194304) for the WM's `_NET_WM_STATE`
             let mask = 1 | 2 | 4 | 8 | 64 | 32768 | 131072 | 2097152 | 4194304;
             (lib.XSelectInput)(display, window, mask);
+
+            // Keep the last frame while the window is resized; the default
+            // `ForgetGravity` blanks it until Vulkan presents the next one.
+            let mut attrs = XSetWindowAttributes { bit_gravity: NORTH_WEST_GRAVITY, ..Default::default() };
+            (lib.XChangeWindowAttributes)(display, window, CW_BIT_GRAVITY, &mut attrs);
 
             let net_wm_name = (lib.XInternAtom)(display, c"_NET_WM_NAME".as_ptr(), 0);
             let utf8_string = (lib.XInternAtom)(display, c"UTF8_STRING".as_ptr(), 0);
@@ -980,6 +1015,34 @@ mod tests {
         assert_eq!(win.defined_cursor_shape(), Some(BLANK_CURSOR));
         win.set_cursor_visible(true);
         assert_eq!(win.defined_cursor_shape(), Some(XC_HAND2));
+    }
+
+    /// Resizing must keep the last frame instead of blanking the window
+    /// until the next one is presented (`ForgetGravity` flickers).
+    #[test]
+    fn new_window_keeps_its_contents_while_resized() {
+        #[repr(C)]
+        struct XWindowAttributes {
+            x: c_int, y: c_int, width: c_int, height: c_int, border_width: c_int, depth: c_int,
+            visual: *mut c_void, root: c_ulong, class: c_int, bit_gravity: c_int, win_gravity: c_int,
+            backing_store: c_int, backing_planes: c_ulong, backing_pixel: c_ulong, save_under: c_int,
+            colormap: c_ulong, map_installed: c_int, map_state: c_int, all_event_masks: c_long,
+            your_event_mask: c_long, do_not_propagate_mask: c_long, override_redirect: c_int, screen: *mut c_void,
+        }
+        let Some(win) = hidden_test_window("litty-gravity-test") else { return };
+        let inner = &win.0;
+        let gravity = unsafe {
+            let h = libc::dlopen(c"libX11.so.6".as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
+            assert!(!h.is_null());
+            let get_sym = libc::dlsym(h, c"XGetWindowAttributes".as_ptr());
+            assert!(!get_sym.is_null(), "XGetWindowAttributes missing");
+            let get: unsafe extern "C" fn(*mut c_void, c_ulong, *mut XWindowAttributes) -> c_int =
+                std::mem::transmute(get_sym);
+            let mut attrs: XWindowAttributes = std::mem::zeroed();
+            assert_ne!(get(inner.display, inner.window, &mut attrs), 0);
+            attrs.bit_gravity
+        };
+        assert_eq!(gravity, NORTH_WEST_GRAVITY);
     }
 
     /// Setting a cursor must reach the X server: the window's cursor is
