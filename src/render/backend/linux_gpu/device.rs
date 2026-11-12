@@ -42,6 +42,55 @@ pub struct VulkanCore {
     pub(super) cells_dsets: [VkDescriptorSet; 2],
     pub(super) cells_ubufs: [(VkBuffer, *mut u8); 2],
     pub(super) image_ubuf: (VkBuffer, *mut u8),
+    /// Every window records into `upload_cmd`, `cells_dsets` and the uniform
+    /// buffers, so they may be reused only once the last frame submitted from
+    /// them, by any window, has finished. See `wait_for_last_frame`.
+    pub(super) in_flight: parking_lot::Mutex<InFlight>,
+}
+
+/// The fence of the last frame submitted from the shared frame state, until
+/// someone waited for it. A surface's own fence only covers its own frames.
+#[derive(Default)]
+pub(super) struct InFlight(VkFence);
+
+impl InFlight {
+    /// A frame was submitted; `fence` signals when it has finished.
+    pub(super) fn submitted(&mut self, fence: VkFence) {
+        self.0 = fence;
+    }
+
+    /// The fence to wait for before the shared frame state is reused, if any.
+    /// The caller waits for it, so it is not returned again.
+    pub(super) fn take(&mut self) -> Option<VkFence> {
+        let fence = std::mem::take(&mut self.0);
+        (fence != 0).then_some(fence)
+    }
+
+    /// The surface owning `fence` has waited for it and is about to reset or
+    /// destroy it; a reset fence would never signal again.
+    pub(super) fn release(&mut self, fence: VkFence) {
+        if self.0 == fence {
+            self.0 = 0;
+        }
+    }
+}
+
+impl VulkanCore {
+    /// Block until the last submitted frame, from any window, has finished,
+    /// so `upload_cmd`, `cells_dsets` and the uniform buffers are free to
+    /// reset and rewrite. For a frame this only blocks when another window
+    /// submitted after this one acquired its image, since a surface waits for
+    /// its own fence then; an upload outside a frame may wait for its own.
+    pub(super) fn wait_for_last_frame(&self) {
+        // The lock is held while waiting so the fence's surface cannot
+        // destroy it meanwhile (`Surface::drop` releases it under this lock).
+        let mut in_flight = self.in_flight.lock();
+        if let Some(fence) = in_flight.take() {
+            // SAFETY: `fence` belongs to `self.device` and stays alive while
+            // it is recorded here (see `InFlight::release`).
+            unsafe { (self.lib.vkWaitForFences)(self.device, 1, &fence, 1, u64::MAX) };
+        }
+    }
 }
 
 unsafe impl Send for VulkanCore {}
@@ -600,6 +649,7 @@ impl VulkanCore {
                 cells_dsets,
                 cells_ubufs: [(ubuf0, uptr0), (ubuf1, uptr1)],
                 image_ubuf: (iubuf, iuptr),
+                in_flight: parking_lot::Mutex::new(InFlight::default()),
             }))
         }
     }
@@ -1193,5 +1243,39 @@ mod tests {
         assert_eq!(graphics_family(&families), Some(2));
         assert_eq!(graphics_family(&families[..2]), None);
         assert_eq!(graphics_family(&[]), None);
+    }
+
+    /// Window B must not reuse the shared command buffer while window A's
+    /// frame is still running (`VUID-vkResetCommandBuffer-commandBuffer-00045`).
+    #[test]
+    fn a_frame_waits_for_the_last_frame_of_any_window() {
+        let (fence_a, fence_b) = (0xA, 0xB);
+        let mut in_flight = InFlight::default();
+        assert_eq!(in_flight.take(), None, "nothing submitted yet");
+
+        in_flight.submitted(fence_a);
+        assert_eq!(in_flight.take(), Some(fence_a), "window B waits for window A's frame");
+        assert_eq!(in_flight.take(), None, "a fence is waited for once");
+
+        in_flight.submitted(fence_a);
+        in_flight.submitted(fence_b);
+        assert_eq!(in_flight.take(), Some(fence_b), "only the latest submission is pending");
+    }
+
+    /// A surface resets its fence when it acquires its next image, and
+    /// destroys it when it closes; a reset fence that stayed recorded would
+    /// never signal and the next frame would wait forever.
+    #[test]
+    fn a_released_fence_is_not_waited_for() {
+        let (fence_a, fence_b) = (0xA, 0xB);
+        let mut in_flight = InFlight::default();
+
+        in_flight.submitted(fence_a);
+        in_flight.release(fence_a);
+        assert_eq!(in_flight.take(), None);
+
+        in_flight.submitted(fence_a);
+        in_flight.release(fence_b);
+        assert_eq!(in_flight.take(), Some(fence_a), "another window's fence stays recorded");
     }
 }

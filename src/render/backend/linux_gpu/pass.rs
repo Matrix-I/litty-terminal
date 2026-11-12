@@ -31,6 +31,7 @@ impl CommandEncoder {
                     flags: 1,
                     p_inheritance_info: std::ptr::null(),
                 };
+                vk.wait_for_last_frame();
                 (vk.lib.vkResetCommandBuffer)(vk.upload_cmd, 0);
                 (vk.lib.vkBeginCommandBuffer)(vk.upload_cmd, &b_info as *const _ as *const c_void);
             }
@@ -131,7 +132,12 @@ impl CommandEncoder {
                 signal_semaphore_count: 1,
                 p_signal_semaphores: &frame.render_done_sem,
             };
-            (vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, frame.fence);
+            let submitted = (vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, frame.fence);
+            // A failed submit never signals the fence; recording it would make
+            // every other window wait for it forever.
+            if submitted == VK_SUCCESS {
+                vk.in_flight.lock().submitted(frame.fence);
+            }
 
             #[repr(C)]
             struct PresentInfo {
