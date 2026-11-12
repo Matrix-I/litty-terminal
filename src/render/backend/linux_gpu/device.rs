@@ -28,9 +28,9 @@ pub struct VulkanCore {
     pub(super) image_desc_pool: VkDescriptorPool,
     /// Descriptor pools are not thread safe; guards `image_desc_pool`.
     pub(super) image_pool_lock: parking_lot::Mutex<()>,
-    /// Shared upload staging buffer. Its lock is held for a whole upload, so
-    /// it also serialises every use of `upload_cmd` outside a frame.
-    pub(super) staging: parking_lot::Mutex<super::resources::Staging>,
+    /// Pending texture uploads, submitted with the next frame. Lock order:
+    /// `uploads` before `in_flight`.
+    pub(super) uploads: parking_lot::Mutex<super::upload::Uploads>,
     pub(super) shader_mod: VkShaderModule,
     pub(super) image_mod: VkShaderModule,
     #[allow(dead_code)]
@@ -568,12 +568,14 @@ impl VulkanCore {
                 p_next: std::ptr::null(),
                 command_pool: cmd_pool,
                 level: 0,
-                count: 1,
+                count: 2,
             };
-            let mut upload_cmd: VkCommandBuffer = std::ptr::null_mut();
-            if !vk_ok((lib.vkAllocateCommandBuffers)(device, &cmd_alloc as *const _ as *const c_void, &mut upload_cmd), "vkAllocateCommandBuffers") {
+            // The frame's command buffer and the upload batch's.
+            let mut cmds: [VkCommandBuffer; 2] = [std::ptr::null_mut(); 2];
+            if !vk_ok((lib.vkAllocateCommandBuffers)(device, &cmd_alloc as *const _ as *const c_void, cmds.as_mut_ptr()), "vkAllocateCommandBuffers") {
                 return None;
             }
+            let [upload_cmd, batch_cmd] = cmds;
 
             let shader_mod = create_shader_module(&lib, device, SHADER_SPV);
             let image_mod = create_shader_module(&lib, device, IMAGE_SPV);
@@ -762,7 +764,7 @@ impl VulkanCore {
                 desc_pool,
                 image_desc_pool,
                 image_pool_lock: parking_lot::Mutex::new(()),
-                staging: parking_lot::Mutex::new(super::resources::Staging::empty()),
+                uploads: parking_lot::Mutex::new(super::upload::Uploads::new(batch_cmd)),
                 shader_mod,
                 image_mod,
                 cells_dset_layout,

@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use super::device::{Device, Queue, VulkanCore};
 use super::ffi::*;
+use super::upload::image_barrier;
 use crate::render::backend::TextureFormat;
 
 pub(super) unsafe fn find_memory_type(
@@ -232,32 +233,6 @@ impl<T: bytemuck::Pod> Drop for HostBuffer<T> {
     }
 }
 
-/// Smallest shared staging buffer: a few hundred glyph cells.
-const STAGING_MIN: usize = 64 << 10;
-/// Largest staging buffer kept between uploads; bigger uploads (inline
-/// images) get a one-off buffer so idle memory does not hold their size.
-const STAGING_KEEP_MAX: usize = 4 << 20;
-
-/// Capacity the shared staging buffer needs for a `len`-byte upload, or
-/// `None` when the upload is too large to be kept around.
-fn staging_capacity(len: usize) -> Option<usize> {
-    (len <= STAGING_KEEP_MAX).then(|| len.next_power_of_two().max(STAGING_MIN))
-}
-
-/// Upload staging memory shared by every texture of the device.
-pub(super) struct Staging {
-    buf: VkBuffer,
-    mem: VkDeviceMemory,
-    ptr: *mut u8,
-    cap: usize,
-}
-
-impl Staging {
-    pub(super) const fn empty() -> Self {
-        Self { buf: 0, mem: 0, ptr: std::ptr::null_mut(), cap: 0 }
-    }
-}
-
 /// Where an upload's first barrier starts: `(old_layout, src_access, src_stage)`.
 /// A ready texture is sampled between uploads and keeps its contents; one that
 /// was never made ready starts from `UNDEFINED`.
@@ -266,112 +241,6 @@ fn upload_source(ready: bool) -> (u32, VkFlags, VkFlags) {
         (VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
     } else {
         (VK_IMAGE_LAYOUT_UNDEFINED, 0, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT)
-    }
-}
-
-/// Start recording a one-off upload into the shared command buffer. Must not
-/// run while a frame is being recorded (see `CommandEncoder`).
-unsafe fn begin_upload(vk: &VulkanCore) {
-    unsafe {
-        #[repr(C)]
-        struct BeginInfo {
-            s_type: u32,
-            p_next: *const c_void,
-            flags: u32,
-            p_inheritance_info: *const c_void,
-        }
-        let b_info = BeginInfo {
-            s_type: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            p_next: std::ptr::null(),
-            flags: 1,
-            p_inheritance_info: std::ptr::null(),
-        };
-        vk.wait_for_last_frame();
-        (vk.lib.vkResetCommandBuffer)(vk.upload_cmd, 0);
-        (vk.lib.vkBeginCommandBuffer)(vk.upload_cmd, &b_info as *const _ as *const c_void);
-    }
-}
-
-/// Submit the recorded upload and wait for it, so its staging memory can be reused.
-unsafe fn submit_upload(vk: &VulkanCore) {
-    unsafe {
-        (vk.lib.vkEndCommandBuffer)(vk.upload_cmd);
-        #[repr(C)]
-        struct SubmitInfo {
-            s_type: u32,
-            p_next: *const c_void,
-            wait_semaphore_count: u32,
-            p_wait_semaphores: *const VkSemaphore,
-            p_wait_dst_stage_mask: *const VkFlags,
-            command_buffer_count: u32,
-            p_command_buffers: *const VkCommandBuffer,
-            signal_semaphore_count: u32,
-            p_signal_semaphores: *const VkSemaphore,
-        }
-        let s_info = SubmitInfo {
-            s_type: VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            p_next: std::ptr::null(),
-            wait_semaphore_count: 0,
-            p_wait_semaphores: std::ptr::null(),
-            p_wait_dst_stage_mask: std::ptr::null(),
-            command_buffer_count: 1,
-            p_command_buffers: &vk.upload_cmd,
-            signal_semaphore_count: 0,
-            p_signal_semaphores: std::ptr::null(),
-        };
-        // A failed submit uploads nothing; the texture keeps its old contents.
-        vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &s_info as *const _ as *const c_void, 0), "vkQueueSubmit");
-        (vk.lib.vkQueueWaitIdle)(vk.queue);
-    }
-}
-
-/// Record a layout transition of the whole color image:
-/// `layouts` = (old, new), `access` = (src, dst), `stages` = (src, dst).
-unsafe fn image_barrier(
-    vk: &VulkanCore,
-    image: VkImage,
-    layouts: (u32, u32),
-    access: (VkFlags, VkFlags),
-    stages: (VkFlags, VkFlags),
-) {
-    unsafe {
-        #[repr(C)]
-        struct ImgBarrier {
-            s_type: u32,
-            p_next: *const c_void,
-            src_access_mask: VkFlags,
-            dst_access_mask: VkFlags,
-            old_layout: u32,
-            new_layout: u32,
-            src_queue_family_index: u32,
-            dst_queue_family_index: u32,
-            image: VkImage,
-            subresource_range: [u32; 5],
-        }
-        let barrier = ImgBarrier {
-            s_type: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            p_next: std::ptr::null(),
-            src_access_mask: access.0,
-            dst_access_mask: access.1,
-            old_layout: layouts.0,
-            new_layout: layouts.1,
-            src_queue_family_index: u32::MAX,
-            dst_queue_family_index: u32::MAX,
-            image,
-            subresource_range: [1, 0, 1, 0, 1],
-        };
-        (vk.lib.vkCmdPipelineBarrier)(
-            vk.upload_cmd,
-            stages.0,
-            stages.1,
-            0,
-            0,
-            std::ptr::null(),
-            0,
-            std::ptr::null(),
-            1,
-            &barrier as *const _ as *const c_void,
-        );
     }
 }
 
@@ -384,40 +253,6 @@ struct BufImgCopy {
     image_subresource: [u32; 4],
     image_offset: VkOffset3D,
     image_extent: VkExtent3D,
-}
-
-/// Record a global memory barrier: `access` = (src, dst), `stages` = (src, dst).
-#[cfg(test)]
-unsafe fn memory_barrier(vk: &VulkanCore, access: (VkFlags, VkFlags), stages: (VkFlags, VkFlags)) {
-    #[repr(C)]
-    struct MemBarrier {
-        s_type: u32,
-        p_next: *const c_void,
-        src_access_mask: VkFlags,
-        dst_access_mask: VkFlags,
-    }
-    let barrier = MemBarrier {
-        s_type: VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-        p_next: std::ptr::null(),
-        src_access_mask: access.0,
-        dst_access_mask: access.1,
-    };
-    // SAFETY: `upload_cmd` is recording (the caller began it) and `barrier`
-    // outlives the call.
-    unsafe {
-        (vk.lib.vkCmdPipelineBarrier)(
-            vk.upload_cmd,
-            stages.0,
-            stages.1,
-            0,
-            1,
-            &barrier as *const _ as *const c_void,
-            0,
-            std::ptr::null(),
-            0,
-            std::ptr::null(),
-        );
-    }
 }
 
 /// A framebuffer for drawing into the render target `view`, registered with
@@ -568,6 +403,8 @@ impl Drop for TextureInner {
     fn drop(&mut self) {
         if let Some(vk) = &self.vk {
             unsafe {
+                // The pending upload batch may copy into this image.
+                vk.uploads.lock().flush(vk);
                 (vk.lib.vkDeviceWaitIdle)(vk.device);
                 if self.framebuffer != 0 {
                     super::surface::forget_framebuffer(self.framebuffer);
@@ -709,16 +546,18 @@ impl Texture {
                 // (the color atlas placeholder): give it a valid layout now.
                 let ready = !render_target;
                 if ready {
-                    let _upload = vk.staging.lock();
-                    begin_upload(vk);
+                    // Recorded into the upload batch, which runs before any
+                    // frame that could sample the texture.
+                    let mut uploads = vk.uploads.lock();
+                    let Some(cmd) = uploads.begin(vk) else { return discard(mem, view) };
                     image_barrier(
                         vk,
+                        cmd,
                         image,
                         (VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
                         (0, VK_ACCESS_SHADER_READ_BIT),
                         (VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT),
                     );
-                    submit_upload(vk);
                 }
                 let image_dset = if ready { alloc_image_dset(vk, view) } else { 0 };
                 let framebuffer = if render_target { create_target_framebuffer(vk, view, format, w, h) } else { 0 };
@@ -761,6 +600,9 @@ impl Texture {
         }
     }
 
+    /// Copy `data` (`width` x `height` tightly packed texels) to `(x, y)`.
+    /// The copy is recorded into the upload batch and runs ahead of the next
+    /// frame (see `upload`), so callers may upload while a frame records.
     #[allow(clippy::too_many_arguments)]
     pub fn write_rect(&self, _queue: &Queue, x: u32, y: u32, width: u32, height: u32, data: &[u8], _bytes_per_row: u32) {
         if width == 0 || height == 0 || data.is_empty() {
@@ -768,53 +610,20 @@ impl Texture {
         }
         let Some(vk) = &self.inner.vk else { return };
         unsafe {
-            // Held until the upload finished: the previous one is complete
-            // (`submit_upload` waits), so the buffer is free to reuse or replace.
-            let mut staging = vk.staging.lock();
-            let one_off = match staging_capacity(data.len()) {
-                Some(cap) => {
-                    if staging.cap < cap {
-                        if staging.buf != 0 {
-                            (vk.lib.vkDestroyBuffer)(vk.device, staging.buf, std::ptr::null());
-                            (vk.lib.vkFreeMemory)(vk.device, staging.mem, std::ptr::null());
-                        }
-                        *staging = Staging::empty();
-                        let Some((buf, mem, ptr)) =
-                            alloc_host_buffer(&vk.lib, vk.device, &vk.mem_props, cap, VK_BUFFER_USAGE_TRANSFER_SRC_BIT)
-                        else {
-                            return;
-                        };
-                        *staging = Staging { buf, mem, ptr, cap };
-                    }
-                    None
-                }
-                None => {
-                    let Some(buf) =
-                        alloc_host_buffer(&vk.lib, vk.device, &vk.mem_props, data.len(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT)
-                    else {
-                        return;
-                    };
-                    Some(buf)
-                }
-            };
-            let (stg_buf, stg_ptr) = match one_off {
-                Some((buf, _, ptr)) => (buf, ptr),
-                None => (staging.buf, staging.ptr),
-            };
-            std::ptr::copy_nonoverlapping(data.as_ptr(), stg_ptr, data.len());
-
+            let mut uploads = vk.uploads.lock();
+            let Some((buf, offset)) = uploads.stage(vk, data) else { return };
+            let Some(cmd) = uploads.begin(vk) else { return };
             let (old_layout, src_access, src_stage) = upload_source(self.inner.ready);
-            begin_upload(vk);
             image_barrier(
                 vk,
+                cmd,
                 self.inner.image,
                 (old_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL),
                 (src_access, VK_ACCESS_TRANSFER_WRITE_BIT),
                 (src_stage, VK_PIPELINE_STAGE_TRANSFER_BIT),
             );
-
             let region = BufImgCopy {
-                buffer_offset: 0,
+                buffer_offset: offset,
                 buffer_row_length: 0,
                 buffer_image_height: 0,
                 image_subresource: [1, 0, 0, 1],
@@ -822,26 +631,21 @@ impl Texture {
                 image_extent: VkExtent3D { width, height, depth: 1 },
             };
             (vk.lib.vkCmdCopyBufferToImage)(
-                vk.upload_cmd,
-                stg_buf,
+                cmd,
+                buf,
                 self.inner.image,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 1,
                 &region as *const _ as *const c_void,
             );
-
             image_barrier(
                 vk,
+                cmd,
                 self.inner.image,
                 (VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
                 (VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT),
                 (VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT),
             );
-            submit_upload(vk);
-            if let Some((buf, mem, _)) = one_off {
-                (vk.lib.vkDestroyBuffer)(vk.device, buf, std::ptr::null());
-                (vk.lib.vkFreeMemory)(vk.device, mem, std::ptr::null());
-            }
         }
     }
 
@@ -850,19 +654,21 @@ impl Texture {
     /// was created; its render pass leaves it ready to be copied from.
     #[cfg(test)]
     pub fn read_pixels(&self, dst: &mut [u8], bytes_per_row: u32) {
+        use super::upload::memory_barrier;
         let Some(vk) = &self.inner.vk else { return };
         assert_ne!(self.inner.framebuffer, 0, "only render targets can be read back");
         let (w, h) = (self.inner.width, self.inner.height);
         let row = w as usize * 4;
         let len = row * h as usize;
         unsafe {
-            let _upload = vk.staging.lock();
             let (buf, mem, ptr) = alloc_host_buffer(&vk.lib, vk.device, &vk.mem_props, len, VK_BUFFER_USAGE_TRANSFER_DST_BIT)
                 .expect("read-back buffer");
-            begin_upload(vk);
+            let mut uploads = vk.uploads.lock();
+            let cmd = uploads.begin(vk).expect("upload batch");
             // Make the render pass's writes visible to the copy.
             image_barrier(
                 vk,
+                cmd,
                 self.inner.image,
                 (VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL),
                 (VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT),
@@ -877,7 +683,7 @@ impl Texture {
                 image_extent: VkExtent3D { width: w, height: h, depth: 1 },
             };
             (vk.lib.vkCmdCopyImageToBuffer)(
-                vk.upload_cmd,
+                cmd,
                 self.inner.image,
                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 buf,
@@ -886,10 +692,11 @@ impl Texture {
             );
             memory_barrier(
                 vk,
+                cmd,
                 (VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT),
                 (VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT),
             );
-            submit_upload(vk);
+            uploads.flush(vk);
             let src = std::slice::from_raw_parts(ptr, len);
             for (y, line) in src.chunks_exact(row).enumerate() {
                 let start = y * bytes_per_row as usize;
@@ -945,13 +752,90 @@ mod tests {
         assert_eq!(target.image_dset(), 0, "render targets are never drawn as images");
     }
 
+    /// `image_layer::Quad`: rect (px), uv.
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
+    struct Quad {
+        rect: [f32; 4],
+        uv: [f32; 4],
+    }
+
+    /// `image_layer::Uniforms`.
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
+    struct ImageUniforms {
+        screen: [f32; 2],
+        flip_y: u32,
+        _pad: u32,
+    }
+
+    /// Draw `texture` over a 16x16 render target and return its pixels.
+    /// `upload` runs before the frame starts (`before`) or while it records.
+    fn draw_uploaded_image(upload_while_recording: bool) -> Option<Vec<u8>> {
+        use super::super::pass::CommandEncoder;
+        let (device, queue) = super::super::device::shared_device_and_queue();
+        device.vk.as_ref()?;
+        let format = TextureFormat::Rgba8Unorm;
+        let pipes = super::super::device::shared_pipelines(&device, format);
+        let target = Texture::new(&device, 16, 16, format, true);
+        let image = Texture::new(&device, 4, 4, format, false);
+        let red = [255u8, 0, 0, 255].repeat(16);
+        let quads = HostBuffer::from_slice(&device, &[Quad { rect: [0.0, 0.0, 16.0, 16.0], uv: [0.0, 0.0, 1.0, 1.0] }]);
+        let uniforms = ImageUniforms { screen: [16.0, 16.0], ..Default::default() };
+        if !upload_while_recording {
+            image.write_rect(&queue, 0, 0, 4, 4, &red, 16);
+        }
+        let mut encoder = CommandEncoder::new(&queue);
+        if upload_while_recording {
+            image.write_rect(&queue, 0, 0, 4, 4, &red, 16);
+        }
+        {
+            let mut pass = encoder.begin_render_pass(target.raw_ptr(), Some([0.0, 0.0, 0.0, 1.0]));
+            pass.draw_image_quad(&pipes.image, &quads, &uniforms, &image, device.linear_sampler(), 0);
+        }
+        encoder.submit_and_wait();
+        let mut pixels = vec![0u8; 16 * 16 * 4];
+        target.read_pixels(&mut pixels, 16 * 4);
+        Some(pixels)
+    }
+
+    /// An inline image uploaded for a frame is drawn by that frame, whether
+    /// the upload happens before the frame starts recording or during it.
     #[test]
-    fn staging_capacity_is_bounded_and_grows_by_powers_of_two() {
-        assert_eq!(staging_capacity(1), Some(64 << 10), "a glyph upload uses the minimum buffer");
-        assert_eq!(staging_capacity(64 << 10), Some(64 << 10));
-        assert_eq!(staging_capacity((64 << 10) + 1), Some(128 << 10));
-        assert_eq!(staging_capacity(4 << 20), Some(4 << 20));
-        // A large inline image must not pin its staging memory while idle.
-        assert_eq!(staging_capacity((4 << 20) + 1), None);
+    #[ignore = "requires a Vulkan device"]
+    fn an_uploaded_image_is_drawn_in_the_same_frame() {
+        for while_recording in [false, true] {
+            let Some(pixels) = draw_uploaded_image(while_recording) else { return };
+            assert_eq!(&pixels[(8 * 16 + 8) * 4..][..4], &[255, 0, 0, 255], "upload while recording: {while_recording}");
+        }
+    }
+
+    /// Not a check: prints how long a frame with many new glyphs takes
+    /// (`cargo test --bin litty glyph_upload_cost -- --ignored --nocapture`).
+    #[test]
+    #[ignore = "benchmark; requires a Vulkan device"]
+    fn glyph_upload_cost() {
+        use super::super::pass::CommandEncoder;
+        let (device, queue) = super::super::device::shared_device_and_queue();
+        if device.vk.is_none() {
+            return;
+        }
+        let atlas = Texture::new(&device, 1024, 1024, TextureFormat::R8Unorm, false);
+        let target = Texture::new(&device, 64, 64, TextureFormat::Rgba8Unorm, true);
+        let glyph = [0x80u8; 16 * 32];
+        for glyphs in [1u32, 64, 1024] {
+            let mut best = std::time::Duration::MAX;
+            for _ in 0..5 {
+                let start = std::time::Instant::now();
+                for g in 0..glyphs {
+                    atlas.write_rect(&queue, (g % 64) * 16, (g / 64) * 32, 16, 32, &glyph, 16);
+                }
+                let mut encoder = CommandEncoder::new(&queue);
+                drop(encoder.begin_render_pass(target.raw_ptr(), Some([0.0; 4])));
+                encoder.submit_and_wait();
+                best = best.min(start.elapsed());
+            }
+            eprintln!("glyph_upload_cost: {glyphs:>4} new glyphs + 1 frame: {:.3} ms (best of 5)", best.as_secs_f64() * 1e3);
+        }
     }
 }
