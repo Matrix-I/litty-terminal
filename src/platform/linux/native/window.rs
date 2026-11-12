@@ -219,7 +219,11 @@ impl NativeWindow {
     }
 
     pub fn set_cursor_visible(&self, visible: bool) {
-        self.inner.lock().cursor_visible = visible;
+        let mut guard = self.inner.lock();
+        guard.cursor_visible = visible;
+        if let Some(x11) = &guard.x11_window {
+            x11.set_cursor_visible(visible);
+        }
     }
 
     pub fn theme(&self) -> Option<Theme> {
