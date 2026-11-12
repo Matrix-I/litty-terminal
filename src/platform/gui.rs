@@ -599,6 +599,8 @@ pub enum WindowEvent {
     MouseWheel { delta: ScrollDelta, phase: TouchPhase },
     Focused(bool),
     RedrawRequested,
+    /// The window manager maximized, restored or fullscreened the window.
+    StateChanged { maximized: bool, fullscreen: bool },
 }
 
 // ---- Event loop -------------------------------------------------------------

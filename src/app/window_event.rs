@@ -73,6 +73,11 @@ impl App {
                 }
             }
 
+            WindowEvent::StateChanged { .. } => {
+                update_corner_radius(s);
+                s.window.request_redraw();
+            }
+
             WindowEvent::ScaleFactorChanged(scale_factor) => {
                 let px = (s.font_pt * scale_factor as f32).round();
                 s.renderer.set_font_px(px, scale_factor);

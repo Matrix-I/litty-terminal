@@ -103,8 +103,14 @@ impl NativeWindow {
 
     /// Keep cached window state in step with an event before the app sees it.
     pub fn observe(&self, event: &WindowEvent) {
-        if let WindowEvent::Resized(size) = event {
-            self.inner.lock().inner_size = *size;
+        match *event {
+            WindowEvent::Resized(size) => self.inner.lock().inner_size = size,
+            WindowEvent::StateChanged { maximized, fullscreen } => {
+                let mut guard = self.inner.lock();
+                guard.maximized = maximized;
+                guard.fullscreen = fullscreen;
+            }
+            _ => {}
         }
     }
 
@@ -316,6 +322,20 @@ mod tests {
         let win = detached(968, 620);
         win.observe(&WindowEvent::Resized(PhysicalSize::new(1920, 1080)));
         assert_eq!(win.inner_size(), PhysicalSize::new(1920, 1080));
+    }
+
+    /// The window manager restoring a window the app maximized (a title-bar
+    /// drag on GNOME) must clear the flag, or the resize edges stay off.
+    #[test]
+    fn wm_state_event_overrides_the_requested_state() {
+        let win = detached(800, 600);
+        win.set_maximized(true);
+        assert!(win.is_maximized());
+        win.observe(&WindowEvent::StateChanged { maximized: false, fullscreen: false });
+        assert!(!win.is_maximized());
+        win.observe(&WindowEvent::StateChanged { maximized: true, fullscreen: true });
+        assert!(win.is_maximized());
+        assert!(win.is_fullscreen());
     }
 
     /// Cascade positions are physical pixels already; scaling them again
