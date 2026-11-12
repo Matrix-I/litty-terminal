@@ -89,6 +89,9 @@ pub struct Grid {
 
     /// Alternate screen (vim, less, htop...), no scrollback.
     alt: Vec<Cell>,
+    /// Physical row of visible row 0 in `alt`: a full-screen scroll rotates
+    /// it instead of moving every row.
+    alt_top: usize,
     pub alt_active: bool,
 
     cur: Cursor,
@@ -214,6 +217,7 @@ impl Grid {
             scroll_fraction: 0.0,
             viewport_dirty: false,
             alt: Vec::new(),
+            alt_top: 0,
             alt_active: false,
             cur: Cursor::default(),
             saved: Cursor::default(),
@@ -930,6 +934,7 @@ impl Grid {
             self.cur.row = 0;
             self.cur.col = 0;
             self.alt = bytemuck::zeroed_vec(self.cols * self.rows);
+            self.alt_top = 0;
             self.display_offset = 0;
             self.scroll_fraction = 0.0;
         } else {
@@ -938,6 +943,7 @@ impl Grid {
                 self.extras_dirty = true;
             }
             self.alt = Vec::new();
+            self.alt_top = 0;
             if save_cursor {
                 self.cur = self.saved_main;
                 self.clamp_cursor();

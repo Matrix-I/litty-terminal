@@ -257,7 +257,8 @@ impl Grid {
             let w = cols.min(self.cols);
             for r in 0..rows.min(self.rows) {
                 if !self.alt.is_empty() {
-                    alt[r * cols..r * cols + w].copy_from_slice(&self.alt[r * self.cols..r * self.cols + w]);
+                    let s = self.row_start(r);
+                    alt[r * cols..r * cols + w].copy_from_slice(&self.alt[s..s + w]);
                 }
             }
             alt
@@ -265,6 +266,7 @@ impl Grid {
             Vec::new()
         };
         self.alt = alt;
+        self.alt_top = 0;
         self.display_offset = 0;
         self.scroll_fraction = 0.0;
         let (main_row, main_col) = main_cursor;

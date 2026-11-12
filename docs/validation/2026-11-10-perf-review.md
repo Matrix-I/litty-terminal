@@ -99,6 +99,10 @@ main screen, about 0.4 µs in the 19-row region, about 1.8 µs on the alt screen
   an O(1) ring rotation.
 - Suggested fix: a ring offset for the alt screen.
 - Low priority: 540,000 lines per second is still far above the draw rate.
+- Fixed (2026-11-13): the alternate screen keeps a ring offset (`alt_top`),
+  so a full-screen scroll up or down rotates it and clears only the rows that
+  come into view. Region scrolls still copy rows. `perf_probe alt_scroll`
+  (macOS arm64, release, best of 7): 28.0 → 1.10 ns/byte.
 
 ### 4. Non-ASCII text is 3 to 5 times slower than ASCII
 

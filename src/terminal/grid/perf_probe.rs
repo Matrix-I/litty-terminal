@@ -94,6 +94,17 @@ fn alt_redraw() -> String {
     s
 }
 
+/// `less` / `tail -f` on the alternate screen: every line feed scrolls the
+/// whole screen with no scrollback.
+fn alt_scroll() -> String {
+    let mut s = String::from("\x1b[?1049h\x1b[50;1H");
+    for i in 0..50_000 {
+        let _ = write!(s, "{i:08} the quick brown fox jumps over the lazy dog 0123456789\r\n");
+    }
+    s.push_str("\x1b[?1049l");
+    s
+}
+
 fn osc8_links() -> String {
     let mut s = String::new();
     for i in 0..20_000 {
@@ -116,13 +127,14 @@ fn osc8_ls() -> String {
 #[test]
 #[ignore = "release-mode performance probe; run explicitly for refactor gates"]
 fn grid_throughput_probe() {
-    let cases: [Case; 8] = [
+    let cases: [Case; 9] = [
         ("ascii_scroll", ascii_scroll),
         ("sgr_log", sgr_log),
         ("unicode_mixed", unicode_mixed),
         ("emoji_clusters", emoji_clusters),
         ("region_scroll", region_scroll),
         ("alt_redraw", alt_redraw),
+        ("alt_scroll", alt_scroll),
         ("osc8_links", osc8_links),
         ("osc8_ls", osc8_ls),
     ];
