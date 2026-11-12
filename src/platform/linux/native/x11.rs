@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::platform::gui::{CursorIcon, PhysicalPosition, PhysicalSize, RawHandle, WindowEvent, WindowSpec};
 use super::events::{wm_state_event, WmStateAtoms, convert_linux_key, keysym_char, mods_after_key, mods_from_state, x11_button_event, HeldKeys};
 use crate::platform::input::{Key, KeyLocation, Mods};
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Once, OnceLock};
 
 #[repr(C)]
@@ -167,6 +167,26 @@ const XC_WATCH: u32 = 150;
 const XC_XTERM: u32 = 152;
 /// Shapes are even numbers below `XC_NUM_GLYPHS`, one cache slot each.
 const CURSOR_SLOTS: usize = (XC_NUM_GLYPHS / 2) as usize;
+/// Pseudo shape for the invisible cursor (outside the cursor font).
+const BLANK_CURSOR: u32 = XC_NUM_GLYPHS;
+
+/// Xlib `XColor`, only passed to `XCreatePixmapCursor`.
+#[repr(C)]
+#[derive(Default)]
+pub struct XColor {
+    pixel: c_ulong,
+    red: u16,
+    green: u16,
+    blue: u16,
+    flags: c_char,
+    pad: c_char,
+}
+
+/// Cursors this window created; 0 = not yet created.
+pub struct CursorCache {
+    font: [c_ulong; CURSOR_SLOTS],
+    blank: c_ulong,
+}
 
 /// Core cursor font shape for a CSS cursor name; the core font has no
 /// diagonal double arrows, so those use the matching corner.
@@ -291,6 +311,12 @@ pub struct X11Lib {
     pub XCreateFontCursor: unsafe extern "C" fn(*mut c_void, std::ffi::c_uint) -> c_ulong,
     pub XDefineCursor: unsafe extern "C" fn(*mut c_void, c_ulong, c_ulong) -> c_int,
     pub XFreeCursor: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
+    pub XCreateBitmapFromData: unsafe extern "C" fn(*mut c_void, c_ulong, *const c_char, std::ffi::c_uint, std::ffi::c_uint) -> c_ulong,
+    #[allow(clippy::type_complexity)]
+    pub XCreatePixmapCursor: unsafe extern "C" fn(
+        *mut c_void, c_ulong, c_ulong, *mut XColor, *mut XColor, std::ffi::c_uint, std::ffi::c_uint,
+    ) -> c_ulong,
+    pub XFreePixmap: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
     #[allow(clippy::type_complexity)]
     pub XQueryPointer: unsafe extern "C" fn(
         *mut c_void, c_ulong, *mut c_ulong, *mut c_ulong,
@@ -358,6 +384,9 @@ impl X11Lib {
                 XCreateFontCursor: sym(handle, c"XCreateFontCursor")?,
                 XDefineCursor: sym(handle, c"XDefineCursor")?,
                 XFreeCursor: sym(handle, c"XFreeCursor")?,
+                XCreateBitmapFromData: sym(handle, c"XCreateBitmapFromData")?,
+                XCreatePixmapCursor: sym(handle, c"XCreatePixmapCursor")?,
+                XFreePixmap: sym(handle, c"XFreePixmap")?,
             })
         }
     }
@@ -383,10 +412,13 @@ pub struct X11WindowInner {
     pub mods: AtomicU8,
     /// Keys held down, to flag auto-repeat presses.
     pub held: HeldKeys,
-    /// Font cursors created so far, by shape / 2 (0 = not yet created).
-    pub cursors: parking_lot::Mutex<[c_ulong; CURSOR_SLOTS]>,
-    /// Shape + 1 of the cursor defined on the window, 0 for none.
+    pub cursors: parking_lot::Mutex<CursorCache>,
+    /// Shape + 1 of the cursor defined on the window (`BLANK_CURSOR` when
+    /// hidden), 0 for none.
     pub defined_cursor: AtomicU32,
+    /// Shape the app asked for, shown again when the pointer is unhidden.
+    pub wanted_cursor: AtomicU32,
+    pub cursor_hidden: AtomicBool,
 }
 
 unsafe impl Send for X11WindowInner {}
@@ -396,7 +428,8 @@ impl Drop for X11WindowInner {
     fn drop(&mut self) {
         super::app::deregister_display_fd(self.fd);
         unsafe {
-            for &cursor in self.cursors.get_mut().iter().filter(|&&c| c != 0) {
+            let cache = self.cursors.get_mut();
+            for &cursor in cache.font.iter().chain([&cache.blank]).filter(|&&c| c != 0) {
                 (self.lib.XFreeCursor)(self.display, cursor);
             }
             (self.lib.XDestroyWindow)(self.display, self.window);
@@ -544,8 +577,10 @@ impl X11Window {
                 scale,
                 mods: AtomicU8::new(0),
                 held: HeldKeys::default(),
-                cursors: parking_lot::Mutex::new([0; CURSOR_SLOTS]),
+                cursors: parking_lot::Mutex::new(CursorCache { font: [0; CURSOR_SLOTS], blank: 0 }),
                 defined_cursor: AtomicU32::new(0),
+                wanted_cursor: AtomicU32::new(XC_LEFT_PTR),
+                cursor_hidden: AtomicBool::new(false),
             }));
 
             Some(win)
@@ -705,16 +740,32 @@ impl X11Window {
         event
     }
 
-    /// Show `icon` over this window. Pointer motion repeats the same icon,
-    /// so an unchanged one costs no X request.
+    /// Show `icon` over this window; while the pointer is hidden it shows
+    /// once unhidden. Pointer motion repeats the same icon, so an unchanged
+    /// one costs no X request.
     pub fn set_cursor(&self, icon: CursorIcon) {
         let shape = font_cursor_shape(icon);
+        self.0.wanted_cursor.store(shape, Ordering::Relaxed);
+        if !self.0.cursor_hidden.load(Ordering::Relaxed) {
+            self.define_cursor(shape);
+        }
+    }
+
+    /// Hide the pointer over this window (`mouse_hide_while_typing`) or
+    /// bring back the last requested icon.
+    pub fn set_cursor_visible(&self, visible: bool) {
+        self.0.cursor_hidden.store(!visible, Ordering::Relaxed);
+        let shape = if visible { self.0.wanted_cursor.load(Ordering::Relaxed) } else { BLANK_CURSOR };
+        self.define_cursor(shape);
+    }
+
+    fn define_cursor(&self, shape: u32) {
         if self.0.defined_cursor.swap(shape + 1, Ordering::Relaxed) == shape + 1 {
             return;
         }
         let cursor = self.cached_cursor(shape);
         if cursor == 0 {
-            // Leave the slot free so a later call retries.
+            // Nothing defined: a later call retries.
             self.0.defined_cursor.store(0, Ordering::Relaxed);
             return;
         }
@@ -724,14 +775,33 @@ impl X11Window {
         }
     }
 
-    /// The font cursor for `shape`, created on first use; 0 if X refused it.
+    /// The cursor for `shape`, created on first use; 0 if X refused it.
     fn cached_cursor(&self, shape: u32) -> c_ulong {
-        let mut cursors = self.0.cursors.lock();
-        let slot = &mut cursors[(shape / 2) as usize];
+        let mut cache = self.0.cursors.lock();
+        let slot = if shape == BLANK_CURSOR { &mut cache.blank } else { &mut cache.font[(shape / 2) as usize] };
         if *slot == 0 {
-            *slot = unsafe { (self.0.lib.XCreateFontCursor)(self.0.display, shape) };
+            *slot = if shape == BLANK_CURSOR { self.create_blank_cursor() } else {
+                unsafe { (self.0.lib.XCreateFontCursor)(self.0.display, shape) }
+            };
         }
         *slot
+    }
+
+    /// A 1x1 cursor whose mask hides every pixel.
+    fn create_blank_cursor(&self) -> c_ulong {
+        let lib = &self.0.lib;
+        let bits: [c_char; 1] = [0];
+        unsafe {
+            let pixmap = (lib.XCreateBitmapFromData)(self.0.display, self.0.window, bits.as_ptr(), 1, 1);
+            if pixmap == 0 {
+                return 0;
+            }
+            let mut color = XColor::default();
+            let color_ptr: *mut XColor = &mut color;
+            let cursor = (lib.XCreatePixmapCursor)(self.0.display, pixmap, pixmap, color_ptr, color_ptr, 0, 0);
+            (lib.XFreePixmap)(self.0.display, pixmap);
+            cursor
+        }
     }
 
     #[cfg(test)]
@@ -864,6 +934,52 @@ mod tests {
         assert_eq!(font_cursor_shape(Default), XC_LEFT_PTR);
         assert_eq!(font_cursor_shape(Text), XC_XTERM);
         assert_eq!(font_cursor_shape(Pointer), XC_HAND2);
+    }
+
+    fn hidden_test_window(title: &'static str) -> Option<X11Window> {
+        if std::env::var_os("DISPLAY").is_none() {
+            eprintln!("no X display; skipping");
+            return None;
+        }
+        let spec = WindowSpec {
+            title,
+            decorations: true,
+            visible: false,
+            transparent: false,
+            inner_size: crate::platform::gui::LogicalSize::new(200.0, 100.0),
+            position: None,
+        };
+        let win = X11Window::create(&spec);
+        if win.is_none() {
+            eprintln!("X display unavailable; skipping");
+        }
+        win
+    }
+
+    /// `mouse_hide_while_typing`: hiding defines a blank cursor, showing
+    /// brings back the icon the app asked for.
+    #[test]
+    fn hiding_the_cursor_defines_a_blank_one_until_shown() {
+        use crate::platform::gui::CursorIcon;
+        let Some(win) = hidden_test_window("litty-hide-cursor-test") else { return };
+        win.set_cursor(CursorIcon::Text);
+        win.set_cursor_visible(false);
+        assert_eq!(win.defined_cursor_shape(), Some(BLANK_CURSOR));
+        win.set_cursor_visible(true);
+        assert_eq!(win.defined_cursor_shape(), Some(XC_XTERM));
+    }
+
+    /// Hover updates while typing must not reveal the hidden pointer; the
+    /// latest icon shows once the pointer moves again.
+    #[test]
+    fn icon_changes_while_hidden_wait_for_show() {
+        use crate::platform::gui::CursorIcon;
+        let Some(win) = hidden_test_window("litty-hidden-icon-test") else { return };
+        win.set_cursor_visible(false);
+        win.set_cursor(CursorIcon::Pointer);
+        assert_eq!(win.defined_cursor_shape(), Some(BLANK_CURSOR));
+        win.set_cursor_visible(true);
+        assert_eq!(win.defined_cursor_shape(), Some(XC_HAND2));
     }
 
     /// Setting a cursor must reach the X server: the window's cursor is
