@@ -69,7 +69,8 @@ From [the 2026-11-11 review](./docs/reviews/2026-11-11-linux-history-ai-graphics
 
 - [ ] **Linux: Wayland window backend.** `NativeWindow::create` is X11 only; the Wayland surface and clipboard paths are unreachable.
 - [ ] **Linux: IME and dead keys.** `set_ime_allowed` is a no-op and X11 text comes from `XLookupString` without XIM.
-- [ ] **Linux: `_NET_WM_NAME` and `WM_CLASS`.** Non-ASCII titles are garbled and desktops cannot match the window to its `.desktop` entry.
+- [x] **Linux: `_NET_WM_NAME` and `WM_CLASS`.** Non-ASCII titles are garbled and desktops cannot match the window to its `.desktop` entry.
+  - Fixed (2026-11-12): `WM_CLASS` is `litty`, `litty` (`91de8c7`); titles are also set as `_NET_WM_NAME` (`UTF8_STRING`) on creation and on every title change. Checked with `xprop` on the real app under XWayland (GNOME): an OSC 2 title `litty e2e — Tiếng Việt ✓ 日本語` is read back unchanged; on `main` the property is missing. The legacy Latin-1 `WM_NAME` is unchanged and still garbled for window managers that ignore EWMH.
 - [ ] **Linux: per-window Vulkan frame state.** One command buffer, two descriptor sets and the uniform buffers are shared by all windows. The validation layers report the command buffer being reset, begun and submitted while still pending (`VUID-vkResetCommandBuffer-commandBuffer-00045`, `-00049`, `-00071`) when a second window opens (2026-11-12, lavapipe).
 - [ ] **Linux: check `vkQueueSubmit` and creation results**; pick the physical device by present support and device type.
 - [ ] **Linux: custom shaders** (GLSL to SPIR-V, offscreen targets).
