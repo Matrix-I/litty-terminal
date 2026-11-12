@@ -358,15 +358,16 @@ pub fn keysym_char(keysym: u32) -> Option<char> {
 pub struct HeldKeys([AtomicU64; 4]);
 
 impl HeldKeys {
-    /// Record a key event; true when it is a press of an already held key.
+    /// Record a key event; true when the key was already held: a press is
+    /// then an auto-repeat, a release matches a reported press.
     pub fn update(&self, keycode: u8, pressed: bool) -> bool {
         let (word, bit) = (&self.0[usize::from(keycode >> 6)], 1u64 << (keycode & 63));
-        if pressed {
-            word.fetch_or(bit, Ordering::Relaxed) & bit != 0
+        let before = if pressed {
+            word.fetch_or(bit, Ordering::Relaxed)
         } else {
-            word.fetch_and(!bit, Ordering::Relaxed);
-            false
-        }
+            word.fetch_and(!bit, Ordering::Relaxed)
+        };
+        before & bit != 0
     }
 
     /// Forget every key: releases are not delivered while unfocused.
@@ -496,7 +497,8 @@ mod tests {
         assert!(!held.update(38, true));
         assert!(held.update(38, true), "second press without release is a repeat");
         assert!(!held.update(255, true));
-        assert!(!held.update(38, false));
+        assert!(held.update(38, false), "release of a held key");
+        assert!(!held.update(38, false), "release without a press");
         assert!(!held.update(38, true), "press after release is fresh");
         held.clear();
         assert!(!held.update(38, true), "focus loss forgets held keys");

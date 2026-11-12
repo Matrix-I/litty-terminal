@@ -184,22 +184,29 @@ impl NativeWindow {
         }
     }
 
+    /// No app action calls this yet: fullscreen is entered from the window
+    /// manager, and its state arrives through `observe`.
     #[allow(dead_code)]
     pub fn set_fullscreen(&self, fullscreen: bool) {
-        self.inner.lock().fullscreen = fullscreen;
+        let mut guard = self.inner.lock();
+        guard.fullscreen = fullscreen;
+        if let Some(x11) = &guard.x11_window {
+            x11.set_fullscreen(fullscreen);
+        }
     }
 
     pub fn is_fullscreen(&self) -> bool {
         self.inner.lock().fullscreen
     }
 
+    /// The monitor under the window's centre (RandR); `None` when the X
+    /// server has no RandR or the window has no X11 connection.
     pub fn current_monitor(&self) -> Option<Monitor> {
-        let guard = self.inner.lock();
-        Some(Monitor {
-            position: guard.position,
-            size: PhysicalSize::new(1920, 1080),
-            refresh_rate_millihertz: Some(60000),
-        })
+        let (x11, size) = {
+            let guard = self.inner.lock();
+            (guard.x11_window.clone()?, guard.inner_size)
+        };
+        x11.current_monitor(size)
     }
 
     pub fn set_title(&self, title: &str) {
@@ -226,13 +233,22 @@ impl NativeWindow {
         }
     }
 
+    /// The desktop's light/dark preference (settings portal).
     pub fn theme(&self) -> Option<Theme> {
-        Some(Theme::Dark)
+        super::portal::system_theme()
     }
 
-    pub fn set_ime_allowed(&self, _allowed: bool) {}
+    pub fn set_ime_allowed(&self, allowed: bool) {
+        if let Some(x11) = &self.inner.lock().x11_window {
+            x11.set_ime_allowed(allowed);
+        }
+    }
 
-    pub fn set_ime_cursor_area(&self, _position: PhysicalPosition<f64>, _size: PhysicalSize<f64>) {}
+    pub fn set_ime_cursor_area(&self, position: PhysicalPosition<f64>, size: PhysicalSize<f64>) {
+        if let Some(x11) = &self.inner.lock().x11_window {
+            x11.set_ime_cursor_area(position, size);
+        }
+    }
 
     pub fn request_attention(&self, requested: bool) {
         if let Some(x11) = &self.inner.lock().x11_window {

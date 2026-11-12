@@ -2,8 +2,11 @@
 
 pub mod app;
 pub mod events;
+pub mod monitor;
+pub mod portal;
 pub mod window;
 pub mod x11;
+pub mod xim;
 
 #[allow(unused_imports)]
 pub use app::run_native;

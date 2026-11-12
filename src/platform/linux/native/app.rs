@@ -233,6 +233,13 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         let loop_ctx = LoopCtx::from_native_linux(&native_ctx);
         handler.resumed(&loop_ctx);
 
+        // Settings portal bus socket (event 4): light/dark changes.
+        let portal_fd = super::portal::watch_fd();
+        if let Some(fd) = portal_fd {
+            let mut ev_portal = libc::epoll_event { events: libc::EPOLLIN as u32, u64: 4 };
+            libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, fd, &mut ev_portal);
+        }
+
         let mut events: [libc::epoll_event; 32] = std::mem::zeroed();
         let mut timer_fired = false;
         // Reused every cycle: the idle loop must not allocate (TD-10).
@@ -303,6 +310,8 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
                         timer_fired = true;
                     } else if tag == 3 {
                         // X11 display socket readable: events will be drained on the next loop cycle
+                    } else if tag == 4 {
+                        portal_readable(epoll_fd, portal_fd);
                     }
                 }
             }
@@ -314,6 +323,24 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         libc::close(timer_fd);
         libc::close(event_fd);
         libc::close(epoll_fd);
+    }
+}
+
+/// Read the settings portal's bus traffic and report a light/dark switch;
+/// stop watching a bus that went away, or `EPOLLHUP` would spin the loop.
+fn portal_readable(epoll_fd: RawFd, portal_fd: Option<RawFd>) {
+    match super::portal::dispatch() {
+        Ok(Some(theme)) => crate::platform::linux::EVENTS.emit(crate::platform::PlatformEvent::SystemAppearance {
+            dark: theme == crate::platform::gui::Theme::Dark,
+        }),
+        Ok(None) => {}
+        Err(super::portal::Disconnected) => {
+            // Deregister before the socket closes, so a reused fd number is never removed.
+            if let Some(fd) = portal_fd {
+                unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut()) };
+            }
+            super::portal::close();
+        }
     }
 }
 
