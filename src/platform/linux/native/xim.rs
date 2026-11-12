@@ -194,16 +194,10 @@ fn spot_to_send(
     spot.filter(|&s| ready && sent != Some(s))
 }
 
-/// Whether a keycode-0 press is text the method committed. Xlib queues its
-/// own as received (`send_event` false); the built-in method instead puts
-/// back the press it consumed, keeping that press's `serial` and
-/// `send_event`. Any other keycode-0 press, one another client sent, must
-/// not be looked up: the built-in method treats it as composed and, with
-/// nothing composed yet, reads a compose-tree entry it never initialised
-/// (libX11 1.8 `imLcLkup.c`).
-fn is_commit(send_event: c_int, serial: c_ulong, consumed_press: Option<c_ulong>) -> bool {
-    send_event == 0 || consumed_press == Some(serial)
-}
+/// Retries of a server that was announced but could not be connected to;
+/// beyond this the window stays on Xlib's built-in method until the server
+/// leaves or another one starts.
+const MAX_REARMS: u32 = 3;
 
 /// Xlib's input method code keeps process-wide state without locks of its
 /// own (the locale modifiers `XOpenIM` reads, the instantiate-callback list
@@ -263,6 +257,14 @@ impl Watch {
             changes.push(WatchChange::Register(next));
         }
         changes
+    }
+
+    /// Replace the registration with a fresh one on the same display: libX11
+    /// does not run a registration's callback twice.
+    fn rearm(&self) -> Vec<WatchChange> {
+        self.registered
+            .map(|(_, display)| vec![WatchChange::Unregister(display), WatchChange::Register(display)])
+            .unwrap_or_default()
     }
 
     /// Make the registrations `changes` asks for.
@@ -391,8 +393,8 @@ pub struct XimContext {
     /// Where the candidate window goes, and what the method last received.
     spot: Option<(c_short, c_short)>,
     sent_spot: Option<(c_short, c_short)>,
-    /// Serial of the last `KeyPress` the method consumed (`is_commit`).
-    consumed_press: Option<c_ulong>,
+    /// Reconnect attempts since this context started waiting (`MAX_REARMS`).
+    rearms: u32,
 }
 
 impl XimContext {
@@ -416,7 +418,7 @@ impl XimContext {
             focused: false,
             spot: None,
             sent_spot: None,
-            consumed_press: None,
+            rearms: 0,
         };
         let Some(lib) = xim_lib() else { return ctx };
         let mut watch = XLIB_IM.lock();
@@ -569,11 +571,6 @@ impl XimContext {
         // Before the key it may compose, so the candidate window opens there.
         self.flush_spot(lib, &watch);
         let consumed = unsafe { (lib.XFilterEvent)(event, 0) != 0 };
-        if consumed && event.type_ == 2 {
-            // KeyPress: the start of every event is `XAnyEvent`.
-            let key = unsafe { &*(event as *const XEvent).cast::<XKeyEvent>() };
-            self.consumed_press = Some(key.serial);
-        }
         self.after_callbacks(lib, &mut watch);
         consumed
     }
@@ -611,7 +608,25 @@ impl XimContext {
         if unsafe { self.open(lib, watch, c"") } {
             self.reopened = true;
             self.stop_waiting(lib, watch);
+        } else {
+            self.rearm(lib, watch);
         }
+    }
+
+    /// The server was announced but did not take this window. libX11 runs a
+    /// registration's callback only once (until some method is destroyed),
+    /// so register again for the next announcement, a bounded number of
+    /// times: registering while a server runs announces it at once.
+    fn rearm(&mut self, lib: &XimLib, watch: &mut Watch) {
+        if self.rearms == MAX_REARMS {
+            return;
+        }
+        self.rearms += 1;
+        if self.rearms == MAX_REARMS {
+            eprintln!("litty: X input method server is running but refused this window; using dead keys and Compose only");
+        }
+        let changes = watch.rearm();
+        watch.apply(lib, changes);
     }
 
     fn start_waiting(&mut self, lib: &XimLib, watch: &mut Watch) {
@@ -620,6 +635,7 @@ impl XimContext {
         }
         // Read first: registering while a server runs calls back at once.
         self.waiting = Some(SERVERS_SEEN.load(Relaxed));
+        self.rearms = 0;
         let changes = watch.add(self.id, self.display as usize);
         watch.apply(lib, changes);
     }
@@ -650,9 +666,15 @@ impl XimContext {
 
     /// Text the method committed: a `KeyPress` with keycode 0 that Xlib
     /// queued after composing (IBus/Fcitx commit, dead key, Compose).
+    ///
+    /// Xlib queues those as received (`send_event` false). One another client
+    /// sent is never looked up: Xlib's built-in method treats every keycode-0
+    /// press as composed and, with nothing composed yet, reads a compose-tree
+    /// entry it never initialised (libX11 1.8 `imLcLkup.c`). The sender
+    /// controls every field of such an event, so none can be trusted; dead
+    /// keys typed with `XSendEvent` therefore do not compose.
     pub fn committed_text(&mut self, key: &mut XKeyEvent) -> Option<String> {
-        let consumed_press = self.consumed_press.take();
-        let lib = xim_lib().filter(|_| key.keycode == 0 && is_commit(key.send_event, key.serial, consumed_press))?;
+        let lib = xim_lib().filter(|_| key.keycode == 0 && key.send_event == 0)?;
         let mut watch = XLIB_IM.lock();
         self.after_callbacks(lib, &mut watch);
         if self.ic.is_null() {
@@ -784,18 +806,6 @@ mod tests {
     }
 
     #[test]
-    fn only_presses_xlib_queued_are_commits() {
-        // IBus/Fcitx commits and the built-in method's own put-back of a
-        // real key are not sent events.
-        assert!(is_commit(0, 7, None));
-        // A sent key the built-in method composed comes back with its serial.
-        assert!(is_commit(1, 7, Some(7)));
-        // Another client's keycode-0 press.
-        assert!(!is_commit(1, 7, None));
-        assert!(!is_commit(1, 8, Some(7)));
-    }
-
-    #[test]
     fn the_spot_is_sent_once_and_only_to_a_ready_context() {
         assert_eq!(spot_to_send(true, Some((1, 2)), None), Some((1, 2)));
         assert_eq!(spot_to_send(true, Some((1, 2)), Some((1, 2))), None, "unchanged");
@@ -834,6 +844,17 @@ mod tests {
         assert_eq!(w.registered, None);
         // The next waiting context registers again.
         assert_eq!(w.add(4, 40), [Register(40)]);
+    }
+
+    #[test]
+    fn rearming_replaces_the_registration_on_its_display() {
+        let mut w = Watch::new();
+        assert_eq!(w.rearm(), [], "nothing registered");
+        w.add(1, 10);
+        w.add(2, 20);
+        assert_eq!(w.rearm(), [Unregister(10), Register(10)]);
+        assert_eq!(w.registered, Some((1, 10)), "same owner");
+        assert_eq!(w.waiting, [(1, 10), (2, 20)]);
     }
 
     #[test]
