@@ -211,7 +211,11 @@ impl NativeWindow {
     }
 
     pub fn set_cursor_icon(&self, icon: CursorIcon) {
-        self.inner.lock().cursor_icon = icon;
+        let mut guard = self.inner.lock();
+        guard.cursor_icon = icon;
+        if let Some(x11) = &guard.x11_window {
+            x11.set_cursor(icon);
+        }
     }
 
     pub fn set_cursor_visible(&self, visible: bool) {
