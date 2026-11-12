@@ -1337,6 +1337,10 @@ pub(super) fn offscreen_render_passes(vk: &VulkanCore, format: TextureFormat) ->
     (clear, load)
 }
 
+/// `custom-shader` needs GLSL to SPIR-V translation and offscreen passes,
+/// which this backend does not have yet.
+pub const CUSTOM_SHADERS_SUPPORTED: bool = false;
+
 impl Device {
     /// Custom shaders need GLSL to SPIR-V translation and offscreen targets,
     /// which this backend does not have. Returning a handle here made the
