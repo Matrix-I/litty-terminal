@@ -367,6 +367,98 @@ unsafe fn image_barrier(
     }
 }
 
+/// `VkBufferImageCopy` for the color aspect of mip level 0, layer 0.
+#[repr(C)]
+struct BufImgCopy {
+    buffer_offset: VkDeviceSize,
+    buffer_row_length: u32,
+    buffer_image_height: u32,
+    image_subresource: [u32; 4],
+    image_offset: VkOffset3D,
+    image_extent: VkExtent3D,
+}
+
+/// Record a global memory barrier: `access` = (src, dst), `stages` = (src, dst).
+#[cfg(test)]
+unsafe fn memory_barrier(vk: &VulkanCore, access: (VkFlags, VkFlags), stages: (VkFlags, VkFlags)) {
+    #[repr(C)]
+    struct MemBarrier {
+        s_type: u32,
+        p_next: *const c_void,
+        src_access_mask: VkFlags,
+        dst_access_mask: VkFlags,
+    }
+    let barrier = MemBarrier {
+        s_type: VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        p_next: std::ptr::null(),
+        src_access_mask: access.0,
+        dst_access_mask: access.1,
+    };
+    // SAFETY: `upload_cmd` is recording (the caller began it) and `barrier`
+    // outlives the call.
+    unsafe {
+        (vk.lib.vkCmdPipelineBarrier)(
+            vk.upload_cmd,
+            stages.0,
+            stages.1,
+            0,
+            1,
+            &barrier as *const _ as *const c_void,
+            0,
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+        );
+    }
+}
+
+/// A framebuffer for drawing into the render target `view`, registered with
+/// the offscreen render passes of `format`; 0 when it could not be created.
+unsafe fn create_target_framebuffer(
+    vk: &VulkanCore,
+    view: VkImageView,
+    format: TextureFormat,
+    width: u32,
+    height: u32,
+) -> VkFramebuffer {
+    #[repr(C)]
+    struct FbInfo {
+        s_type: u32,
+        p_next: *const c_void,
+        flags: u32,
+        render_pass: VkRenderPass,
+        attachment_count: u32,
+        p_attachments: *const VkImageView,
+        width: u32,
+        height: u32,
+        layers: u32,
+    }
+    let (clear_pass, load_pass) = super::device::offscreen_render_passes(vk, format);
+    let info = FbInfo {
+        s_type: VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+        p_next: std::ptr::null(),
+        flags: 0,
+        render_pass: clear_pass,
+        attachment_count: 1,
+        p_attachments: &view,
+        width,
+        height,
+        layers: 1,
+    };
+    let mut fb = 0u64;
+    // SAFETY: `info` and `view` outlive the call; `view` belongs to `vk.device`.
+    let created = unsafe { (vk.lib.vkCreateFramebuffer)(vk.device, &info as *const _ as *const c_void, std::ptr::null(), &mut fb) };
+    if created != VK_SUCCESS || fb == 0 {
+        eprintln!("litty: could not create a {width}x{height} render target");
+        return 0;
+    }
+    super::surface::register_framebuffer(
+        fb,
+        super::surface::FramebufferTarget { width, height, clear_pass, load_pass },
+    );
+    fb
+}
+
 /// Allocate and fill the image pipeline's descriptor set for `view`: the
 /// shared image uniforms, the view and the linear sampler. Written once, so
 /// it is never updated while a recorded frame still refers to it. Returns 0
@@ -454,6 +546,14 @@ struct TextureInner {
     ready: bool,
     /// Descriptor set for drawing this texture as an inline image, or 0.
     image_dset: VkDescriptorSet,
+    /// Framebuffer of a render target (registered with its render passes),
+    /// or 0 for a sampled texture.
+    framebuffer: VkFramebuffer,
+    /// Size of the image, for `read_pixels`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    width: u32,
+    #[cfg_attr(not(test), allow(dead_code))]
+    height: u32,
 }
 
 impl Drop for TextureInner {
@@ -461,6 +561,10 @@ impl Drop for TextureInner {
         if let Some(vk) = &self.vk {
             unsafe {
                 (vk.lib.vkDeviceWaitIdle)(vk.device);
+                if self.framebuffer != 0 {
+                    super::surface::forget_framebuffer(self.framebuffer);
+                    (vk.lib.vkDestroyFramebuffer)(vk.device, self.framebuffer, std::ptr::null());
+                }
                 if self.image_dset != 0 {
                     let _pool = vk.image_pool_lock.lock();
                     (vk.lib.vkFreeDescriptorSets)(vk.device, vk.image_desc_pool, 1, &self.image_dset);
@@ -591,6 +695,7 @@ impl Texture {
                     submit_upload(vk);
                 }
                 let image_dset = if ready { alloc_image_dset(vk, view) } else { 0 };
+                let framebuffer = if render_target { create_target_framebuffer(vk, view, format, w, h) } else { 0 };
                 return Self {
                     inner: Arc::new(TextureInner {
                         vk: Some(vk.clone()),
@@ -599,6 +704,9 @@ impl Texture {
                         view,
                         ready,
                         image_dset,
+                        framebuffer,
+                        width: w,
+                        height: h,
                     }),
                 };
             }
@@ -611,6 +719,9 @@ impl Texture {
                 view: 0,
                 ready: false,
                 image_dset: 0,
+                framebuffer: 0,
+                width: w,
+                height: h,
             }),
         }
     }
@@ -662,15 +773,6 @@ impl Texture {
                 (src_stage, VK_PIPELINE_STAGE_TRANSFER_BIT),
             );
 
-            #[repr(C)]
-            struct BufImgCopy {
-                buffer_offset: VkDeviceSize,
-                buffer_row_length: u32,
-                buffer_image_height: u32,
-                image_subresource: [u32; 4],
-                image_offset: VkOffset3D,
-                image_extent: VkExtent3D,
-            }
             let region = BufImgCopy {
                 buffer_offset: 0,
                 buffer_row_length: 0,
@@ -703,12 +805,68 @@ impl Texture {
         }
     }
 
+    /// Copy a render target's pixels (tightly packed 4-byte texels) into
+    /// `dst`, `bytes_per_row` apart. It must have been drawn into since it
+    /// was created; its render pass leaves it ready to be copied from.
     #[cfg(test)]
-    pub fn read_pixels(&self, _dst: &mut [u8], _bytes_per_row: u32) {}
+    pub fn read_pixels(&self, dst: &mut [u8], bytes_per_row: u32) {
+        let Some(vk) = &self.inner.vk else { return };
+        assert_ne!(self.inner.framebuffer, 0, "only render targets can be read back");
+        let (w, h) = (self.inner.width, self.inner.height);
+        let row = w as usize * 4;
+        let len = row * h as usize;
+        unsafe {
+            let _upload = vk.staging.lock();
+            let (buf, mem, ptr) = alloc_host_buffer(&vk.lib, vk.device, &vk.mem_props, len, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+            begin_upload(vk);
+            // Make the render pass's writes visible to the copy.
+            image_barrier(
+                vk,
+                self.inner.image,
+                (VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL),
+                (VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT),
+                (VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT),
+            );
+            let region = BufImgCopy {
+                buffer_offset: 0,
+                buffer_row_length: 0,
+                buffer_image_height: 0,
+                image_subresource: [1, 0, 0, 1],
+                image_offset: VkOffset3D { x: 0, y: 0, z: 0 },
+                image_extent: VkExtent3D { width: w, height: h, depth: 1 },
+            };
+            (vk.lib.vkCmdCopyImageToBuffer)(
+                vk.upload_cmd,
+                self.inner.image,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                buf,
+                1,
+                &region as *const _ as *const c_void,
+            );
+            memory_barrier(
+                vk,
+                (VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT),
+                (VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT),
+            );
+            submit_upload(vk);
+            let src = std::slice::from_raw_parts(ptr, len);
+            for (y, line) in src.chunks_exact(row).enumerate() {
+                let start = y * bytes_per_row as usize;
+                if let Some(out) = dst.get_mut(start..start + row) {
+                    out.copy_from_slice(line);
+                }
+            }
+            (vk.lib.vkDestroyBuffer)(vk.device, buf, std::ptr::null());
+            (vk.lib.vkFreeMemory)(vk.device, mem, std::ptr::null());
+        }
+    }
 
+    /// The handle the renderer passes around for this texture: for a render
+    /// target its framebuffer (what `CommandEncoder::begin_render_pass`
+    /// takes), otherwise its image view (what draws sample).
     #[inline]
     pub fn raw_ptr(&self) -> RawTexHandle {
-        self.inner.view
+        if self.inner.framebuffer != 0 { self.inner.framebuffer } else { self.inner.view }
     }
 
     /// Descriptor set binding this texture to the image pipeline; 0 when it

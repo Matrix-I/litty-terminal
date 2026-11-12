@@ -508,6 +508,7 @@ impl VulkanCore {
                 vkCmdDraw: load_fn!(vkCmdDraw),
                 vkCmdPipelineBarrier: load_fn!(vkCmdPipelineBarrier),
                 vkCmdCopyBufferToImage: load_fn!(vkCmdCopyBufferToImage),
+                vkCmdCopyImageToBuffer: load_fn!(vkCmdCopyImageToBuffer),
                 vkQueueSubmit: load_fn!(vkQueueSubmit),
                 vkQueueWaitIdle: load_fn!(vkQueueWaitIdle),
                 vkDeviceWaitIdle: load_fn!(vkDeviceWaitIdle),
@@ -828,7 +829,34 @@ unsafe fn create_vk_sampler(lib: &VkLib, device: VkDevice, filter: u32) -> VkSam
     }
 }
 
-unsafe fn create_render_pass(lib: &VkLib, device: VkDevice, format: TextureFormat, clear: bool) -> VkRenderPass {
+/// What a render pass draws into; it sets the layouts around the pass.
+/// Passes differing only in layouts and load op are compatible, so the
+/// pipelines built for the swapchain passes work in offscreen ones.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PassTarget {
+    /// A swapchain image, presented afterwards.
+    Swapchain,
+    /// A render-target texture, copied from afterwards (`read_pixels`).
+    Offscreen,
+}
+
+/// `(initial, final)` layouts of the color attachment. A clearing pass
+/// discards the old contents, so it starts from `UNDEFINED`.
+fn pass_layouts(target: PassTarget, clear: bool) -> (u32, u32) {
+    let after = match target {
+        PassTarget::Swapchain => VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        PassTarget::Offscreen => VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    };
+    (if clear { VK_IMAGE_LAYOUT_UNDEFINED } else { after }, after)
+}
+
+unsafe fn create_render_pass(
+    lib: &VkLib,
+    device: VkDevice,
+    format: TextureFormat,
+    target: PassTarget,
+    clear: bool,
+) -> VkRenderPass {
     unsafe {
         #[repr(C)]
         struct AttDesc {
@@ -872,6 +900,7 @@ unsafe fn create_render_pass(lib: &VkLib, device: VkDevice, format: TextureForma
             dependency_count: u32,
             p_dependencies: *const c_void,
         }
+        let (initial_layout, final_layout) = pass_layouts(target, clear);
         let att = AttDesc {
             flags: 0,
             format: vk_format(format),
@@ -880,8 +909,8 @@ unsafe fn create_render_pass(lib: &VkLib, device: VkDevice, format: TextureForma
             store_op: VK_ATTACHMENT_STORE_OP_STORE,
             stencil_load_op: VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             stencil_store_op: 1,
-            initial_layout: if clear { VK_IMAGE_LAYOUT_UNDEFINED } else { VK_IMAGE_LAYOUT_PRESENT_SRC_KHR },
-            final_layout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            initial_layout,
+            final_layout,
         };
         let color_ref = AttRef { attachment: 0, layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
         let subpass = SubpassDesc {
@@ -1227,8 +1256,8 @@ pub fn shared_pipelines(device: &Device, format: TextureFormat) -> RenderPipelin
     }
     let pipes = if let Some(vk) = &device.vk {
         unsafe {
-            let rp_clear = create_render_pass(&vk.lib, vk.device, format, true);
-            let rp_load = create_render_pass(&vk.lib, vk.device, format, false);
+            let rp_clear = create_render_pass(&vk.lib, vk.device, format, PassTarget::Swapchain, true);
+            let rp_load = create_render_pass(&vk.lib, vk.device, format, PassTarget::Swapchain, false);
             let cells = create_graphics_pipeline(
                 &vk.lib,
                 vk.device,
@@ -1284,6 +1313,28 @@ pub fn shared_pipelines(device: &Device, format: TextureFormat) -> RenderPipelin
     };
     *guard = Some((format, pipes.clone()));
     pipes
+}
+
+/// Offscreen render passes per format, `(format, clear, load)`; at most one
+/// entry per `TextureFormat`, created on first use and kept, like the pipelines.
+static OFFSCREEN_PASSES: parking_lot::Mutex<Vec<(TextureFormat, VkRenderPass, VkRenderPass)>> =
+    parking_lot::const_mutex(Vec::new());
+
+/// `(clear, load)` render passes for drawing into a `format` render target.
+pub(super) fn offscreen_render_passes(vk: &VulkanCore, format: TextureFormat) -> (VkRenderPass, VkRenderPass) {
+    let mut passes = OFFSCREEN_PASSES.lock();
+    if let Some(&(_, clear, load)) = passes.iter().find(|p| p.0 == format) {
+        return (clear, load);
+    }
+    // SAFETY: `vk.device` is a live device and `vk.lib` its function table.
+    let (clear, load) = unsafe {
+        (
+            create_render_pass(&vk.lib, vk.device, format, PassTarget::Offscreen, true),
+            create_render_pass(&vk.lib, vk.device, format, PassTarget::Offscreen, false),
+        )
+    };
+    passes.push((format, clear, load));
+    (clear, load)
 }
 
 impl Device {
@@ -1343,6 +1394,22 @@ mod tests {
         assert_eq!(graphics_family(&families), Some(2));
         assert_eq!(graphics_family(&families[..2]), None);
         assert_eq!(graphics_family(&[]), None);
+    }
+
+    #[test]
+    fn render_targets_end_ready_to_be_read_back() {
+        // A render target's pass must not leave it in PRESENT_SRC_KHR, which
+        // is only valid for swapchain images; `read_pixels` copies from it.
+        assert_eq!(pass_layouts(PassTarget::Offscreen, true), (VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL));
+        assert_eq!(
+            pass_layouts(PassTarget::Offscreen, false),
+            (VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+        );
+        assert_eq!(pass_layouts(PassTarget::Swapchain, true), (VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR));
+        assert_eq!(
+            pass_layouts(PassTarget::Swapchain, false),
+            (VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+        );
     }
 
     #[test]
