@@ -650,6 +650,12 @@ impl XimContext {
         !self.ic.is_null()
     }
 
+    /// Pretend a method was just reconnected.
+    #[cfg(test)]
+    pub fn mark_reopened(&mut self) {
+        self.reopened = true;
+    }
+
     /// Whether a method was reconnected since the last call; its
     /// `filter_events` must then be selected on the window again.
     pub fn take_reopened(&mut self) -> bool {

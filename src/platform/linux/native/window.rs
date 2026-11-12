@@ -238,8 +238,11 @@ impl NativeWindow {
         super::portal::system_theme()
     }
 
+    /// Outside the window lock: reaching the input method may reconnect
+    /// it, a round trip to its server.
     pub fn set_ime_allowed(&self, allowed: bool) {
-        if let Some(x11) = &self.inner.lock().x11_window {
+        let x11 = self.inner.lock().x11_window.clone();
+        if let Some(x11) = x11 {
             x11.set_ime_allowed(allowed);
         }
     }

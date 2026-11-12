@@ -772,37 +772,45 @@ impl X11Window {
         }
     }
 
+    /// Run `f` on the input method, then select the events a method it
+    /// reconnected to needs: every call into it may reconnect, not only
+    /// filtering. Reading the new mask can itself reconnect, hence the loop.
+    fn with_xim<R>(&self, f: impl FnOnce(&mut XimContext) -> R) -> Option<R> {
+        let mut guard = self.0.xim.lock();
+        let xim = guard.as_mut()?;
+        let result = f(xim);
+        while xim.take_reopened() {
+            let mask = BASE_EVENT_MASK | xim.filter_events();
+            unsafe { (self.0.lib.XSelectInput)(self.0.display, self.0.window, mask) };
+        }
+        Some(result)
+    }
+
     /// Let the input method compose text while the app allows it.
     pub fn set_ime_allowed(&self, allowed: bool) {
-        if let Some(xim) = self.0.xim.lock().as_mut() {
-            xim.set_allowed(allowed);
-        }
+        self.with_xim(|xim| xim.set_allowed(allowed));
     }
 
     /// Place the input method's candidate window under the text cursor cell.
     pub fn set_ime_cursor_area(&self, position: PhysicalPosition<f64>, size: PhysicalSize<f64>) {
-        if let Some(xim) = self.0.xim.lock().as_mut() {
-            xim.set_cursor_area(position.x, position.y, size.height);
-        }
+        self.with_xim(|xim| xim.set_cursor_area(position.x, position.y, size.height));
     }
 
     /// Give `xev` to the input method; `true` when it consumed the event.
     /// Preedit changes its callbacks made are queued on `events`.
     fn filter_for_ime(&self, xev: &mut XEvent, events: &mut Vec<WindowEvent>) -> bool {
-        let mut guard = self.0.xim.lock();
-        let Some(xim) = guard.as_mut() else { return false };
-        let consumed = xim.filter(xev);
-        xim.shared().drain_into(events);
-        if xim.take_reopened() {
-            unsafe { (self.0.lib.XSelectInput)(self.0.display, self.0.window, BASE_EVENT_MASK | xim.filter_events()) };
-        }
-        consumed
+        self.with_xim(|xim| {
+            let consumed = xim.filter(xev);
+            xim.shared().drain_into(events);
+            consumed
+        })
+        .unwrap_or(false)
     }
 
     /// Text the input method committed with a keycode-0 `KeyPress`.
     fn ime_commit(&self, kev: &XKeyEvent) -> Option<String> {
         let mut key = *kev;
-        self.0.xim.lock().as_mut()?.committed_text(&mut key)
+        self.with_xim(|xim| xim.committed_text(&mut key)).flatten()
     }
 
     /// Queue `ModifiersChanged` when the held modifiers differ from the last report.
@@ -1007,9 +1015,7 @@ impl X11Window {
                     9 | 10 => {
                         // Keys released while unfocused never report a release.
                         self.0.held.clear();
-                        if let Some(xim) = self.0.xim.lock().as_mut() {
-                            xim.set_focused(xev.type_ == 9);
-                        }
+                        self.with_xim(|xim| xim.set_focused(xev.type_ == 9));
                         events.push(WindowEvent::Focused(xev.type_ == 9));
                     }
                     // PropertyNotify = 28: the WM changed `_NET_WM_STATE`
@@ -1366,6 +1372,22 @@ mod tests {
     fn new_window_has_an_input_context() {
         let Some(win) = hidden_test_window("litty-xim-test") else { return };
         assert!(win.0.xim.lock().as_ref().is_some_and(XimContext::has_context));
+    }
+
+    /// Every call into the input method may reconnect it, not only
+    /// filtering: the new context's events must be selected right away, or
+    /// the first key reaches it without the events it asked for.
+    #[test]
+    fn a_reconnect_outside_filtering_selects_the_new_methods_events() {
+        let Some(win) = hidden_test_window("litty-xim-reselect-test") else { return };
+        let reopened = |win: &X11Window| win.0.xim.lock().as_mut().is_some_and(XimContext::take_reopened);
+        win.0.xim.lock().as_mut().unwrap().mark_reopened();
+        win.set_ime_allowed(true);
+        assert!(!reopened(&win), "set_ime_allowed left the reconnect unselected");
+        win.0.xim.lock().as_mut().unwrap().mark_reopened();
+        let key: XKeyEvent = unsafe { std::mem::zeroed() };
+        win.ime_commit(&key);
+        assert!(!reopened(&win), "ime_commit left the reconnect unselected");
     }
 
     /// Keycode 0 carries input-method text, never a key: without composed
