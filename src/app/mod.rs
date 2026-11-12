@@ -381,7 +381,8 @@ impl EventHandler<AppEvent> for App {
                 for s in &mut self.windows {
                     handle_terminal_requests(s);
                     handle_ai_requests(s, &self.waker);
-                    if !s.tabs.is_empty() {
+                    // An occluded window draws again once it is shown (`Occluded(false)`).
+                    if !s.tabs.is_empty() && !s.occluded {
                         gui_bench::render_observed(s, &mut self.gui_bench, &mut self.gui_bench_result);
                     }
                 }

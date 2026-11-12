@@ -26,6 +26,16 @@ fn focus_events(focused: bool, held: crate::platform::input::Mods) -> impl Itera
     [WindowEvent::ModifiersChanged(mods), WindowEvent::Focused(focused)].into_iter()
 }
 
+/// `NSWindowOcclusionStateVisible`: some part of the window is visible on screen.
+const OCCLUSION_STATE_VISIBLE: usize = 1 << 1;
+
+/// What a window reports when its `occlusionState` changes. A covered,
+/// minimized or hidden window, or one on another Space, has no visible bit; the
+/// app then stops drawing it and releases its drawables.
+fn occlusion_event(state: usize) -> WindowEvent {
+    WindowEvent::Occluded(state & OCCLUSION_STATE_VISIBLE == 0)
+}
+
 /// Modifiers physically held right now, whichever window has key.
 fn held_modifiers() -> crate::platform::input::Mods {
     let flags = class(c"NSEvent").map_or(0, |cls| unsafe { msg_send!(cls, c"modifierFlags"; -> usize) });
@@ -130,6 +140,25 @@ pub fn ensure_window_delegate_class() {
             }
         }
         class_addMethod(cls, sel(c"windowDidChangeBackingProperties:"), window_did_change_backing_properties as *const (), c"v@:@".as_ptr() as *const _);
+
+        // windowDidChangeOcclusionState:
+        extern "C" fn window_did_change_occlusion_state(_this: Id, _cmd: Id, notification: Id) {
+            unsafe {
+                let win = msg_send!(notification, c"object"; -> Id);
+                if !win.is_null() {
+                    let view = msg_send!(win, c"contentView"; -> Id);
+                    if !view.is_null() {
+                        let tag = msg_send!(view, c"tag"; -> usize);
+                        if tag != 0 {
+                            let id = WindowId::from_raw(tag as u64);
+                            let state = msg_send!(win, c"occlusionState"; -> usize);
+                            super::view::emit_event(id, occlusion_event(state));
+                        }
+                    }
+                }
+            }
+        }
+        class_addMethod(cls, sel(c"windowDidChangeOcclusionState:"), window_did_change_occlusion_state as *const (), c"v@:@".as_ptr() as *const _);
 
         // windowShouldClose:
         extern "C" fn window_should_close(_this: Id, _cmd: Id, sender: Id) -> bool {
@@ -628,6 +657,28 @@ pub fn allocate_window_id() -> WindowId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_delegate_reports_occlusion_changes() {
+        // Without this callback a covered or minimized window keeps rendering.
+        ensure_window_delegate_class();
+        // SAFETY: the delegate instance is created above and never freed.
+        let handles = unsafe { responds_to(SHARED_DELEGATE, c"windowDidChangeOcclusionState:") };
+        assert!(handles, "LittyWindowDelegate ignores windowDidChangeOcclusionState:");
+    }
+
+    #[test]
+    fn a_window_without_the_visible_bit_is_occluded() {
+        assert!(matches!(occlusion_event(0), WindowEvent::Occluded(true)));
+        // Bits other than NSWindowOcclusionStateVisible do not count as visible.
+        assert!(matches!(occlusion_event(!OCCLUSION_STATE_VISIBLE), WindowEvent::Occluded(true)));
+    }
+
+    #[test]
+    fn a_window_with_the_visible_bit_is_not_occluded() {
+        assert!(matches!(occlusion_event(OCCLUSION_STATE_VISIBLE), WindowEvent::Occluded(false)));
+        assert!(matches!(occlusion_event(usize::MAX), WindowEvent::Occluded(false)));
+    }
 
     #[test]
     fn losing_key_releases_held_modifiers() {

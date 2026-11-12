@@ -8,6 +8,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use crate::platform::gui::Window;
 
+mod extent;
 mod frame;
 mod gpu;
 mod pane_row;
@@ -132,6 +133,8 @@ pub struct Renderer {
     device: Arc<Device>,
     queue: Arc<Queue>,
     config: SurfaceConfig,
+    /// Window size; `config` holds the drawable size, 1x1 while shrunk.
+    extent: extent::Extent,
     pipelines: RenderPipelines,
     instances: HostBuffer<Instance>,
     viewports: HostBuffer<Viewport>,
@@ -236,9 +239,11 @@ impl Renderer {
         let mut surface = Surface::new(&window, &device);
         let format = surface.default_format();
         let transparent = bg_opacity < 1.0;
+        let extent = extent::Extent::new(size.width, size.height);
+        let (width, height) = extent.drawable_size();
         let config = SurfaceConfig {
-            width: size.width.max(1),
-            height: size.height.max(1),
+            width,
+            height,
             format,
             transparent,
         };
@@ -260,6 +265,7 @@ impl Renderer {
             device,
             queue,
             config,
+            extent,
             pipelines,
             instances,
             viewports,
@@ -381,11 +387,9 @@ impl Renderer {
         (self.atlas.cell_w, self.atlas.cell_h)
     }
 
-    /// Columns and rows that fit in the current surface.
+    /// Columns and rows that fit in the window, also while its drawables are shrunk.
     pub fn grid_size(&self) -> (usize, usize) {
-        let w = self.config.width.saturating_sub(2 * self.pad.0);
-        let h = self.config.height.saturating_sub(2 * self.pad.1);
-        ((w / self.atlas.cell_w).max(1) as usize, (h / self.atlas.cell_h).max(1) as usize)
+        self.extent.grid_size(self.pad, self.cell_size())
     }
 
     /// Top-left pixel of the cell grid: the padding, plus half of the leftover
@@ -395,8 +399,9 @@ impl Renderer {
             return self.pad;
         }
         let (cols, rows) = self.grid_size();
-        let spare_x = self.config.width.saturating_sub(2 * self.pad.0 + cols as u32 * self.atlas.cell_w);
-        let spare_y = self.config.height.saturating_sub(2 * self.pad.1 + rows as u32 * self.atlas.cell_h);
+        let (width, height) = self.extent.size();
+        let spare_x = width.saturating_sub(2 * self.pad.0 + cols as u32 * self.atlas.cell_w);
+        let spare_y = height.saturating_sub(2 * self.pad.1 + rows as u32 * self.atlas.cell_h);
         (self.pad.0 + spare_x / 2, self.pad.1 + spare_y / 2)
     }
 
@@ -472,11 +477,10 @@ impl Renderer {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
+        if !self.extent.resize(width, height) {
             return;
         }
-        self.config.width = width;
-        self.config.height = height;
+        (self.config.width, self.config.height) = self.extent.drawable_size();
         self.surface.configure(&self.device, &self.config);
         self.force_full = true;
     }
@@ -495,8 +499,10 @@ impl Renderer {
         if let Some(fx) = &mut self.postfx {
             fx.shrink();
         }
-        self.config.width = 1;
-        self.config.height = 1;
+        // The window size stays in `extent`: a hidden window still resizes its
+        // shells (config reload, a pane exiting). `resize` restores the drawables.
+        self.extent.shrink();
+        (self.config.width, self.config.height) = self.extent.drawable_size();
         self.surface.shrink_drawables(&self.device, &self.queue);
     }
 
@@ -590,8 +596,9 @@ impl Renderer {
         let (cols, rows) = self.grid_size_for_tabs(bands);
         let (_, top) = self.cell_origin_px(rect.row, rect.col, bands);
         let (right, bottom) = self.cell_origin_px(rect.row + rect.rows, rect.col + rect.cols, bands);
-        let right = if rect.col + rect.cols >= cols { self.config.width as f64 } else { right };
-        let bottom = if rect.row + rect.rows >= rows { self.config.height as f64 } else { bottom };
+        let (width, height) = self.extent.size();
+        let right = if rect.col + rect.cols >= cols { width as f64 } else { right };
+        let bottom = if rect.row + rect.rows >= rows { height as f64 } else { bottom };
         (right, top, bottom)
     }
 
