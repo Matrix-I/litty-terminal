@@ -3,15 +3,9 @@
 use std::ffi::{c_char, c_void, CStr, CString};
 
 use crate::render::backend::TextureFormat;
+pub(super) use crate::render::cg::CGSize;
 
 pub type Id = *mut c_void;
-
-#[repr(C)]
-#[derive(Copy, Clone, Debug, Default)]
-pub(super) struct CGSize {
-    pub width: f64,
-    pub height: f64,
-}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default)]

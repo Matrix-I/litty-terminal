@@ -11,33 +11,13 @@ use parking_lot::Mutex;
 
 use super::shaper::{FontFeature, ShapedGlyph, FONT_FEATURES};
 use super::{synthesized_line_metrics, LineMetrics};
+use crate::render::cg::{CGPoint, CGRect, CGSize};
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 struct CFRange {
     location: isize,
     length: isize,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Default)]
-struct CGPoint {
-    x: f64,
-    y: f64,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Default)]
-struct CGSize {
-    width: f64,
-    height: f64,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Default)]
-struct CGRect {
-    origin: CGPoint,
-    size: CGSize,
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
