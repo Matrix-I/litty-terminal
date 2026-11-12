@@ -486,6 +486,7 @@ impl VulkanCore {
                 vkCreateDescriptorSetLayout: load_fn!(vkCreateDescriptorSetLayout),
                 vkCreatePipelineLayout: load_fn!(vkCreatePipelineLayout),
                 vkCreateRenderPass: load_fn!(vkCreateRenderPass),
+                vkDestroyRenderPass: load_fn!(vkDestroyRenderPass),
                 vkCreateGraphicsPipelines: load_fn!(vkCreateGraphicsPipelines),
                 vkCreateDescriptorPool: load_fn!(vkCreateDescriptorPool),
                 vkAllocateDescriptorSets: load_fn!(vkAllocateDescriptorSets),
@@ -1358,21 +1359,43 @@ pub fn shared_pipelines(device: &Device, format: TextureFormat) -> RenderPipelin
 static OFFSCREEN_PASSES: parking_lot::Mutex<Vec<(TextureFormat, VkRenderPass, VkRenderPass)>> =
     parking_lot::const_mutex(Vec::new());
 
-/// `(clear, load)` render passes for drawing into a `format` render target.
-pub(super) fn offscreen_render_passes(vk: &VulkanCore, format: TextureFormat) -> (VkRenderPass, VkRenderPass) {
-    let mut passes = OFFSCREEN_PASSES.lock();
-    if let Some(&(_, clear, load)) = passes.iter().find(|p| p.0 == format) {
-        return (clear, load);
+/// `(clear, load)` render passes for drawing into a `format` render target,
+/// or `None` (reported) when they could not be created.
+pub(super) fn offscreen_render_passes(vk: &VulkanCore, format: TextureFormat) -> Option<(VkRenderPass, VkRenderPass)> {
+    // SAFETY: `vk.device` is a live device and `vk.lib` its function table;
+    // a pass being destroyed was just created and never used.
+    cached_passes(
+        &mut OFFSCREEN_PASSES.lock(),
+        format,
+        || unsafe {
+            (
+                create_render_pass(&vk.lib, vk.device, format, PassTarget::Offscreen, true),
+                create_render_pass(&vk.lib, vk.device, format, PassTarget::Offscreen, false),
+            )
+        },
+        |rp| unsafe { (vk.lib.vkDestroyRenderPass)(vk.device, rp, std::ptr::null()) },
+    )
+}
+
+/// The cached `(clear, load)` passes of `format`, else `create` them. Only a
+/// complete pair is cached; a half-made pair is destroyed, so a failure is
+/// retried on the next render target instead of handing out a null pass.
+fn cached_passes(
+    cache: &mut Vec<(TextureFormat, VkRenderPass, VkRenderPass)>,
+    format: TextureFormat,
+    create: impl FnOnce() -> (VkRenderPass, VkRenderPass),
+    mut destroy: impl FnMut(VkRenderPass),
+) -> Option<(VkRenderPass, VkRenderPass)> {
+    if let Some(&(_, clear, load)) = cache.iter().find(|p| p.0 == format) {
+        return Some((clear, load));
     }
-    // SAFETY: `vk.device` is a live device and `vk.lib` its function table.
-    let (clear, load) = unsafe {
-        (
-            create_render_pass(&vk.lib, vk.device, format, PassTarget::Offscreen, true),
-            create_render_pass(&vk.lib, vk.device, format, PassTarget::Offscreen, false),
-        )
-    };
-    passes.push((format, clear, load));
-    (clear, load)
+    let (clear, load) = create();
+    if clear == 0 || load == 0 {
+        [clear, load].into_iter().filter(|&rp| rp != 0).for_each(&mut destroy);
+        return None;
+    }
+    cache.push((format, clear, load));
+    Some((clear, load))
 }
 
 /// `custom-shader` needs GLSL to SPIR-V translation and offscreen passes,
@@ -1436,6 +1459,20 @@ mod tests {
         assert_eq!(graphics_family(&families), Some(2));
         assert_eq!(graphics_family(&families[..2]), None);
         assert_eq!(graphics_family(&[]), None);
+    }
+
+    #[test]
+    fn only_complete_offscreen_pass_pairs_are_cached() {
+        let mut cache = Vec::new();
+        let format = TextureFormat::Rgba8Unorm;
+        let mut destroyed = Vec::new();
+        // The load pass failed: the clear pass is destroyed, nothing is kept.
+        assert_eq!(cached_passes(&mut cache, format, || (7, 0), |rp| destroyed.push(rp)), None);
+        assert_eq!(destroyed, [7]);
+        assert!(cache.is_empty(), "a null pass must never be handed out later");
+        // The next render target retries, and that pair is reused.
+        assert_eq!(cached_passes(&mut cache, format, || (8, 9), |_| unreachable!()), Some((8, 9)));
+        assert_eq!(cached_passes(&mut cache, format, || unreachable!(), |_| unreachable!()), Some((8, 9)));
     }
 
     #[test]

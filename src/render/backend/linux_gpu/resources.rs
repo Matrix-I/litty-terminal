@@ -276,7 +276,10 @@ unsafe fn create_target_framebuffer(
         height: u32,
         layers: u32,
     }
-    let (clear_pass, load_pass) = super::device::offscreen_render_passes(vk, format);
+    let Some((clear_pass, load_pass)) = super::device::offscreen_render_passes(vk, format) else {
+        eprintln!("litty: could not create a {width}x{height} render target");
+        return 0;
+    };
     let info = FbInfo {
         s_type: VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
         p_next: std::ptr::null(),
