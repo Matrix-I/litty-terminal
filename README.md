@@ -57,7 +57,7 @@ Press <kbd>Cmd</kbd> + <kbd>,</kbd> (macOS) or <kbd>Ctrl</kbd> + <kbd>,</kbd> (L
 | [AI Shell Assistance (`yo`)](docs/guide/ai-assistant.md) | Providers, keys and workflow |
 | [Auto-Update & CLI Commands](docs/guide/updates-and-cli.md) | `litty +update`, channels, background checks |
 | [Installation](docs/guide/installation.md) | Pre-built macOS and Linux binaries |
-| [Building & Packaging](docs/development/building.md) | Build from source, app bundle and DMG |
+| [Building & Packaging](docs/development/building.md) | Build from source, macOS app bundle and DMG, Linux .deb/.rpm |
 | [Release process](docs/development/release.md) | Maintainer release checklist |
 | [Validation reports](docs/validation/) | Test and benchmark reports (AI live validation, Linux container run, scroll fix) |
 | [Plans](docs/plans/) | Per-release plans and historical records (see also `ROADMAP.md`) |
