@@ -56,7 +56,11 @@ pub struct Surface {
     views: Vec<VkImageView>,
     framebuffers: Vec<VkFramebuffer>,
     image_avail_sem: VkSemaphore,
-    render_done_sem: VkSemaphore,
+    /// One per swapchain image: the presentation engine may still wait on
+    /// the semaphore of an image presented earlier, and it is only known to
+    /// be free once that image is acquired again
+    /// (`VUID-vkQueueSubmit-pSignalSemaphores-00067`).
+    render_done_sems: Vec<VkSemaphore>,
     fence: VkFence,
     width: u32,
     height: u32,
@@ -85,7 +89,6 @@ impl Surface {
     pub fn new(window: &Window, device: &Device) -> Self {
         let mut surface_khr = 0u64;
         let mut image_avail_sem = 0u64;
-        let mut render_done_sem = 0u64;
         let mut fence = 0u64;
 
         if let Some(vk) = &device.vk {
@@ -167,15 +170,7 @@ impl Surface {
                     }
                 }
 
-                #[repr(C)]
-                struct SemInfo {
-                    s_type: u32,
-                    p_next: *const c_void,
-                    flags: u32,
-                }
-                let sem_info = SemInfo { s_type: VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, p_next: std::ptr::null(), flags: 0 };
-                (vk.lib.vkCreateSemaphore)(vk.device, &sem_info as *const _ as *const c_void, std::ptr::null(), &mut image_avail_sem);
-                (vk.lib.vkCreateSemaphore)(vk.device, &sem_info as *const _ as *const c_void, std::ptr::null(), &mut render_done_sem);
+                image_avail_sem = create_semaphore(vk);
 
                 #[repr(C)]
                 struct FenceInfo {
@@ -195,7 +190,7 @@ impl Surface {
             views: Vec::new(),
             framebuffers: Vec::new(),
             image_avail_sem,
-            render_done_sem,
+            render_done_sems: Vec::new(),
             fence,
             width: 1,
             height: 1,
@@ -225,6 +220,7 @@ impl Surface {
                 (vk.lib.vkDestroyImageView)(vk.device, v, std::ptr::null());
             }
             self.views.clear();
+            destroy_semaphores(vk, &mut self.render_done_sems);
 
             let mut caps = VkSurfaceCapabilitiesKHR::default();
             (vk.lib.vkGetPhysicalDeviceSurfaceCapabilitiesKHR)(vk.phys, self.surface_khr, &mut caps);
@@ -319,6 +315,7 @@ impl Surface {
             (vk.lib.vkGetSwapchainImagesKHR)(vk.device, self.swapchain, &mut img_count, imgs.as_mut_ptr());
 
             let pipes = shared_pipelines(device, config.format);
+            self.render_done_sems = imgs.iter().map(|_| create_semaphore(vk)).collect();
             for img in imgs {
                 #[repr(C)]
                 struct ViewInfo {
@@ -401,7 +398,7 @@ impl Surface {
                 image_index: idx,
                 framebuffer: *self.framebuffers.get(idx as usize)?,
                 swapchain: self.swapchain,
-                render_done_sem: self.render_done_sem,
+                render_done_sem: *self.render_done_sems.get(idx as usize)?,
                 image_avail_sem: self.image_avail_sem,
                 fence: self.fence,
             })
@@ -440,11 +437,35 @@ impl Surface {
                 (vk.lib.vkDestroyImageView)(vk.device, v, std::ptr::null());
             }
             self.views.clear();
+            destroy_semaphores(vk, &mut self.render_done_sems);
             if self.swapchain != 0 {
                 (vk.lib.vkDestroySwapchainKHR)(vk.device, self.swapchain, std::ptr::null());
                 self.swapchain = 0;
             }
         }
+    }
+}
+
+/// A binary semaphore, or 0 when it could not be created.
+fn create_semaphore(vk: &VulkanCore) -> VkSemaphore {
+    #[repr(C)]
+    struct SemInfo {
+        s_type: u32,
+        p_next: *const c_void,
+        flags: u32,
+    }
+    let info = SemInfo { s_type: VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, p_next: std::ptr::null(), flags: 0 };
+    let mut sem = 0u64;
+    // SAFETY: `info` is a valid create info and outlives the call.
+    unsafe { (vk.lib.vkCreateSemaphore)(vk.device, &info as *const _ as *const c_void, std::ptr::null(), &mut sem) };
+    sem
+}
+
+/// Destroy and forget `sems`. Callers make sure the device is idle first.
+fn destroy_semaphores(vk: &VulkanCore, sems: &mut Vec<VkSemaphore>) {
+    for sem in sems.drain(..).filter(|&s| s != 0) {
+        // SAFETY: created from `vk.device`; the device is idle.
+        unsafe { (vk.lib.vkDestroySemaphore)(vk.device, sem, std::ptr::null()) };
     }
 }
 
@@ -460,9 +481,6 @@ impl Drop for Surface {
         unsafe {
             if self.image_avail_sem != 0 {
                 (vk.lib.vkDestroySemaphore)(vk.device, self.image_avail_sem, std::ptr::null());
-            }
-            if self.render_done_sem != 0 {
-                (vk.lib.vkDestroySemaphore)(vk.device, self.render_done_sem, std::ptr::null());
             }
             if self.fence != 0 {
                 vk.in_flight.lock().release(self.fence);
