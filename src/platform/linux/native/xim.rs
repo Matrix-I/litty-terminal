@@ -207,6 +207,14 @@ const MAX_REGISTER_FAILURES: u32 = 3;
 /// Xlib runs inside those calls never take it.
 static XLIB_IM: Mutex<Watch> = Mutex::new(Watch::new());
 
+/// Run `f` under the lock every Xlib IM call takes. For the other users
+/// of Xlib's unlocked locale layer (text property conversion), which share
+/// its converter cache and the locale `init_locale` sets.
+pub(super) fn with_xlib_locale<R>(f: impl FnOnce() -> R) -> R {
+    let _guard = XLIB_IM.lock();
+    f()
+}
+
 /// Bumped by the instantiate callback: a method server registered.
 static SERVERS_SEEN: AtomicU64 = AtomicU64::new(0);
 

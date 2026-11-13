@@ -5,11 +5,20 @@ use std::sync::Arc;
 
 use crate::platform::gui::{CursorIcon, Ime, PhysicalPosition, PhysicalSize, RawHandle, WindowEvent, WindowSpec};
 use super::sym;
-use super::xim::XimContext;
+use super::xim::{with_xlib_locale, XimContext};
 use super::events::{wm_state_event, WmStateAtoms, convert_linux_key, keysym_char, mods_after_key, mods_from_state, x11_button_event, HeldKeys};
 use crate::platform::input::{Key, KeyLocation, Mods};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Once, OnceLock};
+
+/// Xlib's `XTextProperty`: a property value with its type and format.
+#[repr(C)]
+pub struct XTextProperty {
+    pub value: *mut u8,
+    pub encoding: c_ulong,
+    pub format: c_int,
+    pub nitems: c_ulong,
+}
 
 #[repr(C)]
 pub struct XEvent {
@@ -133,6 +142,11 @@ const PROP_MODE_REPLACE: c_int = 0;
 const XA_CARDINAL: c_ulong = 6;
 /// Predefined `STRING` atom.
 const XA_STRING: c_ulong = 31;
+/// Predefined atom `WM_NAME`.
+const XA_WM_NAME: c_ulong = 39;
+/// `XStdICCTextStyle`: `STRING` when Latin-1 holds the text, else
+/// `COMPOUND_TEXT`.
+const X_STD_ICC_TEXT_STYLE: c_int = 3;
 /// Predefined `WM_CLASS` atom.
 const XA_WM_CLASS: c_ulong = 67;
 /// `WM_CLASS` value (instance and class, each NUL-terminated). Must match
@@ -328,7 +342,8 @@ pub struct X11Lib {
     pub XConnectionNumber: unsafe extern "C" fn(*mut c_void) -> c_int,
     pub XPending: unsafe extern "C" fn(*mut c_void) -> c_int,
     pub XNextEvent: unsafe extern "C" fn(*mut c_void, *mut XEvent) -> c_int,
-    pub XStoreName: unsafe extern "C" fn(*mut c_void, c_ulong, *const c_char) -> c_int,
+    pub Xutf8TextListToTextProperty: unsafe extern "C" fn(*mut c_void, *mut *mut c_char, c_int, c_int, *mut XTextProperty) -> c_int,
+    pub XSetWMName: unsafe extern "C" fn(*mut c_void, c_ulong, *mut XTextProperty),
     pub XInternAtom: unsafe extern "C" fn(*mut c_void, *const c_char, c_int) -> c_ulong,
     pub XSetWMProtocols: unsafe extern "C" fn(*mut c_void, c_ulong, *mut c_ulong, c_int) -> c_int,
     pub XChangeProperty: unsafe extern "C" fn(*mut c_void, c_ulong, c_ulong, c_ulong, c_int, c_int, *const u8, c_int) -> c_int,
@@ -404,7 +419,8 @@ impl X11Lib {
                 XConnectionNumber: sym(handle, c"XConnectionNumber")?,
                 XPending: sym(handle, c"XPending")?,
                 XNextEvent: sym(handle, c"XNextEvent")?,
-                XStoreName: sym(handle, c"XStoreName")?,
+                Xutf8TextListToTextProperty: sym(handle, c"Xutf8TextListToTextProperty")?,
+                XSetWMName: sym(handle, c"XSetWMName")?,
                 XInternAtom: sym(handle, c"XInternAtom")?,
                 XSetWMProtocols: sym(handle, c"XSetWMProtocols")?,
                 XChangeProperty: sym(handle, c"XChangeProperty")?,
@@ -481,8 +497,9 @@ impl Drop for X11WindowInner {
 }
 
 /// Publish `title` as `WM_NAME` and as `_NET_WM_NAME`. EWMH window
-/// managers read the latter as UTF-8; `WM_NAME` is Latin-1, so non-ASCII
-/// titles show garbled when it is the only one set.
+/// managers read the latter as UTF-8. `WM_NAME` is for the others: ICCCM
+/// types it `STRING` (Latin-1) or `COMPOUND_TEXT`, so Xlib converts the
+/// title to the first that holds it instead of mislabelling UTF-8 bytes.
 ///
 /// # Safety
 /// `display` and `window` must be live handles from `lib`.
@@ -494,9 +511,33 @@ unsafe fn store_title(lib: &X11Lib, display: *mut c_void, window: c_ulong, net_w
         return;
     };
     unsafe {
-        (lib.XStoreName)(display, window, c_title.as_ptr());
+        let mut list = [c_title.as_ptr().cast_mut()];
+        let mut prop = XTextProperty { value: std::ptr::null_mut(), encoding: 0, format: 0, nitems: 0 };
+        // Converting goes through Xlib's locale layer, process-wide and
+        // unlocked (no `XInitThreads`), which input method calls on other
+        // windows' threads use too.
+        let converted = with_xlib_locale(|| {
+            (lib.Xutf8TextListToTextProperty)(display, list.as_mut_ptr(), 1, X_STD_ICC_TEXT_STYLE, &mut prop)
+        });
+        // A positive result counts characters no encoding holds (shown as
+        // a default character); only a negative one means no property.
+        if converted >= 0 {
+            (lib.XSetWMName)(display, window, &mut prop);
+            (lib.XFree)(prop.value.cast());
+        } else {
+            let latin1 = latin1_lossy(title);
+            // At most `len`: one byte per character.
+            let latin1_len = c_int::try_from(latin1.len()).unwrap_or(len);
+            (lib.XChangeProperty)(display, window, XA_WM_NAME, XA_STRING, 8, PROP_MODE_REPLACE, latin1.as_ptr(), latin1_len);
+        }
         (lib.XChangeProperty)(display, window, net_wm_name, utf8_string, 8, PROP_MODE_REPLACE, title.as_ptr(), len);
     }
+}
+
+/// `title` as Latin-1, `?` for characters outside it: the `STRING` that
+/// `WM_NAME` falls back to when Xlib has no converter for the locale.
+fn latin1_lossy(title: &str) -> Vec<u8> {
+    title.chars().map(|c| u8::try_from(c).unwrap_or(b'?')).collect()
 }
 
 /// `_NET_WM_STATE` client message data adding or removing up to two state
@@ -1314,6 +1355,68 @@ mod tests {
 
         win.set_title("vim ~/日本語.txt");
         assert_eq!(net_wm_name(&win).as_deref(), Some("vim ~/日本語.txt"));
+    }
+
+    /// `WM_NAME` of `win` decoded to UTF-8, with the atom name of its type.
+    fn wm_name(win: &X11Window) -> Option<(String, String)> {
+        type GetWmName = unsafe extern "C" fn(*mut c_void, c_ulong, *mut XTextProperty) -> c_int;
+        type ToList = unsafe extern "C" fn(*mut c_void, *const XTextProperty, *mut *mut *mut c_char, *mut c_int) -> c_int;
+        type FreeList = unsafe extern "C" fn(*mut *mut c_char);
+        type AtomName = unsafe extern "C" fn(*mut c_void, c_ulong) -> *mut c_char;
+        let inner = &win.0;
+        unsafe {
+            let h = libc::dlopen(c"libX11.so.6".as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
+            assert!(!h.is_null());
+            let find = |name: &CStr| {
+                let f = libc::dlsym(h, name.as_ptr());
+                assert!(!f.is_null(), "libX11 has no {name:?}");
+                f
+            };
+            let get: GetWmName = std::mem::transmute(find(c"XGetWMName"));
+            let to_list: ToList = std::mem::transmute(find(c"Xutf8TextPropertyToTextList"));
+            let free_list: FreeList = std::mem::transmute(find(c"XFreeStringList"));
+            let atom_name: AtomName = std::mem::transmute(find(c"XGetAtomName"));
+            let mut prop = XTextProperty { value: std::ptr::null_mut(), encoding: 0, format: 0, nitems: 0 };
+            if get(inner.display, inner.window, &mut prop) == 0 {
+                return None;
+            }
+            let name = atom_name(inner.display, prop.encoding);
+            assert!(!name.is_null(), "WM_NAME has no type");
+            let encoding = CStr::from_ptr(name).to_string_lossy().into_owned();
+            (inner.lib.XFree)(name.cast());
+            let (mut list, mut count) = (std::ptr::null_mut(), 0);
+            let status = with_xlib_locale(|| to_list(inner.display, &prop, &mut list, &mut count));
+            (inner.lib.XFree)(prop.value.cast());
+            assert_eq!(status, 0, "WM_NAME ({encoding}) did not decode");
+            assert_eq!(count, 1);
+            let text = CStr::from_ptr(*list).to_str().expect("decoded WM_NAME is UTF-8").to_owned();
+            free_list(list);
+            Some((text, encoding))
+        }
+    }
+
+    /// Window managers without EWMH read `WM_NAME` only: it must carry the
+    /// title in an ICCCM encoding (`STRING` is Latin-1, `COMPOUND_TEXT`
+    /// covers the rest), never raw UTF-8 bytes labelled `STRING`.
+    #[test]
+    fn titles_are_published_as_icccm_wm_name() {
+        let Some(win) = hidden_test_window("café") else { return };
+        assert_eq!(wm_name(&win), Some(("café".into(), "STRING".into())), "Latin-1 titles stay plain STRING");
+
+        win.set_title("litty — Tiếng Việt ✓");
+        let (text, encoding) = wm_name(&win).expect("WM_NAME is set");
+        assert_eq!(text, "litty — Tiếng Việt ✓");
+        assert_eq!(encoding, "COMPOUND_TEXT");
+
+        win.set_title("vim ~/日本語.txt");
+        assert_eq!(wm_name(&win).map(|(t, _)| t).as_deref(), Some("vim ~/日本語.txt"));
+    }
+
+    #[test]
+    fn latin1_fallback_keeps_latin1_and_marks_the_rest() {
+        assert_eq!(latin1_lossy("café ÿ"), b"caf\xe9 \xff");
+        assert_eq!(latin1_lossy("Việt ✓"), b"Vi?t ?");
+        assert_eq!(latin1_lossy(""), b"");
     }
 
     #[test]
