@@ -323,22 +323,7 @@ impl Grid {
     /// when the cell after it is where the cursor is. False if it could not.
     fn append_to_cell(&mut self, row: usize, col: usize, c: char, widen: bool) -> bool {
         let cp = self.row_mut(row)[col].codepoint;
-        let mut text = std::mem::take(&mut self.clusters.buf);
-        text.clear();
-        match self.cluster(cp) {
-            Some(s) => text.push_str(s),
-            None => match char::from_u32(cp).filter(|&b| b != '\0') {
-                Some(base) => text.push(base),
-                None => {
-                    self.clusters.buf = text;
-                    return false;
-                }
-            },
-        }
-        text.push(c);
-        let id = self.intern_cluster(text.as_str());
-        self.clusters.buf = text;
-        let Some(id) = id else { return false };
+        let Some(id) = self.appended_cluster(cp, c) else { return false };
         let was_wide = is_wide_cp(cp);
         let widen = widen && !was_wide && !self.wrap_pending && self.cur.col == col + 1 && col + 1 < self.cols;
         let r = self.row_mut(row);

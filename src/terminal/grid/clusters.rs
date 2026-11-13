@@ -4,6 +4,10 @@
 
 use super::*;
 
+/// Entries in the memo of recent cluster appends. At most 32 while
+/// `ClusterTable` derives `Default` (arrays implement it only up to 32).
+pub(super) const APPEND_MEMO: usize = 32;
+
 /// Multi-codepoint graphemes cells refer to (see `CLUSTER_FLAG`), interned,
 /// plus the scratch buffers the collector reuses so it never allocates per row.
 #[derive(Default)]
@@ -13,6 +17,11 @@ pub(super) struct ClusterTable {
     pub(super) ids: std::collections::HashMap<Box<str>, u32>,
     /// Reused buffer for building a cluster.
     pub(super) buf: String,
+    /// Recent appends as (cell codepoint, appended char, resulting id), so a
+    /// repeated emoji sequence skips building and hashing its text. Entries
+    /// are checked against `texts` on use, so resets and collections need
+    /// not clear it, and its fixed size keeps hostile input from growing it.
+    pub(super) appends: [(u32, u32, u32); APPEND_MEMO],
     /// Collect at most once per history-sized batch of cluster-bearing evictions.
     pub(super) evictions: usize,
     /// Full-table misses to skip before another demand collection. Charging
@@ -46,6 +55,49 @@ impl Grid {
             Some(text) => out.push_str(text),
             None => out.push(self.cell_char(cell)),
         }
+    }
+
+    /// The cluster id for cell value `cp` followed by `c`, interned. None if
+    /// `cp` holds no character or the table is full.
+    pub(super) fn appended_cluster(&mut self, cp: u32, c: char) -> Option<u32> {
+        let slot = (cp.wrapping_mul(0x9E37_79B1) ^ c as u32).wrapping_mul(0x85EB_CA6B) as usize % APPEND_MEMO;
+        if let Some(id) = self.memoized_append(slot, cp, c) {
+            return Some(id);
+        }
+        let mut text = std::mem::take(&mut self.clusters.buf);
+        text.clear();
+        match self.cluster(cp) {
+            Some(s) => text.push_str(s),
+            None => match char::from_u32(cp).filter(|&b| b != '\0') {
+                Some(base) => text.push(base),
+                None => {
+                    self.clusters.buf = text;
+                    return None;
+                }
+            },
+        }
+        text.push(c);
+        let id = self.intern_cluster(text.as_str());
+        self.clusters.buf = text;
+        if let Some(id) = id {
+            self.clusters.appends[slot] = (cp, c as u32, id);
+        }
+        id
+    }
+
+    /// The memo entry in `slot`, if it is for `cp` + `c` and its id still
+    /// names exactly that text (ids are reused after a reset or collection).
+    fn memoized_append(&self, slot: usize, cp: u32, c: char) -> Option<u32> {
+        let (m_cp, m_c, id) = self.clusters.appends[slot];
+        if m_cp != cp || m_c != c as u32 {
+            return None;
+        }
+        let base = self.clusters.texts.get(id as usize)?.strip_suffix(c)?;
+        let same = match self.cluster(cp) {
+            Some(s) => s == base,
+            None => char::from_u32(cp).is_some_and(|b| b != '\0' && base.len() == b.len_utf8() && base.starts_with(b)),
+        };
+        same.then_some(id)
     }
 
     /// Intern a grapheme cluster string and return its ID (`0..MAX_CLUSTERS`),
