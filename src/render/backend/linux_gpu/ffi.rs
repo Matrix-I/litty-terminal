@@ -41,6 +41,120 @@ pub(super) const VK_SUCCESS: i32 = 0;
 pub(super) const VK_SUBOPTIMAL_KHR: i32 = 1000001003;
 pub(super) const VK_ERROR_OUT_OF_DATE_KHR: i32 = -1000001004;
 
+/// Failures forced into Vulkan calls by tests. A failed call is not made,
+/// so the driver is left as a real failure would leave it.
+#[cfg(test)]
+pub(super) mod fault {
+    use std::cell::RefCell;
+
+    /// `VK_ERROR_DEVICE_LOST`: what a forced failure reports.
+    const FORCED: i32 = -4;
+
+    /// What to fail on this thread.
+    #[derive(Default)]
+    struct Plan {
+        /// Fail the n-th checked result (0-based), once.
+        nth: Option<usize>,
+        /// Fail the next `times` results checked under `name`.
+        named: Option<(&'static str, usize)>,
+        /// Every result checked so far, in order, with whether it was failed.
+        log: Vec<(String, bool)>,
+    }
+
+    /// The app drives the GPU from one render thread; tests that record or
+    /// submit work run in parallel, so they take turns through this.
+    pub(in crate::render::backend::linux_gpu) static GPU: parking_lot::Mutex<()> = parking_lot::const_mutex(());
+
+    thread_local! {
+        static PLAN: RefCell<Plan> = RefCell::new(Plan::default());
+    }
+
+    /// Everything checked since the plan was set.
+    pub(in crate::render::backend::linux_gpu) struct Report {
+        log: Vec<(String, bool)>,
+    }
+
+    impl Report {
+        /// Results checked in total.
+        pub(in crate::render::backend::linux_gpu) fn checked(&self) -> usize {
+            self.log.len()
+        }
+
+        /// Results forced to fail.
+        pub(in crate::render::backend::linux_gpu) fn injected(&self) -> usize {
+            self.log.iter().filter(|(_, failed)| *failed).count()
+        }
+
+        /// Names of the checked calls, in order.
+        pub(in crate::render::backend::linux_gpu) fn names(&self) -> Vec<&str> {
+            self.log.iter().map(|(name, _)| name.as_str()).collect()
+        }
+
+        /// Times `what` was checked, failed or not.
+        pub(in crate::render::backend::linux_gpu) fn count(&self, what: &str) -> usize {
+            self.log.iter().filter(|(name, _)| name == what).count()
+        }
+    }
+
+    /// Fail the n-th checked Vulkan result (0-based) from now on this thread.
+    pub(in crate::render::backend::linux_gpu) fn fail_nth(n: usize) {
+        PLAN.with(|p| *p.borrow_mut() = Plan { nth: Some(n), ..Plan::default() });
+    }
+
+    /// Fail the next `times` results checked under `what` on this thread.
+    pub(in crate::render::backend::linux_gpu) fn fail_named(what: &'static str, times: usize) {
+        PLAN.with(|p| *p.borrow_mut() = Plan { named: Some((what, times)), ..Plan::default() });
+    }
+
+    /// Record what is checked without failing anything.
+    pub(in crate::render::backend::linux_gpu) fn observe() {
+        PLAN.with(|p| *p.borrow_mut() = Plan::default());
+    }
+
+    /// Stop injecting and return what was checked meanwhile.
+    pub(in crate::render::backend::linux_gpu) fn finish() -> Report {
+        // The whole plan goes: a failure left armed would hit later calls.
+        Report { log: PLAN.with(|p| std::mem::take(&mut *p.borrow_mut()).log) }
+    }
+
+    /// `Some(error)` when the call named `what` must fail instead of running.
+    pub(in crate::render::backend::linux_gpu) fn apply(what: &str) -> Option<i32> {
+        PLAN.with(|p| {
+            let mut plan = p.borrow_mut();
+            let mut hit = plan.nth == Some(plan.log.len());
+            if let Some((name, times)) = &mut plan.named
+                && *name == what
+                && *times > 0
+            {
+                *times -= 1;
+                hit = true;
+            }
+            plan.log.push((what.to_owned(), hit));
+            hit.then_some(FORCED)
+        })
+    }
+}
+
+/// Run a Vulkan call, unless a test forces it to fail: then it is not made
+/// at all (`VK_ERROR_DEVICE_LOST`), so the driver's state is exactly what a
+/// real failure would leave (nothing created, nothing queued).
+#[cfg(test)]
+pub(super) fn guarded(what: &str, call: impl FnOnce() -> i32) -> i32 {
+    fault::apply(what).unwrap_or_else(call)
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+pub(super) fn guarded(_what: &str, call: impl FnOnce() -> i32) -> i32 {
+    call()
+}
+
+/// Run a Vulkan call and report whether it returned `VK_SUCCESS`; see
+/// `vk_ok`.
+pub(super) fn vk_try(what: &str, call: impl FnOnce() -> i32) -> bool {
+    vk_ok(guarded(what, call), what)
+}
+
 /// Whether a Vulkan call returned `VK_SUCCESS`. Anything else is reported on
 /// stderr: the object it was to create, or the work it was to queue, does
 /// not exist, and callers must not use it.

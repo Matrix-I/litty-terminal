@@ -192,7 +192,7 @@ impl Surface {
                     flags: u32,
                 }
                 let f_info = FenceInfo { s_type: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, p_next: std::ptr::null(), flags: 1 };
-                if !vk_ok((vk.lib.vkCreateFence)(vk.device, &f_info as *const _ as *const c_void, std::ptr::null(), &mut fence), "vkCreateFence") {
+                if !vk_try("vkCreateFence", || (vk.lib.vkCreateFence)(vk.device, &f_info as *const _ as *const c_void, std::ptr::null(), &mut fence)) {
                     fence = 0;
                 }
             }
@@ -312,7 +312,10 @@ impl Surface {
                 old_swapchain: old_sc,
             };
             let mut new_sc = 0u64;
-            let created = (vk.lib.vkCreateSwapchainKHR)(vk.device, &sc_info as *const _ as *const c_void, std::ptr::null(), &mut new_sc) == VK_SUCCESS;
+            // Not `vk_try`: the failure is reported below with the size.
+            let created = guarded("vkCreateSwapchainKHR", || {
+                (vk.lib.vkCreateSwapchainKHR)(vk.device, &sc_info as *const _ as *const c_void, std::ptr::null(), &mut new_sc)
+            }) == VK_SUCCESS;
             // Destroy the old swapchain either way: it was replaced, or the create
             // failed and it must not be presented to again. Never keep its handle.
             if old_sc != 0 {
@@ -327,7 +330,7 @@ impl Surface {
             let mut img_count = 0u32;
             (vk.lib.vkGetSwapchainImagesKHR)(vk.device, self.swapchain, &mut img_count, std::ptr::null_mut());
             let mut imgs = vec![0u64; img_count as usize];
-            if !vk_ok((vk.lib.vkGetSwapchainImagesKHR)(vk.device, self.swapchain, &mut img_count, imgs.as_mut_ptr()), "vkGetSwapchainImagesKHR") {
+            if !vk_try("vkGetSwapchainImagesKHR", || (vk.lib.vkGetSwapchainImagesKHR)(vk.device, self.swapchain, &mut img_count, imgs.as_mut_ptr())) {
                 self.release_swapchain();
                 return;
             }
@@ -362,7 +365,7 @@ impl Surface {
                     subresource_range: [1, 0, 1, 0, 1],
                 };
                 let mut view = 0u64;
-                if !vk_ok((vk.lib.vkCreateImageView)(vk.device, &v_info as *const _ as *const c_void, std::ptr::null(), &mut view), "vkCreateImageView") {
+                if !vk_try("vkCreateImageView", || (vk.lib.vkCreateImageView)(vk.device, &v_info as *const _ as *const c_void, std::ptr::null(), &mut view)) {
                     // Every image needs its framebuffer: an acquired image without one could not be drawn or presented.
                     self.release_swapchain();
                     return;
@@ -393,7 +396,7 @@ impl Surface {
                     layers: 1,
                 };
                 let mut fb = 0u64;
-                if !vk_ok((vk.lib.vkCreateFramebuffer)(vk.device, &fb_info as *const _ as *const c_void, std::ptr::null(), &mut fb), "vkCreateFramebuffer") {
+                if !vk_try("vkCreateFramebuffer", || (vk.lib.vkCreateFramebuffer)(vk.device, &fb_info as *const _ as *const c_void, std::ptr::null(), &mut fb)) {
                     self.release_swapchain();
                     return;
                 }
@@ -496,8 +499,10 @@ pub(super) fn create_semaphore(vk: &VulkanCore) -> VkSemaphore {
     let info = SemInfo { s_type: VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, p_next: std::ptr::null(), flags: 0 };
     let mut sem = 0u64;
     // SAFETY: `info` is a valid create info and outlives the call.
-    let created = unsafe { (vk.lib.vkCreateSemaphore)(vk.device, &info as *const _ as *const c_void, std::ptr::null(), &mut sem) };
-    if vk_ok(created, "vkCreateSemaphore") { sem } else { 0 }
+    let created = vk_try("vkCreateSemaphore", || unsafe {
+        (vk.lib.vkCreateSemaphore)(vk.device, &info as *const _ as *const c_void, std::ptr::null(), &mut sem)
+    });
+    if created { sem } else { 0 }
 }
 
 /// Destroy and forget `sems`. Callers make sure the device is idle first.
@@ -548,6 +553,213 @@ mod tests {
         assert_eq!(framebuffer_target(fb), Some(target(1200, 800)));
         forget_framebuffer(fb);
         assert_eq!(framebuffer_target(fb), None);
+    }
+
+    /// Failure paths of one frame, on a real window and device. Each test
+    /// makes a Vulkan call fail without running it (see `ffi::fault`), so
+    /// the driver is left as a real failure would leave it.
+    mod faults {
+        use std::time::Duration;
+
+        use super::super::super::device::shared_device_and_queue;
+        use super::super::super::pass::CommandEncoder;
+        use super::*;
+        use crate::platform::gui::{LogicalSize, WindowSpec};
+        use crate::platform::linux::native::window::NativeWindow;
+
+        const FRAME_TIMEOUT: Duration = Duration::from_secs(10);
+
+        struct Rig {
+            device: Arc<Device>,
+            queue: Arc<Queue>,
+            surface: Surface,
+            _window: Window,
+            // Last: released after the surface is gone.
+            _frames: parking_lot::MutexGuard<'static, ()>,
+        }
+
+        /// A surface on a real X11 window; `None` (the test is skipped)
+        /// without a display, a GPU or a window the GPU can present to.
+        fn rig() -> Option<Rig> {
+            if std::env::var_os("DISPLAY").is_none() {
+                eprintln!("no X display; skipping");
+                return None;
+            }
+            let frames = fault::GPU.lock();
+            let (device, queue) = shared_device_and_queue();
+            let vk = device.vk.as_ref()?;
+            // Uploads other tests left pending would ride along with the
+            // first frame and add their own checked calls.
+            // SAFETY: the shared device is live; `GPU` is held.
+            unsafe { vk.uploads.lock().flush(vk) };
+            let spec = WindowSpec {
+                title: "litty-vulkan-fault-test",
+                decorations: true,
+                visible: true,
+                transparent: false,
+                inner_size: LogicalSize::new(200.0, 100.0),
+                position: None,
+            };
+            let window = Window::from_native_linux(NativeWindow::create(&spec).ok()?);
+            let mut surface = Surface::new(&window, &device);
+            let config = SurfaceConfig { format: surface.default_format(), width: 200, height: 100, transparent: false };
+            surface.configure(&device, &config);
+            // Probing with `acquire_frame` would reset the fence without a
+            // submit to signal it, and the first real frame would wait forever.
+            if surface.swapchain == 0 || surface.framebuffers.is_empty() {
+                eprintln!("no presentable swapchain here; skipping");
+                return None;
+            }
+            Some(Rig { device, queue, surface, _window: window, _frames: frames })
+        }
+
+        impl Rig {
+            /// Acquire a frame, draw nothing but a clear, and submit it.
+            /// Returns whether a frame could be acquired.
+            fn draw_frame(&mut self) -> bool {
+                let Some(frame) = self.surface.acquire_frame() else { return false };
+                let mut encoder = CommandEncoder::new(&self.queue);
+                drop(encoder.begin_render_pass(frame.texture_ptr(), Some([0.0, 0.0, 0.0, 1.0])));
+                encoder.present_and_submit(frame);
+                true
+            }
+
+            fn idle(&self) -> bool {
+                self.surface.wait_gpu_idle(FRAME_TIMEOUT)
+            }
+        }
+
+        /// A healthy frame is what the failing ones are compared with.
+        #[test]
+        fn a_healthy_frame_is_submitted_and_presented() {
+            let Some(mut rig) = rig() else { return };
+            fault::observe();
+            assert!(rig.draw_frame());
+            assert!(rig.idle());
+            let report = fault::finish();
+            assert_eq!(report.injected(), 0);
+            assert_eq!(report.count("vkQueueSubmit"), 1);
+            assert_eq!(report.count("vkQueuePresentKHR"), 1);
+        }
+
+        /// A failed `vkQueueSubmit` must not be presented, and the fence the
+        /// next frame waits for must still signal.
+        #[test]
+        fn a_failed_submit_is_not_presented_and_the_next_frame_runs() {
+            let Some(mut rig) = rig() else { return };
+            fault::fail_named("vkQueueSubmit", 1);
+            assert!(rig.draw_frame());
+            let report = fault::finish();
+            assert_eq!(report.injected(), 1);
+            assert_eq!(report.count("vkQueuePresentKHR"), 0, "a frame that never ran is not presented");
+            assert!(rig.idle(), "the give-up submit signals the fence");
+
+            assert!(rig.draw_frame(), "the next frame can be acquired");
+            assert!(rig.idle());
+        }
+
+        /// If even the give-up submit fails, an empty submit still signals
+        /// the fence, or the next acquire would wait for it forever.
+        #[test]
+        fn when_the_give_up_submit_fails_too_the_fence_still_signals() {
+            let Some(mut rig) = rig() else { return };
+            fault::fail_named("vkQueueSubmit", 2);
+            assert!(rig.draw_frame());
+            let report = fault::finish();
+            assert_eq!(report.injected(), 2);
+            assert!(rig.idle(), "an empty submit signals the fence");
+            assert!(rig.draw_frame());
+            assert!(rig.idle());
+        }
+
+        #[test]
+        fn a_frame_that_cannot_begin_recording_is_given_up() {
+            let Some(mut rig) = rig() else { return };
+            fault::fail_named("vkBeginCommandBuffer", 1);
+            assert!(rig.draw_frame());
+            let report = fault::finish();
+            assert_eq!(report.injected(), 1);
+            assert_eq!(report.count("vkQueueSubmit"), 1, "only the give-up submit");
+            assert_eq!(report.count("vkQueuePresentKHR"), 0);
+            assert!(rig.idle());
+            assert!(rig.draw_frame());
+            assert!(rig.idle());
+        }
+
+        #[test]
+        fn a_frame_that_cannot_end_recording_is_given_up() {
+            let Some(mut rig) = rig() else { return };
+            // Twice: an upload batch another test opened meanwhile is ended
+            // first, in the same submission, and must not take the frame's
+            // place as the failing call.
+            fault::fail_named("vkEndCommandBuffer", 2);
+            assert!(rig.draw_frame());
+            let report = fault::finish();
+            assert!(report.injected() >= 1);
+            assert_eq!(report.count("vkQueuePresentKHR"), 0);
+            assert!(rig.idle());
+            assert!(rig.draw_frame());
+            assert!(rig.idle());
+        }
+
+        /// A present error other than a stale swapchain is reported, and the
+        /// next frame still renders. The image stays acquired (it was never
+        /// presented); the swapchain has images to spare for the next one.
+        #[test]
+        fn a_failed_present_leaves_the_next_frame_working() {
+            let Some(mut rig) = rig() else { return };
+            fault::fail_named("vkQueuePresentKHR", 1);
+            assert!(rig.draw_frame());
+            let report = fault::finish();
+            assert_eq!(report.injected(), 1);
+            assert!(rig.idle());
+            assert!(rig.draw_frame());
+            assert!(rig.idle());
+        }
+
+        /// No swapchain means no frame, not a crash; the next configure
+        /// builds one.
+        #[test]
+        fn a_failed_swapchain_means_no_frame_until_it_is_rebuilt() {
+            let Some(mut rig) = rig() else { return };
+            let config = SurfaceConfig { format: rig.surface.default_format(), width: 300, height: 200, transparent: false };
+            fault::fail_named("vkCreateSwapchainKHR", 1);
+            rig.surface.configure(&rig.device, &config);
+            assert_eq!(fault::finish().injected(), 1);
+            assert!(rig.surface.acquire_frame().is_none());
+
+            rig.surface.configure(&rig.device, &config);
+            assert!(rig.draw_frame());
+            assert!(rig.idle());
+        }
+
+        /// Image views, framebuffers and semaphores are created one per
+        /// swapchain image; a failure at any of them leaves the surface
+        /// without frames (or fully built) and never with a null handle.
+        #[test]
+        fn a_failure_while_building_the_swapchain_never_leaves_a_half_built_one() {
+            let Some(mut rig) = rig() else { return };
+            let config = SurfaceConfig { format: rig.surface.default_format(), width: 320, height: 240, transparent: false };
+            fault::observe();
+            rig.surface.configure(&rig.device, &config);
+            let checks = fault::finish().checked();
+            assert!(checks > 0, "configure checks its Vulkan results");
+            for n in 0..checks {
+                fault::fail_nth(n);
+                rig.surface.configure(&rig.device, &config);
+                let report = fault::finish();
+                // The window system may hand out fewer images this time
+                // (each adds its own checks): then nothing was failed.
+                assert_eq!(report.injected(), usize::from(n < report.checked()), "check {n} of {checks}");
+                if rig.draw_frame() {
+                    assert!(rig.idle(), "a surface that gives frames gives working ones (failure at check {n})");
+                }
+                // The next configure (a resize, a reload) recovers.
+                rig.surface.configure(&rig.device, &config);
+                assert!(rig.draw_frame(), "no frame after recovering from a failure at check {n} of {checks}");
+                assert!(rig.idle());
+            }
+        }
     }
 
     fn caps(current: (u32, u32), min: (u32, u32), max: (u32, u32)) -> VkSurfaceCapabilitiesKHR {

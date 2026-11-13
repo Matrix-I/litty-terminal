@@ -54,7 +54,7 @@ pub(super) unsafe fn alloc_host_buffer(
             p_queue_family_indices: std::ptr::null(),
         };
         let mut buf = 0u64;
-        if !vk_ok((lib.vkCreateBuffer)(device, &b_info as *const _ as *const c_void, std::ptr::null(), &mut buf), "vkCreateBuffer") {
+        if !vk_try("vkCreateBuffer", || (lib.vkCreateBuffer)(device, &b_info as *const _ as *const c_void, std::ptr::null(), &mut buf)) {
             return None;
         }
         let mut req = VkMemoryRequirements::default();
@@ -79,9 +79,9 @@ pub(super) unsafe fn alloc_host_buffer(
         };
         let mut mem = 0u64;
         let mut ptr: *mut c_void = std::ptr::null_mut();
-        let ready = vk_ok((lib.vkAllocateMemory)(device, &m_alloc as *const _ as *const c_void, std::ptr::null(), &mut mem), "vkAllocateMemory")
-            && vk_ok((lib.vkBindBufferMemory)(device, buf, mem, 0), "vkBindBufferMemory")
-            && vk_ok((lib.vkMapMemory)(device, mem, 0, req.size, 0, &mut ptr), "vkMapMemory")
+        let ready = vk_try("vkAllocateMemory", || (lib.vkAllocateMemory)(device, &m_alloc as *const _ as *const c_void, std::ptr::null(), &mut mem))
+            && vk_try("vkBindBufferMemory", || (lib.vkBindBufferMemory)(device, buf, mem, 0))
+            && vk_try("vkMapMemory", || (lib.vkMapMemory)(device, mem, 0, req.size, 0, &mut ptr))
             && !ptr.is_null();
         if !ready {
             (lib.vkDestroyBuffer)(device, buf, std::ptr::null());
@@ -293,7 +293,9 @@ unsafe fn create_target_framebuffer(
     };
     let mut fb = 0u64;
     // SAFETY: `info` and `view` outlive the call; `view` belongs to `vk.device`.
-    let created = unsafe { (vk.lib.vkCreateFramebuffer)(vk.device, &info as *const _ as *const c_void, std::ptr::null(), &mut fb) };
+    let created = guarded("vkCreateFramebuffer", || unsafe {
+        (vk.lib.vkCreateFramebuffer)(vk.device, &info as *const _ as *const c_void, std::ptr::null(), &mut fb)
+    });
     if created != VK_SUCCESS || fb == 0 {
         eprintln!("litty: could not create a {width}x{height} render target");
         return 0;
@@ -354,7 +356,11 @@ unsafe fn alloc_image_dset(vk: &VulkanCore, view: VkImageView) -> VkDescriptorSe
         let mut dset = 0u64;
         {
             let _pool = vk.image_pool_lock.lock();
-            if (vk.lib.vkAllocateDescriptorSets)(vk.device, &alloc as *const _ as *const c_void, &mut dset) != VK_SUCCESS {
+            // An exhausted pool is expected (many images): not reported.
+            let allocated = guarded("vkAllocateDescriptorSets", || {
+                (vk.lib.vkAllocateDescriptorSets)(vk.device, &alloc as *const _ as *const c_void, &mut dset)
+            });
+            if allocated != VK_SUCCESS {
                 return 0;
             }
         }
@@ -482,7 +488,7 @@ impl Texture {
                     initial_layout: VK_IMAGE_LAYOUT_UNDEFINED,
                 };
                 let mut image = 0u64;
-                if !vk_ok((vk.lib.vkCreateImage)(vk.device, &img_info as *const _ as *const c_void, std::ptr::null(), &mut image), "vkCreateImage") {
+                if !vk_try("vkCreateImage", || (vk.lib.vkCreateImage)(vk.device, &img_info as *const _ as *const c_void, std::ptr::null(), &mut image)) {
                     return Self::unusable(w, h);
                 }
                 let mut req = VkMemoryRequirements::default();
@@ -513,8 +519,8 @@ impl Texture {
                     }
                     Self::unusable(w, h)
                 };
-                if !(vk_ok((vk.lib.vkAllocateMemory)(vk.device, &m_alloc as *const _ as *const c_void, std::ptr::null(), &mut mem), "vkAllocateMemory")
-                    && vk_ok((vk.lib.vkBindImageMemory)(vk.device, image, mem, 0), "vkBindImageMemory"))
+                if !(vk_try("vkAllocateMemory", || (vk.lib.vkAllocateMemory)(vk.device, &m_alloc as *const _ as *const c_void, std::ptr::null(), &mut mem))
+                    && vk_try("vkBindImageMemory", || (vk.lib.vkBindImageMemory)(vk.device, image, mem, 0)))
                 {
                     return discard(mem, 0);
                 }
@@ -541,7 +547,7 @@ impl Texture {
                     subresource_range: [1, 0, 1, 0, 1],
                 };
                 let mut view = 0u64;
-                if !vk_ok((vk.lib.vkCreateImageView)(vk.device, &v_info as *const _ as *const c_void, std::ptr::null(), &mut view), "vkCreateImageView") {
+                if !vk_try("vkCreateImageView", || (vk.lib.vkCreateImageView)(vk.device, &v_info as *const _ as *const c_void, std::ptr::null(), &mut view)) {
                     return discard(mem, 0);
                 }
 
@@ -746,6 +752,7 @@ mod tests {
 
     #[test]
     fn sampled_textures_own_an_image_descriptor_set() {
+        let _gpu = fault::GPU.lock();
         let (device, _queue) = super::super::device::shared_device_and_queue();
         let sampled = Texture::new(&device, 4, 4, TextureFormat::Rgba8Unorm, false);
         // With a GPU every sampled texture can be drawn as an inline image;
@@ -753,6 +760,83 @@ mod tests {
         assert_eq!(sampled.image_dset() != 0, device.vk.is_some());
         let target = Texture::new(&device, 4, 4, TextureFormat::Bgra8Unorm, true);
         assert_eq!(target.image_dset(), 0, "render targets are never drawn as images");
+    }
+
+    /// A host buffer whose GPU memory could not be set up at any step keeps
+    /// its contents on the heap and has no buffer to bind.
+    #[test]
+    fn a_host_buffer_falls_back_to_the_heap_at_any_failure() {
+        let _gpu = fault::GPU.lock();
+        let (device, _queue) = super::super::device::shared_device_and_queue();
+        if device.vk.is_none() {
+            eprintln!("no GPU; skipping");
+            return;
+        }
+        let data = [1u32, 2, 3, 4, 5];
+        fault::observe();
+        let healthy = HostBuffer::from_slice(&device, &data);
+        let checks = fault::finish().checked();
+        assert_ne!(healthy.raw_ptr(), 0);
+        assert_eq!(checks, 4, "create, allocate, bind, map");
+        for n in 0..checks {
+            fault::fail_nth(n);
+            let mut buffer = HostBuffer::from_slice(&device, &data);
+            assert_eq!(fault::finish().injected(), 1);
+            assert_eq!(buffer.raw_ptr(), 0, "no GPU buffer after check {n} failed");
+            assert!(buffer.vk.is_none() && buffer.mem == 0);
+            assert_eq!(buffer.as_slice(), data);
+            buffer.write(&device, &[9, 8, 7]);
+            assert_eq!(buffer.as_slice(), [9, 8, 7]);
+        }
+    }
+
+    /// A texture is either complete or has nothing a draw or upload could
+    /// touch: no image, no view, no descriptor set. Uploads to it record
+    /// nothing, and the GPU runs the upload batch fine.
+    #[test]
+    fn a_texture_is_never_half_built() {
+        let _gpu = fault::GPU.lock();
+        let (device, queue) = super::super::device::shared_device_and_queue();
+        let Some(vk) = device.vk.clone() else {
+            eprintln!("no GPU; skipping");
+            return;
+        };
+        // Every texture starts with no upload batch open, so each run checks
+        // the same calls (opening a batch is one of them).
+        // SAFETY: the shared device is live; `GPU` keeps other tests from
+        // submitting meanwhile.
+        let flush = || unsafe { vk.uploads.lock().flush(&vk) };
+        // Render passes for render targets are made once per format and
+        // cached; make them now so every run below checks the same calls.
+        drop(Texture::new(&device, 8, 8, TextureFormat::Rgba8Unorm, true));
+        for render_target in [false, true] {
+            flush();
+            fault::observe();
+            let texture = Texture::new(&device, 8, 8, TextureFormat::Rgba8Unorm, render_target);
+            let healthy = fault::finish();
+            // Dropping it flushes the upload batch; that is not creation.
+            drop(texture);
+            let checks = healthy.checked();
+            assert!(checks >= 4, "image, memory, bind, view ({checks} checks)");
+            for n in 0..checks {
+                flush();
+                fault::fail_nth(n);
+                let texture = Texture::new(&device, 8, 8, TextureFormat::Rgba8Unorm, render_target);
+                let report = fault::finish();
+                assert_eq!(report.injected(), 1, "check {n} of {:?} was reached: {:?}", healthy.names(), report.names());
+                let t = &texture.inner;
+                let what = format!("render target {render_target}, check {n} of {checks}");
+                if t.image == 0 {
+                    assert_eq!((t.view, t.framebuffer, t.image_dset), (0, 0, 0), "{what}");
+                    assert_eq!(texture.raw_ptr(), 0, "{what}");
+                } else {
+                    assert_ne!(t.view, 0, "{what}");
+                    assert_eq!(t.framebuffer != 0, render_target, "{what}");
+                }
+                texture.write_rect(&queue, 0, 0, 8, 8, &[0x7f; 8 * 8 * 4], 8 * 4);
+                flush();
+            }
+        }
     }
 
     /// `image_layer::Quad`: rect (px), uv.
@@ -822,6 +906,7 @@ mod tests {
     #[test]
     #[ignore = "requires a Vulkan device"]
     fn an_uploaded_image_is_drawn_in_the_same_frame() {
+        let _gpu = fault::GPU.lock();
         for while_recording in [false, true] {
             let Some(pixels) = draw_uploaded_image(while_recording) else { return };
             assert_eq!(center(&pixels), RED, "upload while recording: {while_recording}");
@@ -834,6 +919,7 @@ mod tests {
     #[test]
     #[ignore = "requires a Vulkan device"]
     fn a_given_up_frame_still_runs_its_uploads_and_signals_its_fence() {
+        let _gpu = fault::GPU.lock();
         let (device, queue) = super::super::device::shared_device_and_queue();
         let Some(vk) = device.vk.as_ref() else { return };
         let image = Texture::new(&device, 4, 4, TextureFormat::Rgba8Unorm, false);
@@ -843,7 +929,7 @@ mod tests {
             let sem = super::super::surface::create_semaphore(vk);
             assert_ne!(sem, 0);
             let signal = super::super::upload::SubmitInfo::signaling(&sem);
-            assert!(vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &signal as *const _ as *const c_void, 0), "vkQueueSubmit"));
+            assert!(vk_try("vkQueueSubmit", || (vk.lib.vkQueueSubmit)(vk.queue, 1, &signal as *const _ as *const c_void, 0)));
             #[repr(C)]
             struct FenceInfo {
                 s_type: u32,
@@ -852,7 +938,7 @@ mod tests {
             }
             let info = FenceInfo { s_type: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, p_next: std::ptr::null(), flags: 0 };
             let mut fence = 0u64;
-            assert!(vk_ok((vk.lib.vkCreateFence)(vk.device, &info as *const _ as *const c_void, std::ptr::null(), &mut fence), "vkCreateFence"));
+            assert!(vk_try("vkCreateFence", || (vk.lib.vkCreateFence)(vk.device, &info as *const _ as *const c_void, std::ptr::null(), &mut fence)));
 
             let batch = vk.uploads.lock().take_for_frame(vk);
             assert!(batch.is_some(), "the upload is pending");
@@ -862,7 +948,7 @@ mod tests {
             assert_eq!(waited, VK_SUCCESS, "the next frame's wait for the fence must not hang");
             // The semaphore wait was consumed: signaling it again is valid
             // (a validation run reports VUID-vkQueueSubmit-pSignalSemaphores-00067 otherwise).
-            assert!(vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &signal as *const _ as *const c_void, 0), "vkQueueSubmit"));
+            assert!(vk_try("vkQueueSubmit", || (vk.lib.vkQueueSubmit)(vk.queue, 1, &signal as *const _ as *const c_void, 0)));
             (vk.lib.vkQueueWaitIdle)(vk.queue);
             (vk.lib.vkDestroyFence)(vk.device, fence, std::ptr::null());
             (vk.lib.vkDestroySemaphore)(vk.device, sem, std::ptr::null());
@@ -875,6 +961,7 @@ mod tests {
     #[test]
     #[ignore = "benchmark; requires a Vulkan device"]
     fn glyph_upload_cost() {
+        let _gpu = fault::GPU.lock();
         use super::super::pass::CommandEncoder;
         let (device, queue) = super::super::device::shared_device_and_queue();
         if device.vk.is_none() {

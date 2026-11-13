@@ -104,7 +104,7 @@ impl Uploads {
         unsafe {
             self.free_retired(vk);
             (vk.lib.vkResetCommandBuffer)(self.cmd, 0);
-            if !vk_ok((vk.lib.vkBeginCommandBuffer)(self.cmd, &info as *const _ as *const c_void), "vkBeginCommandBuffer") {
+            if !vk_try("vkBeginCommandBuffer", || (vk.lib.vkBeginCommandBuffer)(self.cmd, &info as *const _ as *const c_void)) {
                 return None;
             }
         }
@@ -157,8 +157,8 @@ impl Uploads {
         self.recording = false;
         self.retired.append(&mut self.one_offs);
         // SAFETY: `cmd` is recording.
-        let ended = unsafe { (vk.lib.vkEndCommandBuffer)(self.cmd) };
-        vk_ok(ended, "vkEndCommandBuffer").then_some(self.cmd)
+        let cmd = self.cmd;
+        vk_try("vkEndCommandBuffer", || unsafe { (vk.lib.vkEndCommandBuffer)(cmd) }).then_some(cmd)
     }
 
     /// Submit the batch on its own and wait until it has run.
@@ -169,7 +169,7 @@ impl Uploads {
             let cmds = [cmd];
             let submit = SubmitInfo::commands(&cmds);
             // A failed submit uploads nothing; the textures keep their old contents.
-            vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, 0), "vkQueueSubmit");
+            vk_try("vkQueueSubmit", || (vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, 0));
             (vk.lib.vkQueueWaitIdle)(vk.queue);
             self.free_retired(vk);
         }

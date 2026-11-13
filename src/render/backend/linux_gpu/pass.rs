@@ -38,7 +38,7 @@ impl CommandEncoder {
                 // Every submitted frame has run, and with it every upload batch.
                 vk.uploads.lock().free_retired(vk);
                 (vk.lib.vkResetCommandBuffer)(vk.upload_cmd, 0);
-                recording = vk_ok((vk.lib.vkBeginCommandBuffer)(vk.upload_cmd, &b_info as *const _ as *const c_void), "vkBeginCommandBuffer");
+                recording = vk_try("vkBeginCommandBuffer", || (vk.lib.vkBeginCommandBuffer)(vk.upload_cmd, &b_info as *const _ as *const c_void));
             }
         }
         Self { vk: queue.vk.clone(), recording }
@@ -123,8 +123,8 @@ impl CommandEncoder {
             let wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
             let submit = SubmitInfo::frame(&cmds[..count], &frame.image_avail_sem, &wait_stage, &frame.render_done_sem);
             let submitted = self.recording
-                && vk_ok((vk.lib.vkEndCommandBuffer)(vk.upload_cmd), "vkEndCommandBuffer")
-                && vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, frame.fence), "vkQueueSubmit");
+                && vk_try("vkEndCommandBuffer", || (vk.lib.vkEndCommandBuffer)(vk.upload_cmd))
+                && vk_try("vkQueueSubmit", || (vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, frame.fence));
             if !submitted {
                 give_up_frame(vk, batch, frame.image_avail_sem, frame.fence);
                 return;
@@ -156,7 +156,7 @@ impl CommandEncoder {
             };
             // Out of date or suboptimal: the next acquire fails or the
             // renderer reconfigures, so only unexpected errors are reported.
-            present_ok((vk.lib.vkQueuePresentKHR)(vk.queue, &present as *const _ as *const c_void));
+            present_ok(guarded("vkQueuePresentKHR", || (vk.lib.vkQueuePresentKHR)(vk.queue, &present as *const _ as *const c_void)));
         }
     }
 
@@ -168,9 +168,9 @@ impl CommandEncoder {
             let mut uploads = vk.uploads.lock();
             let batch = uploads.take_for_frame(vk);
             let cmds: Vec<VkCommandBuffer> = batch.into_iter().chain([vk.upload_cmd]).collect();
-            assert!(vk_ok((vk.lib.vkEndCommandBuffer)(vk.upload_cmd), "vkEndCommandBuffer"));
+            assert!(vk_try("vkEndCommandBuffer", || (vk.lib.vkEndCommandBuffer)(vk.upload_cmd)));
             let submit = SubmitInfo::commands(&cmds);
-            assert!(vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, 0), "vkQueueSubmit"));
+            assert!(vk_try("vkQueueSubmit", || (vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, 0)));
             (vk.lib.vkQueueWaitIdle)(vk.queue);
             uploads.free_retired(vk);
         }
@@ -194,7 +194,7 @@ pub(super) unsafe fn give_up_frame(vk: &VulkanCore, batch: Option<VkCommandBuffe
     let wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     let submit = SubmitInfo::waiting(cmds, &image_avail_sem, &wait_stage);
     unsafe {
-        if !vk_ok((vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, fence), "vkQueueSubmit") {
+        if !vk_try("vkQueueSubmit", || (vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, fence)) {
             // Still signal the fence so the next frame's wait cannot hang.
             (vk.lib.vkQueueSubmit)(vk.queue, 0, std::ptr::null(), fence);
         }
@@ -381,6 +381,7 @@ mod tests {
     /// `vkCmdBeginRenderPass` as a framebuffer and crashed the driver.
     #[test]
     fn an_unknown_target_records_no_render_pass() {
+        let _gpu = fault::GPU.lock();
         let (_device, queue) = super::super::device::shared_device_and_queue();
         let mut encoder = CommandEncoder::new(&queue);
         let pass = encoder.begin_render_pass(0xDEAD_0002, Some([0.0; 4]));
@@ -391,6 +392,7 @@ mod tests {
     /// command buffer anyway (it is not recording: undefined behavior).
     #[test]
     fn a_frame_that_did_not_begin_records_no_render_pass() {
+        let _gpu = fault::GPU.lock();
         let (_device, queue) = super::super::device::shared_device_and_queue();
         let fb = 0xDEAD_0003;
         let target = super::super::surface::FramebufferTarget { width: 4, height: 4, clear_pass: 7, load_pass: 8 };

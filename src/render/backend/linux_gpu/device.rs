@@ -552,7 +552,7 @@ impl VulkanCore {
             // A failure from here on leaves the app without a GPU (`vk: None`),
             // which draws nothing, instead of using null handles. What was
             // created is leaked: this runs once per process.
-            if !vk_ok((lib.vkCreateCommandPool)(device, &pool_info as *const _ as *const c_void, std::ptr::null(), &mut cmd_pool), "vkCreateCommandPool") {
+            if !vk_try("vkCreateCommandPool", || (lib.vkCreateCommandPool)(device, &pool_info as *const _ as *const c_void, std::ptr::null(), &mut cmd_pool)) {
                 return None;
             }
 
@@ -573,7 +573,7 @@ impl VulkanCore {
             };
             // The frame's command buffer and the upload batch's.
             let mut cmds: [VkCommandBuffer; 2] = [std::ptr::null_mut(); 2];
-            if !vk_ok((lib.vkAllocateCommandBuffers)(device, &cmd_alloc as *const _ as *const c_void, cmds.as_mut_ptr()), "vkAllocateCommandBuffers") {
+            if !vk_try("vkAllocateCommandBuffers", || (lib.vkAllocateCommandBuffers)(device, &cmd_alloc as *const _ as *const c_void, cmds.as_mut_ptr())) {
                 return None;
             }
             let [upload_cmd, batch_cmd] = cmds;
@@ -618,7 +618,7 @@ impl VulkanCore {
                 p_bindings: cells_bindings.as_ptr(),
             };
             let mut cells_dset_layout = 0u64;
-            if !vk_ok((lib.vkCreateDescriptorSetLayout)(device, &cells_dl_info as *const _ as *const c_void, std::ptr::null(), &mut cells_dset_layout), "vkCreateDescriptorSetLayout") {
+            if !vk_try("vkCreateDescriptorSetLayout", || (lib.vkCreateDescriptorSetLayout)(device, &cells_dl_info as *const _ as *const c_void, std::ptr::null(), &mut cells_dset_layout)) {
                 return None;
             }
 
@@ -635,7 +635,7 @@ impl VulkanCore {
                 p_bindings: image_bindings.as_ptr(),
             };
             let mut image_dset_layout = 0u64;
-            if !vk_ok((lib.vkCreateDescriptorSetLayout)(device, &image_dl_info as *const _ as *const c_void, std::ptr::null(), &mut image_dset_layout), "vkCreateDescriptorSetLayout") {
+            if !vk_try("vkCreateDescriptorSetLayout", || (lib.vkCreateDescriptorSetLayout)(device, &image_dl_info as *const _ as *const c_void, std::ptr::null(), &mut image_dset_layout)) {
                 return None;
             }
 
@@ -659,7 +659,7 @@ impl VulkanCore {
                 push_constant_range_count: 0,
                 p_push_constant_ranges: std::ptr::null(),
             };
-            if !vk_ok((lib.vkCreatePipelineLayout)(device, &c_pl_info as *const _ as *const c_void, std::ptr::null(), &mut cells_pipe_layout), "vkCreatePipelineLayout") {
+            if !vk_try("vkCreatePipelineLayout", || (lib.vkCreatePipelineLayout)(device, &c_pl_info as *const _ as *const c_void, std::ptr::null(), &mut cells_pipe_layout)) {
                 return None;
             }
 
@@ -673,7 +673,7 @@ impl VulkanCore {
                 push_constant_range_count: 0,
                 p_push_constant_ranges: std::ptr::null(),
             };
-            if !vk_ok((lib.vkCreatePipelineLayout)(device, &i_pl_info as *const _ as *const c_void, std::ptr::null(), &mut image_pipe_layout), "vkCreatePipelineLayout") {
+            if !vk_try("vkCreatePipelineLayout", || (lib.vkCreatePipelineLayout)(device, &i_pl_info as *const _ as *const c_void, std::ptr::null(), &mut image_pipe_layout)) {
                 return None;
             }
 
@@ -706,7 +706,7 @@ impl VulkanCore {
                 p_pool_sizes: pool_sizes.as_ptr(),
             };
             let mut desc_pool = 0u64;
-            if !vk_ok((lib.vkCreateDescriptorPool)(device, &dp_info as *const _ as *const c_void, std::ptr::null(), &mut desc_pool), "vkCreateDescriptorPool") {
+            if !vk_try("vkCreateDescriptorPool", || (lib.vkCreateDescriptorPool)(device, &dp_info as *const _ as *const c_void, std::ptr::null(), &mut desc_pool)) {
                 return None;
             }
             let image_pool_sizes = [
@@ -723,7 +723,7 @@ impl VulkanCore {
                 p_pool_sizes: image_pool_sizes.as_ptr(),
             };
             let mut image_desc_pool = 0u64;
-            if !vk_ok((lib.vkCreateDescriptorPool)(device, &image_dp_info as *const _ as *const c_void, std::ptr::null(), &mut image_desc_pool), "vkCreateDescriptorPool") {
+            if !vk_try("vkCreateDescriptorPool", || (lib.vkCreateDescriptorPool)(device, &image_dp_info as *const _ as *const c_void, std::ptr::null(), &mut image_desc_pool)) {
                 return None;
             }
 
@@ -744,7 +744,7 @@ impl VulkanCore {
                 descriptor_set_count: 2,
                 p_set_layouts: layouts.as_ptr(),
             };
-            if !vk_ok((lib.vkAllocateDescriptorSets)(device, &ds_alloc as *const _ as *const c_void, cells_dsets.as_mut_ptr()), "vkAllocateDescriptorSets") {
+            if !vk_try("vkAllocateDescriptorSets", || (lib.vkAllocateDescriptorSets)(device, &ds_alloc as *const _ as *const c_void, cells_dsets.as_mut_ptr())) {
                 return None;
             }
 
@@ -802,7 +802,7 @@ unsafe fn create_shader_module(lib: &VkLib, device: VkDevice, spv: &[u8]) -> VkS
             p_code: aligned.as_ptr(),
         };
         let mut module = 0u64;
-        if !vk_ok((lib.vkCreateShaderModule)(device, &info as *const _ as *const c_void, std::ptr::null(), &mut module), "vkCreateShaderModule") {
+        if !vk_try("vkCreateShaderModule", || (lib.vkCreateShaderModule)(device, &info as *const _ as *const c_void, std::ptr::null(), &mut module)) {
             return 0;
         }
         module
@@ -853,7 +853,7 @@ unsafe fn create_vk_sampler(lib: &VkLib, device: VkDevice, filter: u32) -> VkSam
             unnormalized_coordinates: 0,
         };
         let mut sampler = 0u64;
-        if !vk_ok((lib.vkCreateSampler)(device, &info as *const _ as *const c_void, std::ptr::null(), &mut sampler), "vkCreateSampler") {
+        if !vk_try("vkCreateSampler", || (lib.vkCreateSampler)(device, &info as *const _ as *const c_void, std::ptr::null(), &mut sampler)) {
             return 0;
         }
         sampler
@@ -968,7 +968,7 @@ unsafe fn create_render_pass(
             p_dependencies: std::ptr::null(),
         };
         let mut rp = 0u64;
-        if !vk_ok((lib.vkCreateRenderPass)(device, &rp_info as *const _ as *const c_void, std::ptr::null(), &mut rp), "vkCreateRenderPass") {
+        if !vk_try("vkCreateRenderPass", || (lib.vkCreateRenderPass)(device, &rp_info as *const _ as *const c_void, std::ptr::null(), &mut rp)) {
             return 0;
         }
         rp
@@ -1264,10 +1264,9 @@ unsafe fn create_graphics_pipeline(
         };
         let mut pipe = 0u64;
         // A pipeline handle of 0 makes every draw with it a no-op.
-        if !vk_ok(
-            (lib.vkCreateGraphicsPipelines)(device, 0, 1, &pipe_info as *const _ as *const c_void, std::ptr::null(), &mut pipe),
-            "vkCreateGraphicsPipelines",
-        ) {
+        if !vk_try("vkCreateGraphicsPipelines", || {
+            (lib.vkCreateGraphicsPipelines)(device, 0, 1, &pipe_info as *const _ as *const c_void, std::ptr::null(), &mut pipe)
+        }) {
             return 0;
         }
         pipe
@@ -1424,6 +1423,35 @@ impl Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every checked call while the device is set up is needed by every
+    /// frame (command buffers, descriptor sets, shaders, uniform buffers),
+    /// so a failure at any of them must give no device (the app then runs
+    /// without a GPU) instead of one holding a null handle.
+    #[test]
+    fn device_setup_gives_no_device_at_any_failure() {
+        // Instances made (and, on failure, left behind) here share the
+        // loader with other tests' swapchains.
+        let _gpu = fault::GPU.lock();
+        fault::observe();
+        // SAFETY: a fresh instance and device, independent of the shared one.
+        let healthy = unsafe { VulkanCore::try_init() };
+        let checks = fault::finish().checked();
+        if healthy.is_none() {
+            eprintln!("no usable Vulkan device; skipping");
+            return;
+        }
+        drop(healthy);
+        assert!(checks > 10, "setup checks its results ({checks} checks)");
+        for n in 0..checks {
+            fault::fail_nth(n);
+            // SAFETY: as above.
+            let core = unsafe { VulkanCore::try_init() };
+            let report = fault::finish();
+            assert_eq!(report.injected(), 1, "check {n} of {checks} was reached");
+            assert!(core.is_none(), "a device was handed out after check {n} of {checks} failed");
+        }
+    }
 
     #[test]
     fn custom_shaders_are_rejected() {
