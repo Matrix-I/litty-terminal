@@ -69,10 +69,19 @@ pub(super) enum Step {
     Done(Result<String, String>),
 }
 
+/// Why a run fails when its window was hidden: an occluded window stops
+/// drawing, so no frame shows the echo, or one shows it only once the window
+/// is visible again (a wait, not a latency).
+const OCCLUDED: &str = "the benchmark window was covered or hidden while measuring; keep it visible on the active Space and run again";
+
 pub(super) struct InputLatencyRun {
     target: usize,
     started: Instant,
     ready: bool,
+    /// The window is occluded now.
+    occluded: bool,
+    /// The window was occluded at some point since measuring started.
+    occluded_while_ready: bool,
     typed: usize,
     next_at: Instant,
     seed: u64,
@@ -88,6 +97,8 @@ impl InputLatencyRun {
             target,
             started: now,
             ready: false,
+            occluded: false,
+            occluded_while_ready: false,
             typed: 0,
             next_at: now,
             seed: 0x9E37_79B9_7F4A_7C15,
@@ -97,11 +108,31 @@ impl InputLatencyRun {
         }
     }
 
+    /// Follow the window's occlusion state. Read from `State::occluded`, the
+    /// flag that stops drawing, which focus and key events clear as well.
+    fn set_occluded(&mut self, occluded: bool) {
+        self.occluded = occluded;
+        self.occluded_while_ready |= occluded && self.ready;
+    }
+
+    /// Set once the window was hidden while measuring (or still is when
+    /// measuring starts); the samples are then no latency figures.
+    fn occlusion_error(&self) -> Option<&'static str> {
+        (self.ready && (self.occluded || self.occluded_while_ready)).then_some(OCCLUDED)
+    }
+
     /// Called from `about_to_wait`: wait for the echo child, then type the next key.
     pub(super) fn tick(&mut self, s: &mut State, waker: &Waker, now: Instant) -> Step {
+        self.set_occluded(s.occluded);
+        if let Some(e) = self.occlusion_error() {
+            return Step::Done(Err(e.into()));
+        }
         if !self.ready {
             if top_left(s) == Some(bench_input::READY_MARK) {
                 self.ready = true;
+                if let Some(e) = self.occlusion_error() {
+                    return Step::Done(Err(e.into()));
+                }
                 // Let the first frames and glyph rasterization settle.
                 self.next_at = now + bench_input::SETTLE_DELAY;
             } else if now.duration_since(self.started) > bench_input::READY_DEADLINE {
@@ -144,6 +175,11 @@ impl InputLatencyRun {
     /// Called right after a draw. A frame submitted after the echo was seen
     /// contains it: wait for the GPU and record the sample.
     pub(super) fn after_render(&mut self, s: &mut State) -> Option<Result<String, String>> {
+        self.set_occluded(s.occluded);
+        if let Some(e) = self.occlusion_error() {
+            self.pending = None;
+            return Some(Err(e.into()));
+        }
         let p = self.pending.as_ref()?;
         let t_seen = p.t_seen?;
         if s.renderer.frames_submitted() == self.frames_before {
@@ -272,5 +308,23 @@ mod tests {
         assert_eq!(press.physical, PhysicalKey::Code(KeyCode::KeyS));
         assert!(press.pressed && !press.repeat);
         assert!(!key_event(1, false).1.pressed);
+    }
+
+    #[test]
+    fn occlusion_fails_the_run_only_once_measuring_started() {
+        let mut run = InputLatencyRun::new(5);
+        run.set_occluded(true);
+        assert_eq!(run.occlusion_error(), None, "covered while starting up: not measuring yet");
+        run.ready = true;
+        assert_eq!(run.occlusion_error(), Some(OCCLUDED), "still covered when measuring starts");
+
+        let mut run = InputLatencyRun::new(5);
+        run.set_occluded(true);
+        run.set_occluded(false);
+        run.ready = true;
+        assert_eq!(run.occlusion_error(), None, "shown again before measuring");
+        run.set_occluded(true);
+        run.set_occluded(false);
+        assert_eq!(run.occlusion_error(), Some(OCCLUDED), "a sample taken across a hidden spell is not a latency");
     }
 }
