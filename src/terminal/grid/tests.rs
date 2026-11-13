@@ -2519,3 +2519,36 @@ fn sgr_fast_path_keeps_parameters_after_the_sixteenth() {
     assert_eq!(slow.display_row(0)[1].fg, FG_BOLD);
     assert_eq!(fast.display_row(0)[1].fg, slow.display_row(0)[1].fg);
 }
+
+#[test]
+fn kitty_delete_on_alt_screen_keeps_main_screen_images() {
+    let px = "AAAAAA==";
+    let setup = |g: &mut Grid| {
+        g.cell_px = (10, 20);
+        feed(g, &format!("\x1b_Ga=T,f=32,s=1,v=1,i=7,q=2;{px}\x1b\\"));
+        feed(g, "\x1b[?1049h");
+        feed(g, "\x1b_Ga=p,i=7,q=2\x1b\\");
+        feed(g, &format!("\x1b_Ga=T,f=32,s=1,v=1,i=8,q=2;{px}\x1b\\"));
+        assert_eq!(g.graphics.placements.iter().filter(|p| !p.alt).count(), 1);
+        assert_eq!(g.graphics.placements.iter().filter(|p| p.alt).count(), 2);
+    };
+    let main_only = |g: &Grid| g.graphics.placements.iter().all(|p| !p.alt && p.image_id == 7) && g.graphics.placements.len() == 1;
+
+    for (delete, keeps_8) in [("d=a", true), ("d=A", false)] {
+        let mut g = Grid::new(20, 5);
+        setup(&mut g);
+        feed(&mut g, &format!("\x1b_Ga=d,{delete},q=2\x1b\\"));
+        assert!(main_only(&g), "{delete} on the alternate screen removed a main-screen placement");
+        assert!(g.graphics.image(7).is_some(), "{delete} freed an image the main screen still shows");
+        assert_eq!(g.graphics.image(8).is_some(), keeps_8, "{delete}: alt-only image 8");
+    }
+
+    for delete in ["d=i,i=7", "d=I,i=7"] {
+        let mut g = Grid::new(20, 5);
+        setup(&mut g);
+        feed(&mut g, &format!("\x1b_Ga=d,{delete},q=2\x1b\\"));
+        let left: Vec<(u32, bool)> = g.graphics.placements.iter().map(|p| (p.image_id, p.alt)).collect();
+        assert_eq!(left, [(7, false), (8, true)], "{delete} on the alternate screen");
+        assert!(g.graphics.image(7).is_some(), "{delete} freed an image the main screen still shows");
+    }
+}
