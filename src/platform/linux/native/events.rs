@@ -68,8 +68,10 @@ pub struct WmStateAtoms {
     pub hidden: c_ulong,
 }
 
-/// Whether the window manager lists the window as hidden (minimized, or on
-/// another workspace for managers that unmap nothing).
+/// Whether the window manager lists the window as hidden: EWMH sets it for a
+/// window that would not show even on the current workspace (minimized).
+/// Some managers (mutter) minimize without unmapping, so this is all they
+/// report.
 pub fn wm_state_hidden(atoms: &[c_ulong], names: WmStateAtoms) -> bool {
     atoms.contains(&names.hidden)
 }
