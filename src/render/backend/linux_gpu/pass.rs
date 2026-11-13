@@ -107,8 +107,11 @@ impl CommandEncoder {
         RenderPass { vk, call_idx: 0 }
     }
 
-    pub fn present_and_submit(self, frame: SurfaceFrame) {
-        let Some(vk) = &self.vk else { return };
+    /// Whether the frame reached the presentation engine (`VK_SUCCESS` or
+    /// `VK_SUBOPTIMAL_KHR`); only then does the window system see a new
+    /// frame (on Wayland, the present's commit).
+    pub fn present_and_submit(self, frame: SurfaceFrame) -> bool {
+        let Some(vk) = &self.vk else { return false };
         unsafe {
             // Pending uploads run first, in the same submission.
             let mut uploads = vk.uploads.lock();
@@ -131,7 +134,7 @@ impl CommandEncoder {
                 && vk_try("vkQueueSubmit", || (vk.lib.vkQueueSubmit)(vk.queue, 1, &submit as *const _ as *const c_void, frame.fence));
             if !submitted {
                 give_up_frame(vk, batch, frame.image_avail_sem, frame.fence);
-                return;
+                return false;
             }
             vk.in_flight.lock().submitted(frame.fence);
             // Presenting can block on the display; uploads need not wait for it.
@@ -160,9 +163,11 @@ impl CommandEncoder {
             };
             // Out of date or suboptimal: the next acquire fails or the
             // renderer reconfigures, so only unexpected errors are reported.
-            present_ok(reported("vkQueuePresentKHR", || {
+            let result = reported("vkQueuePresentKHR", || {
                 (vk.lib.vkQueuePresentKHR)(vk.queue, &present as *const _ as *const c_void)
-            }));
+            });
+            present_ok(result);
+            matches!(result, VK_SUCCESS | VK_SUBOPTIMAL_KHR)
         }
     }
 

@@ -3,7 +3,7 @@ FROM docker.io/library/rust:1.99.1-trixie
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libvulkan1 mesa-vulkan-drivers \
     fonts-dejavu-core fonts-liberation dbus-x11 xvfb xauth openbox \
-    xdotool x11-utils x11-xserver-utils xdg-utils python3 fish zsh \
+    xdotool x11-utils x11-xserver-utils xdg-utils python3 fish zsh weston \
     && rm -rf /var/lib/apt/lists/*
 # Optional host-trusted CA bundle for networks with an enterprise TLS proxy.
 # Only public certificates enter the test image; TLS verification stays enabled.

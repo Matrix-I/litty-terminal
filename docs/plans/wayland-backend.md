@@ -39,7 +39,15 @@ Source: [2026-11-11 review](../reviews/2026-11-11-linux-history-ai-graphics.md).
 Each phase lands on its own branch (`feat/wayland-<phase>`), builds and
 passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
 
-1. **Window and surface.** `NativeWindow` becomes an enum over X11 and
+1. **Window and surface.** *Done 2026-11-13 on `feat/wayland-window`,
+   opt-in with `LITTY_BACKEND=wayland` until input lands. Decisions taken:
+   sctk 0.20 as a direct dependency (no default features; its reexported
+   `wayland-client`); one process-wide connection, never closed (the
+   clipboard keeps its display pointer); frame callbacks requested right
+   before each present (`Window::pre_present_notify`) so the present's
+   commit carries them. The `xkbcommon` question is still open: sctk's
+   keyboard module links libxkbcommon through the `xkbcommon` crate, so
+   phase 2 chooses between that and dlopen.* `NativeWindow` becomes an enum over X11 and
    Wayland backends behind the existing API (`platform::*` names stay
    the same). An `xdg_toplevel` with a Vulkan surface, configure and
    resize, close, title and app id (`litty`, which matches the `.desktop`

@@ -4,6 +4,7 @@ pub mod app;
 pub mod events;
 pub mod monitor;
 pub mod portal;
+pub mod wayland;
 pub mod window;
 pub mod x11;
 pub mod xim;
