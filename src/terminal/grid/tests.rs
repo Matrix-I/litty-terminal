@@ -4,6 +4,7 @@
 use super::*;
 use super::colors::{default_bg, default_fg, palette, parse_x11_color, palette_with};
 use super::links::osc8_target;
+use super::clusters::APPEND_MEMO;
 use super::storage::{MAX_SCROLLBACK, SCROLLBACK_BYTES_DEFAULT, lines_for_bytes};
 
 /// A width whose default scrollback (416 lines) is small enough to fill in a test.
@@ -2551,4 +2552,29 @@ fn kitty_delete_on_alt_screen_keeps_main_screen_images() {
         assert_eq!(left, [(7, false), (8, true)], "{delete} on the alternate screen");
         assert!(g.graphics.image(7).is_some(), "{delete} freed an image the main screen still shows");
     }
+}
+
+#[test]
+fn repeated_cluster_appends_stay_correct_after_the_table_is_reset() {
+    let mut g = Grid::new(20, 3);
+    feed(&mut g, "👍\u{1F3FD}");
+    assert_eq!(cluster_line(&g, 0), "👍\u{1F3FD}");
+    // A reset empties the table, so id 0 next names a different cluster;
+    // a remembered append must not hand out the stale id.
+    feed(&mut g, "\x1bc❤\u{FE0F}\r\n👍\u{1F3FD}");
+    assert_eq!(cluster_line(&g, 0), "❤\u{FE0F}");
+    assert_eq!(cluster_line(&g, 1), "👍\u{1F3FD}");
+    assert_eq!(g.cluster_count(), 2);
+    // The same sequence again reuses the interned cluster.
+    feed(&mut g, "👍\u{1F3FD}");
+    assert_eq!(cluster_line(&g, 1), "👍\u{1F3FD}👍\u{1F3FD}");
+    assert_eq!(g.cluster_count(), 2);
+}
+
+#[test]
+fn append_memo_misses_fall_back_to_interning() {
+    let mut g = Grid::new(20, 3);
+    g.clusters.appends = [(0x1F44D, 0x1F3FD, 7); APPEND_MEMO];
+    feed(&mut g, "👍\u{1F3FD}");
+    assert_eq!(cluster_line(&g, 0), "👍\u{1F3FD}", "a memo entry naming a missing id is ignored");
 }
