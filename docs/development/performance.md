@@ -5,6 +5,8 @@ avoid scanning scrollback for every new cluster. Existing clusters remain
 available; new clusters may temporarily lose combining marks until a later
 collection reclaims unused entries.
 
+## macOS
+
 Measured on 2026-11-13: Litty 0.12.0 release build (`cargo build --release`),
 Apple M1 Pro, macOS 27.2, one 2590 × 1492 px Retina window.
 
@@ -22,12 +24,48 @@ Two drawables at Retina size (15 MB each) make up about half of the
 1-window footprint; they are freed when the window is occluded or closed.
 Startup is dominated by `init` (~175–189 ms p50 under load: font loading and the Metal
 device, overlapped). Comparisons with other terminals are not listed: they
-have not been measured on this setup.
+have not been measured on this setup (macOS); see the Linux section for Ptyxis.
 
 > [!NOTE]
 > **Measuring Memory Footprint on macOS**: macOS Activity Monitor displays **Physical Footprint** (`task_vm_info.phys_footprint`: actual private dirty memory + compressed memory), which accurately reflects the real memory cost attributed to the process. The legacy Unix `ps -o rss` metric includes shared read-only framework pages (Metal, AppKit, and system dylib caches) shared across all macOS GUI applications.
 >
 > Run from the raw binary outside a benchmark, Litty also carries an 8 MB Dock icon bitmap that a bundled `Litty.app` does not; `+bench-ram` skips it so it measures what bundled users get.
+
+## Linux
+
+Measured on 2026-11-13: Litty release build from `feat/wayland-window`
+(`cargo build --release`), Intel Core i5-8365U, UHD Graphics 620 (Mesa, Vulkan),
+Ubuntu, kernel 7.0.0, GNOME Wayland session (window through the existing
+backend). Load average about 0.5.
+
+| Metric | Result | How it was measured |
+| :--- | :---: | :--- |
+| Idle RSS, 1 window, 1 tab | **66.8 MB** | `litty +bench-ram`, step 1 (on Linux the benchmark's "footprint" equals RSS) |
+| Idle RSS, 1 window, 3 tabs | 67.1 MB | Same run, step 2 |
+| Idle RSS, 2 windows, 6 tabs | 68.0 MB | Same run, step 3 |
+| After windows closed | 68.0 MB (leak delta +1.2 MB) | Same run, step 4: RSS does not shrink on Linux, unlike the macOS footprint |
+| Idle PSS, 1 window, 1 tab | **20–22 MB** | `Pss` from `/proc/<pid>/smaps_rollup`, 6–40 s after launch. PSS splits shared libraries (Mesa, Wayland, libc) among the processes using them, so it is the fairer number next to RSS |
+| Idle CPU | **~0.0%** | 1 window, idle shell: 1 tick (10 ms) of CPU over 30 s (`/proc/<pid>/stat`) |
+| Startup to first frame | **63.5–73.8 ms** (mean 68.1, p50 67.9) | `litty +bench-first-frame 10`, 9 runs after the first (65.6 ms); `init` about 48 ms, `gpu` about 12 ms |
+| Keystroke to frame | not measured | `litty +bench-input-latency` did not finish within 100 s on this setup; to be investigated |
+| Binary size | **4.3 MB** | `target/release/litty` (x86_64), about 1.4 MB of it is `naga` |
+
+RSS counts shared pages, so it overstates the cost of a GUI process on Linux;
+use PSS when comparing with other terminals.
+
+### Comparison with the Ubuntu default terminal
+
+Ptyxis (the default on this Ubuntu release), one window, one tab, idle zsh,
+measured 8 s after launch with the same `smaps_rollup` method:
+
+| Terminal | RSS | PSS |
+| :--- | :---: | :---: |
+| Ptyxis (main process + `ptyxis-agent`) | ~125 MB | **~47 MB** |
+| Litty | 67–69 MB | **~20–22 MB** |
+
+This is one run per terminal on one machine, and Ptyxis was freshly launched
+while the Litty process had been up longer, so treat the ratio (about 2×) as
+indicative, not a benchmark.
 
 ## 🚀 Measured Engine Latencies & Microbenchmarks
 
