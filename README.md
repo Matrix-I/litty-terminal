@@ -17,7 +17,7 @@
 
 - **Native GPU rendering** on Metal (macOS) and Vulkan (Linux): the whole grid in a single instanced draw call.
 - **12-byte cells in a zero-allocation ring buffer**, so heavy output never thrashes the heap.
-- **0.0% idle CPU** and 61 MB idle footprint with one window, 28 MB with all windows closed (`ControlFlow::Wait`, event-driven; see [Performance](docs/development/performance.md) for how each number is measured).
+- **0.0% idle CPU** and 61 MB idle footprint with one window, 28 MB with all windows closed (`ControlFlow::Wait`, event-driven; macOS figures. On Linux: ~67 MB RSS / ~21 MB PSS with one window; see [Performance](docs/development/performance.md) for how each number is measured).
 - **Ghostty-compatible configuration** with live reload.
 - **Tabs, windows and splits** that inherit the working directory. Drag a tab title left or right to reorder tabs within a window, or drag it away from the tab bar to pull it out into a new window that follows the pointer, and move it over another window's tab bar to merge it there, as in Chrome.
 - **Seamless title bar on Linux**: the window has no native frame; its title bar is drawn in the terminal's background color with minimize / maximize / close buttons, drag-to-move, double-click to maximize and resizable edges.
