@@ -2,9 +2,10 @@
 //!
 //! Phase 1 of the [Wayland backend plan](../../../../docs/plans/wayland-backend.md):
 //! window, Vulkan surface, configure and resize, close, title and app id,
-//! and frame callbacks pacing redraws. Input, scale, decorations, text
-//! input, occlusion and activation are later phases; until they land the
-//! backend is opt-in (`LITTY_BACKEND=wayland`).
+//! and frame callbacks pacing redraws; keyboard and pointer input (phase 2)
+//! live in [`super::wayland_input`]. Scale, decorations, text input,
+//! occlusion and activation are later phases; until they land the backend
+//! is opt-in (`LITTY_BACKEND=wayland`).
 //!
 //! The connection is never closed: the clipboard (`smithay-clipboard`) keeps
 //! its `wl_display` pointer for the life of the process.
@@ -20,14 +21,18 @@ use smithay_client_toolkit::reexports::client::globals::registry_queue_init;
 use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_surface};
 use smithay_client_toolkit::reexports::client::{Connection, EventQueue, Proxy, QueueHandle};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
+use smithay_client_toolkit::seat::SeatState;
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::xdg::XdgShell;
 use smithay_client_toolkit::shell::xdg::window::{Window, WindowConfigure, WindowDecorations, WindowHandler};
+use smithay_client_toolkit::shm::Shm;
 use smithay_client_toolkit::{
-    delegate_compositor, delegate_output, delegate_registry, delegate_xdg_shell, delegate_xdg_window, registry_handlers,
+    delegate_compositor, delegate_output, delegate_pointer, delegate_registry, delegate_seat, delegate_shm,
+    delegate_xdg_shell, delegate_xdg_window, registry_handlers,
 };
 
-use crate::platform::gui::{PhysicalSize, RawHandle, WindowEvent, WindowId, WindowSpec};
+use super::wayland_input::{Cursor, KeyRepeat, Keyboard, Pointer, RepeatTimer};
+use crate::platform::gui::{CursorIcon, PhysicalSize, RawHandle, WindowEvent, WindowId, WindowSpec};
 
 /// Matches the `.desktop` file, so the shell shows Litty's name and icon.
 const APP_ID: &str = "litty";
@@ -172,29 +177,40 @@ impl Reported {
     }
 }
 
-/// Per-window state the dispatch handlers update.
-struct WindowShared {
+/// Per-window state the dispatch handlers update. Lock order: the dispatch
+/// queue first, then this.
+pub(super) struct WindowShared {
     id: WindowId,
-    state: Mutex<SharedState>,
+    pub(super) state: Mutex<SharedState>,
 }
 
-struct SharedState {
+pub(super) struct SharedState {
     /// Events for the app, drained by `poll_events`.
-    events: Vec<WindowEvent>,
+    pub(super) events: Vec<WindowEvent>,
     pacer: FramePacer,
     reported: Reported,
+    /// Shown whenever a pointer enters the window.
+    pub(super) cursor: Cursor,
 }
 
-/// Registry, outputs and the windows the handlers route events to.
-struct State {
+/// Globals, input devices and the windows the handlers route events to.
+pub(super) struct State {
     registry: RegistryState,
     outputs: OutputState,
+    pub(super) compositor: CompositorState,
+    pub(super) shm: Shm,
+    pub(super) seats: SeatState,
+    pub(super) keyboards: Vec<Keyboard>,
+    pub(super) pointers: Vec<Pointer>,
+    pub(super) repeat: KeyRepeat<ObjectId>,
+    /// `None` when no timerfd could be made: keys then do not repeat.
+    pub(super) repeat_timer: Option<RepeatTimer>,
     windows: Vec<(ObjectId, Weak<WindowShared>)>,
 }
 
 impl State {
     /// The live window whose `wl_surface` is `surface`, pruning closed ones.
-    fn window(&mut self, surface: &wl_surface::WlSurface) -> Option<Arc<WindowShared>> {
+    pub(super) fn window(&mut self, surface: &wl_surface::WlSurface) -> Option<Arc<WindowShared>> {
         self.windows.retain(|(_, w)| w.strong_count() > 0);
         let id = surface.id();
         self.windows.iter().find(|(s, _)| *s == id).and_then(|(_, w)| w.upgrade())
@@ -204,7 +220,6 @@ impl State {
 struct Client {
     conn: Connection,
     qh: QueueHandle<State>,
-    compositor: CompositorState,
     xdg: XdgShell,
     /// Dispatched only by the event loop (and a new window's first round
     /// trips); handlers never take this lock again.
@@ -228,9 +243,25 @@ fn connect() -> Result<Client, String> {
     let qh = queue.handle();
     let compositor = CompositorState::bind(&globals, &qh).map_err(|e| format!("no wl_compositor: {e}"))?;
     let xdg = XdgShell::bind(&globals, &qh).map_err(|e| format!("no xdg_wm_base: {e}"))?;
-    let state = State { registry: RegistryState::new(&globals), outputs: OutputState::new(&globals, &qh), windows: Vec::new() };
+    let shm = Shm::bind(&globals, &qh).map_err(|e| format!("no wl_shm: {e}"))?;
+    let repeat_timer = RepeatTimer::new().map_err(|e| eprintln!("litty: {e}; keys do not repeat")).ok();
+    let state = State {
+        registry: RegistryState::new(&globals),
+        outputs: OutputState::new(&globals, &qh),
+        seats: SeatState::new(&globals, &qh),
+        compositor,
+        shm,
+        keyboards: Vec::new(),
+        pointers: Vec::new(),
+        repeat: KeyRepeat::default(),
+        repeat_timer,
+        windows: Vec::new(),
+    };
     super::app::register_wayland_fd(conn.backend().poll_fd().as_raw_fd());
-    Ok(Client { conn, qh, compositor, xdg, queue: Mutex::new((queue, state)) })
+    if let Some(timer) = &state.repeat_timer {
+        super::app::register_key_repeat_fd(timer.fd());
+    }
+    Ok(Client { conn, qh, xdg, queue: Mutex::new((queue, state)) })
 }
 
 /// Xlib exits the process when its connection breaks; do the same, saying why.
@@ -247,6 +278,19 @@ pub fn dispatch() {
     if let Err(e) = queue.dispatch_pending(state) {
         connection_lost(e);
     }
+}
+
+/// The key repeat timer fired: queue the repeated key for the next poll.
+/// Events already read run first, so a release that arrived with the timer
+/// stops the repeat rather than trailing it.
+pub fn key_repeat_due() {
+    let Some(client) = connected() else { return };
+    let mut guard = client.queue.lock();
+    let (queue, state) = &mut *guard;
+    if let Err(e) = queue.dispatch_pending(state) {
+        connection_lost(e);
+    }
+    state.key_repeat_due();
 }
 
 /// What the event loop does with the Wayland socket while it waits.
@@ -299,7 +343,9 @@ struct WaylandWindowInner {
 impl WaylandWindow {
     pub fn create(spec: &WindowSpec, id: WindowId) -> Result<Self, String> {
         let client = client()?;
-        let surface = client.compositor.create_surface(&client.qh);
+        let mut guard = client.queue.lock();
+        let (queue, state) = &mut *guard;
+        let surface = state.compositor.create_surface(&client.qh);
         // Litty draws its own title bar when the spec turns decorations off.
         let decorations = if spec.decorations { WindowDecorations::RequestServer } else { WindowDecorations::RequestClient };
         let window = client.xdg.create_window(surface, decorations, &client.qh);
@@ -316,11 +362,10 @@ impl WaylandWindow {
                 events: Vec::new(),
                 pacer: FramePacer::default(),
                 reported: Reported { size, maximized: false, fullscreen: false, activated: false },
+                cursor: Cursor::default(),
             }),
         });
 
-        let mut guard = client.queue.lock();
-        let (queue, state) = &mut *guard;
         state.windows.push((window.wl_surface().id(), Arc::downgrade(&shared)));
         // The first commit, without a buffer, asks for the first configure.
         window.commit();
@@ -333,6 +378,9 @@ impl WaylandWindow {
             }
         }
         drop(guard);
+        // Input the round trips dispatched waits in the window's queue; the
+        // loop must poll it before it blocks.
+        super::app::wakeup_main_loop();
         Ok(Self(Arc::new(WaylandWindowInner { window, shared, client })))
     }
 
@@ -396,6 +444,19 @@ impl WaylandWindow {
     pub fn iconify(&self) {
         self.0.window.set_minimized();
     }
+
+    /// Show `icon` (or nothing) while a pointer is over this window. Motion
+    /// repeats the same request, which costs nothing here.
+    pub fn set_cursor(&self, icon: CursorIcon, visible: bool) {
+        let cursor = Cursor { icon, visible };
+        if std::mem::replace(&mut self.0.shared.state.lock().cursor, cursor) == cursor {
+            return;
+        }
+        let guard = self.0.client.queue.lock();
+        for pointer in guard.1.pointers.iter().filter(|p| p.is_over(&self.0.shared)) {
+            pointer.show(&self.0.client.conn, cursor);
+        }
+    }
 }
 
 impl CompositorHandler for State {
@@ -445,7 +506,7 @@ impl WindowHandler for State {
         let Some(win) = self.window(window.wl_surface()) else { return };
         {
             let mut st = win.state.lock();
-            let SharedState { events, pacer, reported } = &mut *st;
+            let SharedState { events, pacer, reported, .. } = &mut *st;
             reported.apply(Configure::from(&configure), events);
             pacer.configure();
         }
@@ -458,11 +519,14 @@ impl ProvidesRegistryState for State {
         &mut self.registry
     }
 
-    registry_handlers![OutputState];
+    registry_handlers![OutputState, SeatState];
 }
 
 delegate_compositor!(State);
 delegate_output!(State);
+delegate_seat!(State);
+delegate_pointer!(State);
+delegate_shm!(State);
 delegate_xdg_shell!(State);
 delegate_xdg_window!(State);
 delegate_registry!(State);

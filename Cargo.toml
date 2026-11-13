@@ -29,6 +29,10 @@ smithay-clipboard = "0.7"
 # smithay-clipboard, whose default `dlopen` feature also loads libwayland at
 # run time instead of linking it.
 smithay-client-toolkit = { version = "0.20", default-features = false }
+# Wayland keyboard layouts. libxkbcommon is opened at run time, as libX11
+# and libwayland are, so the binary still links nothing but libc; sctk's own
+# `xkbcommon` feature would link it.
+xkbcommon-dl = "0.4"
 # `custom-shader`: Vulkan takes SPIR-V only, so GLSL is compiled at load time
 # (Metal compiles shader source itself).
 naga = { version = "30", default-features = false, features = ["glsl-in", "spv-out"] }

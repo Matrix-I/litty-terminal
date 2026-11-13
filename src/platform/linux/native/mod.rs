@@ -5,9 +5,11 @@ pub mod events;
 pub mod monitor;
 pub mod portal;
 pub mod wayland;
+mod wayland_input;
 pub mod window;
 pub mod x11;
 pub mod xim;
+pub mod xkb;
 
 #[allow(unused_imports)]
 pub use app::run_native;

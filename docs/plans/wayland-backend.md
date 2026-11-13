@@ -45,16 +45,25 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    `wayland-client`); one process-wide connection, never closed (the
    clipboard keeps its display pointer); frame callbacks requested right
    before each present (`Window::pre_present_notify`) so the present's
-   commit carries them. The `xkbcommon` question is still open: sctk's
-   keyboard module links libxkbcommon through the `xkbcommon` crate, so
-   phase 2 chooses between that and dlopen.* `NativeWindow` becomes an enum over X11 and
+   commit carries them.* `NativeWindow` becomes an enum over X11 and
    Wayland backends behind the existing API (`platform::*` names stay
    the same). An `xdg_toplevel` with a Vulkan surface, configure and
    resize, close, title and app id (`litty`, which matches the `.desktop`
    file), and frame callbacks driving redraws (idle CPU stays at 0%).
    Test: open, resize and close under a headless compositor (`weston
    --backend=headless`) in `scripts/linux/test.sh`.
-2. **Input.** `wl_seat` keyboard (xkb keymap, modifiers, client-side key
+2. **Input.** *Done 2026-11-14 on `feat/wayland-input`. Decisions taken:
+   libxkbcommon is opened at run time through `xkbcommon-dl` (the binary
+   still links only libc; without the library keys fall back to the evdev
+   table, a US layout); keyboards are handled on raw `wl_keyboard`, since
+   sctk's keyboard module needs its linking `xkbcommon` feature. Keys are
+   named from the keysym the keymap produces, the physical key from the
+   evdev table. Key repeat runs on a timerfd the event loop watches; a
+   compositor that takes over repeat (`wl_keyboard` v10, `repeat_info`
+   rate 0, as GNOME 49 does) sends `repeated` keys instead. Pointer
+   through sctk with `wp_cursor_shape_v1` or the cursor theme. Not yet:
+   dead keys and Compose, which come with text input (phase 5), and
+   horizontal scrolling, which X11 does not report either.* `wl_seat` keyboard (xkb keymap, modifiers, client-side key
    repeat at the compositor's rate and delay), pointer (buttons, motion,
    axis including high-resolution scroll), and cursor shapes through
    `wp_cursor_shape_v1`, falling back to a themed cursor surface. The
