@@ -1438,7 +1438,9 @@ mod tests {
         let (x, y) = (100 + 100, 100 + 50);
         assert!(monitor.position.x <= x && x < monitor.position.x + monitor.size.width as i32, "{monitor:?}");
         assert!(monitor.position.y <= y && y < monitor.position.y + monitor.size.height as i32, "{monitor:?}");
-        assert!(monitor.refresh_rate_millihertz.is_some_and(|hz| hz > 0), "{monitor:?}");
+        // Xvfb's only mode has no timings (dot clock 0), so no rate is
+        // reported there; `monitor.rs` tests the timing math.
+        assert!(monitor.refresh_rate_millihertz.is_none_or(|hz| hz > 0), "{monitor:?}");
     }
 
     /// Needs a window manager and shows a fullscreen window for a moment,
