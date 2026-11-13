@@ -375,9 +375,9 @@ pub(super) struct ScrollGesture {
 impl ScrollGesture {
     /// Events for one frame's vertical scroll. Wheels scroll in notches
     /// (high-resolution `value120` where sent); touchpads and other
-    /// continuous sources scroll in pixels. Wayland's axis points down,
-    /// Litty's up.
-    pub(super) fn events(&mut self, v: &AxisScroll, source: Option<wl_pointer::AxisSource>, out: &mut Vec<WindowEvent>) {
+    /// continuous sources scroll in pixels (logical ones, times `scale` for
+    /// the app's buffer pixels). Wayland's axis points down, Litty's up.
+    pub(super) fn events(&mut self, v: &AxisScroll, source: Option<wl_pointer::AxisSource>, scale: f64, out: &mut Vec<WindowEvent>) {
         let notches = if v.value120 != 0 {
             Some(v.value120 as f32 / VALUE120_PER_NOTCH)
         } else if v.discrete != 0 {
@@ -400,7 +400,7 @@ impl ScrollGesture {
                 } else {
                     TouchPhase::Started
                 };
-                out.push(WindowEvent::MouseWheel { delta: ScrollDelta::Pixels(PhysicalPosition::new(0.0, -v.absolute)), phase });
+                out.push(WindowEvent::MouseWheel { delta: ScrollDelta::Pixels(PhysicalPosition::new(0.0, -v.absolute * scale)), phase });
             }
             None => {}
         }
@@ -508,8 +508,9 @@ impl PointerHandler for State {
             let Some(win) = self.window(&event.surface) else { continue };
             let p = &mut self.pointers[index];
             let (x, y) = event.position;
-            // Logical and physical pixels agree until scaling lands (phase 3).
-            let moved = || convert_raw_event(LinuxRawEvent::Motion { x, y }, 1.0);
+            // Positions arrive in logical pixels; the app works in buffer ones.
+            let scale = win.state.lock().scale();
+            let moved = || convert_raw_event(LinuxRawEvent::Motion { x, y }, scale);
             if let PointerEventKind::Enter { .. } = event.kind {
                 p.over = Some(Arc::downgrade(&win));
                 // The cursor is per enter: the compositor forgets it on
@@ -527,10 +528,10 @@ impl PointerHandler for State {
                 PointerEventKind::Motion { .. } => st.events.extend(moved()),
                 PointerEventKind::Press { button, .. } | PointerEventKind::Release { button, .. } => {
                     let pressed = matches!(event.kind, PointerEventKind::Press { .. });
-                    st.events.extend(convert_raw_event(LinuxRawEvent::Button { button, pressed }, 1.0));
+                    st.events.extend(convert_raw_event(LinuxRawEvent::Button { button, pressed }, scale));
                 }
                 // Litty scrolls vertically only, as on X11.
-                PointerEventKind::Axis { ref vertical, source, .. } => p.scroll.events(vertical, source, &mut st.events),
+                PointerEventKind::Axis { ref vertical, source, .. } => p.scroll.events(vertical, source, scale, &mut st.events),
             }
         }
     }
@@ -727,9 +728,9 @@ mod tests {
     fn wheel_notches_scroll_lines_upward_positive() {
         let mut g = ScrollGesture::default();
         let mut out = Vec::new();
-        g.events(&wheel(-120, -1, -15.0), Some(wl_pointer::AxisSource::Wheel), &mut out);
-        g.events(&wheel(60, 0, 7.5), Some(wl_pointer::AxisSource::Wheel), &mut out);
-        g.events(&wheel(0, 2, 30.0), Some(wl_pointer::AxisSource::Wheel), &mut out);
+        g.events(&wheel(-120, -1, -15.0), Some(wl_pointer::AxisSource::Wheel), 1.0, &mut out);
+        g.events(&wheel(60, 0, 7.5), Some(wl_pointer::AxisSource::Wheel), 1.0, &mut out);
+        g.events(&wheel(0, 2, 30.0), Some(wl_pointer::AxisSource::Wheel), 1.0, &mut out);
         assert_eq!(lines(&out), [1.0, -0.5, -2.0]);
     }
 
@@ -737,7 +738,7 @@ mod tests {
     #[test]
     fn wheel_pixels_without_a_notch_are_ignored() {
         let mut out = Vec::new();
-        ScrollGesture::default().events(&wheel(0, 0, 15.0), Some(wl_pointer::AxisSource::Wheel), &mut out);
+        ScrollGesture::default().events(&wheel(0, 0, 15.0), Some(wl_pointer::AxisSource::Wheel), 1.0, &mut out);
         assert!(out.is_empty(), "{out:?}");
     }
 
@@ -747,10 +748,10 @@ mod tests {
     fn continuous_scrolling_without_stop_just_moves() {
         let mut g = ScrollGesture::default();
         let mut out = Vec::new();
-        g.events(&wheel(0, 0, 3.0), Some(wl_pointer::AxisSource::Continuous), &mut out);
+        g.events(&wheel(0, 0, 3.0), Some(wl_pointer::AxisSource::Continuous), 1.0, &mut out);
         assert!(matches!(out[..], [WindowEvent::MouseWheel { phase: TouchPhase::Moved, .. }]), "{out:?}");
         out.clear();
-        g.events(&wheel(0, 0, 3.0), Some(wl_pointer::AxisSource::Finger), &mut out);
+        g.events(&wheel(0, 0, 3.0), Some(wl_pointer::AxisSource::Finger), 1.0, &mut out);
         assert!(matches!(out[..], [WindowEvent::MouseWheel { phase: TouchPhase::Started, .. }]), "{out:?}");
         out.clear();
         g.end(&mut out);
@@ -762,10 +763,10 @@ mod tests {
         let mut g = ScrollGesture::default();
         let mut out = Vec::new();
         let finger = Some(wl_pointer::AxisSource::Finger);
-        g.events(&wheel(0, 0, 4.0), finger, &mut out);
-        g.events(&wheel(0, 0, 6.0), finger, &mut out);
-        g.events(&AxisScroll { stop: true, ..AxisScroll::default() }, finger, &mut out);
-        g.events(&AxisScroll { stop: true, ..AxisScroll::default() }, finger, &mut out);
+        g.events(&wheel(0, 0, 4.0), finger, 1.0, &mut out);
+        g.events(&wheel(0, 0, 6.0), finger, 1.0, &mut out);
+        g.events(&AxisScroll { stop: true, ..AxisScroll::default() }, finger, 1.0, &mut out);
+        g.events(&AxisScroll { stop: true, ..AxisScroll::default() }, finger, 1.0, &mut out);
         let seen: Vec<_> = out
             .iter()
             .map(|e| match e {
@@ -774,6 +775,25 @@ mod tests {
             })
             .collect();
         assert_eq!(seen, [(-4.0, TouchPhase::Started), (-6.0, TouchPhase::Moved), (0.0, TouchPhase::Ended)], "one Ended only");
+    }
+
+    /// Touchpad pixels are logical; at 150% the content under the finger
+    /// moves 1.5 buffer pixels for each. Wheel notches are not pixels.
+    #[test]
+    fn touchpad_pixels_follow_the_scale() {
+        let mut out = Vec::new();
+        ScrollGesture::default().events(&wheel(0, 0, 4.0), Some(wl_pointer::AxisSource::Finger), 1.5, &mut out);
+        ScrollGesture::default().events(&wheel(120, 1, 15.0), Some(wl_pointer::AxisSource::Wheel), 1.5, &mut out);
+        assert!(
+            matches!(
+                out[..],
+                [
+                    WindowEvent::MouseWheel { delta: ScrollDelta::Pixels(PhysicalPosition { y: -6.0, .. }), .. },
+                    WindowEvent::MouseWheel { delta: ScrollDelta::Lines { y: -1.0 }, .. },
+                ]
+            ),
+            "{out:?}"
+        );
     }
 
     /// Every icon maps to the cursor of the same CSS name.
