@@ -71,7 +71,7 @@ non-trivial work, since it only bumps versions, badges and docs). Once the
 release is published, set the **Status** line of `docs/plans/X.Y.Z.md` to
 "released" with the date and the `ROADMAP.md` row to a historical record.
 
-> The measured README badges (**idle CPU**, **idle RAM**, **binary size**) and
+> The measured README badges (**idle CPU**, **idle RAM**; **binary size** is a `< 5 MB` budget) and
 > the table in `docs/development/performance.md` must match the numbers of the release
 > being shipped. Refresh them in §3 once `scripts/pre-release-check.sh` has
 > produced fresh figures; never ship a release with stale badges.
@@ -93,12 +93,14 @@ scripts/pre-release-check.sh
   `docs/validation/release-X.Y.Z.md` and link that committed file in the release
   notes. Keep packaging reports in `docs/validation/` too; do not upload reports
   as release assets.
-- Update the README badges **idle CPU**, **idle RAM** and **binary size**, and
-  the Litty row of `docs/development/performance.md`. The suite checks budgets
-  only and does not report idle CPU or idle RAM, so measure those yourself
-  (macOS `footprint` with the app idle and all windows closed). Binary size is
-  the byte size of the release binary in decimal MB (`ls -l`, divided by
-  1,000,000, one decimal). If a figure could not be measured, leave the old
+- Update the README badges **idle CPU** and **idle RAM**, and the Litty row
+  of `docs/development/performance.md`. The suite checks budgets only and does
+  not report idle CPU or idle RAM, so measure those yourself (macOS
+  `footprint` with the app idle and all windows closed). The **binary size**
+  badge is a budget (`< 5 MB`): check that both release binaries stay under
+  5,000,000 bytes (`ls -l`) and record the measured sizes in
+  `docs/validation/release-X.Y.Z.md`; a release over budget is a blocker
+  until the budget is raised on purpose. If a figure could not be measured, leave the old
   value only after noting it under **Known limitations**. Fold the change into
   the release commit (amend before tagging, or a `docs(readme)` commit).
 - Fill the release commit SHA in `RELEASE_NOTES.md` and the archived validation report

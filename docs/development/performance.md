@@ -16,7 +16,7 @@ Apple M1 Pro, macOS 27.2, one 2590 × 1492 px Retina window.
 | Idle CPU | **0.0%** | 1 window, idle shell: no CPU time used over 30 s (`ps -o time`) |
 | Startup to first frame | **213–219 ms** p50 warm (5 runs of 6–10, load 3–12; v0.11.1 gave 211–214 ms alternating in the same conditions) | `litty +bench-first-frame 10`: process spawn → GPU-completed first frame |
 | Keystroke to frame | **6.6–7.1 ms** p50, 15.8–16.0 ms p95 (v0.11.1 figures, not re-measured: the benchmark window was occluded during the v0.12.0 runs and an occluded window no longer draws; 3 runs, machine under load; v0.11.0 measured 6.35–6.75 ms p50 alternating in the same conditions, 3.1–3.6 ms on an idle machine) | `litty +bench-input-latency`: synthetic key → GPU-completed frame showing the echo; excludes the OS input stack and display scanout |
-| Binary size | **2.2 MB** | `target/release/litty` |
+| Binary size | **< 5 MB** (budget) | `target/release/litty`: 2.2 MB on macOS for 0.12.0; 4.3 MB on Linux x86_64 on 2026-11-13, of which about 1.4 MB is `naga` (custom shaders) |
 
 Two drawables at Retina size (15 MB each) make up about half of the
 1-window footprint; they are freed when the window is occluded or closed.
