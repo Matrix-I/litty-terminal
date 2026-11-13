@@ -232,6 +232,7 @@ mod tests {
 
     #[test]
     fn test_image_layer_prune_idle() {
+        let _gpu = crate::render::backend::TEST_GPU.lock();
         let (device, queue) = backend::shared_device_and_queue();
         let mut layer = ImageLayer::new(&device, TextureFormat::Bgra8Unorm);
 

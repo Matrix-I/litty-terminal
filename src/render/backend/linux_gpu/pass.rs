@@ -156,7 +156,9 @@ impl CommandEncoder {
             };
             // Out of date or suboptimal: the next acquire fails or the
             // renderer reconfigures, so only unexpected errors are reported.
-            present_ok(guarded("vkQueuePresentKHR", || (vk.lib.vkQueuePresentKHR)(vk.queue, &present as *const _ as *const c_void)));
+            present_ok(reported("vkQueuePresentKHR", || {
+                (vk.lib.vkQueuePresentKHR)(vk.queue, &present as *const _ as *const c_void)
+            }));
         }
     }
 
@@ -345,19 +347,33 @@ impl RenderPass {
         }
     }
 
+    /// One `custom-shader` pass: the full target, shaded from `source_tex`
+    /// (a render target, through its descriptor set and linear sampler) and
+    /// `globals` (push constants, so each pass of a frame has its own).
     pub fn draw_postfx<G: bytemuck::Pod>(
         &mut self,
         pipeline: &ObjPtr,
-        _globals: &G,
-        _source_tex: &Texture,
+        globals: &G,
+        source_tex: &Texture,
         _sampler: SamplerHandle,
     ) {
         let Some(vk) = &self.vk else { return };
-        if pipeline.0 == 0 {
+        let dset = source_tex.image_dset();
+        let size = std::mem::size_of::<G>();
+        if pipeline.0 == 0 || dset == 0 || size > super::device::POSTFX_PUSH_SIZE as usize {
             return;
         }
         unsafe {
             (vk.lib.vkCmdBindPipeline)(vk.upload_cmd, 0, pipeline.0);
+            (vk.lib.vkCmdBindDescriptorSets)(vk.upload_cmd, 0, vk.postfx_pipe_layout, 0, 1, &dset, 0, std::ptr::null());
+            (vk.lib.vkCmdPushConstants)(
+                vk.upload_cmd,
+                vk.postfx_pipe_layout,
+                VK_SHADER_STAGE_FRAGMENT_BIT,
+                0,
+                size as u32,
+                globals as *const G as *const c_void,
+            );
             (vk.lib.vkCmdDraw)(vk.upload_cmd, 3, 1, 0, 0);
         }
     }

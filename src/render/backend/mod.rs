@@ -17,6 +17,13 @@ mod linux_gpu;
 #[cfg(not(target_os = "macos"))]
 pub use linux_gpu::*;
 
+/// The app drives the GPU from one render thread, and the backend shares
+/// per-device state (the frame command buffer, the upload batch) on that
+/// assumption. Tests run in parallel, so every test that uses the shared
+/// device takes this lock first.
+#[cfg(test)]
+pub static TEST_GPU: parking_lot::Mutex<()> = parking_lot::const_mutex(());
+
 /// Supported 2D texture and surface pixel formats.
 #[allow(clippy::enum_variant_names)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

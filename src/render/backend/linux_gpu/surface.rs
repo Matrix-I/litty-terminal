@@ -703,8 +703,10 @@ mod tests {
         }
 
         /// A present error other than a stale swapchain is reported, and the
-        /// next frame still renders. The image stays acquired (it was never
-        /// presented); the swapchain has images to spare for the next one.
+        /// next frame still renders. The present is made and only its result
+        /// replaced: a failed present still consumes its wait semaphore and
+        /// releases the image, and skipping it would hold an image the next
+        /// acquire may need (`VUID-vkAcquireNextImageKHR-surface-07783`).
         #[test]
         fn a_failed_present_leaves_the_next_frame_working() {
             let Some(mut rig) = rig() else { return };

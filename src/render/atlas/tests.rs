@@ -224,6 +224,7 @@ fn loads_sfmono_nerd_font_successfully() {
 
 #[test]
 fn test_dynamic_atlas_growth_and_shaper_cap() {
+    let _gpu = crate::render::backend::TEST_GPU.lock();
     let (device, queue) = crate::render::backend::shared_device_and_queue();
 
     let fonts = load_font(&[]);
@@ -411,6 +412,7 @@ fn test_atlas() -> (Atlas, std::sync::Arc<crate::render::backend::Queue>) {
 
 #[test]
 fn color_texture_is_a_placeholder_until_a_color_glyph_is_uploaded() {
+    let _gpu = crate::render::backend::TEST_GPU.lock();
     let (mut atlas, queue) = test_atlas();
     for cp in ['a', '─', 'é'] {
         atlas.slot(&queue, cp as u32);
@@ -422,6 +424,7 @@ fn color_texture_is_a_placeholder_until_a_color_glyph_is_uploaded() {
 
 #[test]
 fn growing_the_atlas_drops_the_color_texture() {
+    let _gpu = crate::render::backend::TEST_GPU.lock();
     let (mut atlas, queue) = test_atlas();
     let (device, _) = crate::render::backend::shared_device_and_queue();
     atlas.upload_color(&queue, 1);
@@ -435,6 +438,7 @@ fn growing_the_atlas_drops_the_color_texture() {
 #[cfg(target_os = "macos")]
 #[test]
 fn an_emoji_creates_the_color_texture() {
+    let _gpu = crate::render::backend::TEST_GPU.lock();
     let (mut atlas, queue) = test_atlas();
     let (left, _) = atlas.glyph_slots(&queue, '😀' as u32, 2, GlyphStyle::default());
     assert!(atlas.is_color(left));
