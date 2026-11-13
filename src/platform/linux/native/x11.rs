@@ -1254,17 +1254,23 @@ mod tests {
     /// until the next one is presented (`ForgetGravity` flickers).
     #[test]
     fn new_window_keeps_its_contents_while_resized() {
-        #[repr(C)]
-        struct XWindowAttributes {
-            x: c_int, y: c_int, width: c_int, height: c_int, border_width: c_int, depth: c_int,
-            visual: *mut c_void, root: c_ulong, class: c_int, bit_gravity: c_int, win_gravity: c_int,
-            backing_store: c_int, backing_planes: c_ulong, backing_pixel: c_ulong, save_under: c_int,
-            colormap: c_ulong, map_installed: c_int, map_state: c_int, all_event_masks: c_long,
-            your_event_mask: c_long, do_not_propagate_mask: c_long, override_redirect: c_int, screen: *mut c_void,
-        }
         let Some(win) = hidden_test_window("litty-gravity-test") else { return };
+        assert_eq!(window_attributes(&win).bit_gravity, NORTH_WEST_GRAVITY);
+    }
+
+    #[repr(C)]
+    struct XWindowAttributes {
+        x: c_int, y: c_int, width: c_int, height: c_int, border_width: c_int, depth: c_int,
+        visual: *mut c_void, root: c_ulong, class: c_int, bit_gravity: c_int, win_gravity: c_int,
+        backing_store: c_int, backing_planes: c_ulong, backing_pixel: c_ulong, save_under: c_int,
+        colormap: c_ulong, map_installed: c_int, map_state: c_int, all_event_masks: c_long,
+        your_event_mask: c_long, do_not_propagate_mask: c_long, override_redirect: c_int, screen: *mut c_void,
+    }
+
+    /// `XGetWindowAttributes` of the test window, read from the server.
+    fn window_attributes(win: &X11Window) -> XWindowAttributes {
         let inner = &win.0;
-        let gravity = unsafe {
+        unsafe {
             let h = libc::dlopen(c"libX11.so.6".as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
             assert!(!h.is_null());
             let get_sym = libc::dlsym(h, c"XGetWindowAttributes".as_ptr());
@@ -1273,9 +1279,8 @@ mod tests {
                 std::mem::transmute(get_sym);
             let mut attrs: XWindowAttributes = std::mem::zeroed();
             assert_ne!(get(inner.display, inner.window, &mut attrs), 0);
-            attrs.bit_gravity
-        };
-        assert_eq!(gravity, NORTH_WEST_GRAVITY);
+            attrs
+        }
     }
 
     /// Setting a cursor must reach the X server: the window's cursor is
@@ -1544,8 +1549,22 @@ mod tests {
     fn unmapping_the_window_reports_it_occluded_until_it_is_mapped_again() {
         let Some(win) = hidden_test_window("litty-occlusion-test") else { return };
         win.set_visible(true);
-        // Visible from the start: mapping is not news.
-        assert_eq!(next_occlusion(&win), None);
+        // Visible from the start: mapping is not news. Wait until the
+        // window manager has really mapped it, so its MapNotify was read.
+        const IS_VIEWABLE: c_int = 2;
+        let mut seen = Vec::new();
+        for _ in 0..50 {
+            win.poll_events(&mut seen);
+            if window_attributes(&win).map_state == IS_VIEWABLE {
+                break;
+            }
+            let mut fd = libc::pollfd { fd: win.fd(), events: libc::POLLIN, revents: 0 };
+            unsafe { libc::poll(&mut fd, 1, 100) };
+        }
+        assert_eq!(window_attributes(&win).map_state, IS_VIEWABLE, "the window was mapped");
+        // The MapNotify was sent before the attributes reply; this reads it.
+        win.poll_events(&mut seen);
+        assert!(!seen.iter().any(|e| matches!(e, WindowEvent::Occluded(_))), "{seen:?}");
         win.set_visible(false);
         assert_eq!(next_occlusion(&win), Some(true));
         win.set_visible(true);
