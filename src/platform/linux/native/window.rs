@@ -58,9 +58,7 @@ impl NativeWindow {
             (spec.inner_size.width.max(100.0) * scale).round() as u32,
             (spec.inner_size.height.max(100.0) * scale).round() as u32,
         );
-        let position = spec.position.map_or(PhysicalPosition::new(100, 100), |p| {
-            PhysicalPosition::new((p.x * scale).round() as i32, (p.y * scale).round() as i32)
-        });
+        let position = x11_win.origin();
         let x11_win = Some(x11_win);
 
         let inner = Arc::new(Mutex::new(NativeWindowInner {

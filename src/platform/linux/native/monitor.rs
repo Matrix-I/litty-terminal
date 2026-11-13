@@ -116,6 +116,17 @@ fn monitor_at(monitors: &[Monitor], point: PhysicalPosition<i32>) -> Option<Moni
     monitors.iter().find(contains).or(monitors.first()).cloned()
 }
 
+/// Top-left corner that centers a `width` x `height` window in `monitor`.
+/// A window larger than the monitor is pinned to its top-left so the title
+/// bar stays reachable.
+pub fn centered_origin(monitor: &Monitor, width: u32, height: u32) -> PhysicalPosition<i32> {
+    let offset = |monitor_extent: u32, extent: u32| i32::try_from(monitor_extent.saturating_sub(extent) / 2).unwrap_or(0);
+    PhysicalPosition::new(
+        monitor.position.x.saturating_add(offset(monitor.size.width, width)),
+        monitor.position.y.saturating_add(offset(monitor.size.height, height)),
+    )
+}
+
 /// Active CRTCs of the screen with `root`, in X order.
 ///
 /// # Safety
@@ -203,6 +214,26 @@ mod tests {
         assert_eq!(monitor_at(&monitors, PhysicalPosition::new(2559, 1439)), Some(monitors[0].clone()));
         // Right and bottom edges belong to the next monitor or to none.
         assert_eq!(monitor_at(&monitors, PhysicalPosition::new(2560, 0)), Some(monitors[1].clone()));
+    }
+
+    #[test]
+    fn a_window_is_centered_in_its_monitor() {
+        let m = monitor(2560, 0, 1920, 1080, 60_000);
+        assert_eq!(centered_origin(&m, 960, 600), PhysicalPosition::new(2560 + 480, 240));
+        // Odd leftovers round down to whole pixels.
+        assert_eq!(centered_origin(&monitor(0, 0, 1001, 701, 60_000), 500, 300), PhysicalPosition::new(250, 200));
+    }
+
+    #[test]
+    fn centering_uses_the_offset_of_a_monitor_left_of_the_primary() {
+        let m = monitor(-1280, -200, 1280, 1024, 75_000);
+        assert_eq!(centered_origin(&m, 800, 600), PhysicalPosition::new(-1280 + 240, -200 + 212));
+    }
+
+    #[test]
+    fn a_window_larger_than_the_monitor_is_pinned_to_its_top_left() {
+        let m = monitor(100, 50, 800, 500, 60_000);
+        assert_eq!(centered_origin(&m, 960, 628), PhysicalPosition::new(100, 50));
     }
 
     #[test]
