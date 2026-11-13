@@ -11,7 +11,8 @@ The runner selects an active runtime, copies tracked source plus these scripts t
 an isolated build context, and runs native Linux `cargo check`, Clippy with zero
 warnings, the full Rust suite under Xvfb/D-Bus, shell PTY smoke checks, and an X11
 window smoke test, plus a native Wayland window smoke test under headless Weston
-(`wayland_smoke.py`: open, compositor-driven resize, frame callbacks, close). Rust is pinned to 1.99.1; the image uses Debian 13 and Mesa
+(`wayland_smoke.py`: open, compositor-driven resize, frame callbacks, close), and a Wayland input smoke test under headless sway
+(`wayland_input_smoke.py`: typing through the keymap, Ctrl, client key repeat, pointer and cursor-shape binding). Rust is pinned to 1.99.1; the image uses Debian 13 and Mesa
 software Vulkan. Named `litty-linux-target` and `litty-linux-registry` volumes
 cache Linux build artifacts and public crates. Host credentials, user dotfiles,
 `.git`, and the host `target` directory are not mounted into the container.

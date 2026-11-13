@@ -315,21 +315,32 @@ impl NativeWindow {
         }
     }
 
-    /// Recorded only on Wayland until cursor shapes (plan phase 2).
     pub fn set_cursor_icon(&self, icon: CursorIcon) {
         let mut guard = self.inner.lock();
         guard.cursor_icon = icon;
-        if let Some(x11) = guard.backend.as_ref().and_then(Backend::x11) {
-            x11.set_cursor(icon);
+        match &guard.backend {
+            Some(Backend::X11(x11)) => x11.set_cursor(icon),
+            Some(Backend::Wayland(wl)) => {
+                // The Wayland queue lock may wait on a dispatch; don't hold the window meanwhile.
+                let (wl, visible) = (wl.clone(), guard.cursor_visible);
+                drop(guard);
+                wl.set_cursor(icon, visible);
+            }
+            None => {}
         }
     }
 
-    /// Recorded only on Wayland until cursor shapes (plan phase 2).
     pub fn set_cursor_visible(&self, visible: bool) {
         let mut guard = self.inner.lock();
         guard.cursor_visible = visible;
-        if let Some(x11) = guard.backend.as_ref().and_then(Backend::x11) {
-            x11.set_cursor_visible(visible);
+        match &guard.backend {
+            Some(Backend::X11(x11)) => x11.set_cursor_visible(visible),
+            Some(Backend::Wayland(wl)) => {
+                let (wl, icon) = (wl.clone(), guard.cursor_icon);
+                drop(guard);
+                wl.set_cursor(icon, visible);
+            }
+            None => {}
         }
     }
 
@@ -361,8 +372,8 @@ impl NativeWindow {
         }
     }
 
-    /// Unsupported on Wayland until the pointer's serial is known (plan
-    /// phases 2 and 4): `xdg_toplevel.move` needs it.
+    /// Unsupported on Wayland until Litty's own title bar moves the window
+    /// with `xdg_toplevel.move` (plan phase 4).
     pub fn drag_window(&self) -> Result<(), Unsupported> {
         let guard = self.inner.lock();
         let x11 = guard.backend.as_ref().and_then(Backend::x11).ok_or(Unsupported)?;
@@ -370,8 +381,8 @@ impl NativeWindow {
         Ok(())
     }
 
-    /// Unsupported on Wayland until the pointer's serial is known (plan
-    /// phases 2 and 4): `xdg_toplevel.resize` needs it.
+    /// Unsupported on Wayland until Litty's own resize edges use
+    /// `xdg_toplevel.resize` (plan phase 4).
     pub fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), Unsupported> {
         let guard = self.inner.lock();
         let x11 = guard.backend.as_ref().and_then(Backend::x11).ok_or(Unsupported)?;

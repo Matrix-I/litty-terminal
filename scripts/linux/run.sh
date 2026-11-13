@@ -20,3 +20,4 @@ cargo build --locked
 xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- \
     python3 scripts/linux/x11_smoke.py target/debug/litty
 python3 scripts/linux/wayland_smoke.py target/debug/litty
+python3 scripts/linux/wayland_input_smoke.py target/debug/litty

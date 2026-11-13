@@ -18,6 +18,8 @@ static WAKE_EVENTFD: Mutex<Option<RawFd>> = Mutex::new(None);
 static DISPLAY_FD: Mutex<Option<RawFd>> = Mutex::new(None);
 /// The process-wide Wayland connection's socket, once one is open.
 static WAYLAND_FD: Mutex<Option<RawFd>> = Mutex::new(None);
+/// The Wayland key repeat timer, opened with the connection and never closed.
+static KEY_REPEAT_FD: Mutex<Option<RawFd>> = Mutex::new(None);
 static EPOLL_FD: Mutex<Option<RawFd>> = Mutex::new(None);
 
 pub fn register_window(win: &NativeWindow) {
@@ -48,6 +50,23 @@ pub fn register_wayland_fd(fd: RawFd) {
     *WAYLAND_FD.lock() = Some(fd);
     if let Some(epoll) = *EPOLL_FD.lock() {
         watch_wayland(epoll, fd);
+    }
+}
+
+/// Watch the Wayland key repeat timer (event 6).
+pub fn register_key_repeat_fd(fd: RawFd) {
+    *KEY_REPEAT_FD.lock() = Some(fd);
+    if let Some(epoll) = *EPOLL_FD.lock() {
+        watch_key_repeat(epoll, fd);
+    }
+}
+
+fn watch_key_repeat(epoll: RawFd, fd: RawFd) {
+    let mut ev = libc::epoll_event { events: libc::EPOLLIN as u32, u64: 6 };
+    if unsafe { libc::epoll_ctl(epoll, libc::EPOLL_CTL_ADD, fd, &mut ev) } != 0 {
+        // Unwatched, a held key would repeat only when something else wakes the loop.
+        let err = std::io::Error::last_os_error();
+        eprintln!("litty: cannot watch the key repeat timer ({err}); keys do not repeat");
     }
 }
 
@@ -268,6 +287,9 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         if let Some(wfd) = *WAYLAND_FD.lock() {
             watch_wayland(epoll_fd, wfd);
         }
+        if let Some(rfd) = *KEY_REPEAT_FD.lock() {
+            watch_key_repeat(epoll_fd, rfd);
+        }
 
         *WAKE_EVENTFD.lock() = Some(event_fd);
 
@@ -344,6 +366,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
             };
 
             let n = libc::epoll_wait(epoll_fd, events.as_mut_ptr(), events.len() as i32, timeout);
+            let mut key_repeat_due = false;
             if n > 0 {
                 for ev in events.iter().take(n as usize) {
                     let tag = ev.u64;
@@ -369,8 +392,15 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
                         {
                             super::wayland::read(guard);
                         }
+                    } else if tag == 6 {
+                        key_repeat_due = true;
                     }
                 }
+            }
+            // After the socket read above, so a release read in the same
+            // wakeup cancels the repeat instead of following it.
+            if key_repeat_due {
+                super::wayland::key_repeat_due();
             }
         }
 
