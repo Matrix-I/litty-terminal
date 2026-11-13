@@ -127,21 +127,22 @@ fn kitty_reply(c: &KittyCommand, msg: &str) -> Option<String> {
 }
 
 impl Store {
-    /// Run a Kitty command. Returns the outcome and the reply body (`OK` or an
-    /// error such as `ENOENT:...`), already filtered by `q=`.
+    /// Run a Kitty command on the main screen. Returns the outcome and the
+    /// reply body (`OK` or an error such as `ENOENT:...`), already filtered by `q=`.
     #[cfg(test)]
     pub fn kitty(&mut self, cmd: KittyCommand, payload: &[u8]) -> (KittyOutcome, Option<String>) {
-        match self.prepare_kitty(cmd, payload) {
+        match self.prepare_kitty(cmd, payload, false) {
             KittyPreparation::Complete(outcome, reply) => (outcome, reply),
             KittyPreparation::Decode(cmd, data) => {
                 let decoded = decode_kitty(&cmd, &data);
-                self.finish_kitty(cmd, decoded)
+                self.finish_kitty(cmd, decoded, false)
             }
         }
     }
 
     /// Assemble chunks under the grid lock; the returned decode runs without it.
-    pub(crate) fn prepare_kitty(&mut self, cmd: KittyCommand, payload: &[u8]) -> KittyPreparation {
+    /// `alt`: the alternate screen is active (scopes deletions).
+    pub(crate) fn prepare_kitty(&mut self, cmd: KittyCommand, payload: &[u8], alt: bool) -> KittyPreparation {
         // Abandoned chunked transmission timeout: free buffers if sender stalled > 5s.
         const CHUNKED_TIMEOUT: Duration = Duration::from_secs(5);
         let now = Instant::now();
@@ -183,11 +184,11 @@ impl Store {
             }
             return KittyPreparation::Decode(cmd, data);
         }
-        let (outcome, reply) = self.finish_kitty(cmd, Err(String::new()));
+        let (outcome, reply) = self.finish_kitty(cmd, Err(String::new()), alt);
         KittyPreparation::Complete(outcome, reply)
     }
 
-    pub(crate) fn finish_kitty(&mut self, cmd: KittyCommand, decoded: DecodedImage) -> (KittyOutcome, Option<String>) {
+    pub(crate) fn finish_kitty(&mut self, cmd: KittyCommand, decoded: DecodedImage, alt: bool) -> (KittyOutcome, Option<String>) {
         match cmd.action {
             b't' | b'T' | b'q' => match decoded {
                 Ok((w, h, rgba)) => {
@@ -215,7 +216,7 @@ impl Store {
                 if !matches!(cmd.delete, 0 | b'a' | b'A' | b'i' | b'I') {
                     return (KittyOutcome::None, kitty_reply(&cmd, "EINVAL:unsupported delete selector"));
                 }
-                self.kitty_delete(&cmd);
+                self.kitty_delete(&cmd, alt);
                 (KittyOutcome::None, None)
             }
             b'f' => match self.kitty_frame(&cmd, decoded) {
@@ -234,29 +235,33 @@ impl Store {
         }
     }
 
-    /// `a=d`: lowercase keeps the image data, uppercase frees it too.
-    fn kitty_delete(&mut self, cmd: &KittyCommand) {
-        let free = cmd.delete.is_ascii_uppercase();
-        match cmd.delete.to_ascii_lowercase() {
-            b'i' => {
-                let pid = cmd.placement_id;
-                self.placements.retain(|p| !(p.image_id == cmd.id && (pid == 0 || p.placement_id == pid)));
-                self.virtuals.retain(|v| !(v.image_id == cmd.id && (pid == 0 || v.placement_id == pid)));
-                if free {
-                    self.remove_image(cmd.id, true);
-                }
-            }
-            // Only `a`/`A` (and the omitted default) reach this branch;
+    /// `a=d`: lowercase keeps the image data, uppercase frees it too. Only
+    /// the current screen's placements go, as Kitty keeps one image store per
+    /// screen; image data the other screen still shows is not freed.
+    fn kitty_delete(&mut self, cmd: &KittyCommand, alt: bool) {
+        let (selector, id, pid) = (cmd.delete, cmd.id, cmd.placement_id);
+        let hit = |image_id: u32, placement_id: u32| match selector {
+            b'i' => image_id == id && (pid == 0 || placement_id == pid),
+            b'I' => image_id == id,
+            // Only `a`/`A` (and the omitted default) reach this arm;
             // unsupported selectors are rejected before any mutation.
-            _ => {
-                self.placements.clear();
-                self.virtuals.clear();
-                if free {
-                    let ids: Vec<u32> = self.images.keys().copied().collect();
-                    for id in ids {
-                        self.remove_image(id, true);
-                    }
-                }
+            _ => true,
+        };
+        self.placements.retain(|p| p.alt != alt || !hit(p.image_id, p.placement_id));
+        self.virtuals.retain(|v| v.alt != alt || !hit(v.image_id, v.placement_id));
+        if selector.is_ascii_uppercase() {
+            // Sorted once so the check stays O(n log n) under the grid lock.
+            let mut shown: Vec<u32> = self.placements.iter().map(|p| p.image_id).chain(self.virtuals.iter().map(|v| v.image_id)).collect();
+            shown.sort_unstable();
+            shown.dedup();
+            let unused: Vec<u32> = self
+                .images
+                .keys()
+                .copied()
+                .filter(|&i| (selector == b'A' || i == id) && shown.binary_search(&i).is_err())
+                .collect();
+            for i in unused {
+                self.remove_image(i, false);
             }
         }
     }

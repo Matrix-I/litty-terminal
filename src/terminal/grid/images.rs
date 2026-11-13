@@ -33,7 +33,7 @@ impl Grid {
     pub(super) fn apc_dispatch(&mut self) {
         let body = std::mem::take(&mut self.apc_buf);
         if let Some((cmd, payload)) = crate::terminal::graphics::parse_kitty(&body) {
-            match self.graphics.prepare_kitty(cmd.clone(), payload) {
+            match self.graphics.prepare_kitty(cmd.clone(), payload, self.alt_active) {
                 crate::terminal::graphics::KittyPreparation::Complete(outcome, reply) => self.apply_kitty(&cmd, outcome, reply),
                 crate::terminal::graphics::KittyPreparation::Decode(cmd, data) => self.queue_image(ImageJob::Kitty(cmd, data)),
             }
@@ -59,7 +59,7 @@ impl Grid {
             }
             ImageCompletion::Sixel(None) => {},
             ImageCompletion::Kitty(cmd, decoded) => {
-                let (outcome, reply) = self.graphics.finish_kitty(cmd.clone(), decoded);
+                let (outcome, reply) = self.graphics.finish_kitty(cmd.clone(), decoded, self.alt_active);
                 self.apply_kitty(&cmd, outcome, reply);
             }
         }
