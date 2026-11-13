@@ -9,6 +9,8 @@ optimization candidates are identified separately from reproduced failures.
 
 | Version | Record |
 | --- | --- |
+| [v0.13.0](./docs/plans/0.13.0.md) | Planned — every open item carried over from earlier records and this roadmap, to resolve in one release |
+| [v0.12.0](./docs/plans/0.12.0.md) | Release record (2026-11-13) — Linux Vulkan robustness and X11 integration (IME, monitors, theme, fullscreen, titles), security and robustness fixes, 10 MB scrollback default, alt-screen and non-ASCII parser speedups |
 | [v0.11.1](./docs/plans/0.11.1.md) | Release record (2026-11-11) — source review fixes (click-to-move panic, RIS, OSC titles, scroll margins), OSC 8 file-link hardening, faster OSC 8 interning and rows-only resize, SIGWINCH after resize bursts, macOS live-resize and window fixes |
 | [v0.11.0](./docs/plans/0.11.0.md) | Release record (2026-11-09) — ships the performance gap plan: new latency, startup and PTY throughput benchmarks, shaping cache, faster OSC 8 / Unicode paths, overlapped startup and lower idle memory; T1 and emoji interning carry over |
 | [v0.10.1](./docs/plans/0.10.1.md) | Release record (2026-11-08) — macOS pointer-hide, key-window and Kitty function-key fixes; first release built by the tag-triggered CI workflow |
@@ -51,13 +53,16 @@ follow-ups are in v0.8.0; shipped refactor results are in v0.7.1.
   - During v0.11.1 validation (2026-11-11) the 0-window footprint stayed at 47 MB in 7 of 18 runs of the release build, the level from before the drawable fix `79d44ef`; v0.11.0 gave 28–32 MB in 8 alternating runs. 78 later runs (v0.11.0, `15bca71`, `d37a085`, `a0f7ebc`, `86967b8` and the release build) never showed it, so it is not reproduced and no fix was made. Suspected timing under system load. Method and data: [validation report](./docs/validation/release-0.11.1.md).
 
 - [ ] **Occlusion events are never emitted (macOS and Linux)**
+  - Scheduled for [v0.13.0](./docs/plans/0.13.0.md).
   - Found in the 2026-11-11 performance review: no platform sends `WindowEvent::Occluded`, so `State::occluded` is always `false`. Covered or minimized windows keep rendering on PTY output and their drawables are never shrunk. Needs an emitter in `src/platform/{macos,linux}/` and its own plan. See [finding 2](./docs/validation/2026-11-11-perf-review.md).
   - macOS fixed (2026-11-12): the window delegate handles `windowDidChangeOcclusionState:` and reports `Occluded` when `occlusionState` loses `NSWindowOcclusionStateVisible` (covered, minimized, hidden, other Space). A hidden window keeps its grid size while its drawables are shrunk (`render/renderer/extent.rs`) and is not drawn on PTY output. Unit-tested; the running app (minimize, cover, switch Space, native tabs, Quick Terminal, a minimized `vim` across a config reload) was checked by the user on 2026-11-12. Linux still has no emitter.
 
-- [ ] **Plans B and C of the 2026-11-11 review (Vulkan) need a run on real Linux hardware**
+- [x] **Plans B and C of the 2026-11-11 review (Vulkan) need a run on real Linux hardware**
+  - Closed (2026-11-13): the maintainer confirms every `fix(linux)` commit shipped in v0.12.0 was verified on real Linux hardware.
   - The code is done and passes in an x86_64 container (lavapipe, Xvfb, validation layers); the manual checklists in [plan B](./docs/plans/2026-11-11-review-fixes-b-vulkan-robustness.md) and [plan C](./docs/plans/2026-11-11-review-fixes-c-vulkan-images.md) are open. The macOS GUI runs of the perf plan's Step 3 items 1–4 and plan A's Task 5 Step 5 were checked by the user on 2026-11-12 and pass.
 
 - [ ] **LLM assistant release validation on additional environments**
+  - Scheduled for [v0.13.0](./docs/plans/0.13.0.md).
   - Implementation is complete (see [implementation record](./docs/plans/yosh_implementation_plan.md#implementation-record-2026-11-01)); mock provider/tool/continuation/cancellation/compaction tests and isolated zsh/Bash 3.2 smoke tests pass.
   - Linux feature validation is complete per the user confirmation above. Separate provider/version coverage and quantitative memory measurements remain in the v0.8.0 follow-ups. These are release validation, not unimplemented assistant features.
   - Anthropic live-provider smoke test **passed** (2026-11-01, `LITTY_AI_LIVE_MODEL=claude-haiku-5-5`, `bash scripts/test-ai-live.sh`, 1 passed in 9.57s): docs + scrollback tool round trips + chat; pending suggestion + edited execution + continuation; context compaction + post-compaction request; transport cancellation in 221 ms. See [scope](./docs/validation/ai-live-validation.md). Other providers (OpenAI, OpenRouter, etc.) were not live-tested.
@@ -70,6 +75,7 @@ follow-ups are in v0.8.0; shipped refactor results are in v0.7.1.
 From [the 2026-11-11 review](./docs/reviews/2026-11-11-linux-history-ai-graphics.md). Not scheduled.
 
 - [ ] **Linux: Wayland window backend.** `NativeWindow::create` is X11 only; the Wayland surface and clipboard paths are unreachable.
+  - Scheduled for [v0.13.0](./docs/plans/0.13.0.md).
 - [x] **Linux: IME and dead keys.** `set_ime_allowed` is a no-op and X11 text comes from `XLookupString` without XIM.
   - Fixed on X11 (2026-11-12): windows connect to the XIM server `XMODIFIERS` names (on-the-spot preedit, candidate window at the cursor) and fall back to Xlib's built-in method for dead keys and Compose; a server that starts late or restarts is picked up. Checked in the real app under XWayland (GNOME) with synthetic keys: IBus Unikey Telex `tieengs vieetj` commits `tiếng việt` with preedit `a`→`â` (`main`: raw letters), `dead_acute e` gives `é` and `Multi_key o c` gives `©` (`main`: `e`, `oc`); late start, crash and restart of `ibus-x11` all recover, in every open window (2026-11-12, two windows: `tiếng`/`việt` after a late start, `aé` while it is down, `đâ` after a restart). Xlib's input method calls are serialised process-wide (parallel tests crashed in libX11), the candidate-window spot is sent from the event loop rather than while rendering, and keycode-0 presses another client sends are not looked up (libX11's built-in method reads an uninitialised compose-tree entry for them). Since then dead keys and Compose typed with `XSendEvent` no longer compose (the `é`/`©` check above used them; hardware keys and XTEST are unaffected but could not be injected here under GNOME on Wayland). The settings portal is reached only at `DBUS_SESSION_BUS_ADDRESS` or `$XDG_RUNTIME_DIR/bus`, never through D-Bus autolaunch. GNOME on Wayland does not run `ibus-x11`, so there IBus reaches Litty only once it is started by hand or through the Wayland backend (text-input), which is part of the item above.
 - [x] **Linux: `_NET_WM_NAME` and `WM_CLASS`.** Non-ASCII titles are garbled and desktops cannot match the window to its `.desktop` entry.
@@ -81,6 +87,7 @@ From [the 2026-11-11 review](./docs/reviews/2026-11-11-linux-history-ai-graphics
 - [x] **Linux: check `vkQueueSubmit` and creation results**; pick the physical device by present support and device type.
   - Fixed (2026-11-12, `5ba9871`, `702148d`): every creation, submit and present result is checked; a failed setup step falls back or skips the draw with a `litty: ... failed (VkResult n)` line instead of using a null handle. The device is the first non-CPU one with a graphics queue, swapchain support and SPIR-V 1.1 (or the storage-buffer extension), software renderers last. The device is picked before any window exists, so present support is checked when a window's surface is created. Failure paths have no fault-injection tests.
 - [ ] **Linux: custom shaders** (GLSL to SPIR-V, offscreen targets).
+  - Scheduled for [v0.13.0](./docs/plans/0.13.0.md).
 - [x] **Linux: batch glyph uploads** into one submission per frame. A new sampled texture also costs two submissions (layout transition, then the first upload).
   - Fixed (2026-11-12, `fe5fd57`): uploads and layout transitions record into a batch submitted with the frame. `glyph_upload_cost` (release, Intel UHD 620): 64 new glyphs 8.1 ms to 1.2 ms, 1024 new glyphs 131 ms to 8 ms.
 - [x] **Linux: `shader.spv` needs Vulkan 1.1.** It declares `SPV_KHR_storage_buffer_storage_class` while the instance asks for Vulkan 1.0 without that extension (`VUID-VkShaderModuleCreateInfo-pCode-08742`).
