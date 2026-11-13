@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::platform::gui::{CursorIcon, Ime, PhysicalPosition, PhysicalSize, RawHandle, WindowEvent, WindowSpec};
 use super::sym;
 use super::xim::{with_xlib_locale, XimContext};
-use super::events::{wm_state_event, WmStateAtoms, convert_linux_key, keysym_char, mods_after_key, mods_from_state, x11_button_event, HeldKeys};
+use super::events::{wm_state_event, wm_state_hidden, OcclusionTracker, WmStateAtoms, convert_linux_key, keysym_char, mods_after_key, mods_from_state, x11_button_event, HeldKeys};
 use crate::platform::input::{Key, KeyLocation, Mods};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Once, OnceLock};
@@ -114,6 +114,16 @@ pub struct XClientMessageEvent {
 }
 
 #[repr(C)]
+pub struct XVisibilityEvent {
+    pub type_: c_int,
+    pub serial: c_ulong,
+    pub send_event: c_int,
+    pub display: *mut c_void,
+    pub window: c_ulong,
+    pub state: c_int,
+}
+
+#[repr(C)]
 pub struct XPropertyEvent {
     pub type_: c_int,
     pub serial: c_ulong,
@@ -199,9 +209,10 @@ const CW_BIT_GRAVITY: c_ulong = 1 << 4;
 
 /// Events every window selects: KeyPress (1), KeyRelease (2), ButtonPress
 /// (4), ButtonRelease (8), PointerMotion (64), Exposure (32768),
-/// StructureNotify (131072), FocusChange (2097152) and PropertyChange
-/// (4194304) for the WM's `_NET_WM_STATE`.
-const BASE_EVENT_MASK: c_long = 1 | 2 | 4 | 8 | 64 | 32768 | 131072 | 2097152 | 4194304;
+/// VisibilityChange (65536, whether another window covers this one),
+/// StructureNotify (131072, which includes map and unmap), FocusChange
+/// (2097152) and PropertyChange (4194304) for the WM's `_NET_WM_STATE`.
+const BASE_EVENT_MASK: c_long = 1 | 2 | 4 | 8 | 64 | 32768 | 65536 | 131072 | 2097152 | 4194304;
 
 /// Pseudo shape for the invisible cursor (outside the cursor font).
 const BLANK_CURSOR: u32 = XC_NUM_GLYPHS;
@@ -466,6 +477,9 @@ pub struct X11WindowInner {
     /// `_NET_WM_STATE`, whose changes report WM-driven maximize/fullscreen.
     pub net_wm_state: c_ulong,
     pub wm_state_atoms: WmStateAtoms,
+    /// Map, `_NET_WM_STATE_HIDDEN` and visibility events folded into the
+    /// app's one `Occluded` flag.
+    pub occlusion: parking_lot::Mutex<OcclusionTracker>,
     pub root: c_ulong,
     pub screen: c_int,
     pub scale: f64,
@@ -670,6 +684,7 @@ impl X11Window {
                 max_vert: atom(c"_NET_WM_STATE_MAXIMIZED_VERT"),
                 max_horz: atom(c"_NET_WM_STATE_MAXIMIZED_HORZ"),
                 fullscreen: atom(c"_NET_WM_STATE_FULLSCREEN"),
+                hidden: atom(c"_NET_WM_STATE_HIDDEN"),
             };
             (lib.XSetWMProtocols)(display, window, protocols.as_mut_ptr(), 1);
 
@@ -720,6 +735,7 @@ impl X11Window {
                 utf8_string,
                 net_wm_state,
                 wm_state_atoms,
+                occlusion: parking_lot::Mutex::new(OcclusionTracker::default()),
                 root,
                 screen,
                 scale,
@@ -936,9 +952,10 @@ impl X11Window {
         keysym_text(keysym)
     }
 
-    /// Current `_NET_WM_STATE` as a `StateChanged` event; a missing or
-    /// unreadable property reads as a plain, restored window.
-    fn read_wm_state(&self) -> WindowEvent {
+    /// Current `_NET_WM_STATE` as a `StateChanged` event and whether it
+    /// lists the window as hidden; a missing or unreadable property reads
+    /// as a plain, restored, visible window.
+    fn read_wm_state(&self) -> (WindowEvent, bool) {
         let (mut actual_type, mut format, mut count, mut after) = (0, 0, 0, 0);
         let mut data: *mut u8 = std::ptr::null_mut();
         let status = unsafe {
@@ -953,11 +970,11 @@ impl X11Window {
         } else {
             &[]
         };
-        let event = wm_state_event(atoms, self.0.wm_state_atoms);
+        let state = (wm_state_event(atoms, self.0.wm_state_atoms), wm_state_hidden(atoms, self.0.wm_state_atoms));
         if !data.is_null() {
             unsafe { (self.0.lib.XFree)(data.cast()) };
         }
-        event
+        state
     }
 
     /// Show `icon` over this window; while the pointer is hidden it shows
@@ -1126,8 +1143,21 @@ impl X11Window {
                     28 => {
                         let pev: &XPropertyEvent = std::mem::transmute(&xev);
                         if pev.atom == self.0.net_wm_state {
-                            events.push(self.read_wm_state());
+                            let (state, hidden) = self.read_wm_state();
+                            events.push(state);
+                            events.extend(self.0.occlusion.lock().set_hidden(hidden));
                         }
+                    }
+                    // VisibilityNotify = 15: another window now covers this
+                    // one entirely, or no longer does.
+                    15 => {
+                        let vev: &XVisibilityEvent = std::mem::transmute(&xev);
+                        events.extend(self.0.occlusion.lock().set_visibility(vev.state));
+                    }
+                    // UnmapNotify = 18, MapNotify = 19: minimized, withdrawn
+                    // or on another workspace, and back.
+                    18 | 19 => {
+                        events.extend(self.0.occlusion.lock().set_mapped(xev.type_ == 19));
                     }
                     // MappingNotify = 34: the layout changed; without this
                     // `XLookupString` keeps resolving keysyms from the old map.
@@ -1488,6 +1518,38 @@ mod tests {
             let (mx, my) = (monitor.position.x + monitor.size.width as i32 / 2, monitor.position.y + monitor.size.height as i32 / 2);
             assert!((cx - mx).abs() <= 1 && (cy - my).abs() <= 1, "window centre ({cx}, {cy}) vs monitor centre ({mx}, {my})");
         }
+    }
+
+    /// The `Occluded` state the window reports next, waiting up to two
+    /// seconds on its connection for the server's map and unmap events.
+    fn next_occlusion(win: &X11Window) -> Option<bool> {
+        for _ in 0..20 {
+            let mut events = Vec::new();
+            win.poll_events(&mut events);
+            if let Some(occluded) = events.iter().find_map(|e| match e {
+                WindowEvent::Occluded(o) => Some(*o),
+                _ => None,
+            }) {
+                return Some(occluded);
+            }
+            let mut fd = libc::pollfd { fd: win.fd(), events: libc::POLLIN, revents: 0 };
+            unsafe { libc::poll(&mut fd, 1, 100) };
+        }
+        None
+    }
+
+    /// Withdrawing the window (what minimizing does for window managers
+    /// that unmap) stops it drawing; showing it again resumes.
+    #[test]
+    fn unmapping_the_window_reports_it_occluded_until_it_is_mapped_again() {
+        let Some(win) = hidden_test_window("litty-occlusion-test") else { return };
+        win.set_visible(true);
+        // Visible from the start: mapping is not news.
+        assert_eq!(next_occlusion(&win), None);
+        win.set_visible(false);
+        assert_eq!(next_occlusion(&win), Some(true));
+        win.set_visible(true);
+        assert_eq!(next_occlusion(&win), Some(false));
     }
 
     /// Window managers without EWMH read `WM_NAME` only: it must carry the
