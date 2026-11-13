@@ -69,7 +69,21 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    `wp_cursor_shape_v1`, falling back to a themed cursor surface. The
    keymap rules in `src/keymap.rs` stay as they are (Linux uses
    `Ctrl+Shift`).
-3. **Scale and outputs.** `wp_fractional_scale_v1` and `wp_viewporter`
+3. **Scale and outputs.** *Done 2026-11-14 on `feat/wayland-scale`.
+   Decisions taken: every surface gets a `wp_viewport` showing a buffer
+   of `logical size × scale` at the logical size, so fractional and
+   integer scales take the same path and the buffer never has to divide
+   by the scale (the integer scale is sctk's, from
+   `preferred_buffer_scale` or the outputs); without `wp_viewporter` the
+   window stays at scale 1 and the compositor upscales. The viewport size
+   is set right before a present, in the same commit. `current_monitor`
+   is the output the surface entered last (before the first enter, the
+   only output if there is one). Checked on GNOME at 125%
+   (`preferred_scale(150)` before the first configure, a 968x620 window
+   drawn at 1210x775, 60 Hz from the output's current mode) and on
+   headless sway at 150%. Not yet: moving between outputs of different
+   scales (one monitor here), and the cursor theme fallback's own scale.*
+   `wp_fractional_scale_v1` and `wp_viewporter`
    (integer `wl_output.scale` as the fallback), with monitor lookup for
    `current_monitor` and refresh rates. Centering new windows does not
    apply: Wayland clients cannot place their own windows.

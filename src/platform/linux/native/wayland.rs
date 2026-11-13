@@ -3,9 +3,16 @@
 //! Phase 1 of the [Wayland backend plan](../../../../docs/plans/wayland-backend.md):
 //! window, Vulkan surface, configure and resize, close, title and app id,
 //! and frame callbacks pacing redraws; keyboard and pointer input (phase 2)
-//! live in [`super::wayland_input`]. Scale, decorations, text input,
-//! occlusion and activation are later phases; until they land the backend
-//! is opt-in (`LITTY_BACKEND=wayland`).
+//! live in [`super::wayland_input`]; scale and outputs (phase 3) here.
+//! Decorations, text input, occlusion and activation are later phases;
+//! until they land the backend is opt-in (`LITTY_BACKEND=wayland`).
+//!
+//! Scale: a window draws its buffer at `logical size × scale` and shows it
+//! at the logical size through a `wp_viewport`, so a fractional scale
+//! (`wp_fractional_scale_v1`) and an integer one (sctk's, from
+//! `wl_surface.preferred_buffer_scale` or the outputs) both stay sharp and
+//! the buffer never has to divide by the scale. Without `wp_viewporter`
+//! the window draws at scale 1 and the compositor upscales it.
 //!
 //! The connection is never closed: the clipboard (`smithay-clipboard`) keeps
 //! its `wl_display` pointer for the life of the process.
@@ -15,11 +22,16 @@ use std::sync::{Arc, OnceLock, Weak};
 
 use parking_lot::Mutex;
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
-use smithay_client_toolkit::output::{OutputHandler, OutputState};
+use smithay_client_toolkit::output::{Mode, OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::client::backend::{ObjectId, ReadEventsGuard, WaylandError};
 use smithay_client_toolkit::reexports::client::globals::registry_queue_init;
 use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_surface};
-use smithay_client_toolkit::reexports::client::{Connection, EventQueue, Proxy, QueueHandle};
+use smithay_client_toolkit::reexports::client::{delegate_noop, Connection, Dispatch, EventQueue, Proxy, QueueHandle};
+use smithay_client_toolkit::reexports::protocols::wp::fractional_scale::v1::client::{
+    wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+    wp_fractional_scale_v1::{self, WpFractionalScaleV1},
+};
+use smithay_client_toolkit::reexports::protocols::wp::viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::SeatState;
 use smithay_client_toolkit::shell::WaylandSurface;
@@ -32,7 +44,7 @@ use smithay_client_toolkit::{
 };
 
 use super::wayland_input::{Cursor, KeyRepeat, Keyboard, Pointer, RepeatTimer};
-use crate::platform::gui::{CursorIcon, PhysicalSize, RawHandle, WindowEvent, WindowId, WindowSpec};
+use crate::platform::gui::{CursorIcon, Monitor, PhysicalPosition, PhysicalSize, RawHandle, WindowEvent, WindowId, WindowSpec};
 
 /// Matches the `.desktop` file, so the shell shows Litty's name and icon.
 const APP_ID: &str = "litty";
@@ -148,24 +160,100 @@ impl From<&WindowConfigure> for Configure {
     }
 }
 
+/// Where a window's scale comes from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ScaleSource {
+    /// The surface has a `wp_viewport`; without one it stays at scale 1.
+    viewport: bool,
+    /// `wp_fractional_scale_v1.preferred_scale`, in 120ths. Wins over
+    /// `integer` once sent.
+    fractional: Option<u32>,
+    /// sctk's integer scale: the preferred buffer scale, or the largest
+    /// scale of the outputs the surface is on.
+    integer: i32,
+}
+
+impl ScaleSource {
+    fn factor(&self) -> f64 {
+        if !self.viewport {
+            return 1.0;
+        }
+        match self.fractional {
+            Some(n) if n > 0 => f64::from(n) / 120.0,
+            _ => f64::from(self.integer.max(1)),
+        }
+    }
+}
+
+/// Buffer pixels for a logical length, rounded half away from zero as
+/// `wp_fractional_scale_v1` asks.
+fn scaled(logical: u32, scale: f64) -> u32 {
+    ((f64::from(logical) * scale).round() as u32).max(1)
+}
+
 /// Window state last reported to the app.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Reported {
+    /// Surface size in logical pixels: the configured one, or the
+    /// requested one before that. The viewport shows the buffer at it.
+    logical: (u32, u32),
+    source: ScaleSource,
+    /// The buffer size (`logical × scale`) and the scale the app was told.
     size: PhysicalSize<u32>,
+    scale: f64,
     maximized: bool,
     fullscreen: bool,
     activated: bool,
 }
 
 impl Reported {
-    /// Apply a configure, appending an event for each change. Scale is 1
-    /// until fractional scaling lands, so surface and buffer sizes agree.
-    fn apply(&mut self, c: Configure, out: &mut Vec<WindowEvent>) {
-        let size = PhysicalSize::new(c.width.unwrap_or(self.size.width), c.height.unwrap_or(self.size.height));
-        if size != self.size {
-            self.size = size;
+    /// A window of `logical` size at scale 1 until the compositor says more.
+    fn new(logical: (u32, u32), viewport: bool) -> Self {
+        Self {
+            logical,
+            source: ScaleSource { viewport, fractional: None, integer: 1 },
+            size: PhysicalSize::new(logical.0, logical.1),
+            scale: 1.0,
+            maximized: false,
+            fullscreen: false,
+            activated: false,
+        }
+    }
+
+    /// The compositor's preferred fractional scale, in 120ths.
+    fn set_fractional(&mut self, scale_120: u32, out: &mut Vec<WindowEvent>) {
+        self.source.fractional = Some(scale_120);
+        self.rescale(out);
+    }
+
+    /// sctk's integer scale for the surface.
+    fn set_integer(&mut self, factor: i32, out: &mut Vec<WindowEvent>) {
+        self.source.integer = factor;
+        self.rescale(out);
+    }
+
+    /// A new scale is one event, which carries the new buffer size along
+    /// (`NativeWindow::observe` reads it back): a `Resized` before it would
+    /// size the terminal for the old font first, sending the shell a
+    /// wrong SIGWINCH.
+    fn rescale(&mut self, out: &mut Vec<WindowEvent>) {
+        let scale = self.source.factor();
+        let size = PhysicalSize::new(scaled(self.logical.0, scale), scaled(self.logical.1, scale));
+        let resized = size != self.size;
+        self.size = size;
+        if scale != self.scale {
+            self.scale = scale;
+            out.push(WindowEvent::ScaleFactorChanged(scale));
+        } else if resized {
             out.push(WindowEvent::Resized(size));
         }
+    }
+
+    /// Apply a configure (sizes in logical pixels), appending an event for
+    /// each change.
+    fn apply(&mut self, c: Configure, out: &mut Vec<WindowEvent>) {
+        self.logical = (c.width.unwrap_or(self.logical.0), c.height.unwrap_or(self.logical.1));
+        self.rescale(out);
         if (c.maximized, c.fullscreen) != (self.maximized, self.fullscreen) {
             (self.maximized, self.fullscreen) = (c.maximized, c.fullscreen);
             out.push(WindowEvent::StateChanged { maximized: c.maximized, fullscreen: c.fullscreen });
@@ -191,6 +279,41 @@ pub(super) struct SharedState {
     reported: Reported,
     /// Shown whenever a pointer enters the window.
     pub(super) cursor: Cursor,
+    /// Outputs the surface is on, the latest entered last.
+    outputs: Vec<wl_output::WlOutput>,
+    /// The viewport destination last committed.
+    viewport_size: Option<(u32, u32)>,
+}
+
+impl SharedState {
+    /// Buffer pixels per logical pixel: pointer positions arrive logical.
+    pub(super) fn scale(&self) -> f64 {
+        self.reported.scale
+    }
+}
+
+/// The output a window is on: the latest it entered that `describe` still
+/// knows, or before any enter the only output there is.
+fn pick_output<O, I>(entered: &[O], all: &[O], describe: impl Fn(&O) -> Option<I>) -> Option<I> {
+    match entered.iter().rev().find_map(&describe) {
+        Some(info) => Some(info),
+        None if entered.is_empty() && all.len() == 1 => describe(&all[0]),
+        None => None,
+    }
+}
+
+/// The monitor an output's current mode describes. The position is the
+/// output's place in the compositor's (logical) space; the size is the
+/// mode's, in physical pixels.
+fn monitor(position: (i32, i32), modes: &[Mode]) -> Option<Monitor> {
+    let mode = modes.iter().find(|m| m.current)?;
+    let (width, height) = mode.dimensions;
+    Some(Monitor {
+        position: PhysicalPosition::new(position.0, position.1),
+        size: PhysicalSize::new(width.max(0) as u32, height.max(0) as u32),
+        // Zero means a virtual output with no rate.
+        refresh_rate_millihertz: u32::try_from(mode.refresh_rate).ok().filter(|&r| r > 0),
+    })
 }
 
 /// Globals, input devices and the windows the handlers route events to.
@@ -221,6 +344,8 @@ struct Client {
     conn: Connection,
     qh: QueueHandle<State>,
     xdg: XdgShell,
+    viewporter: Option<WpViewporter>,
+    fractional: Option<WpFractionalScaleManagerV1>,
     /// Dispatched only by the event loop (and a new window's first round
     /// trips); handlers never take this lock again.
     queue: Mutex<(EventQueue<State>, State)>,
@@ -244,6 +369,9 @@ fn connect() -> Result<Client, String> {
     let compositor = CompositorState::bind(&globals, &qh).map_err(|e| format!("no wl_compositor: {e}"))?;
     let xdg = XdgShell::bind(&globals, &qh).map_err(|e| format!("no xdg_wm_base: {e}"))?;
     let shm = Shm::bind(&globals, &qh).map_err(|e| format!("no wl_shm: {e}"))?;
+    // Both optional: without them the window draws at an integer scale, or 1.
+    let viewporter = globals.bind(&qh, 1..=1, ()).ok();
+    let fractional = globals.bind(&qh, 1..=1, ()).ok();
     let repeat_timer = RepeatTimer::new().map_err(|e| eprintln!("litty: {e}; keys do not repeat")).ok();
     let state = State {
         registry: RegistryState::new(&globals),
@@ -261,7 +389,7 @@ fn connect() -> Result<Client, String> {
     if let Some(timer) = &state.repeat_timer {
         super::app::register_key_repeat_fd(timer.fd());
     }
-    Ok(Client { conn, qh, xdg, queue: Mutex::new((queue, state)) })
+    Ok(Client { conn, qh, xdg, viewporter, fractional, queue: Mutex::new((queue, state)) })
 }
 
 /// Xlib exits the process when its connection breaks; do the same, saying why.
@@ -335,9 +463,29 @@ pub fn read(guard: ReadEventsGuard) {
 pub struct WaylandWindow(Arc<WaylandWindowInner>);
 
 struct WaylandWindowInner {
+    /// Declared before `window`, so it goes before the surface does.
+    scaling: SurfaceScaling,
     window: Window,
     shared: Arc<WindowShared>,
     client: &'static Client,
+}
+
+/// A surface's scaling objects. `fractional` exists only with `viewport`:
+/// a fractional scale can only be shown through one.
+struct SurfaceScaling {
+    viewport: Option<WpViewport>,
+    fractional: Option<WpFractionalScaleV1>,
+}
+
+impl Drop for SurfaceScaling {
+    fn drop(&mut self) {
+        if let Some(fractional) = self.fractional.take() {
+            fractional.destroy();
+        }
+        if let Some(viewport) = self.viewport.take() {
+            viewport.destroy();
+        }
+    }
 }
 
 impl WaylandWindow {
@@ -351,20 +499,27 @@ impl WaylandWindow {
         let window = client.xdg.create_window(surface, decorations, &client.qh);
         window.set_title(spec.title);
         window.set_app_id(APP_ID);
-        // Logical and physical pixels agree until scaling lands (phase 3).
-        let size = PhysicalSize::new(
-            spec.inner_size.width.max(100.0).round() as u32,
-            spec.inner_size.height.max(100.0).round() as u32,
-        );
+        // The spec is in logical pixels; the scale arrives later (on the
+        // first configure's round trips, or once the surface is shown).
+        let logical = (spec.inner_size.width.max(100.0).round() as u32, spec.inner_size.height.max(100.0).round() as u32);
         let shared = Arc::new(WindowShared {
             id,
             state: Mutex::new(SharedState {
                 events: Vec::new(),
                 pacer: FramePacer::default(),
-                reported: Reported { size, maximized: false, fullscreen: false, activated: false },
+                reported: Reported::new(logical, client.viewporter.is_some()),
                 cursor: Cursor::default(),
+                outputs: Vec::new(),
+                viewport_size: None,
             }),
         });
+        let surface = window.wl_surface();
+        let viewport = client.viewporter.as_ref().map(|v| v.get_viewport(surface, &client.qh, ()));
+        let fractional = match (&viewport, &client.fractional) {
+            (Some(_), Some(manager)) => Some(manager.get_fractional_scale(surface, &client.qh, Arc::downgrade(&shared))),
+            _ => None,
+        };
+        let scaling = SurfaceScaling { viewport, fractional };
 
         state.windows.push((window.wl_surface().id(), Arc::downgrade(&shared)));
         // The first commit, without a buffer, asks for the first configure.
@@ -381,12 +536,27 @@ impl WaylandWindow {
         // Input the round trips dispatched waits in the window's queue; the
         // loop must poll it before it blocks.
         super::app::wakeup_main_loop();
-        Ok(Self(Arc::new(WaylandWindowInner { window, shared, client })))
+        Ok(Self(Arc::new(WaylandWindowInner { scaling, window, shared, client })))
     }
 
-    /// The size the compositor configured, or the requested one before that.
+    /// The buffer size: the configured (or requested) size times the scale.
     pub fn inner_size(&self) -> PhysicalSize<u32> {
         self.0.shared.state.lock().reported.size
+    }
+
+    pub fn scale_factor(&self) -> f64 {
+        self.0.shared.state.lock().reported.scale
+    }
+
+    /// The output the window entered last that the compositor still
+    /// describes. A surface enters outputs only once shown, so before that
+    /// the only output is the answer; with several there is none yet.
+    pub fn current_monitor(&self) -> Option<Monitor> {
+        let guard = self.0.client.queue.lock();
+        let entered = self.0.shared.state.lock().outputs.clone();
+        let all: Vec<_> = guard.1.outputs.outputs().collect();
+        let info = pick_output(&entered, &all, |o| guard.1.outputs.info(o))?;
+        monitor(info.logical_position.unwrap_or(info.location), &info.modes)
     }
 
     pub fn raw_handle(&self) -> RawHandle {
@@ -408,12 +578,28 @@ impl WaylandWindow {
     }
 
     /// Called right before the frame is presented: ask for its frame
-    /// callback, which the present's commit sends to the compositor.
+    /// callback and set the viewport to the window's logical size, both
+    /// sent by the present's commit. A buffer still at the old size is
+    /// stretched to it for that frame.
     pub fn pre_present_notify(&self) {
-        if self.0.shared.state.lock().pacer.presenting() {
-            let surface = self.0.window.wl_surface();
-            surface.frame(&self.0.client.qh, surface.clone());
+        let (presenting, destination) = {
+            let mut st = self.0.shared.state.lock();
+            let logical = st.reported.logical;
+            let presenting = st.pacer.presenting();
+            let changed = presenting && st.viewport_size != Some(logical);
+            if changed {
+                st.viewport_size = Some(logical);
+            }
+            (presenting, changed.then_some(logical))
+        };
+        if !presenting {
+            return;
         }
+        if let (Some(viewport), Some((w, h))) = (&self.0.scaling.viewport, destination) {
+            viewport.set_destination(i32::try_from(w).unwrap_or(i32::MAX), i32::try_from(h).unwrap_or(i32::MAX));
+        }
+        let surface = self.0.window.wl_surface();
+        surface.frame(&self.0.client.qh, surface.clone());
     }
 
     pub fn present_skipped(&self) {
@@ -460,9 +646,18 @@ impl WaylandWindow {
 }
 
 impl CompositorHandler for State {
-    // Buffer scale and output transforms are phase 3; the window draws at scale 1.
-    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: i32) {}
+    /// The integer scale; a fractional one, where sent, takes precedence.
+    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &wl_surface::WlSurface, factor: i32) {
+        let Some(win) = self.window(surface) else { return };
+        {
+            let mut st = win.state.lock();
+            let SharedState { events, reported, .. } = &mut *st;
+            reported.set_integer(factor, events);
+        }
+        super::app::request_redraw(win.id);
+    }
 
+    // Rotated outputs are drawn upright by the compositor.
     fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
 
     fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _time: u32) {
@@ -473,10 +668,37 @@ impl CompositorHandler for State {
         }
     }
 
-    // Monitor lookup is phase 3.
-    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
+    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &wl_surface::WlSurface, output: &wl_output::WlOutput) {
+        let Some(win) = self.window(surface) else { return };
+        let outputs = &mut win.state.lock().outputs;
+        outputs.retain(|o| o != output);
+        outputs.push(output.clone());
+    }
 
-    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
+    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &wl_surface::WlSurface, output: &wl_output::WlOutput) {
+        let Some(win) = self.window(surface) else { return };
+        win.state.lock().outputs.retain(|o| o != output);
+    }
+}
+
+impl Dispatch<WpFractionalScaleV1, Weak<WindowShared>> for State {
+    fn event(
+        _: &mut Self,
+        _: &WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        window: &Weak<WindowShared>,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let wp_fractional_scale_v1::Event::PreferredScale { scale } = event else { return };
+        let Some(win) = window.upgrade() else { return };
+        {
+            let mut st = win.state.lock();
+            let SharedState { events, reported, .. } = &mut *st;
+            reported.set_fractional(scale, events);
+        }
+        super::app::request_redraw(win.id);
+    }
 }
 
 impl OutputHandler for State {
@@ -484,7 +706,8 @@ impl OutputHandler for State {
         &mut self.outputs
     }
 
-    // Outputs are tracked by `OutputState`; nothing reads them before phase 3.
+    // `OutputState` keeps each output's modes for `current_monitor`, and
+    // sctk recomputes the integer scale of the surfaces on it.
     fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
 
     fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
@@ -530,6 +753,10 @@ delegate_shm!(State);
 delegate_xdg_shell!(State);
 delegate_xdg_window!(State);
 delegate_registry!(State);
+// No events: the manager and viewport objects only take requests.
+delegate_noop!(State: WpViewporter);
+delegate_noop!(State: WpViewport);
+delegate_noop!(State: WpFractionalScaleManagerV1);
 
 #[cfg(test)]
 mod tests {
@@ -611,7 +838,7 @@ mod tests {
     }
 
     fn reported(w: u32, h: u32) -> Reported {
-        Reported { size: PhysicalSize::new(w, h), maximized: false, fullscreen: false, activated: false }
+        Reported::new((w, h), true)
     }
 
     fn configure(width: Option<u32>, height: Option<u32>) -> Configure {
@@ -660,5 +887,104 @@ mod tests {
         out.clear();
         r.apply(max, &mut out);
         assert!(out.is_empty(), "a repeated configure reports nothing: {out:?}");
+    }
+
+    fn sizes_and_scales(out: &[WindowEvent]) -> Vec<String> {
+        out.iter().map(|e| format!("{e:?}")).collect()
+    }
+
+    /// At 125% the buffer has more pixels for the same logical window. The
+    /// scale change alone is reported: a `Resized` first would lay the
+    /// terminal out for the old font.
+    #[test]
+    fn a_fractional_scale_draws_more_pixels_at_the_same_size() {
+        let mut r = reported(800, 600);
+        let mut out = Vec::new();
+        r.set_fractional(150, &mut out);
+        assert!(
+            matches!(out[..], [WindowEvent::ScaleFactorChanged(s)] if s == 1.25),
+            "{:?}",
+            sizes_and_scales(&out)
+        );
+        assert_eq!((r.size, r.scale, r.logical), (PhysicalSize::new(1000, 750), 1.25, (800, 600)));
+        out.clear();
+        r.set_fractional(150, &mut out);
+        assert!(out.is_empty(), "the same scale again reports nothing: {out:?}");
+    }
+
+    /// A configure is logical: at a scale its buffer is that much larger.
+    /// Halves round away from zero (819 × 1.25 = 1023.75, 101 × 1.5 = 151.5).
+    #[test]
+    fn configured_sizes_are_scaled_and_rounded() {
+        let mut r = reported(800, 600);
+        let mut out = Vec::new();
+        r.set_fractional(150, &mut out);
+        out.clear();
+        r.apply(configure(Some(819), Some(512)), &mut out);
+        assert!(matches!(out[..], [WindowEvent::Resized(PhysicalSize { width: 1024, height: 640 })]), "{out:?}");
+        r.set_fractional(180, &mut out);
+        out.clear();
+        r.apply(configure(Some(101), None), &mut out);
+        assert!(matches!(out[..], [WindowEvent::Resized(PhysicalSize { width: 152, height: 768 })]), "{out:?}");
+    }
+
+    /// Without fractional scaling the integer scale applies; once a
+    /// fractional one is sent it wins, and later integer changes are moot.
+    #[test]
+    fn a_fractional_scale_wins_over_the_integer_one() {
+        let mut r = reported(800, 600);
+        let mut out = Vec::new();
+        r.set_integer(2, &mut out);
+        assert!(matches!(out[..], [WindowEvent::ScaleFactorChanged(s)] if s == 2.0), "{out:?}");
+        assert_eq!(r.size, PhysicalSize::new(1600, 1200));
+        out.clear();
+        r.set_fractional(180, &mut out);
+        assert_eq!(r.scale, 1.5);
+        out.clear();
+        r.set_integer(3, &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        assert_eq!(r.size, PhysicalSize::new(1200, 900));
+    }
+
+    /// With no viewport a buffer cannot be shown smaller than it is, so the
+    /// window stays at scale 1 and the compositor upscales it.
+    #[test]
+    fn without_a_viewport_the_scale_stays_one() {
+        let mut r = Reported::new((800, 600), false);
+        let mut out = Vec::new();
+        r.set_fractional(240, &mut out);
+        r.set_integer(2, &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        assert_eq!((r.size, r.scale), (PhysicalSize::new(800, 600), 1.0));
+    }
+
+    /// The latest entered output wins; one that is gone is skipped. Before
+    /// any enter a single output is the answer, but of two neither is.
+    #[test]
+    fn the_window_is_on_the_output_it_entered_last() {
+        let known = |o: &&str| (*o != "gone").then(|| o.to_string());
+        assert_eq!(pick_output(&["a", "b"], &["a", "b"], known).as_deref(), Some("b"));
+        assert_eq!(pick_output(&["a", "gone"], &["a"], known).as_deref(), Some("a"));
+        assert_eq!(pick_output(&[], &["a"], known).as_deref(), Some("a"));
+        assert_eq!(pick_output(&[], &["a", "b"], known), None);
+        assert_eq!(pick_output(&["gone"], &["a"], known), None, "it entered one, just not one still known");
+    }
+
+    fn mode(dimensions: (i32, i32), refresh_rate: i32, current: bool) -> Mode {
+        Mode { dimensions, refresh_rate, current, preferred: false }
+    }
+
+    /// The monitor is the output's current mode, not its first or preferred
+    /// one; a rate of 0 (virtual outputs) is no rate.
+    #[test]
+    fn the_monitor_is_the_current_mode() {
+        let modes = [mode((3840, 2160), 60_000, false), mode((2560, 1440), 143_912, true)];
+        let m = monitor((1920, 0), &modes).expect("a current mode");
+        assert_eq!(m.position, PhysicalPosition::new(1920, 0));
+        assert_eq!(m.size, PhysicalSize::new(2560, 1440));
+        assert_eq!(m.refresh_rate_millihertz, Some(143_912));
+        let virtual_output = monitor((0, 0), &[mode((1024, 640), 0, true)]).expect("a current mode");
+        assert_eq!(virtual_output.refresh_rate_millihertz, None);
+        assert!(monitor((0, 0), &[mode((800, 600), 60_000, false)]).is_none());
     }
 }
