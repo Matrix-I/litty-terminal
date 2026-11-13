@@ -5,7 +5,7 @@ use crate::platform::gui::{
     WindowEvent,
 };
 use crate::platform::input::{Key, KeyCode, KeyInput, KeyLocation, Mods, NamedKey, PhysicalKey};
-use std::ffi::c_ulong;
+use std::ffi::{c_int, c_ulong};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[allow(dead_code)]
@@ -65,6 +65,56 @@ pub struct WmStateAtoms {
     pub max_vert: c_ulong,
     pub max_horz: c_ulong,
     pub fullscreen: c_ulong,
+    pub hidden: c_ulong,
+}
+
+/// Whether the window manager lists the window as hidden (minimized, or on
+/// another workspace for managers that unmap nothing).
+pub fn wm_state_hidden(atoms: &[c_ulong], names: WmStateAtoms) -> bool {
+    atoms.contains(&names.hidden)
+}
+
+/// `VisibilityNotify` state `VisibilityFullyObscured`.
+pub const VISIBILITY_FULLY_OBSCURED: c_int = 2;
+
+/// What makes a window invisible, from the three sources X11 offers: no
+/// single one is reliable (`VisibilityNotify` is mostly `Unobscured` under
+/// a compositor, `_NET_WM_STATE_HIDDEN` is EWMH only, and an unmapped
+/// window may still be listed), so any of them hides the window.
+#[derive(Debug, Default)]
+pub struct OcclusionTracker {
+    unmapped: bool,
+    hidden: bool,
+    obscured: bool,
+    /// The state last handed to the app; the app assumes visible.
+    reported: bool,
+}
+
+impl OcclusionTracker {
+    fn changed(&mut self) -> Option<WindowEvent> {
+        let occluded = self.unmapped || self.hidden || self.obscured;
+        (std::mem::replace(&mut self.reported, occluded) != occluded).then_some(WindowEvent::Occluded(occluded))
+    }
+
+    /// `MapNotify` / `UnmapNotify`. An unmapped window gets no visibility
+    /// events, so a stale `FullyObscured` is dropped with it.
+    pub fn set_mapped(&mut self, mapped: bool) -> Option<WindowEvent> {
+        self.unmapped = !mapped;
+        self.obscured = false;
+        self.changed()
+    }
+
+    /// `_NET_WM_STATE` listed (or no longer lists) `_NET_WM_STATE_HIDDEN`.
+    pub fn set_hidden(&mut self, hidden: bool) -> Option<WindowEvent> {
+        self.hidden = hidden;
+        self.changed()
+    }
+
+    /// `VisibilityNotify` state.
+    pub fn set_visibility(&mut self, state: c_int) -> Option<WindowEvent> {
+        self.obscured = state == VISIBILITY_FULLY_OBSCURED;
+        self.changed()
+    }
 }
 
 /// Window state from a `_NET_WM_STATE` atom list. Maximized needs both axes:
@@ -382,7 +432,7 @@ impl HeldKeys {
 mod tests {
     use super::*;
 
-    const WM: WmStateAtoms = WmStateAtoms { max_vert: 301, max_horz: 302, fullscreen: 303 };
+    const WM: WmStateAtoms = WmStateAtoms { max_vert: 301, max_horz: 302, fullscreen: 303, hidden: 304 };
 
     fn wm_state(atoms: &[std::ffi::c_ulong]) -> (bool, bool) {
         match wm_state_event(atoms, WM) {
@@ -406,6 +456,59 @@ mod tests {
     #[test]
     fn empty_wm_state_is_a_restored_window() {
         assert_eq!(wm_state(&[]), (false, false));
+    }
+
+    fn occluded(event: Option<WindowEvent>) -> Option<bool> {
+        event.map(|e| match e {
+            WindowEvent::Occluded(o) => o,
+            other => panic!("expected Occluded, got {other:?}"),
+        })
+    }
+
+    #[test]
+    fn wm_state_hidden_is_read_from_its_atom() {
+        assert!(wm_state_hidden(&[301, 304], WM));
+        assert!(!wm_state_hidden(&[301, 302, 303], WM));
+        assert!(!wm_state_hidden(&[], WM));
+    }
+
+    #[test]
+    fn unmapping_and_mapping_report_occlusion_once_each() {
+        let mut t = OcclusionTracker::default();
+        assert_eq!(occluded(t.set_mapped(true)), None, "already visible: nothing to report");
+        assert_eq!(occluded(t.set_mapped(false)), Some(true));
+        assert_eq!(occluded(t.set_mapped(false)), None);
+        assert_eq!(occluded(t.set_mapped(true)), Some(false));
+    }
+
+    #[test]
+    fn fully_obscured_hides_the_window_and_partial_does_not() {
+        let mut t = OcclusionTracker::default();
+        assert_eq!(occluded(t.set_visibility(1)), None, "partly obscured still draws");
+        assert_eq!(occluded(t.set_visibility(VISIBILITY_FULLY_OBSCURED)), Some(true));
+        assert_eq!(occluded(t.set_visibility(1)), Some(false));
+        assert_eq!(occluded(t.set_visibility(0)), None);
+    }
+
+    /// Any source keeps the window occluded: a compositor that says
+    /// `Unobscured` does not undo a minimize.
+    #[test]
+    fn the_window_stays_occluded_until_every_source_clears() {
+        let mut t = OcclusionTracker::default();
+        assert_eq!(occluded(t.set_hidden(true)), Some(true));
+        assert_eq!(occluded(t.set_visibility(0)), None);
+        assert_eq!(occluded(t.set_mapped(false)), None);
+        assert_eq!(occluded(t.set_mapped(true)), None, "still listed as hidden");
+        assert_eq!(occluded(t.set_hidden(false)), Some(false));
+    }
+
+    #[test]
+    fn unmapping_forgets_a_stale_obscured_state() {
+        let mut t = OcclusionTracker::default();
+        assert_eq!(occluded(t.set_visibility(VISIBILITY_FULLY_OBSCURED)), Some(true));
+        assert_eq!(occluded(t.set_mapped(false)), None);
+        // After the window is shown again, no visibility event has arrived yet.
+        assert_eq!(occluded(t.set_mapped(true)), Some(false));
     }
 
     const SHIFT: u32 = 1;
