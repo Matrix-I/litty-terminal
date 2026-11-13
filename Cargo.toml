@@ -25,6 +25,10 @@ mimalloc = { version = "0.1", default-features = false }
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 # Wayland clipboard on the app's own connection (no wl-copy window flash on GNOME).
 smithay-clipboard = "0.7"
+# Native Wayland windows (xdg-shell). Already in the tree through
+# smithay-clipboard, whose default `dlopen` feature also loads libwayland at
+# run time instead of linking it.
+smithay-client-toolkit = { version = "0.20", default-features = false }
 # `custom-shader`: Vulkan takes SPIR-V only, so GLSL is compiled at load time
 # (Metal compiles shader source itself).
 naga = { version = "30", default-features = false, features = ["glsl-in", "spv-out"] }

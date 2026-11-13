@@ -304,6 +304,42 @@ impl Window {
         }
     }
 
+    /// Whether the window may draw now. A Wayland window waits for its
+    /// first configure and its last frame's callback (withheld while it
+    /// cannot be seen) and asks for the redraw again once they arrive.
+    pub fn may_redraw(&self) -> bool {
+        match &self.0 {
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(_) => true,
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.may_redraw(),
+        }
+    }
+
+    /// The frame announced by `pre_present_notify` was not presented
+    /// (failed submit or present), so the window must not wait for it.
+    pub fn present_skipped(&self) {
+        match &self.0 {
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(_) => {}
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.present_skipped(),
+        }
+    }
+
+    /// Call right before presenting a frame. A Wayland window asks for the
+    /// frame's callback here, so the present's commit carries the request
+    /// and a redraw that presents nothing leaves none outstanding.
+    pub fn pre_present_notify(&self) {
+        match &self.0 {
+            // Core Animation paces the layer's drawables itself.
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(_) => {}
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.pre_present_notify(),
+        }
+    }
+
     pub fn scale_factor(&self) -> f64 {
         match &self.0 {
             #[cfg(target_os = "macos")]

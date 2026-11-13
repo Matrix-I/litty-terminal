@@ -1,4 +1,4 @@
-//! Native Linux Window representation for Wayland and X11.
+//! Native Linux window, over an X11 or a Wayland backend.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
@@ -8,6 +8,7 @@ use crate::platform::gui::{
     CursorIcon, LogicalPosition, WindowEvent, Monitor, PhysicalPosition, PhysicalSize,
     RawHandle, ResizeDirection, Theme, Unsupported, WindowId, WindowSpec,
 };
+use super::wayland::{BackendChoice, WaylandWindow};
 use super::x11::X11Window;
 
 static NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(1);
@@ -28,7 +29,41 @@ pub struct NativeWindowInner {
     pub cursor_visible: bool,
     pub cursor_icon: CursorIcon,
     pub raw_handle: Option<RawHandle>,
-    pub x11_window: Option<X11Window>,
+    /// `None` only for the windowless test double.
+    pub backend: Option<Backend>,
+}
+
+/// The window system connection behind a `NativeWindow`.
+#[derive(Clone)]
+pub enum Backend {
+    X11(X11Window),
+    Wayland(WaylandWindow),
+}
+
+impl Backend {
+    /// Append the events this window's connection has queued.
+    pub fn poll_events(&self, events: &mut Vec<WindowEvent>) {
+        match self {
+            Backend::X11(x11) => x11.poll_events(events),
+            Backend::Wayland(wl) => wl.poll_events(events),
+        }
+    }
+
+    /// Events are queued in the X11 connection. Wayland's queue is checked
+    /// once for all windows (`wayland::prepare_wait`).
+    pub fn pending(&self) -> bool {
+        match self {
+            Backend::X11(x11) => x11.pending(),
+            Backend::Wayland(_) => false,
+        }
+    }
+
+    fn x11(&self) -> Option<&X11Window> {
+        match self {
+            Backend::X11(x11) => Some(x11),
+            Backend::Wayland(_) => None,
+        }
+    }
 }
 
 unsafe impl Send for NativeWindowInner {}
@@ -44,22 +79,36 @@ impl NativeWindow {
     pub fn create(spec: &WindowSpec) -> Result<Self, std::io::Error> {
         let id = allocate_window_id();
 
-        // Without an X11 window there is nothing to draw into: fail loudly
-        // instead of running a windowless process.
-        let x11_win = X11Window::create(spec).ok_or_else(|| {
-            std::io::Error::other("could not open an X11 window (is libX11 installed and DISPLAY set?)")
-        })?;
-        let raw_handle = Some(x11_win.raw_handle());
-        super::app::register_display_fd(x11_win.fd());
-
-        // Same physical size and position `X11Window::create` used.
-        let scale = x11_win.scale();
-        let inner_size = PhysicalSize::new(
-            (spec.inner_size.width.max(100.0) * scale).round() as u32,
-            (spec.inner_size.height.max(100.0) * scale).round() as u32,
-        );
-        let position = x11_win.origin();
-        let x11_win = Some(x11_win);
+        let wayland = match super::wayland::selected_backend() {
+            BackendChoice::Wayland => WaylandWindow::create(spec, id)
+                .inspect_err(|e| eprintln!("litty: {e}; opening an X11 window instead"))
+                .ok(),
+            BackendChoice::X11 => None,
+        };
+        let (backend, inner_size, position, scale) = match wayland {
+            // Scale 1 until scaling lands; Wayland never reveals the position.
+            Some(wl) => (Backend::Wayland(wl.clone()), wl.inner_size(), PhysicalPosition::new(0, 0), 1.0),
+            None => {
+                // Without an X11 window there is nothing to draw into: fail
+                // loudly instead of running a windowless process.
+                let x11_win = X11Window::create(spec).ok_or_else(|| {
+                    std::io::Error::other("could not open an X11 window (is libX11 installed and DISPLAY set?)")
+                })?;
+                super::app::register_display_fd(x11_win.fd());
+                // Same physical size and position `X11Window::create` used.
+                let scale = x11_win.scale();
+                let inner_size = PhysicalSize::new(
+                    (spec.inner_size.width.max(100.0) * scale).round() as u32,
+                    (spec.inner_size.height.max(100.0) * scale).round() as u32,
+                );
+                let position = x11_win.origin();
+                (Backend::X11(x11_win), inner_size, position, scale)
+            }
+        };
+        let raw_handle = Some(match &backend {
+            Backend::X11(x11) => x11.raw_handle(),
+            Backend::Wayland(wl) => wl.raw_handle(),
+        });
 
         let inner = Arc::new(Mutex::new(NativeWindowInner {
             title: spec.title.to_string(),
@@ -73,7 +122,7 @@ impl NativeWindow {
             cursor_visible: true,
             cursor_icon: CursorIcon::Default,
             raw_handle,
-            x11_window: x11_win,
+            backend: Some(backend),
         }));
 
         let win = Self { id, inner };
@@ -85,7 +134,7 @@ impl NativeWindow {
         self.id
     }
 
-    /// A handle that does not keep the window (and its X11 connection) alive.
+    /// A handle that does not keep the window (and its connection) alive.
     pub fn downgrade(&self) -> WeakNativeWindow {
         WeakNativeWindow { id: self.id, inner: Arc::downgrade(&self.inner) }
     }
@@ -94,9 +143,41 @@ impl NativeWindow {
         super::app::request_redraw(self.id);
     }
 
-    /// This window's X11 connection.
-    pub fn x11(&self) -> Option<X11Window> {
-        self.inner.lock().x11_window.clone()
+    /// This window's window system connection.
+    pub fn backend(&self) -> Option<Backend> {
+        self.inner.lock().backend.clone()
+    }
+
+    fn x11(&self) -> Option<X11Window> {
+        self.inner.lock().backend.as_ref()?.x11().cloned()
+    }
+
+    fn wayland(&self) -> Option<WaylandWindow> {
+        match self.inner.lock().backend.as_ref()? {
+            Backend::Wayland(wl) => Some(wl.clone()),
+            Backend::X11(_) => None,
+        }
+    }
+
+    /// Whether a requested redraw may run now. A Wayland window waits for
+    /// its first configure and its last frame's callback, and replays the
+    /// redraw itself once they arrive.
+    pub fn may_redraw(&self) -> bool {
+        self.wayland().is_none_or(|wl| wl.may_redraw())
+    }
+
+    /// Called right before a frame is presented (frame callback on Wayland).
+    pub fn pre_present_notify(&self) {
+        if let Some(wl) = self.wayland() {
+            wl.pre_present_notify();
+        }
+    }
+
+    /// The frame announced by `pre_present_notify` never reached the window.
+    pub fn present_skipped(&self) {
+        if let Some(wl) = self.wayland() {
+            wl.present_skipped();
+        }
     }
 
     /// Keep cached window state in step with an event before the app sees it.
@@ -120,8 +201,13 @@ impl NativeWindow {
         self.inner.lock().inner_size
     }
 
+    /// Wayland clients cannot know where their window is.
     pub fn outer_position(&self) -> Result<PhysicalPosition<i32>, Unsupported> {
-        Ok(self.inner.lock().position)
+        let guard = self.inner.lock();
+        match guard.backend {
+            Some(Backend::Wayland(_)) => Err(Unsupported),
+            _ => Ok(guard.position),
+        }
     }
 
     pub fn set_outer_position(&self, position: LogicalPosition<f64>) {
@@ -132,18 +218,21 @@ impl NativeWindow {
         ));
     }
 
+    /// No-op on Wayland: clients cannot place their own windows.
     pub fn set_outer_position_physical(&self, position: PhysicalPosition<i32>) {
         let mut guard = self.inner.lock();
         guard.position = position;
-        if let Some(x11) = &guard.x11_window {
+        if let Some(x11) = guard.backend.as_ref().and_then(Backend::x11) {
             x11.move_to(position.x, position.y);
         }
     }
 
+    /// No-op on Wayland: a toplevel cannot be hidden without destroying it
+    /// (the app only ever shows its windows).
     pub fn set_visible(&self, visible: bool) {
         let mut guard = self.inner.lock();
         guard.visible = visible;
-        if let Some(x11) = &guard.x11_window {
+        if let Some(x11) = guard.backend.as_ref().and_then(Backend::x11) {
             x11.set_visible(visible);
         }
     }
@@ -152,8 +241,9 @@ impl NativeWindow {
         self.inner.lock().visible
     }
 
+    /// No-op on Wayland until `xdg_activation_v1` (plan phase 7).
     pub fn focus_window(&self) {
-        if let Some(x11) = &self.inner.lock().x11_window {
+        if let Some(x11) = self.x11() {
             x11.focus();
         }
     }
@@ -165,8 +255,13 @@ impl NativeWindow {
     pub fn set_minimized(&self, min: bool) {
         let mut guard = self.inner.lock();
         guard.minimized = min;
-        if min && let Some(x11) = &guard.x11_window {
-            x11.iconify();
+        if !min {
+            return;
+        }
+        match &guard.backend {
+            Some(Backend::X11(x11)) => x11.iconify(),
+            Some(Backend::Wayland(wl)) => wl.iconify(),
+            None => {}
         }
     }
 
@@ -177,8 +272,10 @@ impl NativeWindow {
     pub fn set_maximized(&self, max: bool) {
         let mut guard = self.inner.lock();
         guard.maximized = max;
-        if let Some(x11) = &guard.x11_window {
-            x11.set_maximized(max);
+        match &guard.backend {
+            Some(Backend::X11(x11)) => x11.set_maximized(max),
+            Some(Backend::Wayland(wl)) => wl.set_maximized(max),
+            None => {}
         }
     }
 
@@ -187,9 +284,10 @@ impl NativeWindow {
     /// through `observe`: it may refuse or ignore the request.
     #[allow(dead_code)]
     pub fn set_fullscreen(&self, fullscreen: bool) {
-        let x11 = self.inner.lock().x11_window.clone();
-        if let Some(x11) = x11 {
-            x11.set_fullscreen(fullscreen);
+        match self.backend() {
+            Some(Backend::X11(x11)) => x11.set_fullscreen(fullscreen),
+            Some(Backend::Wayland(wl)) => wl.set_fullscreen(fullscreen),
+            None => {}
         }
     }
 
@@ -198,11 +296,11 @@ impl NativeWindow {
     }
 
     /// The monitor under the window's centre (RandR); `None` when the X
-    /// server has no RandR or the window has no X11 connection.
+    /// server has no RandR, and on Wayland until output lookup (plan phase 3).
     pub fn current_monitor(&self) -> Option<Monitor> {
         let (x11, size) = {
             let guard = self.inner.lock();
-            (guard.x11_window.clone()?, guard.inner_size)
+            (guard.backend.as_ref()?.x11()?.clone(), guard.inner_size)
         };
         x11.current_monitor(size)
     }
@@ -210,23 +308,27 @@ impl NativeWindow {
     pub fn set_title(&self, title: &str) {
         let mut guard = self.inner.lock();
         guard.title = title.to_string();
-        if let Some(ref x11) = guard.x11_window {
-            x11.set_title(title);
+        match &guard.backend {
+            Some(Backend::X11(x11)) => x11.set_title(title),
+            Some(Backend::Wayland(wl)) => wl.set_title(title),
+            None => {}
         }
     }
 
+    /// Recorded only on Wayland until cursor shapes (plan phase 2).
     pub fn set_cursor_icon(&self, icon: CursorIcon) {
         let mut guard = self.inner.lock();
         guard.cursor_icon = icon;
-        if let Some(x11) = &guard.x11_window {
+        if let Some(x11) = guard.backend.as_ref().and_then(Backend::x11) {
             x11.set_cursor(icon);
         }
     }
 
+    /// Recorded only on Wayland until cursor shapes (plan phase 2).
     pub fn set_cursor_visible(&self, visible: bool) {
         let mut guard = self.inner.lock();
         guard.cursor_visible = visible;
-        if let Some(x11) = &guard.x11_window {
+        if let Some(x11) = guard.backend.as_ref().and_then(Backend::x11) {
             x11.set_cursor_visible(visible);
         }
     }
@@ -237,36 +339,42 @@ impl NativeWindow {
     }
 
     /// Outside the window lock: reaching the input method may reconnect
-    /// it, a round trip to its server.
+    /// it, a round trip to its server. No-op on Wayland until text-input
+    /// (plan phase 5).
     pub fn set_ime_allowed(&self, allowed: bool) {
-        let x11 = self.inner.lock().x11_window.clone();
-        if let Some(x11) = x11 {
+        if let Some(x11) = self.x11() {
             x11.set_ime_allowed(allowed);
         }
     }
 
+    /// No-op on Wayland until text-input (plan phase 5).
     pub fn set_ime_cursor_area(&self, position: PhysicalPosition<f64>, size: PhysicalSize<f64>) {
-        if let Some(x11) = &self.inner.lock().x11_window {
+        if let Some(x11) = self.inner.lock().backend.as_ref().and_then(Backend::x11) {
             x11.set_ime_cursor_area(position, size);
         }
     }
 
+    /// No-op on Wayland until `xdg_activation_v1` (plan phase 7).
     pub fn request_attention(&self, requested: bool) {
-        if let Some(x11) = &self.inner.lock().x11_window {
+        if let Some(x11) = self.inner.lock().backend.as_ref().and_then(Backend::x11) {
             x11.request_attention(requested);
         }
     }
 
+    /// Unsupported on Wayland until the pointer's serial is known (plan
+    /// phases 2 and 4): `xdg_toplevel.move` needs it.
     pub fn drag_window(&self) -> Result<(), Unsupported> {
         let guard = self.inner.lock();
-        let x11 = guard.x11_window.as_ref().ok_or(Unsupported)?;
+        let x11 = guard.backend.as_ref().and_then(Backend::x11).ok_or(Unsupported)?;
         x11.begin_move_resize(8); // _NET_WM_MOVERESIZE_MOVE
         Ok(())
     }
 
+    /// Unsupported on Wayland until the pointer's serial is known (plan
+    /// phases 2 and 4): `xdg_toplevel.resize` needs it.
     pub fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), Unsupported> {
         let guard = self.inner.lock();
-        let x11 = guard.x11_window.as_ref().ok_or(Unsupported)?;
+        let x11 = guard.backend.as_ref().and_then(Backend::x11).ok_or(Unsupported)?;
         x11.begin_move_resize(moveresize_direction(direction));
         Ok(())
     }
@@ -286,7 +394,7 @@ impl NativeWindow {
     }
 }
 
-/// Registry handle for the event loop: the window closes (and its X11
+/// Registry handle for the event loop: the window closes (an X11 window's
 /// connection with it) once the app drops its last `NativeWindow`.
 pub struct WeakNativeWindow {
     id: WindowId,
@@ -313,7 +421,7 @@ fn moveresize_direction(direction: ResizeDirection) -> std::ffi::c_long {
     }
 }
 
-/// A window with no X11 connection, for tests of the loop's bookkeeping.
+/// A window with no window system connection, for tests of the loop's bookkeeping.
 #[cfg(test)]
 pub(crate) fn detached(width: u32, height: u32) -> NativeWindow {
     NativeWindow {
@@ -330,7 +438,7 @@ pub(crate) fn detached(width: u32, height: u32) -> NativeWindow {
             cursor_visible: true,
             cursor_icon: CursorIcon::Default,
             raw_handle: None,
-            x11_window: None,
+            backend: None,
         })),
     }
 }

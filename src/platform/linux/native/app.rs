@@ -16,6 +16,8 @@ static PENDING_EVENTS: Mutex<Vec<(WindowId, WindowEvent)>> = Mutex::new(Vec::new
 static WINDOWS: Mutex<Vec<WeakNativeWindow>> = Mutex::new(Vec::new());
 static WAKE_EVENTFD: Mutex<Option<RawFd>> = Mutex::new(None);
 static DISPLAY_FD: Mutex<Option<RawFd>> = Mutex::new(None);
+/// The process-wide Wayland connection's socket, once one is open.
+static WAYLAND_FD: Mutex<Option<RawFd>> = Mutex::new(None);
 static EPOLL_FD: Mutex<Option<RawFd>> = Mutex::new(None);
 
 pub fn register_window(win: &NativeWindow) {
@@ -38,6 +40,47 @@ pub fn register_display_fd(fd: RawFd) {
         unsafe {
             libc::epoll_ctl(epoll, libc::EPOLL_CTL_ADD, fd, &mut ev);
         }
+    }
+}
+
+/// Watch the Wayland socket (event 5). It is opened once and never closed.
+pub fn register_wayland_fd(fd: RawFd) {
+    *WAYLAND_FD.lock() = Some(fd);
+    if let Some(epoll) = *EPOLL_FD.lock() {
+        watch_wayland(epoll, fd);
+    }
+}
+
+/// `EPOLLOUT` is on the Wayland socket's watch.
+static WAYLAND_WRITABLE: AtomicBool = AtomicBool::new(false);
+
+fn wayland_events(writable: bool) -> u32 {
+    let base = libc::EPOLLIN | libc::EPOLLERR | libc::EPOLLHUP;
+    (if writable { base | libc::EPOLLOUT } else { base }) as u32
+}
+
+fn watch_wayland(epoll: RawFd, fd: RawFd) {
+    let mut ev = libc::epoll_event { events: wayland_events(WAYLAND_WRITABLE.load(Ordering::Relaxed)), u64: 5 };
+    if unsafe { libc::epoll_ctl(epoll, libc::EPOLL_CTL_ADD, fd, &mut ev) } != 0 {
+        // Unwatched, its events would only be read while something else wakes the loop.
+        let err = std::io::Error::last_os_error();
+        eprintln!("litty: cannot watch the Wayland connection ({err})");
+        std::process::exit(1);
+    }
+}
+
+/// Also wake when the Wayland socket can take more requests (`writable`),
+/// while a flush could not send them all. Only a change costs a syscall.
+pub fn watch_wayland_writable(writable: bool) {
+    if WAYLAND_WRITABLE.swap(writable, Ordering::Relaxed) == writable {
+        return;
+    }
+    let (Some(epoll), Some(fd)) = (*EPOLL_FD.lock(), *WAYLAND_FD.lock()) else { return };
+    let mut ev = libc::epoll_event { events: wayland_events(writable), u64: 5 };
+    if unsafe { libc::epoll_ctl(epoll, libc::EPOLL_CTL_MOD, fd, &mut ev) } != 0 {
+        let err = std::io::Error::last_os_error();
+        eprintln!("litty: cannot watch the Wayland connection ({err})");
+        std::process::exit(1);
     }
 }
 
@@ -222,6 +265,9 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
             };
             libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, dfd, &mut ev_display);
         }
+        if let Some(wfd) = *WAYLAND_FD.lock() {
+            watch_wayland(epoll_fd, wfd);
+        }
 
         *WAKE_EVENTFD.lock() = Some(event_fd);
 
@@ -251,11 +297,13 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
                 handler.user_event(&loop_ctx, user_ev);
             }
 
-            // 2. Poll each window's own X11 connection
+            // 2. Poll each window's connection: its own for X11, the
+            //    shared one (dispatched once here) for Wayland
+            super::wayland::dispatch();
             live_windows(&mut wins);
             for win in &wins {
-                let Some(x11) = win.x11() else { continue };
-                x11.poll_events(&mut window_events);
+                let Some(backend) = win.backend() else { continue };
+                backend.poll_events(&mut window_events);
                 for ev in window_events.drain(..) {
                     win.observe(&ev);
                     handler.window_event(&loop_ctx, win.id(), ev);
@@ -284,9 +332,12 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
             // 5. Determine epoll_wait timeout
             let flow_mode = native_ctx.flow_mode.load(Ordering::SeqCst);
             live_windows(&mut wins);
-            let has_x11_pending = wins.iter().any(|w| w.x11().is_some_and(|x| x.pending()));
+            let has_x11_pending = wins.iter().any(|w| w.backend().is_some_and(|b| b.pending()));
             wins.clear();
-            let timeout = if has_x11_pending || flow_mode == 1 {
+            // Prepared last, right before blocking; dropped (cancelled) unless read.
+            let mut wayland = super::wayland::prepare_wait();
+            let wayland_busy = matches!(wayland, super::wayland::Wait::Busy);
+            let timeout = if has_x11_pending || wayland_busy || flow_mode == 1 {
                 0 // Non-blocking poll if events are pending or poll requested
             } else {
                 -1 // Block on epoll (timerfd handles WaitUntil)
@@ -309,6 +360,15 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
                         // X11 display socket readable: events will be drained on the next loop cycle
                     } else if tag == 4 {
                         portal_readable(epoll_fd, portal_fd);
+                    } else if tag == 5 {
+                        // Wayland socket readable (or writable again: the read then
+                        // finds nothing, and the next cycle flushes): read now,
+                        // dispatched on the next cycle.
+                        if let super::wayland::Wait::Read(guard) =
+                            std::mem::replace(&mut wayland, super::wayland::Wait::Disconnected)
+                        {
+                            super::wayland::read(guard);
+                        }
                     }
                 }
             }

@@ -588,7 +588,15 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(frame.texture_ptr(), None);
             pass.draw_corners(&self.pipelines.corner, &u);
         }
-        encoder.present_and_submit(frame);
+        let window = self.window.upgrade();
+        if let Some(window) = &window {
+            window.pre_present_notify();
+        }
+        if !encoder.present_and_submit(frame)
+            && let Some(window) = &window
+        {
+            window.present_skipped();
+        }
         self.frames_submitted += 1;
     }
 }

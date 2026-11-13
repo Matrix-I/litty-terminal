@@ -653,7 +653,8 @@ impl App {
     pub(super) fn on_redraw_requested(&mut self, id: WindowId) {
         let waker = self.waker.clone();
         let Some(s) = self.windows.iter_mut().find(|s| s.window.id() == id) else { return };
-        if s.occluded {
+        // A refused redraw is owed: the window asks again when it may draw.
+        if s.occluded || !s.window.may_redraw() {
             return;
         }
         // Re-arm before rendering so any PTY write during the draw schedules the next frame.

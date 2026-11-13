@@ -129,6 +129,9 @@ pub struct Renderer {
     frame_capture: Option<crate::render::frame_metrics::Capture>,
     /// Frames handed to the GPU so far; benchmarks compare it across a draw.
     frames_submitted: u64,
+    /// Told right before each present (Wayland frame pacing). Weak: the app
+    /// drops the renderer before its window, and never through this.
+    window: std::sync::Weak<Window>,
     surface: Surface,
     device: Arc<Device>,
     queue: Arc<Queue>,
@@ -259,6 +262,7 @@ impl Renderer {
 
         let images = crate::render::image_layer::ImageLayer::new(&device, format);
         Renderer {
+            window: Arc::downgrade(&window),
             frame_capture: None,
             frames_submitted: 0,
             surface,

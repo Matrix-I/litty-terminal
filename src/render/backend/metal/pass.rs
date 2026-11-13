@@ -91,12 +91,14 @@ impl CommandEncoder {
         }
     }
 
-    pub fn present_and_submit(self, frame: SurfaceFrame) {
+    /// Always presented: Metal reports failures through the command buffer.
+    pub fn present_and_submit(self, frame: SurfaceFrame) -> bool {
         unsafe {
             msg_send!(self.cmd_buf.as_ptr(), c"presentDrawable:", frame.drawable.as_ptr() => Id);
             msg_send!(self.cmd_buf.as_ptr(), c"commit");
         }
         frame.in_flight.record(self.cmd_buf);
+        true
     }
 
     pub fn present_and_submit_wait(self, frame: SurfaceFrame) {

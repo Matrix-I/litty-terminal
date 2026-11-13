@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run inside the Linux test image, with software Vulkan and an isolated X server.
+# Run inside the Linux test image, with software Vulkan, an isolated X server
+# and a headless Wayland compositor.
 set -euo pipefail
 export XDG_RUNTIME_DIR
 XDG_RUNTIME_DIR=$(mktemp -d)
@@ -18,3 +19,4 @@ cargo test --locked linux_xdg_open_dispatch_smoke -- --ignored --nocapture
 cargo build --locked
 xvfb-run -a -s '-screen 0 1280x800x24' dbus-run-session -- \
     python3 scripts/linux/x11_smoke.py target/debug/litty
+python3 scripts/linux/wayland_smoke.py target/debug/litty

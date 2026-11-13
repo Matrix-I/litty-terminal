@@ -263,6 +263,7 @@ dependencies = [
  "mimalloc",
  "naga",
  "parking_lot",
+ "smithay-client-toolkit",
  "smithay-clipboard",
  "unicode-normalization",
  "unicode-width",

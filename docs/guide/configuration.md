@@ -129,6 +129,12 @@ keybind = ctrl+shift+h=text:hello\n
 keybind = cmd+d=unbind
 ```
 
+## Environment
+
+| Variable | Values | Effect |
+|---|---|---|
+| `LITTY_BACKEND` | `x11` (default), `wayland` | Linux window system. `wayland` opens native Wayland windows (falls back to X11 if the compositor cannot be reached); it is a preview without keyboard, mouse, scaling or a title bar yet, see the [Wayland backend plan](../plans/wayland-backend.md). |
+
 ## See also
 
 - [Keybinding actions](keybinding-actions.md)

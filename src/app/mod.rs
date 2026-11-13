@@ -382,8 +382,9 @@ impl EventHandler<AppEvent> for App {
                     s.history_search.poll();
                     handle_terminal_requests(s);
                     handle_ai_requests(s, &self.waker);
-                    // An occluded window draws again once it is shown (`Occluded(false)`).
-                    if !s.tabs.is_empty() && !s.occluded {
+                    // An occluded window draws again once it is shown (`Occluded(false)`);
+                    // one that may not draw yet (Wayland frame pacing) asks for a redraw.
+                    if !s.tabs.is_empty() && !s.occluded && s.window.may_redraw() {
                         gui_bench::render_observed(s, &mut self.gui_bench, &mut self.gui_bench_result);
                     }
                 }
