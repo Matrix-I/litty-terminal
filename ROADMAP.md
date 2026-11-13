@@ -62,7 +62,7 @@ follow-ups are in v0.8.0; shipped refactor results are in v0.7.1.
   - The code is done and passes in an x86_64 container (lavapipe, Xvfb, validation layers); the manual checklists in [plan B](./docs/plans/2026-11-11-review-fixes-b-vulkan-robustness.md) and [plan C](./docs/plans/2026-11-11-review-fixes-c-vulkan-images.md) are open. The macOS GUI runs of the perf plan's Step 3 items 1–4 and plan A's Task 5 Step 5 were checked by the user on 2026-11-12 and pass.
 
 - [ ] **LLM assistant release validation on additional environments**
-  - Scheduled for [v0.13.0](./docs/plans/0.13.0.md).
+  - Not scheduled: descoped from [v0.13.0](./docs/plans/0.13.0.md#deferred) on 2026-11-13 as nice to have; planned again only if an issue is opened.
   - Implementation is complete (see [implementation record](./docs/plans/yosh_implementation_plan.md#implementation-record-2026-11-01)); mock provider/tool/continuation/cancellation/compaction tests and isolated zsh/Bash 3.2 smoke tests pass.
   - Linux feature validation is complete per the user confirmation above. Separate provider/version coverage and quantitative memory measurements remain in the v0.8.0 follow-ups. These are release validation, not unimplemented assistant features.
   - Anthropic live-provider smoke test **passed** (2026-11-01, `LITTY_AI_LIVE_MODEL=claude-haiku-5-5`, `bash scripts/test-ai-live.sh`, 1 passed in 9.57s): docs + scrollback tool round trips + chat; pending suggestion + edited execution + continuation; context compaction + post-compaction request; transport cancellation in 221 ms. See [scope](./docs/validation/ai-live-validation.md). Other providers (OpenAI, OpenRouter, etc.) were not live-tested.
@@ -96,7 +96,7 @@ From [the 2026-11-11 review](./docs/reviews/2026-11-11-linux-history-ai-graphics
   - Fixed (2026-11-12, `aa1b7b9`): render-target textures own a framebuffer with offscreen render passes, and an unknown target records no pass. The test segfaulted on `main` and now passes with its pixel checks and no validation errors.
 - [x] **Linux: `custom-shader` warning.** It is printed once per window and worded as a compile error; say once that the key is unsupported.
   - Fixed (2026-11-12, `ab2de85`): one `custom-shader is not supported on Linux yet` line per process, however many windows open.
-- [x] **Graphics: unsupported Kitty `a=d` selectors** return an error without changing image data or placements (2026-11-12). Existing `a`/`A`, default and `i`/`I` semantics are preserved; alternate-screen scoping remains a separate follow-up.
+- [x] **Graphics: unsupported Kitty `a=d` selectors** return an error without changing image data or placements (2026-11-12). Existing `a`/`A`, default and `i`/`I` semantics are preserved. Alternate-screen scoping done 2026-11-13: deletions touch only the active screen's placements, and `A`/`I` keep image data the other screen still shows (remaining gaps listed in [v0.13.0](./docs/plans/0.13.0.md#graphics)).
 - [x] **Graphics: `t=f`/`t=t` failure replies** use the same `EPERM` for read, decompression and image-decoding failures (2026-11-12).
 - [x] **Graphics: `I=` replies and APNG fallback**: numbered transmissions reply with the assigned id; valid APNGs with later partial frames show the full default image while malformed default images remain rejected (2026-11-12).
 - [x] **History: background reload and bounded deletes**: history reloads offload to a background worker; deletions are queued and processed sequentially without silent drops or corrupting rewrites (2026-11-12).

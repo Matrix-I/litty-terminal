@@ -1276,7 +1276,7 @@ Add a section at the end:
 - [ ] `platform::prepare_window_attributes` for the `WindowAttributesExtMacOS` block in `app::window::create_window`.
 - [ ] Linux behavior gaps behind explicit no-ops: `caps_lock` (Kitty never reports Caps Lock), `system_dark` (no appearance detection; e.g. xdg-desktop-portal `color-scheme`), `beep`, update progress dialog.
 - [ ] Linux has no `wcwidth` override for spacing marks (`grid` uses `macos_wcwidth` only on macOS); check glibc `wcwidth` vs unicode-width for Indic scripts.
-- [ ] Optional: lib target (see Task 9 of the phase 4 plan).
+- [ ] Optional: lib target (see Task 9 of the phase 4 plan). Descoped from v0.13.0 on 2026-11-13: no consumer yet.
 ```
 
 If Task 6 Step 1 found CoreText entry points without a Linux twin, add one line per missing function here.

@@ -80,11 +80,11 @@ Not measured: keystroke-to-screen latency, launch → first presented frame.
 | B1 | No input-latency benchmark | Done (macOS; Linux in a software-Vulkan container) | P0 |
 | B2 | No first-frame benchmark | Done (warm and cold) | P0 |
 | B3 | No end-to-end PTY throughput benchmark | Done | P0 |
-| T1 | Glyph shaping and rasterization run under the grid lock | Measured; deferred after T2 (≤ 3% left) | P3 |
+| T1 | Glyph shaping and rasterization run under the grid lock | Measured; descoped from v0.13.0 (≤ 3% left after T2) | P3 |
 | T2 | CoreText shaping allocates per run, per dirty row, per frame | Done | P1 |
 | T3 | OSC 8 throughput 3.3 MB/s | Done (scan skipped when provably full) | P1 |
 | T4 | Region scroll 36 MB/s | Closed: cost is the row copy itself (no change) | P2 |
-| T5 | Unicode/emoji path 56–75 MB/s | Done (UTF-8 fast path); emoji cluster interning left | P2 |
+| T5 | Unicode/emoji path 56–75 MB/s | Done (UTF-8 fast path; append memo for emoji clusters, 2026-11-13) | P2 |
 | T6 | Grid locked 4–5 times per frame | Closed: 2 locks per frame, ~0.5 µs extra (no change) | P2 |
 | T7 | Terminal reply buffer reallocated each batch | Done (no allocation per short reply; latency unchanged) | P3 |
 | S1 | Metal shaders compiled from source at startup | Done (overlapped, not precompiled) | P1 |
@@ -618,6 +618,11 @@ isolation step.
   (~10%) are the next costs. SipHash stays on purpose: cluster text comes
   from untrusted output, so a cheaper hasher would open hash flooding. A
   pending ZWJ still sends the next character through vte (~6%).
+- [x] Append memo, 2026-11-13: `Grid::appended_cluster` remembers the last
+  32 (cell value, appended char) → cluster id results and checks a hit
+  against the table, so repeated sequences skip building and hashing the
+  text while SipHash stays for every miss. `emoji_clusters` 12.1–12.2 →
+  11.2–11.4 ns/B (release, interleaved builds). See [v0.13.0](./0.13.0.md).
 
 ### T6 Lock the grid once per pane per frame
 
