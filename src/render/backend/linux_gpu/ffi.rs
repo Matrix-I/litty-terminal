@@ -94,6 +94,11 @@ pub(super) mod fault {
         pub(in crate::render::backend::linux_gpu) fn count(&self, what: &str) -> usize {
             self.log.iter().filter(|(name, _)| name == what).count()
         }
+
+        /// Times `what` was checked and not failed.
+        pub(in crate::render::backend::linux_gpu) fn passed(&self, what: &str) -> usize {
+            self.log.iter().filter(|(name, failed)| name == what && !failed).count()
+        }
     }
 
     /// Fail the n-th checked Vulkan result (0-based) from now on this thread.

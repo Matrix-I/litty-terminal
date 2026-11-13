@@ -417,8 +417,11 @@ impl Renderer {
     /// `animation`: `None` never, `Some(false)` when a shader uses time,
     /// `Some(true)` always.
     pub fn set_custom_shaders(&mut self, paths: &[std::path::PathBuf], animation: Option<bool>) {
-        let (sources, uses_time) = crate::render::postfx::load(paths);
-        self.postfx = crate::render::postfx::PostFx::new(&self.device, self.config.format, &sources);
+        use crate::render::postfx;
+        let mut problems = Vec::new();
+        let (sources, uses_time) = postfx::load(paths, &mut problems);
+        self.postfx = postfx::PostFx::new(&self.device, self.config.format, &sources, &mut problems);
+        postfx::report(&problems);
         self.animate = self.postfx.is_some() && animation.is_some_and(|always| always || uses_time);
         self.force_full = true;
     }

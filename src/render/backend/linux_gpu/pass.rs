@@ -9,6 +9,10 @@ use super::resources::{HostBuffer, Texture};
 use super::surface::SurfaceFrame;
 use super::upload::SubmitInfo;
 
+/// Set once a `custom-shader` pass was skipped for want of a descriptor set
+/// (reported once: it repeats every frame).
+pub(super) static POSTFX_SKIPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub struct CommandEncoder {
     vk: Option<Arc<VulkanCore>>,
     /// Whether the frame's command buffer began recording. When it did not,
@@ -357,12 +361,20 @@ impl RenderPass {
         source_tex: &Texture,
         _sampler: SamplerHandle,
     ) {
+        const { assert!(std::mem::size_of::<G>() <= super::device::POSTFX_PUSH_SIZE as usize) };
         let Some(vk) = &self.vk else { return };
         let dset = source_tex.image_dset();
-        let size = std::mem::size_of::<G>();
-        if pipeline.0 == 0 || dset == 0 || size > super::device::POSTFX_PUSH_SIZE as usize {
+        if pipeline.0 == 0 {
             return;
         }
+        if dset == 0 {
+            // The pass cleared its target, so the window shows black.
+            if !POSTFX_SKIPPED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("litty: custom-shader skipped: no descriptor set left for its source (too many images?)");
+            }
+            return;
+        }
+        let size = std::mem::size_of::<G>();
         unsafe {
             (vk.lib.vkCmdBindPipeline)(vk.upload_cmd, 0, pipeline.0);
             (vk.lib.vkCmdBindDescriptorSets)(vk.upload_cmd, 0, vk.postfx_pipe_layout, 0, 1, &dset, 0, std::ptr::null());

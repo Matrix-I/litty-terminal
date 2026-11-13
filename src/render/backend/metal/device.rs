@@ -197,6 +197,12 @@ pub fn shared_pipelines(device: &Device, format: TextureFormat) -> RenderPipelin
     pipes
 }
 
+/// Nothing beyond `postfx`'s own check: Metal compiles the source when the
+/// pipeline is built (the Vulkan backend compiles it here).
+pub fn validate_postfx(_msl_src: &str) -> Result<(), String> {
+    Ok(())
+}
+
 impl Device {
     /// Nothing to do: the pipeline is released when its last `ObjPtr`
     /// drops (the Vulkan backend destroys it here).

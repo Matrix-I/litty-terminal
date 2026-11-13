@@ -6,6 +6,7 @@ use naga::back::spv;
 use naga::front::glsl;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use naga::{ShaderStage, Span};
+use std::ops::Range;
 
 use super::device::{shared_pipelines, Blend, Device};
 use super::ffi::*;
@@ -20,18 +21,19 @@ void main() {
 }
 ";
 
-/// Compile GLSL 450 for `stage` to SPIR-V 1.0 words. Errors name the line
-/// counted from `first_line` (the first line of the user's file within
-/// `src`), so they point into the file the user wrote.
-fn compile(src: &str, stage: ShaderStage, first_line: u32) -> Result<Vec<u32>, String> {
+/// Compile GLSL 450 for `stage` to SPIR-V 1.0 words. `user` is the range of
+/// lines of `src` (1-based) that come from the user's file; errors there
+/// name the line in that file, errors elsewhere are in the wrapper.
+fn compile(src: &str, stage: ShaderStage, user: Range<u32>) -> Result<Vec<u32>, String> {
     let at = |span: Span| {
         if !span.is_defined() {
             return String::new();
         }
         let line = span.location(src).line_number;
-        match line.checked_sub(first_line) {
-            Some(n) => format!("line {}: ", n + 1),
-            None => "in the code litty adds: ".to_string(),
+        if user.contains(&line) {
+            format!("line {}: ", line - user.start + 1)
+        } else {
+            "in the code litty adds: ".to_string()
         }
     };
     let module = glsl::Frontend::default().parse(&glsl::Options::from(stage), src).map_err(|e| {
@@ -47,11 +49,27 @@ fn compile(src: &str, stage: ShaderStage, first_line: u32) -> Result<Vec<u32>, S
     spv::write_vec(&module, &info, &options, None).map_err(|e| e.to_string())
 }
 
-/// 1-based line of `src` where the user's shader starts: the line after
-/// `postfx`'s start marker, else the first.
-fn user_first_line(src: &str) -> u32 {
-    src.find(crate::render::postfx::USER_START)
-        .map_or(1, |at| src[..at].matches('\n').count() as u32 + 2)
+/// 1-based lines of `src` that hold the user's shader: between `postfx`'s
+/// markers (each on a line of its own), else all of them.
+fn user_lines(src: &str) -> Range<u32> {
+    use crate::render::postfx::{USER_END, USER_START};
+    let line_of = |at: usize| src[..at].matches('\n').count() as u32 + 1;
+    match (src.find(USER_START), src.find(USER_END)) {
+        (Some(start), Some(end)) => line_of(start) + 1..line_of(end),
+        (Some(start), None) => line_of(start) + 1..u32::MAX,
+        _ => 1..u32::MAX,
+    }
+}
+
+fn compile_postfx(glsl_src: &str) -> Result<Vec<u32>, String> {
+    compile(glsl_src, ShaderStage::Fragment, user_lines(glsl_src))
+}
+
+/// Check a wrapped `custom-shader` when the config loads, so a broken file
+/// is reported with its path before any window builds it. Vulkan has no
+/// cheaper check than compiling.
+pub fn validate_postfx(glsl_src: &str) -> Result<(), String> {
+    compile_postfx(glsl_src).map(drop)
 }
 
 impl Device {
@@ -59,8 +77,8 @@ impl Device {
     /// pipeline uses the shared swapchain pass, which offscreen passes of
     /// the same format are compatible with.
     pub fn create_postfx_pipeline(&self, glsl_src: &str, format: TextureFormat) -> Result<ObjPtr, String> {
-        let fragment = compile(glsl_src, ShaderStage::Fragment, user_first_line(glsl_src))?;
-        let vertex = compile(VERTEX_GLSL, ShaderStage::Vertex, 1)?;
+        let fragment = compile_postfx(glsl_src)?;
+        let vertex = compile(VERTEX_GLSL, ShaderStage::Vertex, 1..u32::MAX)?;
         let Some(vk) = &self.vk else { return Err("no Vulkan device".into()) };
         let render_pass = shared_pipelines(self, format).render_pass_clear;
         if render_pass == 0 {
@@ -126,15 +144,15 @@ mod tests {
     /// helper the wrapper offers compiles.
     #[test]
     fn shadertoy_shaders_compile_to_spirv() {
-        let words = compile(&postfx::wrap(INVERT), ShaderStage::Fragment, 1).unwrap();
+        let words = compile_postfx(&postfx::wrap(INVERT)).unwrap();
         assert_eq!(words[0], 0x0723_0203);
         let everything = "void mainImage(out vec4 o, in vec2 f) {
     vec2 uv = f / iResolution.xy + iMouse.xy * 0.0;
     float t = iTime + iTimeDelta + float(iFrame) + iDate.w;
     o = textureLod(iChannel0, uv, 0.0) * (0.5 + 0.5 * sin(t));
 }";
-        compile(&postfx::wrap(everything), ShaderStage::Fragment, 1).unwrap();
-        assert_eq!(compile(VERTEX_GLSL, ShaderStage::Vertex, 1).unwrap()[0], 0x0723_0203);
+        compile_postfx(&postfx::wrap(everything)).unwrap();
+        assert_eq!(compile(VERTEX_GLSL, ShaderStage::Vertex, 1..u32::MAX).unwrap()[0], 0x0723_0203);
     }
 
     /// A mistake is reported at its line in the user's file, not in the
@@ -142,22 +160,40 @@ mod tests {
     #[test]
     fn errors_point_into_the_users_file() {
         let src = postfx::wrap("void mainImage(out vec4 o, in vec2 f) {\n    o = vec4(1.0);\n    o = nope;\n}");
-        let err = compile(&src, ShaderStage::Fragment, user_first_line(&src)).unwrap_err();
+        let err = compile_postfx(&src).unwrap_err();
         assert!(err.starts_with("line 3: "), "{err}");
         assert!(err.contains("nope"), "{err}");
+    }
+
+    /// A mistake that naga finds in the wrapper's `main` (here: `mainImage`
+    /// takes the wrong arguments) has no line in the user's file.
+    #[test]
+    fn errors_after_the_users_code_are_in_the_wrapper() {
+        let err = validate_postfx(&postfx::wrap("void mainImage(out vec4 o, in vec3 f) { o = vec4(1.0); }")).unwrap_err();
+        assert!(err.starts_with("in the code litty adds: "), "{err}");
+    }
+
+    /// Validation is the compile itself, so whatever GLSL naga takes is
+    /// accepted (a `#define` here) and nothing touches the GPU.
+    #[test]
+    fn validation_compiles_without_a_gpu() {
+        let defines = "#define PI 3.14159\nvoid mainImage(out vec4 o, in vec2 f) { o = vec4(sin(PI)); }";
+        validate_postfx(&postfx::wrap(defines)).unwrap();
+        let err = validate_postfx(&postfx::wrap("void mainImage(out vec4 o, in vec2 f) {\n o = nope;\n}")).unwrap_err();
+        assert!(err.starts_with("line 2: "), "{err}");
     }
 
     #[test]
     fn a_shader_without_main_image_is_an_error() {
         let src = postfx::wrap("void notMain(out vec4 o, in vec2 f) { o = vec4(1.0); }");
-        assert!(compile(&src, ShaderStage::Fragment, user_first_line(&src)).is_err());
+        assert!(compile_postfx(&src).is_err());
     }
 
     #[test]
-    fn user_lines_start_after_the_marker() {
-        assert_eq!(user_first_line("no marker"), 1);
-        let src = format!("a\nb\n{}\nuser", postfx::USER_START);
-        assert_eq!(user_first_line(&src), 4);
+    fn user_lines_are_between_the_markers() {
+        assert_eq!(user_lines("no marker"), 1..u32::MAX);
+        let src = format!("a\nb\n{}\nuser\nmore\n{}\nmain", postfx::USER_START, postfx::USER_END);
+        assert_eq!(user_lines(&src), 4..6);
     }
 
     /// The pipeline is built against the shared swapchain pass and works in
@@ -235,6 +271,44 @@ mod tests {
         let Some(last) = shade(rows, [0.0; 4], true) else { return };
         assert!(red_of_row(&between, 0) < red_of_row(&between, 3), "row 0 is fragCoord.y = 0.5");
         assert!(red_of_row(&last, 0) > red_of_row(&last, 3), "row 0 is the top: fragCoord.y = 3.5");
+    }
+
+    /// A source that got no descriptor set (the shared pool ran out) cannot
+    /// be sampled: the pass draws nothing and says so, instead of a silent
+    /// black window.
+    #[test]
+    fn a_pass_without_a_descriptor_set_is_reported() {
+        use super::super::ffi::fault;
+        use super::super::pass::{CommandEncoder, POSTFX_SKIPPED};
+        use super::super::resources::Texture;
+        use std::sync::atomic::Ordering;
+        let _gpu = crate::render::backend::TEST_GPU.lock();
+        let (device, queue) = super::super::device::shared_device_and_queue();
+        if device.vk.is_none() {
+            eprintln!("no GPU; skipping");
+            return;
+        }
+        let format = TextureFormat::Bgra8Unorm;
+        let pipeline = device.create_postfx_pipeline(&postfx::wrap(INVERT), format).unwrap();
+        fault::fail_named("vkAllocateDescriptorSets", 1);
+        let source = Texture::new(&device, 8, 4, format, true);
+        assert_eq!(fault::finish().injected(), 1);
+        assert_eq!(source.image_dset(), 0);
+        let target = Texture::new(&device, 8, 4, format, true);
+        POSTFX_SKIPPED.store(false, Ordering::Relaxed);
+        let mut encoder = CommandEncoder::new(&queue);
+        drop(encoder.begin_render_pass(source.raw_ptr(), Some([1.0; 4])));
+        {
+            let mut pass = encoder.begin_render_pass(target.raw_ptr(), Some([0.0, 0.0, 0.0, 1.0]));
+            pass.draw_postfx(&pipeline, &[0u32; 16], &source, device.linear_sampler());
+        }
+        encoder.submit_and_wait();
+        assert!(POSTFX_SKIPPED.load(Ordering::Relaxed));
+        let mut pixels = vec![0u8; 8 * 4 * 4];
+        target.read_pixels(&mut pixels, 8 * 4);
+        assert!(pixels.as_chunks::<4>().0.iter().all(|px| *px == [0, 0, 0, 255]), "nothing drawn");
+        drop((source, target));
+        device.destroy_postfx_pipeline(&pipeline);
     }
 
     #[test]

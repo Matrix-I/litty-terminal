@@ -9,14 +9,17 @@
 //! Animation (`iTime`) means a redraw per frame; it only runs while a shader
 //! uses `iTime` / `iFrame` and `custom-shader-animation` allows it.
 
+#[cfg(any(target_os = "macos", test))]
 use std::collections::HashSet;
-use std::path::Path;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use crate::render::backend::{CommandEncoder, Device, ObjPtr, Queue, Texture, TextureFormat};
 
 /// Marks where the user's shader starts in the wrapped source.
 pub(crate) const USER_START: &str = "/*__LITTY_USER_START__*/";
-const USER_END: &str = "/*__LITTY_USER_END__*/";
+pub(crate) const USER_END: &str = "/*__LITTY_USER_END__*/";
 
 /// Uniforms every pass sees (64 bytes, matches `MSL_PRELUDE` and
 /// `GLSL_PRELUDE`).
@@ -184,18 +187,30 @@ void main() {{
     )
 }
 
-/// Validate a wrapped Shadertoy shader before the backend compiles it.
-/// Checks balanced braces/parens, `mainImage` entrypoint presence, and Undeclared identifiers.
-fn check(src: &str) -> Result<(), String> {
-    let user = src
-        .split_once(USER_START)
+/// Validate a wrapped shader when the config loads. Metal compiles only when
+/// a window builds the pipeline, so a heuristic check runs first there;
+/// Vulkan compiles here, which reports real errors with their line.
+fn validate(src: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    check(src)?;
+    // A missing `}` makes the compiler fail in the wrapper after the user's
+    // code; say where the mistake probably is.
+    crate::render::backend::validate_postfx(src)
+        .map_err(|e| match balance(user_code(src)) {
+            Ok(()) => e,
+            Err(hint) => format!("{e} ({hint} in your shader?)"),
+        })
+}
+
+/// The user's shader within a wrapped source.
+fn user_code(src: &str) -> &str {
+    src.split_once(USER_START)
         .and_then(|(_, rest)| rest.split_once(USER_END))
-        .map_or(src, |(u, _)| u);
+        .map_or(src, |(u, _)| u)
+}
 
-    if !user.contains("mainImage") {
-        return Err("missing `mainImage` entry point".to_string());
-    }
-
+/// Whether braces and parentheses pair up (comments are not skipped).
+fn balance(user: &str) -> Result<(), String> {
     let mut braces = 0i32;
     let mut parens = 0i32;
     for ch in user.chars() {
@@ -220,6 +235,18 @@ fn check(src: &str) -> Result<(), String> {
     if braces != 0 || parens != 0 {
         return Err("unbalanced braces or parentheses".to_string());
     }
+    Ok(())
+}
+
+/// Validate a wrapped Shadertoy shader before the backend compiles it.
+/// Checks balanced braces/parens, `mainImage` entrypoint presence, and Undeclared identifiers.
+#[cfg(any(target_os = "macos", test))]
+fn check(src: &str) -> Result<(), String> {
+    let user = user_code(src);
+    if !user.contains("mainImage") {
+        return Err("missing `mainImage` entry point".to_string());
+    }
+    balance(user)?;
 
     let mut known: HashSet<&str> = [
         // Types & qualifiers
@@ -229,7 +256,7 @@ fn check(src: &str) -> Result<(), String> {
         "continue", "discard", "true", "false", "precision", "highp", "mediump", "lowp",
         // Shadertoy uniforms & entry point
         "mainImage", "iResolution", "iTime", "iTimeDelta", "iFrame", "iMouse", "iDate",
-        "iChannel0", "iChannel1", "iChannel2", "iChannel3", "iChannelResolution", "gl_FragCoord",
+        "iChannel0", "gl_FragCoord",
         // GLSL built-in functions
         "texture", "textureLod", "texelFetch", "textureSize", "sin", "cos", "tan", "asin", "acos",
         "atan", "sinh", "cosh", "tanh", "pow", "exp", "log", "exp2", "log2", "sqrt", "inversesqrt",
@@ -241,8 +268,13 @@ fn check(src: &str) -> Result<(), String> {
     ]
     .into_iter()
     .collect();
+    // `#define NAME ...` (the scan below skips preprocessor lines).
+    known.extend(user.lines().filter_map(|line| {
+        let name = line.trim_start().strip_prefix('#')?.trim_start().strip_prefix("define")?.trim_start();
+        name.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).next().filter(|n| !n.is_empty())
+    }));
 
-    // Collect identifiers declared after a type name or `#define`.
+    // Collect identifiers declared after a type name.
     let tokens: Vec<(usize, &str)> = scan_ident_tokens(user);
     for (idx, (_, tok)) in tokens.iter().enumerate() {
         if matches!(
@@ -275,6 +307,7 @@ fn check(src: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn scan_ident_tokens(s: &str) -> Vec<(usize, &str)> {
     let mut out = Vec::new();
     let bytes = s.as_bytes();
@@ -322,31 +355,64 @@ fn uses_time(user: &str) -> bool {
     ["iTime", "iFrame", "iTimeDelta", "iDate"].iter().any(|n| user.contains(n))
 }
 
-/// Read, wrap and check every `custom-shader` file; broken ones are reported
-/// and left out. Returns the sources and whether any of them animates.
-pub fn load(paths: &[std::path::PathBuf]) -> (Vec<String>, bool) {
+/// A `custom-shader` file, wrapped for the backend.
+pub struct Source {
+    path: PathBuf,
+    src: String,
+}
+
+/// Read, wrap and validate every `custom-shader` file; broken ones are left
+/// out and added to `problems` (see [`report`]). Returns the sources and
+/// whether any of them animates.
+pub fn load(paths: &[PathBuf], problems: &mut Vec<String>) -> (Vec<Source>, bool) {
     let mut sources = Vec::new();
     let mut animated = false;
     for path in paths {
-        match std::fs::read_to_string(path) {
-            Ok(user) => {
-                let src = wrap(&user);
-                match check(&src) {
-                    Ok(()) => {
-                        animated |= uses_time(&user);
-                        sources.push(src);
-                    }
-                    Err(e) => eprintln!("litty: custom-shader {}: {e}", display(path)),
-                }
+        let loaded = std::fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|user| {
+            let src = wrap(&user);
+            validate(&src).map(|()| (user, src))
+        });
+        match loaded {
+            Ok((user, src)) => {
+                animated |= uses_time(&user);
+                sources.push(Source { path: path.clone(), src });
             }
-            Err(e) => eprintln!("litty: custom-shader {}: {e}", display(path)),
+            Err(e) => problems.push(problem(path, &e)),
         }
     }
     (sources, animated)
 }
 
-fn display(path: &Path) -> String {
-    path.display().to_string()
+fn problem(path: &Path, error: &str) -> String {
+    format!("litty: custom-shader {}: {error}", path.display())
+}
+
+/// Print `problems` on stderr unless they are the ones printed last: every
+/// window loads the shaders, and again on each config reload.
+pub fn report(problems: &[String]) {
+    static LAST: Mutex<Option<u64>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if fresh(&mut last, problems) {
+        for p in problems {
+            eprintln!("{p}");
+        }
+    }
+}
+
+/// Whether `problems` differ from those `last` remembers (a hash of them),
+/// remembering them. No problems forget the last ones, so a shader that
+/// breaks again in the same way is reported again.
+fn fresh(last: &mut Option<u64>, problems: &[String]) -> bool {
+    if problems.is_empty() {
+        *last = None;
+        return false;
+    }
+    let mut hasher = std::hash::DefaultHasher::new();
+    problems.hash(&mut hasher);
+    let hash = Some(hasher.finish());
+    let fresh = *last != hash;
+    *last = hash;
+    fresh
 }
 
 pub struct PostFx {
@@ -363,17 +429,18 @@ pub struct PostFx {
 }
 
 impl PostFx {
-    /// Build the passes for already checked `sources` (see [`load`]); `None`
-    /// when there are none.
-    pub fn new(device: &Device, format: TextureFormat, sources: &[String]) -> Option<Self> {
+    /// Build the passes for already validated `sources` (see [`load`]);
+    /// shaders the backend still rejects go to `problems`. `None` when no
+    /// pass is left.
+    pub fn new(device: &Device, format: TextureFormat, sources: &[Source], problems: &mut Vec<String>) -> Option<Self> {
         if sources.is_empty() {
             return None;
         }
         let mut pipelines = Vec::with_capacity(sources.len());
-        for src in sources {
-            match device.create_postfx_pipeline(src, format) {
+        for source in sources {
+            match device.create_postfx_pipeline(&source.src, format) {
                 Ok(p) => pipelines.push(p),
-                Err(e) => eprintln!("litty: custom-shader compile error: {e}"),
+                Err(e) => problems.push(problem(&source.path, &e)),
             }
         }
         if pipelines.is_empty() {
@@ -499,6 +566,58 @@ mod tests {
         assert!(uses_time(crt));
 
         assert!(check(&wrap("void mainImage(out vec4 c, in vec2 f) { c = nope; }")).is_err());
+    }
+
+    #[test]
+    fn defined_names_are_declared() {
+        check(&wrap("#define PI 3.14159\nvoid mainImage(out vec4 o, in vec2 f) { o = vec4(1.0); o.x = PI; }")).unwrap();
+    }
+
+    /// Only `iChannel0` is bound; the others would fail later, in the
+    /// backend's compiler, without naming the identifier.
+    #[test]
+    fn channels_litty_does_not_bind_are_undeclared() {
+        let err = check(&wrap("void mainImage(out vec4 o, in vec2 f) { o = texture(iChannel1, f); }")).unwrap_err();
+        assert!(err.contains("iChannel1"), "{err}");
+    }
+
+    /// Each problem names its file, and the good files still load.
+    #[test]
+    fn problems_name_the_file() {
+        let dir = std::env::temp_dir().join(format!("litty-postfx-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (good, bad, missing) = (dir.join("good.glsl"), dir.join("bad.glsl"), dir.join("missing.glsl"));
+        std::fs::write(&good, "#define K 0.5\nvoid mainImage(out vec4 o, in vec2 f) { o = vec4(K); }").unwrap();
+        std::fs::write(&bad, "void mainImage(out vec4 o, in vec2 f) {\n o = nope;\n}").unwrap();
+        let mut problems = Vec::new();
+        let (sources, animated) = load(&[good.clone(), bad.clone(), missing.clone()], &mut problems);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(sources.iter().map(|s| &s.path).collect::<Vec<_>>(), [&good]);
+        assert!(!animated);
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].contains(&*bad.to_string_lossy()) && problems[0].contains("nope"), "{problems:?}");
+        assert!(problems[1].contains(&*missing.to_string_lossy()), "{problems:?}");
+    }
+
+    /// The compiler sees a missing `}` only in the wrapper after the user's
+    /// code; the message says the user's shader is the likely place.
+    #[test]
+    fn a_missing_brace_points_at_the_users_shader() {
+        let err = validate(&wrap("void mainImage(out vec4 o, in vec2 f) {\n o = vec4(1.0);\n")).unwrap_err();
+        assert!(err.contains("unbalanced braces or parentheses in your shader?"), "{err}");
+    }
+
+    /// Every window loads the shaders (and again on each config reload);
+    /// the same problems are printed once, and again after they were fixed.
+    #[test]
+    fn the_same_problems_are_reported_once() {
+        let mut last = None;
+        let (a, b) = (vec!["a".to_string()], vec!["b".to_string()]);
+        assert!(fresh(&mut last, &a));
+        assert!(!fresh(&mut last, &a));
+        assert!(fresh(&mut last, &b));
+        assert!(!fresh(&mut last, &[]));
+        assert!(fresh(&mut last, &b));
     }
 
     #[test]
