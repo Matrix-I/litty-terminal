@@ -39,6 +39,9 @@ pub struct VulkanCore {
     #[allow(dead_code)]
     pub(super) image_dset_layout: VkDescriptorSetLayout,
     pub(super) image_pipe_layout: VkPipelineLayout,
+    /// The image descriptor set plus `POSTFX_PUSH_SIZE` bytes of push
+    /// constants, for `custom-shader` passes.
+    pub(super) postfx_pipe_layout: VkPipelineLayout,
     pub(super) nearest_sampler: VkSampler,
     pub(super) linear_sampler: VkSampler,
     pub(super) cells_dsets: [VkDescriptorSet; 2],
@@ -120,6 +123,10 @@ pub struct RenderPipelines {
 static SHARED_VK: parking_lot::Mutex<Option<(Arc<Device>, Arc<Queue>)>> = parking_lot::const_mutex(None);
 pub(super) static SHARED_PIPES: parking_lot::Mutex<Option<(TextureFormat, RenderPipelines)>> =
     parking_lot::const_mutex(None);
+
+/// Bytes of push constants a `custom-shader` pass gets (`postfx::Globals`);
+/// Vulkan guarantees at least 128.
+pub(super) const POSTFX_PUSH_SIZE: u32 = 64;
 
 /// Sampled textures that can own an image descriptor set at once (glyph
 /// atlases plus inline images; a terminal keeps at most 1024 images).
@@ -487,6 +494,9 @@ impl VulkanCore {
                 vkCreatePipelineLayout: load_fn!(vkCreatePipelineLayout),
                 vkCreateRenderPass: load_fn!(vkCreateRenderPass),
                 vkDestroyRenderPass: load_fn!(vkDestroyRenderPass),
+                vkDestroyShaderModule: load_fn!(vkDestroyShaderModule),
+                vkDestroyPipeline: load_fn!(vkDestroyPipeline),
+                vkCmdPushConstants: load_fn!(vkCmdPushConstants),
                 vkCreateGraphicsPipelines: load_fn!(vkCreateGraphicsPipelines),
                 vkCreateDescriptorPool: load_fn!(vkCreateDescriptorPool),
                 vkAllocateDescriptorSets: load_fn!(vkAllocateDescriptorSets),
@@ -677,6 +687,30 @@ impl VulkanCore {
                 return None;
             }
 
+            // `custom-shader` passes sample a render target through its
+            // image descriptor set; their uniforms are push constants, since
+            // each pass of a frame needs its own.
+            #[repr(C)]
+            struct PushRange {
+                stage_flags: u32,
+                offset: u32,
+                size: u32,
+            }
+            let postfx_push = PushRange { stage_flags: VK_SHADER_STAGE_FRAGMENT_BIT, offset: 0, size: POSTFX_PUSH_SIZE };
+            let mut postfx_pipe_layout = 0u64;
+            let p_pl_info = PipeLayoutInfo {
+                s_type: VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                p_next: std::ptr::null(),
+                flags: 0,
+                set_layout_count: 1,
+                p_set_layouts: &image_dset_layout,
+                push_constant_range_count: 1,
+                p_push_constant_ranges: &postfx_push as *const PushRange as *const c_void,
+            };
+            if !vk_try("vkCreatePipelineLayout", || (lib.vkCreatePipelineLayout)(device, &p_pl_info as *const _ as *const c_void, std::ptr::null(), &mut postfx_pipe_layout)) {
+                return None;
+            }
+
             #[repr(C)]
             struct PoolSize {
                 ty: u32,
@@ -772,6 +806,7 @@ impl VulkanCore {
                 cells_pipe_layout,
                 image_dset_layout,
                 image_pipe_layout,
+                postfx_pipe_layout,
                 nearest_sampler,
                 linear_sampler,
                 cells_dsets,
@@ -783,7 +818,7 @@ impl VulkanCore {
     }
 }
 
-unsafe fn create_shader_module(lib: &VkLib, device: VkDevice, spv: &[u8]) -> VkShaderModule {
+pub(super) unsafe fn create_shader_module(lib: &VkLib, device: VkDevice, spv: &[u8]) -> VkShaderModule {
     unsafe {
         #[repr(C)]
         struct ModInfo {
@@ -867,7 +902,8 @@ unsafe fn create_vk_sampler(lib: &VkLib, device: VkDevice, filter: u32) -> VkSam
 enum PassTarget {
     /// A swapchain image, presented afterwards.
     Swapchain,
-    /// A render-target texture, copied from afterwards (`read_pixels`).
+    /// A render-target texture, sampled afterwards by the next
+    /// `custom-shader` pass (tests also copy from it, `read_pixels`).
     Offscreen,
 }
 
@@ -876,9 +912,53 @@ enum PassTarget {
 fn pass_layouts(target: PassTarget, clear: bool) -> (u32, u32) {
     let after = match target {
         PassTarget::Swapchain => VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-        PassTarget::Offscreen => VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        PassTarget::Offscreen => VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
     (if clear { VK_IMAGE_LAYOUT_UNDEFINED } else { after }, after)
+}
+
+/// `VkSubpassDependency`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SubpassDependency {
+    src_subpass: u32,
+    dst_subpass: u32,
+    src_stage_mask: u32,
+    dst_stage_mask: u32,
+    src_access_mask: u32,
+    dst_access_mask: u32,
+    dependency_flags: u32,
+}
+
+/// Ordering of a pass against the passes around it in the same frame. In:
+/// earlier attachment writes (the previous pass on the same image) and
+/// earlier samples of the image (a `custom-shader` pass reading the target
+/// this one now clears) finish before it draws. Out: its writes are visible
+/// to a later pass sampling the image. Every pass has the same ones, since
+/// pipelines are shared between passes and must stay compatible.
+fn pass_dependencies() -> [SubpassDependency; 2] {
+    let draw = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    let sample = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    [
+        SubpassDependency {
+            src_subpass: VK_SUBPASS_EXTERNAL,
+            dst_subpass: 0,
+            src_stage_mask: draw | sample,
+            dst_stage_mask: draw,
+            src_access_mask: VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            dst_access_mask: VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            dependency_flags: 0,
+        },
+        SubpassDependency {
+            src_subpass: 0,
+            dst_subpass: VK_SUBPASS_EXTERNAL,
+            src_stage_mask: draw,
+            dst_stage_mask: sample,
+            src_access_mask: VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            dst_access_mask: VK_ACCESS_SHADER_READ_BIT,
+            dependency_flags: 0,
+        },
+    ]
 }
 
 unsafe fn create_render_pass(
@@ -956,6 +1036,7 @@ unsafe fn create_render_pass(
             preserve_attachment_count: 0,
             p_preserve_attachments: std::ptr::null(),
         };
+        let dependencies = pass_dependencies();
         let rp_info = RpInfo {
             s_type: VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
             p_next: std::ptr::null(),
@@ -964,8 +1045,8 @@ unsafe fn create_render_pass(
             p_attachments: &att,
             subpass_count: 1,
             p_subpasses: &subpass,
-            dependency_count: 0,
-            p_dependencies: std::ptr::null(),
+            dependency_count: dependencies.len() as u32,
+            p_dependencies: dependencies.as_ptr() as *const c_void,
         };
         let mut rp = 0u64;
         if !vk_try("vkCreateRenderPass", || (lib.vkCreateRenderPass)(device, &rp_info as *const _ as *const c_void, std::ptr::null(), &mut rp)) {
@@ -975,18 +1056,29 @@ unsafe fn create_render_pass(
     }
 }
 
+/// How a pipeline's output combines with the target's pixels.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Blend {
+    /// Source over, by the source's alpha (cells, images).
+    Alpha,
+    /// Fade the target by the source's alpha (rounded corners).
+    CornerFade,
+    /// Write the output as is (`custom-shader` passes, as on Metal).
+    Replace,
+}
+
+/// A pipeline drawing with `vertex` and `fragment` (module, entry point).
 #[allow(clippy::too_many_arguments)]
-unsafe fn create_graphics_pipeline(
+pub(super) unsafe fn create_graphics_pipeline(
     lib: &VkLib,
     device: VkDevice,
     render_pass: VkRenderPass,
     pipe_layout: VkPipelineLayout,
-    module: VkShaderModule,
-    vs_entry: &CStr,
-    fs_entry: &CStr,
+    vertex: (VkShaderModule, &CStr),
+    fragment: (VkShaderModule, &CStr),
     vertex_stride: u32,
     attrs: &[(u32, u32, u32)],
-    corner_fade: bool,
+    blend: Blend,
 ) -> VkPipeline {
     unsafe {
         #[repr(C)]
@@ -1005,8 +1097,8 @@ unsafe fn create_graphics_pipeline(
                 p_next: std::ptr::null(),
                 flags: 0,
                 stage: VK_SHADER_STAGE_VERTEX_BIT,
-                module,
-                p_name: vs_entry.as_ptr(),
+                module: vertex.0,
+                p_name: vertex.1.as_ptr(),
                 p_spec_info: std::ptr::null(),
             },
             StageInfo {
@@ -1014,8 +1106,8 @@ unsafe fn create_graphics_pipeline(
                 p_next: std::ptr::null(),
                 flags: 0,
                 stage: VK_SHADER_STAGE_FRAGMENT_BIT,
-                module,
-                p_name: fs_entry.as_ptr(),
+                module: fragment.0,
+                p_name: fragment.1.as_ptr(),
                 p_spec_info: std::ptr::null(),
             },
         ];
@@ -1159,8 +1251,8 @@ unsafe fn create_graphics_pipeline(
             alpha_blend_op: u32,
             color_write_mask: u32,
         }
-        let blend_att = if corner_fade {
-            BlendAtt {
+        let blend_att = match blend {
+            Blend::CornerFade => BlendAtt {
                 blend_enable: 1,
                 src_color_blend_factor: VK_BLEND_FACTOR_ZERO,
                 dst_color_blend_factor: VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
@@ -1169,9 +1261,8 @@ unsafe fn create_graphics_pipeline(
                 dst_alpha_blend_factor: VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
                 alpha_blend_op: VK_BLEND_OP_ADD,
                 color_write_mask: 0xF,
-            }
-        } else {
-            BlendAtt {
+            },
+            Blend::Alpha => BlendAtt {
                 blend_enable: 1,
                 src_color_blend_factor: VK_BLEND_FACTOR_SRC_ALPHA,
                 dst_color_blend_factor: VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
@@ -1180,7 +1271,17 @@ unsafe fn create_graphics_pipeline(
                 dst_alpha_blend_factor: VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
                 alpha_blend_op: VK_BLEND_OP_ADD,
                 color_write_mask: 0xF,
-            }
+            },
+            Blend::Replace => BlendAtt {
+                blend_enable: 0,
+                src_color_blend_factor: VK_BLEND_FACTOR_ONE,
+                dst_color_blend_factor: VK_BLEND_FACTOR_ZERO,
+                color_blend_op: VK_BLEND_OP_ADD,
+                src_alpha_blend_factor: VK_BLEND_FACTOR_ONE,
+                dst_alpha_blend_factor: VK_BLEND_FACTOR_ZERO,
+                alpha_blend_op: VK_BLEND_OP_ADD,
+                color_write_mask: 0xF,
+            },
         };
         #[repr(C)]
         struct BlendState {
@@ -1301,36 +1402,33 @@ pub fn shared_pipelines(device: &Device, format: TextureFormat) -> RenderPipelin
                 vk.device,
                 rp_clear,
                 vk.cells_pipe_layout,
-                vk.shader_mod,
-                c"vs_main",
-                c"fs_main",
+                (vk.shader_mod, c"vs_main"),
+                (vk.shader_mod, c"fs_main"),
                 12,
                 &[(0, VK_FORMAT_R32_UINT, 0), (1, VK_FORMAT_R32_UINT, 4), (2, VK_FORMAT_R32_UINT, 8)],
-                false,
+                Blend::Alpha,
             );
             let corner = create_graphics_pipeline(
                 &vk.lib,
                 vk.device,
                 rp_load,
                 vk.cells_pipe_layout,
-                vk.shader_mod,
-                c"vs_corner",
-                c"fs_corner",
+                (vk.shader_mod, c"vs_corner"),
+                (vk.shader_mod, c"fs_corner"),
                 0,
                 &[],
-                true,
+                Blend::CornerFade,
             );
             let image = create_graphics_pipeline(
                 &vk.lib,
                 vk.device,
                 rp_clear,
                 vk.image_pipe_layout,
-                vk.image_mod,
-                c"vs_main",
-                c"fs_main",
+                (vk.image_mod, c"vs_main"),
+                (vk.image_mod, c"fs_main"),
                 32,
                 &[(0, VK_FORMAT_R32G32B32A32_SFLOAT, 0), (1, VK_FORMAT_R32G32B32A32_SFLOAT, 16)],
-                false,
+                Blend::Alpha,
             );
             RenderPipelines {
                 cells: ObjPtr(cells),
@@ -1397,18 +1495,7 @@ fn cached_passes(
     Some((clear, load))
 }
 
-/// `custom-shader` needs GLSL to SPIR-V translation and offscreen passes,
-/// which this backend does not have yet.
-pub const CUSTOM_SHADERS_SUPPORTED: bool = false;
-
 impl Device {
-    /// Custom shaders need GLSL to SPIR-V translation and offscreen targets,
-    /// which this backend does not have. Returning a handle here made the
-    /// renderer bind it as a real pipeline.
-    pub fn create_postfx_pipeline(&self, _msl_src: &str, _format: TextureFormat) -> Result<ObjPtr, String> {
-        Err("custom shaders are not supported on Linux yet".into())
-    }
-
     #[inline]
     pub fn nearest_sampler(&self) -> SamplerHandle {
         self.vk.as_ref().map_or(0, |v| v.nearest_sampler)
@@ -1451,13 +1538,6 @@ mod tests {
             assert_eq!(report.injected(), 1, "check {n} of {checks} was reached");
             assert!(core.is_none(), "a device was handed out after check {n} of {checks} failed");
         }
-    }
-
-    #[test]
-    fn custom_shaders_are_rejected() {
-        let device = Device { vk: None };
-        let err = device.create_postfx_pipeline("void mainImage() {}", TextureFormat::Bgra8Unorm).err();
-        assert_eq!(err.as_deref(), Some("custom shaders are not supported on Linux yet"));
     }
 
     #[test]
@@ -1504,19 +1584,36 @@ mod tests {
     }
 
     #[test]
-    fn render_targets_end_ready_to_be_read_back() {
+    fn render_targets_end_ready_to_be_sampled() {
         // A render target's pass must not leave it in PRESENT_SRC_KHR, which
-        // is only valid for swapchain images; `read_pixels` copies from it.
-        assert_eq!(pass_layouts(PassTarget::Offscreen, true), (VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL));
+        // is only valid for swapchain images; the next `custom-shader` pass
+        // samples it through its image descriptor set.
+        assert_eq!(pass_layouts(PassTarget::Offscreen, true), (VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
         assert_eq!(
             pass_layouts(PassTarget::Offscreen, false),
-            (VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+            (VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
         );
         assert_eq!(pass_layouts(PassTarget::Swapchain, true), (VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR));
         assert_eq!(
             pass_layouts(PassTarget::Swapchain, false),
             (VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
         );
+    }
+
+    /// Without an outgoing dependency the next pass could sample a render
+    /// target before its pixels were written; without the incoming one a
+    /// pass could clear a target the previous shader pass still samples.
+    #[test]
+    fn passes_order_sampling_against_drawing() {
+        let [into, out] = pass_dependencies();
+        assert_eq!((into.src_subpass, into.dst_subpass), (VK_SUBPASS_EXTERNAL, 0));
+        assert_ne!(into.src_stage_mask & VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, "waits for earlier samples");
+        // The swapchain image's acquire semaphore is waited on at this stage.
+        assert_ne!(into.src_stage_mask & VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0);
+        assert_eq!((out.src_subpass, out.dst_subpass), (0, VK_SUBPASS_EXTERNAL));
+        assert_eq!(out.dst_stage_mask, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        assert_eq!((out.src_access_mask, out.dst_access_mask), (VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT));
+        assert_eq!(std::mem::size_of::<SubpassDependency>(), 28, "VkSubpassDependency");
     }
 
     #[test]

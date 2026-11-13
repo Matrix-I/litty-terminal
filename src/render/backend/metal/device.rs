@@ -197,10 +197,11 @@ pub fn shared_pipelines(device: &Device, format: TextureFormat) -> RenderPipelin
     pipes
 }
 
-/// `custom-shader` runs as MSL post-processing passes (`PostFx`).
-pub const CUSTOM_SHADERS_SUPPORTED: bool = true;
-
 impl Device {
+    /// Nothing to do: the pipeline is released when its last `ObjPtr`
+    /// drops (the Vulkan backend destroys it here).
+    pub fn destroy_postfx_pipeline(&self, _pipeline: &ObjPtr) {}
+
     /// Compile a custom Metal fragment shader library & pipeline (`PostFx`).
     pub fn create_postfx_pipeline(&self, msl_src: &str, format: TextureFormat) -> Result<ObjPtr, String> {
         unsafe {

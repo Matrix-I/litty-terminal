@@ -11,11 +11,15 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::render::backend::{CommandEncoder, Device, ObjPtr, Queue, Texture, TextureFormat};
 
-/// Uniforms every pass sees (64 bytes, matches `MSL_PRELUDE`).
+/// Marks where the user's shader starts in the wrapped source.
+pub(crate) const USER_START: &str = "/*__LITTY_USER_START__*/";
+const USER_END: &str = "/*__LITTY_USER_END__*/";
+
+/// Uniforms every pass sees (64 bytes, matches `MSL_PRELUDE` and
+/// `GLSL_PRELUDE`).
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Globals {
@@ -31,6 +35,7 @@ pub struct Globals {
 
 const _: () = assert!(std::mem::size_of::<Globals>() == 64);
 
+#[cfg(target_os = "macos")]
 const MSL_PRELUDE: &str = r#"#include <metal_stdlib>
 using namespace metal;
 
@@ -84,6 +89,7 @@ vertex PostFxVsOut vs_postfx(uint i [[vertex_id]]) {
 
 /// Wrap a user Shadertoy GLSL snippet into a self-contained MSL shader source,
 /// preserving the user snippet between markers for zero-dependency validation.
+#[cfg(target_os = "macos")]
 fn wrap(user: &str) -> String {
     // Transform `out vec4 name` / `in vec2 name` parameter qualifiers for MSL compatibility.
     let msl_body = user
@@ -94,9 +100,9 @@ fn wrap(user: &str) -> String {
     // Inject Shadertoy uniform bindings into `mainImage` scope via macros.
     format!(
         "{MSL_PRELUDE}
-/*__LITTY_USER_START__*/
+{USER_START}
 {user}
-/*__LITTY_USER_END__*/
+{USER_END}
 #define iResolution (_litty_g._litty_resolution.xyz)
 #define iTime (_litty_g.iTime)
 #define iTimeDelta (_litty_g.iTimeDelta)
@@ -128,12 +134,62 @@ fragment float4 fs_postfx(
 "#
 }
 
-/// Validate a wrapped Shadertoy shader without linking `naga`.
+/// Uniforms and `iChannel0` for GLSL 450 on Vulkan. The uniforms are push
+/// constants (one block per pass); the source is a render target sampled
+/// linearly. Members are not named like the Shadertoy macros, which would
+/// otherwise expand inside their own definitions.
+#[cfg(not(target_os = "macos"))]
+const GLSL_PRELUDE: &str = "#version 450
+layout(push_constant) uniform LittyGlobals {
+    vec4 resolution;
+    vec4 mouse;
+    vec4 date;
+    float time;
+    float time_delta;
+    int frame;
+    uint to_screen;
+} _litty_g;
+layout(set = 0, binding = 1) uniform texture2D _litty_tex;
+layout(set = 0, binding = 2) uniform sampler _litty_smp;
+layout(location = 0) out vec4 _litty_color;
+#define iResolution (_litty_g.resolution.xyz)
+#define iMouse (_litty_g.mouse)
+#define iDate (_litty_g.date)
+#define iTime (_litty_g.time)
+#define iTimeDelta (_litty_g.time_delta)
+#define iFrame (_litty_g.frame)
+#define iChannel0 sampler2D(_litty_tex, _litty_smp)
+";
+
+/// Wrap a user Shadertoy GLSL snippet into a GLSL 450 fragment shader. The
+/// user's code is kept as written (Shadertoy's `mainImage` is valid GLSL);
+/// `main` flips `fragCoord` to bottom-left for the last pass, as on Metal
+/// (Vulkan's `gl_FragCoord` starts top-left too).
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn wrap(user: &str) -> String {
+    format!(
+        "{GLSL_PRELUDE}{USER_START}
+{user}
+{USER_END}
+void main() {{
+    vec2 fc = gl_FragCoord.xy;
+    if (_litty_g.to_screen != 0u) {{
+        fc.y = _litty_g.resolution.y - fc.y;
+    }}
+    vec4 color = vec4(0.0);
+    mainImage(color, fc);
+    _litty_color = color;
+}}
+"
+    )
+}
+
+/// Validate a wrapped Shadertoy shader before the backend compiles it.
 /// Checks balanced braces/parens, `mainImage` entrypoint presence, and Undeclared identifiers.
 fn check(src: &str) -> Result<(), String> {
     let user = src
-        .split_once("/*__LITTY_USER_START__*/")
-        .and_then(|(_, rest)| rest.split_once("/*__LITTY_USER_END__*/"))
+        .split_once(USER_START)
+        .and_then(|(_, rest)| rest.split_once(USER_END))
         .map_or(src, |(u, _)| u);
 
     if !user.contains("mainImage") {
@@ -266,31 +322,9 @@ fn uses_time(user: &str) -> bool {
     ["iTime", "iFrame", "iTimeDelta", "iDate"].iter().any(|n| user.contains(n))
 }
 
-/// A warning printed at most once per process, however many windows or
-/// config reloads ask for it.
-struct WarnOnce(AtomicBool);
-
-impl WarnOnce {
-    const fn new() -> Self {
-        Self(AtomicBool::new(false))
-    }
-
-    /// `true` for the first caller only.
-    fn first(&self) -> bool {
-        !self.0.swap(true, Ordering::Relaxed)
-    }
-}
-
-static UNSUPPORTED_WARNING: WarnOnce = WarnOnce::new();
-
-const UNSUPPORTED: &str = "litty: custom-shader is not supported on Linux yet; the setting is ignored";
-
 /// Read, wrap and check every `custom-shader` file; broken ones are reported
 /// and left out. Returns the sources and whether any of them animates.
 pub fn load(paths: &[std::path::PathBuf]) -> (Vec<String>, bool) {
-    if !supported(paths, crate::render::backend::CUSTOM_SHADERS_SUPPORTED, &UNSUPPORTED_WARNING) {
-        return (Vec::new(), false);
-    }
     let mut sources = Vec::new();
     let mut animated = false;
     for path in paths {
@@ -311,24 +345,13 @@ pub fn load(paths: &[std::path::PathBuf]) -> (Vec<String>, bool) {
     (sources, animated)
 }
 
-/// Whether `paths` should be loaded. On a backend without custom shaders
-/// the key is reported once, rather than as a compile error per shader and
-/// window, and nothing is read.
-fn supported(paths: &[std::path::PathBuf], backend_supported: bool, warning: &WarnOnce) -> bool {
-    if paths.is_empty() || backend_supported {
-        return true;
-    }
-    if warning.first() {
-        eprintln!("{UNSUPPORTED}");
-    }
-    false
-}
-
 fn display(path: &Path) -> String {
     path.display().to_string()
 }
 
 pub struct PostFx {
+    /// Releases `pipelines` on drop (a config reload replaces them).
+    device: Device,
     pipelines: Vec<ObjPtr>,
     /// Ping-pong targets; `targets[0]` receives the cell pass.
     targets: Vec<Texture>,
@@ -358,6 +381,7 @@ impl PostFx {
         }
         let now = std::time::Instant::now();
         Some(PostFx {
+            device: device.clone(),
             pipelines,
             targets: Vec::new(),
             format,
@@ -427,6 +451,14 @@ impl PostFx {
     }
 }
 
+impl Drop for PostFx {
+    fn drop(&mut self) {
+        for pipeline in &self.pipelines {
+            self.device.destroy_postfx_pipeline(pipeline);
+        }
+    }
+}
+
 /// Shadertoy's `iDate`: year, month (0-based), day, seconds since midnight (UTC).
 fn date_now() -> [f32; 4] {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
@@ -446,25 +478,6 @@ fn date_now() -> [f32; 4] {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn unsupported_custom_shaders_are_skipped_and_reported_once() {
-        let warning = super::WarnOnce::new();
-        let paths = [std::path::PathBuf::from("/nonexistent/crt.glsl")];
-        assert!(!super::supported(&paths, false, &warning), "first window");
-        assert!(!warning.first(), "the first call printed the warning");
-        assert!(!super::supported(&paths, false, &warning), "second window: skipped, not printed again");
-        assert!(super::supported(&paths, true, &super::WarnOnce::new()), "Metal loads them");
-        assert!(super::supported(&[], false, &super::WarnOnce::new()), "nothing configured, nothing to say");
-    }
-
-    #[test]
-    fn a_warning_is_due_only_once() {
-        let warning = super::WarnOnce::new();
-        assert!(warning.first());
-        assert!(!warning.first());
-        assert!(!warning.first());
-    }
-
     use super::*;
 
     #[test]

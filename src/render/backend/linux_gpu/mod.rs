@@ -8,15 +8,17 @@
 //! - `surface`: Wayland / X11 `VkSurfaceKHR`, `VkSwapchainKHR` (`FIFO`, `minImageCount = 2`), and `shrink_drawables`.
 //! - `pass`: `CommandEncoder` and `RenderPass` draw encoding.
 //! - `upload`: texture uploads batched into the next frame's submission.
+//! - `shader`: `custom-shader` GLSL compiled to SPIR-V (naga) and its pipelines.
 
 mod device;
 mod ffi;
 mod pass;
 mod resources;
+mod shader;
 mod surface;
 mod upload;
 
-pub use device::{shared_device_and_queue, shared_pipelines, Device, Queue, RenderPipelines, CUSTOM_SHADERS_SUPPORTED};
+pub use device::{shared_device_and_queue, shared_pipelines, Device, Queue, RenderPipelines};
 pub use ffi::ObjPtr;
 pub use pass::{CommandEncoder, RenderPass};
 pub use resources::{HostBuffer, Texture};

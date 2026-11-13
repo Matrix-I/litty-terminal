@@ -396,7 +396,8 @@ struct TextureInner {
     view: VkImageView,
     /// In `SHADER_READ_ONLY_OPTIMAL` between uploads (every sampled texture).
     ready: bool,
-    /// Descriptor set for drawing this texture as an inline image, or 0.
+    /// Descriptor set sampling this texture (an inline image, or a render
+    /// target read by a `custom-shader` pass), or 0.
     image_dset: VkDescriptorSet,
     /// Framebuffer of a render target (registered with its render passes),
     /// or 0 for a sampled texture.
@@ -568,7 +569,8 @@ impl Texture {
                         (VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT),
                     );
                 }
-                let image_dset = if ready { alloc_image_dset(vk, view) } else { 0 };
+                // Render targets are sampled too, by `custom-shader` passes.
+                let image_dset = alloc_image_dset(vk, view);
                 let framebuffer = if render_target { create_target_framebuffer(vk, view, format, w, h) } else { 0 };
                 if render_target && framebuffer == 0 {
                     return discard(mem, view);
@@ -660,7 +662,7 @@ impl Texture {
 
     /// Copy a render target's pixels (tightly packed 4-byte texels) into
     /// `dst`, `bytes_per_row` apart. It must have been drawn into since it
-    /// was created; its render pass leaves it ready to be copied from.
+    /// was created; its render pass leaves it ready to be sampled.
     #[cfg(test)]
     pub fn read_pixels(&self, dst: &mut [u8], bytes_per_row: u32) {
         use super::upload::memory_barrier;
@@ -679,7 +681,7 @@ impl Texture {
                 vk,
                 cmd,
                 self.inner.image,
-                (VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL),
+                (VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL),
                 (VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT),
                 (VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT),
             );
@@ -698,6 +700,15 @@ impl Texture {
                 buf,
                 1,
                 &region as *const _ as *const c_void,
+            );
+            // Back to the layout its load pass and shader passes expect.
+            image_barrier(
+                vk,
+                cmd,
+                self.inner.image,
+                (VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+                (0, VK_ACCESS_SHADER_READ_BIT),
+                (VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT),
             );
             memory_barrier(
                 vk,
@@ -726,8 +737,8 @@ impl Texture {
         if self.inner.framebuffer != 0 { self.inner.framebuffer } else { self.inner.view }
     }
 
-    /// Descriptor set binding this texture to the image pipeline; 0 when it
-    /// has none (render target, no GPU, or the pool was exhausted).
+    /// Descriptor set binding this texture to the image and `custom-shader`
+    /// pipelines; 0 when it has none (no GPU, or the pool was exhausted).
     #[inline]
     pub(super) fn image_dset(&self) -> VkDescriptorSet {
         self.inner.image_dset
@@ -758,8 +769,9 @@ mod tests {
         // With a GPU every sampled texture can be drawn as an inline image;
         // without one (headless test machines) there is nothing to bind.
         assert_eq!(sampled.image_dset() != 0, device.vk.is_some());
+        // Render targets are sampled by the next `custom-shader` pass.
         let target = Texture::new(&device, 4, 4, TextureFormat::Bgra8Unorm, true);
-        assert_eq!(target.image_dset(), 0, "render targets are never drawn as images");
+        assert_eq!(target.image_dset() != 0, device.vk.is_some());
     }
 
     /// A host buffer whose GPU memory could not be set up at any step keeps

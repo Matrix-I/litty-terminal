@@ -4,6 +4,7 @@ use crate::render::backend::{self, CommandEncoder, Texture, TextureFormat};
 #[test]
 #[ignore = "requires a Metal/Vulkan adapter; run explicitly for GPU pixel verification"]
 fn precise_scroll_gpu_pixels() {
+    let _gpu = crate::render::backend::TEST_GPU.lock();
     use super::*;
     let (device, queue) = backend::shared_device_and_queue();
     for flip_y in [0, 1] {
@@ -75,6 +76,7 @@ fn precise_scroll_gpu_pixels() {
 
 #[test]
 fn test_shader_compilation_and_pipelines() {
+    let _gpu = crate::render::backend::TEST_GPU.lock();
     let (device, _queue) = backend::shared_device_and_queue();
     let _pipes_bgra = backend::shared_pipelines(&device, TextureFormat::Bgra8Unorm);
     let _pipes_rgba = backend::shared_pipelines(&device, TextureFormat::Rgba8Unorm);

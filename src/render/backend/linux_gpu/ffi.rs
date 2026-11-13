@@ -61,12 +61,12 @@ pub(super) mod fault {
         log: Vec<(String, bool)>,
     }
 
-    /// The app drives the GPU from one render thread; tests that record or
-    /// submit work run in parallel, so they take turns through this.
-    pub(in crate::render::backend::linux_gpu) static GPU: parking_lot::Mutex<()> = parking_lot::const_mutex(());
+    pub(in crate::render::backend::linux_gpu) use crate::render::backend::TEST_GPU as GPU;
 
     thread_local! {
-        static PLAN: RefCell<Plan> = RefCell::new(Plan::default());
+        /// `None` while no test watches this thread: calls are then neither
+        /// failed nor logged.
+        static PLAN: RefCell<Option<Plan>> = const { RefCell::new(None) };
     }
 
     /// Everything checked since the plan was set.
@@ -98,29 +98,30 @@ pub(super) mod fault {
 
     /// Fail the n-th checked Vulkan result (0-based) from now on this thread.
     pub(in crate::render::backend::linux_gpu) fn fail_nth(n: usize) {
-        PLAN.with(|p| *p.borrow_mut() = Plan { nth: Some(n), ..Plan::default() });
+        PLAN.with(|p| *p.borrow_mut() = Some(Plan { nth: Some(n), ..Plan::default() }));
     }
 
     /// Fail the next `times` results checked under `what` on this thread.
     pub(in crate::render::backend::linux_gpu) fn fail_named(what: &'static str, times: usize) {
-        PLAN.with(|p| *p.borrow_mut() = Plan { named: Some((what, times)), ..Plan::default() });
+        PLAN.with(|p| *p.borrow_mut() = Some(Plan { named: Some((what, times)), ..Plan::default() }));
     }
 
     /// Record what is checked without failing anything.
     pub(in crate::render::backend::linux_gpu) fn observe() {
-        PLAN.with(|p| *p.borrow_mut() = Plan::default());
+        PLAN.with(|p| *p.borrow_mut() = Some(Plan::default()));
     }
 
     /// Stop injecting and return what was checked meanwhile.
     pub(in crate::render::backend::linux_gpu) fn finish() -> Report {
         // The whole plan goes: a failure left armed would hit later calls.
-        Report { log: PLAN.with(|p| std::mem::take(&mut *p.borrow_mut()).log) }
+        Report { log: PLAN.with(|p| p.borrow_mut().take().map(|plan| plan.log).unwrap_or_default()) }
     }
 
     /// `Some(error)` when the call named `what` must fail instead of running.
     pub(in crate::render::backend::linux_gpu) fn apply(what: &str) -> Option<i32> {
         PLAN.with(|p| {
-            let mut plan = p.borrow_mut();
+            let mut slot = p.borrow_mut();
+            let plan = slot.as_mut()?;
             let mut hit = plan.nth == Some(plan.log.len());
             if let Some((name, times)) = &mut plan.named
                 && *name == what
@@ -146,6 +147,21 @@ pub(super) fn guarded(what: &str, call: impl FnOnce() -> i32) -> i32 {
 #[cfg(not(test))]
 #[inline(always)]
 pub(super) fn guarded(_what: &str, call: impl FnOnce() -> i32) -> i32 {
+    call()
+}
+
+/// Make a Vulkan call, then let a test replace its result with a failure.
+/// For calls whose failure still did their work, such as a present that
+/// reports an error but has consumed its semaphore and released its image.
+#[cfg(test)]
+pub(super) fn reported(what: &str, call: impl FnOnce() -> i32) -> i32 {
+    let result = call();
+    fault::apply(what).unwrap_or(result)
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+pub(super) fn reported(_what: &str, call: impl FnOnce() -> i32) -> i32 {
     call()
 }
 
@@ -223,6 +239,8 @@ pub(super) const VK_FORMAT_B8G8R8A8_UNORM: u32 = 44;
 pub(super) const VK_IMAGE_LAYOUT_UNDEFINED: u32 = 0;
 pub(super) const VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL: u32 = 2;
 pub(super) const VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: u32 = 5;
+/// Only `read_pixels` (tests) copies out of an image.
+#[cfg(test)]
 pub(super) const VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL: u32 = 6;
 pub(super) const VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL: u32 = 7;
 pub(super) const VK_IMAGE_LAYOUT_PRESENT_SRC_KHR: u32 = 1000001002;
@@ -292,6 +310,8 @@ pub(super) const VK_PIPELINE_STAGE_HOST_BIT: u32 = 0x0000_4000;
 
 pub(super) const VK_ACCESS_TRANSFER_WRITE_BIT: u32 = 0x0000_1000;
 pub(super) const VK_ACCESS_SHADER_READ_BIT: u32 = 0x0000_0020;
+pub(super) const VK_ACCESS_COLOR_ATTACHMENT_READ_BIT: u32 = 0x0000_0080;
+pub(super) const VK_SUBPASS_EXTERNAL: u32 = !0;
 // Read-back only (`Texture::read_pixels`, GPU tests).
 #[cfg_attr(not(test), allow(dead_code))]
 pub(super) const VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT: u32 = 0x0000_0100;
@@ -494,6 +514,9 @@ pub(super) struct VkLib {
     pub vkDestroyImageView: unsafe extern "C" fn(VkDevice, VkImageView, *const c_void),
     pub vkCreateSampler: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkSampler) -> i32,
     pub vkCreateShaderModule: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkShaderModule) -> i32,
+    pub vkDestroyShaderModule: unsafe extern "C" fn(VkDevice, VkShaderModule, *const c_void),
+    pub vkDestroyPipeline: unsafe extern "C" fn(VkDevice, VkPipeline, *const c_void),
+    pub vkCmdPushConstants: unsafe extern "C" fn(VkCommandBuffer, VkPipelineLayout, VkFlags, u32, u32, *const c_void),
     pub vkCreateDescriptorSetLayout: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkDescriptorSetLayout) -> i32,
     pub vkCreatePipelineLayout: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkPipelineLayout) -> i32,
     pub vkCreateRenderPass: unsafe extern "C" fn(VkDevice, *const c_void, *const c_void, *mut VkRenderPass) -> i32,

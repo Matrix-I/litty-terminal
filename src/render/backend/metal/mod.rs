@@ -13,7 +13,7 @@ mod pass;
 mod resources;
 mod surface;
 
-pub use device::{shared_device_and_queue, shared_pipelines, Device, Queue, RenderPipelines, CUSTOM_SHADERS_SUPPORTED};
+pub use device::{shared_device_and_queue, shared_pipelines, Device, Queue, RenderPipelines};
 pub use ffi::ObjPtr;
 pub use pass::{CommandEncoder, RenderPass};
 pub use resources::{HostBuffer, Texture};
