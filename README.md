@@ -6,7 +6,7 @@
 [![GPU Backend](https://img.shields.io/badge/GPU-Metal%20%7C%20Vulkan-orange.svg)]()
 [![Idle CPU](https://img.shields.io/badge/idle%20CPU-0.0%25-green.svg)]()
 [![Idle RAM](https://img.shields.io/badge/idle%20RAM-63MB-success.svg)]()
-[![Binary Size](https://img.shields.io/badge/binary-2.2MB-informational.svg)]()
+[![Binary Size](https://img.shields.io/badge/binary-%3C%205MB-informational.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **Litty** is an ultra-fast, lightweight, GPU-accelerated terminal emulator written in Rust. It delivers ~4 ms keystroke-to-frame latency, silky-smooth 120Hz ProMotion rendering, and an exceptionally small memory footprint without sacrificing modern developer ergonomics.
