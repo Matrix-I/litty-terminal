@@ -147,6 +147,13 @@ const XA_WM_NAME: c_ulong = 39;
 /// `XStdICCTextStyle`: `STRING` when Latin-1 holds the text, else
 /// `COMPOUND_TEXT`.
 const X_STD_ICC_TEXT_STYLE: c_int = 3;
+/// Predefined `WM_NORMAL_HINTS` atom and its `WM_SIZE_HINTS` type.
+const XA_WM_NORMAL_HINTS: c_ulong = 40;
+const XA_WM_SIZE_HINTS: c_ulong = 41;
+/// `USPosition`: the position in `WM_NORMAL_HINTS` was chosen by the user
+/// (here: by the app), so window managers keep it instead of placing the
+/// window themselves.
+const US_POSITION: c_long = 1;
 /// Predefined `WM_CLASS` atom.
 const XA_WM_CLASS: c_ulong = 67;
 /// `WM_CLASS` value (instance and class, each NUL-terminated). Must match
@@ -462,6 +469,8 @@ pub struct X11WindowInner {
     pub root: c_ulong,
     pub screen: c_int,
     pub scale: f64,
+    /// Where the window was created, in root coordinates.
+    pub origin: PhysicalPosition<i32>,
     /// Last modifiers reported to the app, packed by `pack_mods`.
     pub mods: AtomicU8,
     /// Keys held down, to flag auto-repeat presses.
@@ -534,6 +543,44 @@ unsafe fn store_title(lib: &X11Lib, display: *mut c_void, window: c_ulong, net_w
     }
 }
 
+/// Where a new window of `width` x `height` goes: centered on the monitor
+/// under the pointer, which is where the user is working (X11 has no
+/// "focused monitor"; GTK and mutter use the pointer the same way). Without
+/// RandR, the corner the window always opened at.
+///
+/// # Safety
+/// `display` and `root` must be live handles from `lib`.
+unsafe fn centered_on_pointer_monitor(lib: &X11Lib, display: *mut c_void, root: c_ulong, width: u32, height: u32) -> PhysicalPosition<i32> {
+    const FALLBACK: PhysicalPosition<i32> = PhysicalPosition::new(100, 100);
+    let (mut root_ret, mut child) = (0, 0);
+    let (mut root_x, mut root_y, mut win_x, mut win_y) = (0, 0, 0, 0);
+    let mut mask = 0;
+    unsafe {
+        let on_screen = (lib.XQueryPointer)(display, root, &mut root_ret, &mut child, &mut root_x, &mut root_y, &mut win_x, &mut win_y, &mut mask);
+        if on_screen == 0 {
+            return FALLBACK;
+        }
+        super::monitor::monitor_for_point(display, root, PhysicalPosition::new(root_x, root_y))
+            .map_or(FALLBACK, |monitor| super::monitor::centered_origin(&monitor, width, height))
+    }
+}
+
+/// Mark `(x, y)` as a position the app chose (`WM_NORMAL_HINTS`), so the
+/// window manager does not override it with its own placement.
+///
+/// # Safety
+/// `display` and `window` must be live handles from `lib`.
+unsafe fn set_position_hint(lib: &X11Lib, display: *mut c_void, window: c_ulong, x: c_int, y: c_int) {
+    // XSizeHints is 18 longs: flags, x, y, then the size fields (unused).
+    let mut hints = [0 as c_long; 18];
+    hints[0] = US_POSITION;
+    hints[1] = c_long::from(x);
+    hints[2] = c_long::from(y);
+    unsafe {
+        (lib.XChangeProperty)(display, window, XA_WM_NORMAL_HINTS, XA_WM_SIZE_HINTS, 32, PROP_MODE_REPLACE, hints.as_ptr().cast(), hints.len() as c_int);
+    }
+}
+
 /// `title` as Latin-1, `?` for characters outside it: the `STRING` that
 /// `WM_NAME` falls back to when Xlib has no converter for the locale.
 fn latin1_lossy(title: &str) -> Vec<u8> {
@@ -587,8 +634,13 @@ impl X11Window {
             // The spec is in logical pixels; X11 windows are physical.
             let width = (spec.inner_size.width.max(100.0) * scale).round() as c_int;
             let height = (spec.inner_size.height.max(100.0) * scale).round() as c_int;
-            let x = spec.position.map_or(100, |p| (p.x * scale).round() as c_int);
-            let y = spec.position.map_or(100, |p| (p.y * scale).round() as c_int);
+            let (x, y) = match spec.position {
+                Some(p) => ((p.x * scale).round() as c_int, (p.y * scale).round() as c_int),
+                None => {
+                    let origin = centered_on_pointer_monitor(&lib, display, root, width as u32, height as u32);
+                    (origin.x, origin.y)
+                }
+            };
 
             let window = (lib.XCreateSimpleWindow)(display, root, x, y, width, height, 0, 0, 0);
             if window == 0 {
@@ -637,6 +689,10 @@ impl X11Window {
             let pid = [c_long::from(libc::getpid())];
             (lib.XChangeProperty)(display, window, pid_atom, XA_CARDINAL, 32, PROP_MODE_REPLACE, pid.as_ptr().cast(), 1);
 
+            if spec.position.is_none() {
+                set_position_hint(&lib, display, window, x, y);
+            }
+
             (lib.XChangeProperty)(
                 display, window, XA_WM_CLASS, XA_STRING, 8, PROP_MODE_REPLACE,
                 WM_CLASS.as_ptr(), WM_CLASS.len() as c_int,
@@ -667,6 +723,7 @@ impl X11Window {
                 root,
                 screen,
                 scale,
+                origin: PhysicalPosition::new(x, y),
                 mods: AtomicU8::new(0),
                 held: HeldKeys::default(),
                 cursors: parking_lot::Mutex::new(CursorCache { font: [0; CURSOR_SLOTS], blank: 0 }),
@@ -682,6 +739,11 @@ impl X11Window {
 
     pub fn scale(&self) -> f64 {
         self.0.scale
+    }
+
+    /// Where the window was created, in root coordinates.
+    pub fn origin(&self) -> PhysicalPosition<i32> {
+        self.0.origin
     }
 
     pub fn fd(&self) -> i32 {
@@ -1395,6 +1457,39 @@ mod tests {
         }
     }
 
+    /// A window without a requested position opens centered on a monitor,
+    /// and says so in `WM_NORMAL_HINTS` so the window manager keeps it there.
+    #[test]
+    fn a_new_window_is_centered_and_marks_its_position_as_chosen() {
+        let Some(win) = hidden_test_window("litty-center-test") else { return };
+        let inner = &win.0;
+        let (mut actual_type, mut format, mut count, mut after) = (0, 0, 0, 0);
+        let mut data: *mut u8 = std::ptr::null_mut();
+        let hints = unsafe {
+            let status = (inner.lib.XGetWindowProperty)(
+                inner.display, inner.window, XA_WM_NORMAL_HINTS, 0, 18, 0, XA_WM_SIZE_HINTS,
+                &mut actual_type, &mut format, &mut count, &mut after, &mut data,
+            );
+            assert_eq!(status, 0);
+            assert!(!data.is_null() && format == 32 && count >= 3, "no WM_NORMAL_HINTS");
+            let longs: Vec<c_long> = std::slice::from_raw_parts(data.cast::<c_long>(), count as usize).to_vec();
+            (inner.lib.XFree)(data.cast());
+            longs
+        };
+        assert_eq!(hints[0] & US_POSITION, US_POSITION);
+        let origin = win.origin();
+        assert_eq!((hints[1], hints[2]), (c_long::from(origin.x), c_long::from(origin.y)));
+        // Centered, when RandR names a monitor to center on: the window's
+        // centre is the monitor's centre (to the pixel the halving rounds).
+        // The 200x100 logical spec is physical pixels times the scale.
+        let (width, height) = ((200.0 * win.scale()).round() as u32, (100.0 * win.scale()).round() as u32);
+        if let Some(monitor) = win.current_monitor(PhysicalSize::new(width, height)) {
+            let (cx, cy) = (origin.x + width as i32 / 2, origin.y + height as i32 / 2);
+            let (mx, my) = (monitor.position.x + monitor.size.width as i32 / 2, monitor.position.y + monitor.size.height as i32 / 2);
+            assert!((cx - mx).abs() <= 1 && (cy - my).abs() <= 1, "window centre ({cx}, {cy}) vs monitor centre ({mx}, {my})");
+        }
+    }
+
     /// Window managers without EWMH read `WM_NAME` only: it must carry the
     /// title in an ICCCM encoding (`STRING` is Latin-1, `COMPOUND_TEXT`
     /// covers the rest), never raw UTF-8 bytes labelled `STRING`.
@@ -1434,8 +1529,8 @@ mod tests {
             eprintln!("no RandR on this X server; skipping");
             return;
         };
-        // `hidden_test_window` leaves the window at the default (100, 100).
-        let (x, y) = (100 + 100, 100 + 50);
+        let origin = win.origin();
+        let (x, y) = (origin.x + 100, origin.y + 50);
         assert!(monitor.position.x <= x && x < monitor.position.x + monitor.size.width as i32, "{monitor:?}");
         assert!(monitor.position.y <= y && y < monitor.position.y + monitor.size.height as i32, "{monitor:?}");
         // Xvfb's only mode has no timings (dot clock 0), so no rate is
