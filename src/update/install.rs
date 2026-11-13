@@ -428,7 +428,12 @@ mod tests {
         fs::write(installed.join("obsolete"), "old").unwrap();
         let source = dir.join("Litty.app");
         fs::create_dir_all(source.join("Contents/MacOS")).unwrap();
-        fs::copy("/bin/echo", source.join("Contents/MacOS/litty")).unwrap();
+        // A freshly built arm64 binary, not a copy of /bin/echo: that is an
+        // arm64e platform binary, and once re-signed ad hoc macOS 15 refuses
+        // to run third-party arm64e code.
+        let program = dir.join("echo.c");
+        fs::write(&program, "#include <stdio.h>\nint main(int argc, char **argv) { return argc > 1 && puts(argv[1]) >= 0 ? 0 : 1; }\n").unwrap();
+        assert!(Command::new("/usr/bin/cc").arg(&program).arg("-o").arg(source.join("Contents/MacOS/litty")).status().unwrap().success());
         fs::write(source.join("Contents/Info.plist"), "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>litty</string><key>CFBundleIdentifier</key><string>test.litty.update</string></dict></plist>").unwrap();
         let archive = dir.join("bundle.zip");
         run_bundle_helper(Command::new("/usr/bin/ditto").args(["-ck", "--keepParent"]).arg(&source).arg(&archive)).unwrap();
