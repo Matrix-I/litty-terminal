@@ -22,4 +22,5 @@ pub use device::{shared_device_and_queue, shared_pipelines, Device, Queue, Rende
 pub use ffi::ObjPtr;
 pub use pass::{CommandEncoder, RenderPass};
 pub use resources::{HostBuffer, Texture};
+pub use shader::validate_postfx;
 pub use surface::{Surface, SurfaceFrame};

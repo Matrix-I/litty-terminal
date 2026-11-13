@@ -569,12 +569,14 @@ impl Texture {
                         (VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT),
                     );
                 }
-                // Render targets are sampled too, by `custom-shader` passes.
-                let image_dset = alloc_image_dset(vk, view);
                 let framebuffer = if render_target { create_target_framebuffer(vk, view, format, w, h) } else { 0 };
                 if render_target && framebuffer == 0 {
                     return discard(mem, view);
                 }
+                // Last, so a texture discarded above takes no set from the
+                // shared pool. Render targets are sampled too, by
+                // `custom-shader` passes.
+                let image_dset = alloc_image_dset(vk, view);
                 return Self {
                     inner: Arc::new(TextureInner {
                         vk: Some(vk.clone()),
@@ -841,6 +843,8 @@ mod tests {
                 if t.image == 0 {
                     assert_eq!((t.view, t.framebuffer, t.image_dset), (0, 0, 0), "{what}");
                     assert_eq!(texture.raw_ptr(), 0, "{what}");
+                    // A set taken from the shared pool would never be freed.
+                    assert_eq!(report.passed("vkAllocateDescriptorSets"), 0, "{what}: {:?}", report.names());
                 } else {
                     assert_ne!(t.view, 0, "{what}");
                     assert_eq!(t.framebuffer != 0, render_target, "{what}");
