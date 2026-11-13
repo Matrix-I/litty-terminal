@@ -18,6 +18,9 @@ pub struct Image {
     pub rgba: Arc<[u8]>,
     /// Whether this image was automatically assigned an ID by the terminal.
     pub auto: bool,
+    /// Transmitted while the alternate screen was active. Kitty keeps one
+    /// image store per screen; uppercase deletes free only their own screen's.
+    pub(super) alt: bool,
     /// Kitty animation frames 2.. (`a=f`) and playback state (`a=a`).
     pub(super) frames: Vec<Frame>,
     pub(super) anim: Animation,
@@ -59,7 +62,7 @@ pub(super) struct Animation {
 impl Image {
     pub(super) fn new(width: u32, height: u32, rgba: Vec<u8>) -> Self {
         let anim = Animation { root_gap: DEFAULT_GAP, ..Animation::default() };
-        Image { key: next_key(), width, height, rgba: rgba.into(), auto: false, frames: Vec::new(), anim }
+        Image { key: next_key(), width, height, rgba: rgba.into(), auto: false, alt: false, frames: Vec::new(), anim }
     }
 
     pub(super) fn frame_count(&self) -> usize {
