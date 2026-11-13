@@ -822,7 +822,7 @@ fn security_task2_png_returns_default_image_with_later_small_animation_frame() {
 }
 
 #[test]
-fn kitty_supported_delete_selectors_keep_existing_scope() {
+fn kitty_supported_delete_selectors_select_placements() {
     for selector in [0, b'a', b'A', b'i', b'I'] {
         let mut store = Store::default();
         for id in [7, 8] {
@@ -842,10 +842,11 @@ fn kitty_supported_delete_selectors_keep_existing_scope() {
                 assert!(!store.placements.iter().any(|p| p.image_id == 7 && p.placement_id == 1));
             }
             b'I' => {
-                assert_eq!(store.images.len(), 1);
-                assert_eq!(store.placements.len(), 2);
-                assert_eq!(store.virtuals.len(), 2);
-                assert!(store.placements.iter().all(|p| p.image_id == 8));
+                // Like `i`, but placement 2 still shows image 7, so its data stays.
+                assert_eq!(store.images.len(), 2);
+                assert_eq!(store.placements.len(), 3);
+                assert_eq!(store.virtuals.len(), 3);
+                assert!(!store.placements.iter().any(|p| p.image_id == 7 && p.placement_id == 1));
             }
             _ => {
                 assert!(store.placements.is_empty());
@@ -885,4 +886,96 @@ fn decode_png_rejects_small_default_and_nonzero_default_offsets() {
     super::png::write_png_chunk(&mut chunks, b"fcTL", &fctl);
     png.splice(33..33, chunks);
     assert_eq!(decode_png(&png).unwrap_err(), "EINVAL:bad PNG");
+}
+
+fn screen_placement(image_id: u32, placement_id: u32, alt: bool) -> Placement {
+    Placement { image_id, placement_id, line: 0, col: 0, cols: 1, rows: 1, src: [0, 0, 1, 1], z: 0, alt, fit: false }
+}
+
+fn transmit_on(store: &mut Store, id: u32, alt: bool) {
+    let cmd = KittyCommand { action: b't', format: 32, medium: b'd', width: 1, height: 1, id, quiet: 2, ..Default::default() };
+    assert!(store.kitty_on(cmd, b"AAAAAA==", alt).1.is_none());
+}
+
+fn delete_on(store: &mut Store, delete: u8, id: u32, placement_id: u32, alt: bool) {
+    let cmd = KittyCommand { action: b'd', delete, id, placement_id, ..Default::default() };
+    assert!(store.kitty_on(cmd, &[], alt).1.is_none());
+}
+
+#[test]
+fn kitty_delete_uppercase_i_with_placement_id_frees_only_unused_data() {
+    let mut store = Store::default();
+    transmit_on(&mut store, 7, false);
+    store.place(screen_placement(7, 1, false));
+    store.place(screen_placement(7, 2, false));
+    delete_on(&mut store, b'I', 7, 1, false);
+    let left: Vec<u32> = store.placements.iter().map(|p| p.placement_id).collect();
+    assert_eq!(left, [2], "`d=I,p=1` removes only placement 1");
+    assert!(store.image(7).is_some(), "placement 2 still shows image 7");
+    delete_on(&mut store, b'I', 7, 2, false);
+    assert!(store.placements.is_empty());
+    assert!(store.image(7).is_none(), "the last placement went, so the data is freed");
+}
+
+#[test]
+fn kitty_uppercase_deletes_keep_unplaced_images_of_the_other_screen() {
+    let mut store = Store::default();
+    transmit_on(&mut store, 9, false);
+    transmit_on(&mut store, 10, true);
+    delete_on(&mut store, b'A', 0, 0, true);
+    assert!(store.image(9).is_some(), "`d=A` on the alternate screen freed a main-screen image");
+    assert!(store.image(10).is_none(), "the alternate screen's own unplaced image is freed");
+    delete_on(&mut store, b'I', 9, 0, true);
+    assert!(store.image(9).is_some(), "`d=I` on the alternate screen freed a main-screen image");
+    delete_on(&mut store, b'I', 9, 0, false);
+    assert!(store.image(9).is_none());
+}
+
+#[test]
+fn placing_an_id_on_one_screen_keeps_the_other_screens_placement() {
+    let mut store = Store::default();
+    transmit_on(&mut store, 7, false);
+    store.place(screen_placement(7, 1, false));
+    store.place(screen_placement(7, 1, true));
+    let screens: Vec<bool> = store.placements.iter().map(|p| p.alt).collect();
+    assert_eq!(screens, [false, true]);
+    store.place(screen_placement(7, 1, true));
+    assert_eq!(store.placements.len(), 2, "same id on the same screen still replaces");
+}
+
+#[test]
+fn kitty_delete_uppercase_i_without_placement_id_frees_the_image() {
+    let mut store = Store::default();
+    transmit_on(&mut store, 7, false);
+    store.place(screen_placement(7, 1, false));
+    store.place(screen_placement(7, 2, false));
+    delete_on(&mut store, b'I', 7, 0, false);
+    assert!(store.placements.is_empty());
+    assert!(store.image(7).is_none());
+}
+
+#[test]
+fn leaving_the_alternate_screen_frees_its_unused_images() {
+    let mut store = Store::default();
+    transmit_on(&mut store, 7, false);
+    transmit_on(&mut store, 8, true);
+    transmit_on(&mut store, 9, true);
+    store.place(screen_placement(7, 0, true));
+    store.place(screen_placement(9, 0, false));
+    store.leave_alt();
+    assert!(store.placements.iter().all(|p| !p.alt));
+    assert!(store.image(7).is_some(), "main-screen images stay");
+    assert!(store.image(8).is_none(), "the alternate screen's unused image goes with it");
+    assert!(store.image(9).is_some(), "still shown by a main-screen placement");
+}
+
+#[test]
+fn a_virtual_placement_on_one_screen_keeps_the_other_screens() {
+    let mut store = Store::default();
+    let virt = |alt| VirtualPlacement { image_id: 7, placement_id: 1, cols: 1, rows: 1, z: 0, alt };
+    store.place_virtual(virt(false));
+    store.place_virtual(virt(true));
+    assert_eq!(store.virtuals.len(), 2);
+    store.place_virtual(virt(true));
+    assert_eq!(store.virtuals.len(), 2, "same id on the same screen still replaces");
 }

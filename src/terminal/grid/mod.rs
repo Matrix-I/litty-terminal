@@ -992,9 +992,7 @@ impl Grid {
                 self.cur = self.saved_main;
                 self.clamp_cursor();
             }
-            self.graphics.placements.retain(|p| !p.alt);
-            self.graphics.virtuals.retain(|v| !v.alt);
-            self.graphics.prune_dead_auto_ids();
+            self.graphics.leave_alt();
         }
         self.wrap_pending = false;
         self.selection = None;

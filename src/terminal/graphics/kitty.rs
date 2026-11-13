@@ -131,11 +131,17 @@ impl Store {
     /// reply body (`OK` or an error such as `ENOENT:...`), already filtered by `q=`.
     #[cfg(test)]
     pub fn kitty(&mut self, cmd: KittyCommand, payload: &[u8]) -> (KittyOutcome, Option<String>) {
-        match self.prepare_kitty(cmd, payload, false) {
+        self.kitty_on(cmd, payload, false)
+    }
+
+    /// [`Store::kitty`] on the main (`alt` false) or alternate screen.
+    #[cfg(test)]
+    pub fn kitty_on(&mut self, cmd: KittyCommand, payload: &[u8], alt: bool) -> (KittyOutcome, Option<String>) {
+        match self.prepare_kitty(cmd, payload, alt) {
             KittyPreparation::Complete(outcome, reply) => (outcome, reply),
             KittyPreparation::Decode(cmd, data) => {
                 let decoded = decode_kitty(&cmd, &data);
-                self.finish_kitty(cmd, decoded, false)
+                self.finish_kitty(cmd, decoded, alt)
             }
         }
     }
@@ -196,6 +202,9 @@ impl Store {
                         return (KittyOutcome::None, kitty_reply(&cmd, "OK"));
                     }
                     let id = self.insert(cmd.id, w, h, rgba);
+                    if let Some(img) = self.images.get_mut(&id) {
+                        img.alt = alt;
+                    }
                     let out = if cmd.action == b'T' { KittyOutcome::Place { id } } else { KittyOutcome::None };
                     let mut reply_cmd = cmd;
                     if reply_cmd.number != 0 {
@@ -235,14 +244,14 @@ impl Store {
         }
     }
 
-    /// `a=d`: lowercase keeps the image data, uppercase frees it too. Only
-    /// the current screen's placements go, as Kitty keeps one image store per
-    /// screen; image data the other screen still shows is not freed.
+    /// `a=d`: lowercase keeps the image data, uppercase frees it too. Kitty
+    /// keeps one image store per screen, so only the current screen's
+    /// placements go, and only that screen's images that nothing shows any
+    /// more are freed.
     fn kitty_delete(&mut self, cmd: &KittyCommand, alt: bool) {
         let (selector, id, pid) = (cmd.delete, cmd.id, cmd.placement_id);
         let hit = |image_id: u32, placement_id: u32| match selector {
-            b'i' => image_id == id && (pid == 0 || placement_id == pid),
-            b'I' => image_id == id,
+            b'i' | b'I' => image_id == id && (pid == 0 || placement_id == pid),
             // Only `a`/`A` (and the omitted default) reach this arm;
             // unsupported selectors are rejected before any mutation.
             _ => true,
@@ -250,19 +259,7 @@ impl Store {
         self.placements.retain(|p| p.alt != alt || !hit(p.image_id, p.placement_id));
         self.virtuals.retain(|v| v.alt != alt || !hit(v.image_id, v.placement_id));
         if selector.is_ascii_uppercase() {
-            // Sorted once so the check stays O(n log n) under the grid lock.
-            let mut shown: Vec<u32> = self.placements.iter().map(|p| p.image_id).chain(self.virtuals.iter().map(|v| v.image_id)).collect();
-            shown.sort_unstable();
-            shown.dedup();
-            let unused: Vec<u32> = self
-                .images
-                .keys()
-                .copied()
-                .filter(|&i| (selector == b'A' || i == id) && shown.binary_search(&i).is_err())
-                .collect();
-            for i in unused {
-                self.remove_image(i, false);
-            }
+            self.free_unshown(alt, (selector == b'I').then_some(id));
         }
     }
 }

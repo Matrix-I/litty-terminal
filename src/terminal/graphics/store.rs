@@ -185,10 +185,11 @@ impl Store {
         self.images.get(&id)
     }
 
-    /// Add a placement, replacing one with the same image and placement id.
+    /// Add a placement, replacing one with the same image and placement id on
+    /// the same screen.
     pub fn place(&mut self, p: Placement) {
         if p.placement_id != 0 {
-            self.placements.retain(|q| !(q.image_id == p.image_id && q.placement_id == p.placement_id));
+            self.placements.retain(|q| !(q.image_id == p.image_id && q.placement_id == p.placement_id && q.alt == p.alt));
         }
         if self.placements.len() >= MAX_PLACEMENTS {
             // Drop the oldest in one batch so a flood stays amortized O(1).
@@ -197,9 +198,10 @@ impl Store {
         self.placements.push(p);
     }
 
-    /// Add a virtual placement, replacing one with the same image and placement id.
+    /// Add a virtual placement, replacing one with the same image and
+    /// placement id on the same screen.
     pub fn place_virtual(&mut self, v: VirtualPlacement) {
-        self.virtuals.retain(|q| !(q.image_id == v.image_id && q.placement_id == v.placement_id));
+        self.virtuals.retain(|q| !(q.image_id == v.image_id && q.placement_id == v.placement_id && q.alt == v.alt));
         if self.virtuals.len() >= MAX_VIRTUALS {
             self.virtuals.drain(..MAX_VIRTUALS / 8);
         }
@@ -211,6 +213,34 @@ impl Store {
     pub fn virtual_for(&self, image_id: u32, placement_id: u32) -> Option<&VirtualPlacement> {
         let mut of_image = self.virtuals.iter().rev().filter(|v| v.image_id == image_id);
         of_image.clone().find(|v| v.placement_id == placement_id).or_else(|| of_image.next())
+    }
+
+    /// Free the images transmitted on screen `alt` (only image `only`, if
+    /// given) that no placement or virtual placement shows.
+    pub(super) fn free_unshown(&mut self, alt: bool, only: Option<u32>) {
+        // Sorted once so the check stays O(n log n) under the grid lock.
+        let mut shown: Vec<u32> = self.placements.iter().map(|p| p.image_id).chain(self.virtuals.iter().map(|v| v.image_id)).collect();
+        shown.sort_unstable();
+        shown.dedup();
+        let unused: Vec<u32> = self
+            .images
+            .iter()
+            .filter(|&(&i, img)| img.alt == alt && only.is_none_or(|o| o == i) && shown.binary_search(&i).is_err())
+            .map(|(&i, _)| i)
+            .collect();
+        for i in unused {
+            self.remove_image(i, false);
+        }
+    }
+
+    /// The alternate screen was left: drop its placements and, as Kitty
+    /// drops that screen's whole store, the images it transmitted that the
+    /// main screen does not show.
+    pub fn leave_alt(&mut self) {
+        self.placements.retain(|p| !p.alt);
+        self.virtuals.retain(|v| !v.alt);
+        self.free_unshown(true, None);
+        self.prune_dead_auto_ids();
     }
 
     /// Prune any auto-assigned images that have no remaining regular or
