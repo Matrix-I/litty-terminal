@@ -762,7 +762,7 @@ pub(super) fn line_metrics(font: &NativeFont, px: f32) -> LineMetrics {
 
 unsafe fn cached_ct_base_font(is_emoji: bool, size: f64) -> *const c_void {
     unsafe {
-        static BASE_FONT_CACHE: Mutex<[Option<(u64, usize)>; 2]> = parking_lot::const_mutex([None, None]);
+        static BASE_FONT_CACHE: Mutex<[Option<(u64, usize)>; 2]> = Mutex::new([None, None]);
         let slot_idx = usize::from(is_emoji);
         let size_bits = size.to_bits();
         {

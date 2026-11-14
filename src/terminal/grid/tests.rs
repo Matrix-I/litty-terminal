@@ -2460,7 +2460,7 @@ fn sparse_snapshot_matches_dense_cell_oracle() {
     let mut grid = Grid::new(8, 4);
     let mut parser = vte::Parser::new();
     for input in ["", "ab ❤️e\u{301}日本x\r\n", "abcdefghijk\r\n", "\r\n\r\n", "\x1b[?1049h界❤️\r\n", "\x1b[?1049l", "بَ  x\r\n"] {
-        for byte in input.bytes() { parser.advance(&mut grid, byte); }
+        parser.advance(&mut grid, input.as_bytes());
         for resize in [None, Some((1, 2)), Some((8, 4))] {
             if let Some((cols, rows)) = resize { grid.resize(cols, rows); }
             let sparse = grid.search_text();
@@ -2476,9 +2476,9 @@ fn sparse_snapshot_matches_dense_cell_oracle() {
     }
     let mut a = Grid::new(4, 1);
     let mut b = Grid::new(1, 1);
-    for byte in "\x1b[?2027h❤️".bytes() { parser.advance(&mut a, byte); }
+    parser.advance(&mut a, "\x1b[?2027h❤️".as_bytes());
     let mut parser = vte::Parser::new();
-    for byte in "\x1b[?2027h❤️".bytes() { parser.advance(&mut b, byte); }
+    parser.advance(&mut b, "\x1b[?2027h❤️".as_bytes());
     b.resize(4, 1);
     let re = crate::terminal::regex_lite::Regex::new("❤️").unwrap();
     assert_eq!(a.search_text().text, b.search_text().text);
@@ -2491,7 +2491,8 @@ fn benchmark_search_snapshot_dense_vs_sparse() {
     for (name, line) in [("dense", "x".repeat(160)), ("sparse", "x".repeat(20))] {
         let mut grid = Grid::new(160, 24);
         let mut parser = vte::Parser::new();
-        for _ in 0..5024 { for b in line.bytes().chain(b"\r\n".iter().copied()) { parser.advance(&mut grid, b); } }
+        let full = format!("{line}\r\n");
+        for _ in 0..5024 { parser.advance(&mut grid, full.as_bytes()); }
         let bytes = |t: &crate::terminal::search::SearchText| t.text.capacity() + t.rows.capacity() * 16 + t.columns.capacity() * 24;
         let time = |f: &dyn Fn() -> crate::terminal::search::SearchText| { let t = std::time::Instant::now(); let r = f(); (t.elapsed(), bytes(&r)) };
         let (dense_t, dense_b) = time(&|| grid.dense_search_text());

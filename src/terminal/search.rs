@@ -143,9 +143,7 @@ mod tests {
 
     fn feed(g: &mut Grid, s: &str) {
         let mut p = vte::Parser::new();
-        for b in s.bytes() {
-            p.advance(g, b);
-        }
+        p.advance(g, s.as_bytes());
     }
 
     fn search(g: &Grid, query: &str, regex: bool) -> Vec<Selection> {
@@ -257,8 +255,9 @@ mod tests {
 fn ascii_snapshot_mapping_is_sparse() {
     let mut grid = crate::terminal::grid::Grid::new(160, 24);
     let mut parser = vte::Parser::new();
+    let line = format!("{}\r\n", "x".repeat(160));
     for _ in 0..5024 {
-        for byte in "x".repeat(160).bytes().chain(b"\r\n".iter().copied()) { parser.advance(&mut grid, byte); }
+        parser.advance(&mut grid, line.as_bytes());
     }
     let snapshot = grid.search_text();
     assert!(snapshot.columns.len() <= snapshot.rows.len() * 2);
@@ -271,7 +270,7 @@ fn ascii_snapshot_mapping_is_sparse() {
 fn search_snapshot_reuse_is_bounded_and_close_releases_buffers() {
     let mut grid = crate::terminal::grid::Grid::new(80, 24);
     let mut parser = vte::Parser::new();
-    for byte in b"hello \xe7\x95\x8c" { parser.advance(&mut grid, *byte); }
+    parser.advance(&mut grid, b"hello \xe7\x95\x8c");
     let snapshot = grid.search_text();
     let expected = snapshot.text.clone();
     assert!(snapshot.reusable());

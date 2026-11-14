@@ -25,10 +25,10 @@ struct SharedMetal {
     queue: Arc<Queue>,
 }
 
-static SHARED_METAL: parking_lot::Mutex<Option<SharedMetal>> = parking_lot::const_mutex(None);
+static SHARED_METAL: parking_lot::Mutex<Option<SharedMetal>> = parking_lot::Mutex::new(None);
 
 static SHARED_PIPELINES: parking_lot::Mutex<Option<(TextureFormat, RenderPipelines)>> =
-    parking_lot::const_mutex(None);
+    parking_lot::Mutex::new(None);
 
 #[derive(Clone)]
 pub struct RenderPipelines {
