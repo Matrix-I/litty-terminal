@@ -86,8 +86,8 @@ impl NativeWindow {
             BackendChoice::X11 => None,
         };
         let (backend, inner_size, position, scale) = match wayland {
-            // Scale 1 until scaling lands; Wayland never reveals the position.
-            Some(wl) => (Backend::Wayland(wl.clone()), wl.inner_size(), PhysicalPosition::new(0, 0), 1.0),
+            // Wayland never reveals the position.
+            Some(wl) => (Backend::Wayland(wl.clone()), wl.inner_size(), PhysicalPosition::new(0, 0), wl.scale_factor()),
             None => {
                 // Without an X11 window there is nothing to draw into: fail
                 // loudly instead of running a windowless process.
@@ -184,6 +184,15 @@ impl NativeWindow {
     pub fn observe(&self, event: &WindowEvent) {
         match *event {
             WindowEvent::Resized(size) => self.inner.lock().inner_size = size,
+            WindowEvent::ScaleFactorChanged(scale) => {
+                let mut guard = self.inner.lock();
+                guard.scale_factor = scale;
+                // A Wayland scale change resizes the buffer without a
+                // `Resized` of its own; the app re-reads the size next.
+                if let Some(Backend::Wayland(wl)) = &guard.backend {
+                    guard.inner_size = wl.inner_size();
+                }
+            }
             WindowEvent::StateChanged { maximized, fullscreen } => {
                 let mut guard = self.inner.lock();
                 guard.maximized = maximized;
@@ -295,14 +304,17 @@ impl NativeWindow {
         self.inner.lock().fullscreen
     }
 
-    /// The monitor under the window's centre (RandR); `None` when the X
-    /// server has no RandR, and on Wayland until output lookup (plan phase 3).
+    /// The monitor under the window's centre (RandR; `None` when the X
+    /// server has none), or on Wayland the output the window entered last.
     pub fn current_monitor(&self) -> Option<Monitor> {
-        let (x11, size) = {
+        let (backend, size) = {
             let guard = self.inner.lock();
-            (guard.backend.as_ref()?.x11()?.clone(), guard.inner_size)
+            (guard.backend.clone()?, guard.inner_size)
         };
-        x11.current_monitor(size)
+        match backend {
+            Backend::X11(x11) => x11.current_monitor(size),
+            Backend::Wayland(wl) => wl.current_monitor(),
+        }
     }
 
     pub fn set_title(&self, title: &str) {
@@ -492,6 +504,15 @@ mod tests {
         assert!(!win.is_fullscreen());
         win.observe(&WindowEvent::StateChanged { maximized: false, fullscreen: true });
         assert!(win.is_fullscreen());
+    }
+
+    /// A Wayland output scale change reaches the cached scale before the
+    /// app reads it to size its font.
+    #[test]
+    fn scale_event_updates_the_scale_factor() {
+        let win = detached(1000, 750);
+        win.observe(&WindowEvent::ScaleFactorChanged(1.25));
+        assert_eq!(win.scale_factor(), 1.25);
     }
 
     /// Cascade positions are physical pixels already; scaling them again

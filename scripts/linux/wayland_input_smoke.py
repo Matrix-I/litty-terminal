@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native Wayland keyboard and pointer smoke check under a headless sway.
+"""Native Wayland input and scale smoke check under a headless sway.
 
 Weston's headless backend has no seat, so input runs on sway (wlroots),
 which accepts virtual keyboards (`wtype`) and pointers (`wlrctl`). Litty
@@ -11,7 +11,9 @@ it reads from the terminal:
 - modifiers: Ctrl+W reaches the terminal as the word-erase character;
 - key repeat: a held key repeats on the client and stops on release;
 - pointer: a new pointer is bound with a `wp_cursor_shape_v1` device and
-  released when it goes away (the cursor on enter is checked by hand).
+  released when it goes away (the cursor on enter is checked by hand);
+- scale: at 150% the window gets the fractional scale, keeps its logical
+  size through a viewport and draws a buffer 1.5 times that size.
 """
 import os
 import pathlib
@@ -23,7 +25,9 @@ import tempfile
 import time
 
 OUTPUT = (1024, 640)
-TOOLS = ('sway', 'wtype', 'wlrctl')
+TOOLS = ('sway', 'swaymsg', 'wtype', 'wlrctl')
+# 150%, in the 120ths `wp_fractional_scale_v1` speaks.
+SCALE_120 = 180
 # wtype's pause before its first key, for Litty to bind the new keyboard.
 TYPING_PAUSE_MS = 2000
 
@@ -45,7 +49,7 @@ def main():
     if missing:
         print(f'SKIP Wayland input smoke: {", ".join(missing)} not installed', flush=True)
         return
-    with tempfile.TemporaryDirectory(prefix='litty-wayland-input-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='litty-wayland-sway-') as temporary:
         root = pathlib.Path(temporary)
         home = root / 'home'
         (home / '.litty').mkdir(parents=True)
@@ -142,6 +146,27 @@ while [ ! -e '{quit_flag}' ]; do sleep 0.1; done
             wait_for(protocol, lambda t: re.search(r'-> wp_cursor_shape_manager_v1#\d+\.get_pointer\(', t), 'pointer bound')
             wait_for(protocol, lambda t: re.search(r'-> wp_cursor_shape_device_v1#\d+\.destroy\(\)', t), 'pointer released')
             print('PASS Wayland pointer is bound with a cursor shape device and released with it', flush=True)
+
+            ipc = wait_for(lambda: next(runtime.glob('sway-ipc.*.sock'), None), bool, 'sway IPC socket')
+            subprocess.run(['swaymsg', '-s', str(ipc), 'output', 'HEADLESS-1', 'scale', str(SCALE_120 / 120)],
+                           env=env, check=True, timeout=20, stdout=subprocess.DEVNULL)
+            preferred = rf'wp_fractional_scale_v1#\d+\.preferred_scale\({SCALE_120}\)'
+            scaled_at = re.search(preferred, wait_for(protocol, lambda t: re.search(preferred, t), 'fractional scale')).end()
+            destination = wait_for(lambda: re.search(r'-> wp_viewport#\d+\.set_destination\((\d+), (\d+)\)', protocol()[scaled_at:]),
+                                   bool, 'viewport at the new logical size')
+            logical = tuple(int(v) for v in destination.groups())
+            # The viewport shows the size sway configured, not a stale one.
+            configured = re.findall(r'xdg_toplevel#\d+\.configure\((\d+), (\d+),', protocol()[scaled_at:])
+            assert configured and tuple(map(int, configured[-1])) == logical, (configured, logical)
+            # Rounded half away from zero, as the protocol asks.
+            expected = tuple(int(v * SCALE_120 / 120 + .5) for v in logical)
+
+            def last_buffer(text):
+                sizes = re.findall(r'create_buffer\(new id wl_buffer#\d+, \d+, (\d+), (\d+),', text)
+                return tuple(map(int, sizes[-1])) if sizes else None
+
+            wait_for(lambda: last_buffer(protocol()[scaled_at:]), lambda size: size == expected, f'a {expected[0]}x{expected[1]} buffer')
+            print(f'PASS Wayland window at 150% shows {logical[0]}x{logical[1]} with a {expected[0]}x{expected[1]} buffer', flush=True)
 
             quit_flag.touch()
             code = app.wait(timeout=20)
