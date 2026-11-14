@@ -186,6 +186,9 @@ pub fn activate_app() {
     }
 }
 
+/// Wayland launcher tokens do not apply to AppKit.
+pub fn capture_startup_activation() {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +218,3 @@ mod tests {
         assert!(seen.lock().unwrap().contains(&crate::platform::PlatformEvent::Reopen));
     }
 }
-
-/// Wayland launcher tokens do not apply to AppKit.
-pub fn capture_startup_activation() {}
