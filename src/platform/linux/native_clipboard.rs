@@ -19,9 +19,9 @@ pub fn init_clipboard(window: &crate::platform::gui::Window) {
         return;
     }
     if let Some(RawHandle::Wayland { display, .. }) = window.raw_handle() {
-        // SAFETY: the display outlives the process-lifetime static; winit never
-        // closes it while windows exist and the app exits without dropping it.
-        let clipboard = unsafe { Clipboard::new(display) };
+        // SAFETY: the native Wayland backend keeps its connection alive in a
+        // process-lifetime static, even after the last window closes.
+        let clipboard = unsafe { Clipboard::new_with_dnd(display, super::native::wayland::receive_file_drop) };
         let _ = CLIPBOARD.set(Arc::new(Mutex::new(clipboard)));
     }
 }

@@ -55,3 +55,7 @@ strip = true
 inherits = "release"
 lto = "thin"
 codegen-units = 16
+
+# Clipboard and file drops share one wl_data_device on GNOME.
+[patch.crates-io]
+smithay-clipboard = { path = "patches/smithay-clipboard" }
