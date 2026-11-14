@@ -247,7 +247,7 @@ fn check(src: &str) -> Result<(), String> {
     if !user.contains("mainImage") {
         return Err("missing `mainImage` entry point".to_string());
     }
-    balance(user)?;
+    balance(user).map_err(|error| format!("{error} in your shader?"))?;
 
     let mut known: HashSet<&str> = [
         // Types & qualifiers
