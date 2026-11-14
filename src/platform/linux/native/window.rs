@@ -26,6 +26,8 @@ pub struct NativeWindowInner {
     pub minimized: bool,
     pub maximized: bool,
     pub fullscreen: bool,
+    /// The window system draws the frame; otherwise the app does.
+    pub server_decorations: bool,
     pub cursor_visible: bool,
     pub cursor_icon: CursorIcon,
     pub raw_handle: Option<RawHandle>,
@@ -85,9 +87,12 @@ impl NativeWindow {
                 .ok(),
             BackendChoice::X11 => None,
         };
-        let (backend, inner_size, position, scale) = match wayland {
+        let (backend, inner_size, position, scale, server_decorations) = match wayland {
             // Wayland never reveals the position.
-            Some(wl) => (Backend::Wayland(wl.clone()), wl.inner_size(), PhysicalPosition::new(0, 0), wl.scale_factor()),
+            Some(wl) => {
+                let decorations = wl.server_decorations();
+                (Backend::Wayland(wl.clone()), wl.inner_size(), PhysicalPosition::new(0, 0), wl.scale_factor(), decorations)
+            }
             None => {
                 // Without an X11 window there is nothing to draw into: fail
                 // loudly instead of running a windowless process.
@@ -102,7 +107,9 @@ impl NativeWindow {
                     (spec.inner_size.height.max(100.0) * scale).round() as u32,
                 );
                 let position = x11_win.origin();
-                (Backend::X11(x11_win), inner_size, position, scale)
+                // X11 window managers frame a window unless the spec's Motif
+                // hints ask them not to.
+                (Backend::X11(x11_win), inner_size, position, scale, spec.decorations)
             }
         };
         let raw_handle = Some(match &backend {
@@ -119,6 +126,7 @@ impl NativeWindow {
             minimized: false,
             maximized: false,
             fullscreen: false,
+            server_decorations,
             cursor_visible: true,
             cursor_icon: CursorIcon::Default,
             raw_handle,
@@ -197,6 +205,15 @@ impl NativeWindow {
                 let mut guard = self.inner.lock();
                 guard.maximized = maximized;
                 guard.fullscreen = fullscreen;
+            }
+            WindowEvent::ServerDecorations(server) => {
+                let mut guard = self.inner.lock();
+                guard.server_decorations = server;
+                // Like a scale change, it may resize the window without a
+                // `Resized` of its own.
+                if let Some(Backend::Wayland(wl)) = &guard.backend {
+                    guard.inner_size = wl.inner_size();
+                }
             }
             _ => {}
         }
@@ -304,6 +321,10 @@ impl NativeWindow {
         self.inner.lock().fullscreen
     }
 
+    pub fn server_decorations(&self) -> bool {
+        self.inner.lock().server_decorations
+    }
+
     /// The monitor under the window's centre (RandR; `None` when the X
     /// server has none), or on Wayland the output the window entered last.
     pub fn current_monitor(&self) -> Option<Monitor> {
@@ -384,22 +405,28 @@ impl NativeWindow {
         }
     }
 
-    /// Unsupported on Wayland until Litty's own title bar moves the window
-    /// with `xdg_toplevel.move` (plan phase 4).
+    /// Hand the window to the window manager to move with the pointer, as
+    /// the left button is down on Litty's own title bar.
     pub fn drag_window(&self) -> Result<(), Unsupported> {
-        let guard = self.inner.lock();
-        let x11 = guard.backend.as_ref().and_then(Backend::x11).ok_or(Unsupported)?;
-        x11.begin_move_resize(8); // _NET_WM_MOVERESIZE_MOVE
-        Ok(())
+        match self.backend().ok_or(Unsupported)? {
+            Backend::X11(x11) => {
+                x11.begin_move_resize(8); // _NET_WM_MOVERESIZE_MOVE
+                Ok(())
+            }
+            Backend::Wayland(wl) => wl.drag_window(),
+        }
     }
 
-    /// Unsupported on Wayland until Litty's own resize edges use
-    /// `xdg_toplevel.resize` (plan phase 4).
+    /// Hand the window to the window manager to resize from `direction`'s
+    /// edge, as the left button is down on Litty's own resize border.
     pub fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), Unsupported> {
-        let guard = self.inner.lock();
-        let x11 = guard.backend.as_ref().and_then(Backend::x11).ok_or(Unsupported)?;
-        x11.begin_move_resize(moveresize_direction(direction));
-        Ok(())
+        match self.backend().ok_or(Unsupported)? {
+            Backend::X11(x11) => {
+                x11.begin_move_resize(moveresize_direction(direction));
+                Ok(())
+            }
+            Backend::Wayland(wl) => wl.drag_resize_window(direction),
+        }
     }
 
     pub fn raw_handle(&self) -> Option<RawHandle> {
@@ -458,6 +485,7 @@ pub(crate) fn detached(width: u32, height: u32) -> NativeWindow {
             minimized: false,
             maximized: false,
             fullscreen: false,
+            server_decorations: false,
             cursor_visible: true,
             cursor_icon: CursorIcon::Default,
             raw_handle: None,
@@ -504,6 +532,18 @@ mod tests {
         assert!(!win.is_fullscreen());
         win.observe(&WindowEvent::StateChanged { maximized: false, fullscreen: true });
         assert!(win.is_fullscreen());
+    }
+
+    /// A compositor that takes the frame over (sway, for tiled windows)
+    /// must reach the cached flag the app reads when it lays out.
+    #[test]
+    fn decoration_event_updates_the_flag() {
+        let win = detached(800, 600);
+        assert!(!win.server_decorations());
+        win.observe(&WindowEvent::ServerDecorations(true));
+        assert!(win.server_decorations());
+        win.observe(&WindowEvent::ServerDecorations(false));
+        assert!(!win.server_decorations());
     }
 
     /// A Wayland output scale change reaches the cached scale before the

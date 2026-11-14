@@ -35,7 +35,7 @@ use crate::paste::{history_insert_payload, paste_payload, shell_quote};
 use crate::platform::clipboard::{copy_to_clipboard, copy_to_primary, paste_from_primary};
 use crate::platform::process::open_target;
 use crate::render::renderer::{TabBarAction, WindowControl};
-use super::csd::{update_corner_radius, begin_edge_resize, run_control, toggle_maximized, update_edge_cursor};
+use super::csd::{update_corner_radius, begin_edge_resize, run_control, set_server_decorations, toggle_maximized, update_edge_cursor};
 
 
 impl App {
@@ -77,6 +77,9 @@ impl App {
                 update_corner_radius(s);
                 s.window.request_redraw();
             }
+
+            // Only Linux draws its own frame; only Wayland sends this.
+            WindowEvent::ServerDecorations(server) if cfg!(target_os = "linux") => set_server_decorations(s, server),
 
             WindowEvent::ScaleFactorChanged(scale_factor) => {
                 let px = (s.font_pt * scale_factor as f32).round();

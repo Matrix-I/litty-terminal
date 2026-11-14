@@ -528,6 +528,9 @@ impl PointerHandler for State {
                 PointerEventKind::Motion { .. } => st.events.extend(moved()),
                 PointerEventKind::Press { button, .. } | PointerEventKind::Release { button, .. } => {
                     let pressed = matches!(event.kind, PointerEventKind::Press { .. });
+                    if let PointerEventKind::Press { serial, .. } = event.kind {
+                        st.grab = Some((p.seat.clone(), serial));
+                    }
                     st.events.extend(convert_raw_event(LinuxRawEvent::Button { button, pressed }, scale));
                 }
                 // Litty scrolls vertically only, as on X11.
