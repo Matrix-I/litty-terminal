@@ -187,6 +187,10 @@ where a test is impossible) before it is fixed.
   always opens an X11 window. The Wayland branches in `surface.rs` and
   `platform/linux/native_clipboard.rs` are never reached, which contradicts the
   project description (Wayland and X11).
+  **Current resolution:** all seven native Wayland backend phases are merged
+  as an opt-in preview (`LITTY_BACKEND=wayland`). The finding above records
+  the reviewed revision; see [current acceptance status](../plans/wayland-backend.md#acceptance-checklist)
+  and [GNOME/sway/KWin validation](../validation/wayland-integrated-2026-11-14.md).
 - **No IME or dead keys.** `set_ime_allowed` and `set_ime_cursor_area` are
   no-ops and key text comes from `XLookupString` without XIM
   (`platform/linux/native/x11.rs:536`), so ibus/fcitx input (for example

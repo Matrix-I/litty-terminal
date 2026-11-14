@@ -30,3 +30,16 @@ The X11 probe uses Xvfb, Openbox and synthetic input to verify mouse wheel and
 keysym input, window close, and Kitty lock modifier encoding. It does not prove physical keyboard behavior, Wayland
 compositor integration, real browser/file-manager dispatch, or hardware GPU
 latency/idle RAM limits. Keep those manual roadmap checks separate.
+
+## Integrated Wayland validation
+
+- [x] Merged-main X11, Weston and sway smoke checks, plus live GNOME IME,
+  clipboard/drop and activation/occlusion checks have been run.
+- [x] An isolated KWin 6.3.6 virtual compositor passed window-state,
+  minimize/workspace recovery and startup-scale checks. Its temporary harness
+  is separate from `test.sh`; the standard container script does not run KWin.
+- [ ] Full KDE/sway desktop IME, clipboard payload/drop, physical input and
+  mixed-DPI display checks remain open.
+
+See the [integrated report](../../docs/validation/wayland-integrated-2026-11-14.md)
+for the exact tested revision, environment failures/retries and acceptance scope.

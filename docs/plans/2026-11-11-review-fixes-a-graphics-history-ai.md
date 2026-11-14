@@ -575,7 +575,8 @@ Append at the end of `ROADMAP.md`:
 
 From [the 2026-11-11 review](./docs/reviews/2026-11-11-linux-history-ai-graphics.md). Not scheduled.
 
-- [ ] **Linux: Wayland window backend.** `NativeWindow::create` is X11 only; the Wayland surface and clipboard paths are unreachable.
+- [x] **Linux: native Wayland backend preview.** All seven backend phases are merged; opt in with `LITTY_BACKEND=wayland`.
+- [ ] **Wayland desktop acceptance.** Full compositor/IME/data-transfer and physical-device coverage remains in the dedicated Wayland plan.
 - [ ] **Linux: IME and dead keys.** `set_ime_allowed` is a no-op and X11 text comes from `XLookupString` without XIM.
 - [ ] **Linux: `_NET_WM_NAME` and `WM_CLASS`.** Non-ASCII titles are garbled and desktops cannot match the window to its `.desktop` entry.
 - [ ] **Linux: per-window Vulkan frame state.** One command buffer, two descriptor sets and the uniform buffers are shared by all windows.

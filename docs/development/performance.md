@@ -53,6 +53,32 @@ backend). Load average about 0.5.
 RSS counts shared pages, so it overstates the cost of a GUI process on Linux;
 use PSS when comparing with other terminals.
 
+### Merged Wayland preview validation
+
+The earlier table records the 2026-11-13 run. A separate release-build check
+at merged commit `129dc36` used isolated configs on GNOME; one sample per
+backend. Linux `+bench-ram` reports RSS as footprint.
+
+| Measurement | Native Wayland | X11 / XWayland |
+| :--- | :---: | :---: |
+| 1 window / 1 tab | 77.41 MB | 78.24 MB |
+| 1 window / 3 tabs | 77.64 MB | 78.46 MB |
+| 2 windows / 6 tabs | 77.90 MB | 78.79 MB |
+| After cleanup to 1 window / 1 tab | 77.66 MB | 78.56 MB |
+| Cleanup delta | +0.25 MB | +0.32 MB |
+| Idle CPU, sleeping shell, cursor blink off | 0 ticks / 5 s | 0 ticks / 5 s |
+
+- [x] Both backends passed the RAM benchmark's window/tab budgets.
+- [x] Continuous Wayland output requested 297 frames in 5.004 s (~59.4/s).
+- [x] Covered GNOME and minimized KWin headless windows stopped an
+  always-animated shader; each sampled 0 CPU ticks / 3 s and resumed rendering
+  when shown. These used the debug build, separately from the release table.
+- [ ] Physical presentation/input-to-photon latency, slow/GPU-stall behavior
+  and macOS closed-window footprint are not established by these checks.
+
+See the [integrated validation report](../validation/wayland-integrated-2026-11-14.md)
+for sample limits, environment retries and remaining compositor acceptance.
+
 ### Comparison with the Ubuntu default terminal
 
 Ptyxis (the default on this Ubuntu release), one window, one tab, idle zsh,

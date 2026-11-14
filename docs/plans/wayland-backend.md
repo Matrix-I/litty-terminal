@@ -6,34 +6,30 @@ into a release. Split out of [v0.13.0](./0.13.0.md) on 2026-11-13.
 default pending the cross-compositor validation below. Application-level
 notification click callbacks and token forwarding to an existing instance
 remain separate follow-ups (see phase 7).
+All seven phase branches are merged in `main` at `129dc36`. The
+[integrated validation report](../validation/wayland-integrated-2026-11-14.md)
+records GNOME live and Weston/sway/KWin headless results and remaining checks.
+
 Source: [2026-11-11 review](../reviews/2026-11-11-linux-history-ai-graphics.md).
 
-## Decisions to make first
+## Decisions
 
-1. **Client library.** `smithay-client-toolkit` 0.20 and `wayland-client`
-   0.31 are already in `Cargo.lock` through `smithay-clipboard`. The
-   recommendation is to depend on them directly (registry, seat, xdg-shell,
-   output handling, keyboard repeat) instead of hand-writing the protocol
-   the way `x11.rs` dlopens Xlib. Adding them as direct dependencies needs
-   approval.
-2. **Keymaps.** Wayland sends an xkb keymap; mapping keys needs
-   `libxkbcommon`. Choose between dlopen (as for libX11, no build
-   dependency) and the `xkbcommon` crate.
-3. **Decorations.** GNOME (mutter) has no `xdg-decoration`, so Litty must
-   draw its own title bar there. It already draws one on macOS
-   (`titlebar`), so the plan is to reuse that rather than add
-   `sctk-adwaita`.
-4. **Backend choice at run time.** Use Wayland when `WAYLAND_DISPLAY` is
-   set and the connection works, otherwise X11, with an override
-   (`LITTY_BACKEND=x11`) for bug reports. The same binary keeps both.
+1. **Client library.** Use `smithay-client-toolkit` 0.20 directly, with its
+   reexported `wayland-client`; retain the existing patched clipboard library.
+2. **Keymaps.** Load libxkbcommon at run time through `xkbcommon-dl`.
+3. **Decorations.** Use Litty's own title bar, yielding to compositor frames
+   when requested. No `sctk-adwaita` dependency.
+4. **Backend choice at run time.** X11 remains the default. Explicit
+   `LITTY_BACKEND=wayland` opts in; an unavailable Wayland connection falls
+   back to X11. Automatic Wayland selection awaits broader acceptance.
 
 ## Phases
 
 Each phase lands on its own branch (`feat/wayland-<phase>`), builds and
 passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
 
-1. **Window and surface.** *Done 2026-11-13 on `feat/wayland-window`,
-   opt-in with `LITTY_BACKEND=wayland` until input lands. Decisions taken:
+1. [x] **Window and surface.** *Done 2026-11-13 on `feat/wayland-window`,
+   opt-in with `LITTY_BACKEND=wayland` pending desktop acceptance. Decisions taken:
    sctk 0.20 as a direct dependency (no default features; its reexported
    `wayland-client`); one process-wide connection, never closed (the
    clipboard keeps its display pointer); frame callbacks requested right
@@ -45,7 +41,7 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    file), and frame callbacks driving redraws (idle CPU stays at 0%).
    Test: open, resize and close under a headless compositor (`weston
    --backend=headless`) in `scripts/linux/test.sh`.
-2. **Input.** *Done 2026-11-14 on `feat/wayland-input`. Decisions taken:
+2. [x] **Input.** *Done 2026-11-14 on `feat/wayland-input`. Decisions taken:
    libxkbcommon is opened at run time through `xkbcommon-dl` (the binary
    still links only libc; without the library keys fall back to the evdev
    table, a US layout); keyboards are handled on raw `wl_keyboard`, since
@@ -54,15 +50,15 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    evdev table. Key repeat runs on a timerfd the event loop watches; a
    compositor that takes over repeat (`wl_keyboard` v10, `repeat_info`
    rate 0, as GNOME 49 does) sends `repeated` keys instead. Pointer
-   through sctk with `wp_cursor_shape_v1` or the cursor theme. Not yet:
-   dead keys and Compose, which come with text input (phase 5), and
-   horizontal scrolling, which X11 does not report either.* `wl_seat` keyboard (xkb keymap, modifiers, client-side key
+   through sctk with `wp_cursor_shape_v1` or the cursor theme. Dead keys
+   and Compose landed in phase 5. Horizontal scrolling remains unsupported,
+   as on X11.* `wl_seat` keyboard (xkb keymap, modifiers, client-side key
    repeat at the compositor's rate and delay), pointer (buttons, motion,
    axis including high-resolution scroll), and cursor shapes through
    `wp_cursor_shape_v1`, falling back to a themed cursor surface. The
    keymap rules in `src/keymap.rs` stay as they are (Linux uses
    `Ctrl+Shift`).
-3. **Scale and outputs.** *Done 2026-11-14 on `feat/wayland-scale`.
+3. [x] **Scale and outputs.** *Done 2026-11-14 on `feat/wayland-scale`.
    Decisions taken: every surface gets a `wp_viewport` showing a buffer
    of `logical size × scale` at the logical size, so fractional and
    integer scales take the same path and the buffer never has to divide
@@ -74,13 +70,16 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    only output if there is one). Checked on GNOME at 125%
    (`preferred_scale(150)` before the first configure, a 968x620 window
    drawn at 1210x775, 60 Hz from the output's current mode) and on
-   headless sway at 150%. Not yet: moving between outputs of different
-   scales (one monitor here), and the cursor theme fallback's own scale.*
+   headless sway at 150%. Integrated validation also passed live scale
+   changes from 100% to 200% and moves between virtual outputs at 200%
+   and 125% on sway, plus KWin startup scales from 100% to 200%. Physical
+   mixed-DPI monitor moves, KWin live scale changes and the cursor theme
+   fallback's own scale remain unchecked.*
    `wp_fractional_scale_v1` and `wp_viewporter`
    (integer `wl_output.scale` as the fallback), with monitor lookup for
    `current_monitor` and refresh rates. Centering new windows does not
    apply: Wayland clients cannot place their own windows.
-4. **Decorations.** *Done 2026-11-14 on `feat/wayland-decorations`.
+4. [x] **Decorations.** *Done 2026-11-14 on `feat/wayland-decorations`.
    Decision taken (2026-11-14): Litty's own title bar everywhere, as on
    X11, so Wayland windows ask for client-side decorations; where the
    compositor frames the window anyway (sway does for tiled windows, and
@@ -95,7 +94,7 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    (`tiled_left` and so on) for corners and edges.* Originally:
    `xdg-decoration` where the compositor offers server side decorations; otherwise Litty's own title bar with move
    (`xdg_toplevel.move`), resize edges, and window buttons.
-5. **Text input.** *Done 2026-11-14 on
+5. [x] **Text input.** *Done 2026-11-14 on
    `feat/wayland-text-input`.
    One optional `zwp_text_input_v3` per seat, enabled only on the focused
    editable surface; preedit/commit applied atomically at `done`, reset
@@ -115,11 +114,12 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    with preedit/commit through v3 and a clean process exit. Reproduce with
    `/usr/bin/python3 scripts/linux/wayland_text_input_smoke.py --telex`
    in a live GNOME session (temporary input-engine selection is restored).
-   Not yet checked: candidate popup appearance, KDE/wlroots IME.*
+   Headless KWin also enables text-input-v3 on focus, without injected text.
+   Not yet checked: candidate popup appearance, KDE/wlroots IME composition.*
    `zwp_text_input_v3`: preedit drawn as on X11 (XIM),
    commit, and the cursor rectangle for the candidate window. Checked
    with IBus Unikey (Telex) under GNOME, as was done for X11.
-6. **Clipboard and drag and drop.** *Done 2026-11-14 on
+6. [x] **Clipboard and drag and drop.** *Done 2026-11-14 on
    `feat/wayland-clipboard`. Clipboard and primary selection
    use `smithay-clipboard` on the window's own connection. GNOME sends
    data events to the most recently bound data device, so a local patch
@@ -135,9 +135,10 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    primary selection in both directions, plus two consecutive two-file
    drops with spaces, quotes and Vietnamese in the names (Copy completion
    and a clean exit with no protocol errors). `scripts/linux/wayland_data_smoke.py`
-   reproduces the live desktop checks. Not yet checked: KDE/wlroots data
-   transfer and real file-manager drops (GTK4 is the tested source).*
-7. **Occlusion and activation.** *Backend implemented 2026-11-14 on
+   reproduces the live desktop checks. Headless KWin receives clipboard and
+   primary offers. KDE/wlroots payload transfers and real file-manager drops
+   remain unchecked (GTK4 is the tested drop source).*
+7. [x] **Occlusion and activation.** *Backend implemented 2026-11-14 on
    `feat/wayland-activation`. A presented frame with no callback for 500 ms
    emits `Occluded(true)` once; a callback restores visibility and owes a
    redraw, even if the app stopped asking while hidden. Skipped presents
@@ -167,16 +168,40 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    callback, and Litty has no single-instance IPC. Notification click-through
    and forwarding a token to an already-running process need those app
    integrations; the backend hooks and launcher-token path are implemented.
-   Not yet checked: KDE/wlroots, minimize/workspace changes, and slow/GPU-stall
-   behavior. The broader backend validation below remains outstanding.
+   Headless KWin 6.3.6 also passed minimize/workspace animation stop and
+   rendering recovery, hidden bell activation and clean close. Real KDE/sway
+   desktop activation policy, real-desktop minimize/workspace changes and
+   slow/GPU-stall behavior remain unchecked. The broader backend acceptance
+   below remains outstanding.
 
-## Done means
+## Acceptance checklist
 
-- Every `platform::*` window function has a Wayland implementation or an
-  explicit no-op with the reason (as `CLAUDE.md` asks for platform code).
-- Checked by hand on GNOME (mutter) and KDE (KWin), plus a wlroots
-  compositor (sway): typing including IME, resize, fractional scale 1.25, copy and
-  paste with another app, multiple windows, minimize.
-- Idle RAM and CPU budgets hold (`+bench-ram`, idle CPU 0%).
-- `ROADMAP.md` and the [configuration guide](../guide/configuration.md)
-  updated; X11 remains available and tested.
+Evidence: [integrated validation](../validation/wayland-integrated-2026-11-14.md).
+The seven checked phases above track implementation; the unchecked desktop
+items below still prevent declaring full backend acceptance.
+
+- [x] All seven backend phases merged; merged-main Linux/macOS CI passes.
+- [x] Local checks, full Rust suite, Clippy and release build pass.
+- [x] GNOME live Telex IME, clipboard/primary round trips and GTK4 file drops.
+- [x] GNOME covered-window occlusion, launcher tokens and hidden attention.
+- [x] Weston headless open, resize, frame callbacks and close.
+- [x] Sway headless keyboard/repeat, pointer binding and decorations.
+- [x] Sway live scale changes 100–200% and virtual mixed-scale output moves.
+- [x] KWin headless resize, maximize/fullscreen, minimize/workspaces and close.
+- [x] KWin startup scales 100–200%; text-input focus and selection offers.
+- [x] Linux RAM benchmark budgets and sampled idle CPU; continuous-output pacing.
+- [x] X11 default, override and unavailable-Wayland fallback tested.
+- [x] Roadmap, configuration guide and validation/performance docs updated.
+- [ ] Complete manual GNOME, KDE and sway desktop coverage: typing including
+  IME, pointer/touchpad, hand move/resize, copy/paste, real file-manager drops,
+  multiple windows, minimize and workspace transitions on each compositor.
+- [ ] Candidate popup appearance/position after zoom/resize/scale changes;
+  dead keys/Compose and preedit reset with real desktop input.
+- [ ] Physical mixed-DPI monitors, cursor fallback scaling and KWin live
+  scale changes (the headless output tool failed; startup scales passed).
+- [ ] Slow/GPU-stall behavior, hardware GPU validation and macOS closed-window
+  memory measurements; Linux RSS does not establish macOS footprint budgets.
+- [ ] Complete platform API/no-op coverage audit against the acceptance rule:
+  every window function must be implemented or explicitly explain its no-op.
+- [ ] Application follow-ups: notification click callbacks and token forwarding
+  to an existing instance. Backend hooks do not supply these integrations.
