@@ -383,17 +383,20 @@ impl NativeWindow {
     }
 
     /// Outside the window lock: reaching the input method may reconnect
-    /// it, a round trip to its server. No-op on Wayland until text-input
-    /// (plan phase 5).
+    /// it, a round trip to its server.
     pub fn set_ime_allowed(&self, allowed: bool) {
         if let Some(x11) = self.x11() {
             x11.set_ime_allowed(allowed);
+        } else if let Some(wl) = self.wayland() {
+            wl.set_ime_allowed(allowed);
         }
     }
 
-    /// No-op on Wayland until text-input (plan phase 5).
+    /// Position the input method candidate window at the terminal cursor.
     pub fn set_ime_cursor_area(&self, position: PhysicalPosition<f64>, size: PhysicalSize<f64>) {
-        if let Some(x11) = self.inner.lock().backend.as_ref().and_then(Backend::x11) {
+        if let Some(wl) = self.wayland() {
+            wl.set_ime_cursor_area(position, size);
+        } else if let Some(x11) = self.x11() {
             x11.set_ime_cursor_area(position, size);
         }
     }

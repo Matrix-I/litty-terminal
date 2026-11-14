@@ -129,8 +129,14 @@ impl Drop for State {
 pub(super) struct ImeState {
     /// IME composition in progress (Telex, Pinyin, ...); keys belong to the IME while non-empty.
     pub(super) preedit: String,
-    /// Last cursor cell reported to the IME for candidate window placement.
-    pub(super) cursor_cell: Option<(usize, usize)>,
+    /// Last candidate rectangle in buffer pixels, including font and band geometry.
+    pub(super) cursor_area: Option<[f64; 4]>,
+}
+
+impl ImeState {
+    pub(super) fn cursor_area_changed(&mut self, area: [f64; 4]) -> bool {
+        self.cursor_area.replace(area) != Some(area)
+    }
 }
 
 /// Requests a window raises during an event; `App` acts on them afterwards.
@@ -191,4 +197,20 @@ pub(super) struct PointerState {
     pub(super) mouse_button_down: Option<mouse::Button>,
     /// Last `(pane, row, col)` reported to a mouse-tracking application.
     pub(super) last_mouse_report: Option<(u64, usize, usize)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ImeState;
+
+    #[test]
+    fn ime_candidate_tracks_pixel_geometry_even_when_the_cell_is_unchanged() {
+        let mut ime = ImeState { preedit: String::new(), cursor_area: None };
+        assert!(ime.cursor_area_changed([4.0, 37.0, 9.0, 18.0]));
+        assert!(!ime.cursor_area_changed([4.0, 37.0, 9.0, 18.0]));
+        // The same grid cell after a zoom or output-scale change.
+        assert!(ime.cursor_area_changed([6.0, 55.5, 13.5, 27.0]));
+        // A changed title band moves the same cell too.
+        assert!(ime.cursor_area_changed([6.0, 27.0, 13.5, 27.0]));
+    }
 }

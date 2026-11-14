@@ -102,7 +102,28 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    (`tiled_left` and so on) for corners and edges.* Originally:
    `xdg-decoration` where the compositor offers server side decorations; otherwise Litty's own title bar with move
    (`xdg_toplevel.move`), resize edges, and window buttons.
-5. **Text input.** `zwp_text_input_v3`: preedit drawn as on X11 (XIM),
+5. **Text input.** *Done 2026-11-14 on
+   `feat/wayland-text-input`.
+   One optional `zwp_text_input_v3` per seat, enabled only on the focused
+   editable surface; preedit/commit applied atomically at `done`, reset
+   on leave/disable. Candidate rectangles convert buffer pixels to
+   surface-local logical pixels, including fractional scales. Content
+   purpose is terminal; surrounding text/deletion is not advertised
+   because the shell owns the editable line. The existing shared IME API
+   draws preedit without representing its internal selection. Dead keys
+   and Compose use libxkbcommon's locale table, with Ctrl/Alt/Super
+   shortcuts bypassing it and focus loss resetting it. Unit tests cover
+   Unicode composition, reset, shortcuts, commit/preedit ordering and
+   fractional candidate rectangles. The app caches pixel geometry rather
+   than just the grid cell, so zoom, scale and title-band changes refresh
+   the candidate rectangle too. Checked on GNOME: text-input-v3 bind,
+   enter, enable, terminal purpose, cursor rectangle, done and leave;
+   IBus Unikey Telex `tieengs vieetj` arrives at the PTY as `tiếng việt`,
+   with preedit/commit through v3 and a clean process exit. Reproduce with
+   `/usr/bin/python3 scripts/linux/wayland_text_input_smoke.py --telex`
+   in a live GNOME session (temporary input-engine selection is restored).
+   Not yet checked: candidate popup appearance, KDE/wlroots IME.*
+   `zwp_text_input_v3`: preedit drawn as on X11 (XIM),
    commit, and the cursor rectangle for the candidate window. Checked
    with IBus Unikey (Telex) under GNOME, as was done for X11.
 6. **Clipboard and drag and drop.** The existing `smithay-clipboard` path
