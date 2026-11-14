@@ -186,6 +186,9 @@ pub fn activate_app() {
     }
 }
 
+/// Wayland launcher tokens do not apply to AppKit.
+pub fn capture_startup_activation() {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

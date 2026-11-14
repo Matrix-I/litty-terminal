@@ -1,18 +1,11 @@
 # Native Wayland window backend — Plan
 
-Status: planned, not scheduled into a release. Split out of
-[v0.13.0](./0.13.0.md) on 2026-11-13. Today `NativeWindow::create`
-(`src/platform/linux/native/window.rs`) opens X11 windows only, so Wayland
-desktops run Litty through XWayland. That costs:
-
-- IME under GNOME on Wayland only through a hand-started `ibus-x11`, since
-  Wayland input methods use `text-input-v3`;
-- fractional scaling, which XWayland renders blurry or at 2x;
-- the Wayland surface (`VK_KHR_wayland_surface`) and the Wayland clipboard
-  path, which exist but are never reached;
-- occlusion, which under XWayland reports only minimizing
-  (`_NET_WM_STATE_HIDDEN`), never a covered window.
-
+Status: backend phases 1–7 implemented as an opt-in preview, not scheduled
+into a release. Split out of [v0.13.0](./0.13.0.md) on 2026-11-13.
+`LITTY_BACKEND=wayland` opens native Wayland windows; X11 remains the
+default pending the cross-compositor validation below. Application-level
+notification click callbacks and token forwarding to an existing instance
+remain separate follow-ups (see phase 7).
 Source: [2026-11-11 review](../reviews/2026-11-11-linux-history-ai-graphics.md).
 
 ## Decisions to make first
@@ -144,10 +137,38 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    and a clean exit with no protocol errors). `scripts/linux/wayland_data_smoke.py`
    reproduces the live desktop checks. Not yet checked: KDE/wlroots data
    transfer and real file-manager drops (GTK4 is the tested source).*
-7. **Occlusion and activation.** The compositor stops sending frame
-   callbacks to a hidden window (minimized, covered, or on another
-   workspace); `Occluded` follows them, as on macOS. `xdg_activation_v1` for
-   focusing a window from a notification or a second instance.
+7. **Occlusion and activation.** *Backend implemented 2026-11-14 on
+   `feat/wayland-activation`. A presented frame with no callback for 500 ms
+   emits `Occluded(true)` once; a callback restores visibility and owes a
+   redraw, even if the app stopped asking while hidden. Skipped presents
+   cancel the watchdog. The event loop waits only for an outstanding
+   deadline, never polls while idle/occluded. Visual animation and blink
+   timers stop while occluded, including `custom-shader-animation=always`.
+   This is advisory starvation detection: compositor/GPU stalls can also
+   delay callbacks, and compositors need not suppress every hidden callback.
+   `xdg_activation_v1` is optional; focus requests use a recent seat/serial
+   and source surface, attention requests omit the input grant. Requests
+   are asynchronous, deduplicated per window, and their token objects are
+   destroyed on completion/cancel/window close. Wayland has no separate
+   urgency-cancellation request, so `request_attention(false)` can cancel
+   pending work but cannot revoke attention already shown by a compositor.
+   `XDG_ACTIVATION_TOKEN` is captured/removed before threads or children
+   start and consumed by the first Wayland window; the shell never inherits
+   it. Compositor focus-stealing policy is always authoritative.*
+   Checked on GNOME with `scripts/linux/wayland_activation_smoke.py`:
+   GDK supplies a launcher token, native activation uses it, and the PTY
+   environment lacks it; a fullscreen GTK cover starves callbacks, releases
+   drawables and stops an always-animated shader (0–1 CPU ticks per 3 s,
+   one residual frame request in the sample). Bell attention still works
+   while hidden, rendering resumes on uncover, and opening another window
+   from the keyboard requests a token with seat/serial and source surface.
+   The process exits cleanly without protocol errors.
+   **Application follow-ups:** the current `notify-send` helper has no click
+   callback, and Litty has no single-instance IPC. Notification click-through
+   and forwarding a token to an already-running process need those app
+   integrations; the backend hooks and launcher-token path are implemented.
+   Not yet checked: KDE/wlroots, minimize/workspace changes, and slow/GPU-stall
+   behavior. The broader backend validation below remains outstanding.
 
 ## Done means
 

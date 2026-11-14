@@ -4,9 +4,10 @@
 //! window, Vulkan surface, configure and resize, close, title and app id,
 //! and frame callbacks pacing redraws; keyboard and pointer input (phase 2)
 //! live in [`super::wayland_input`]; scale and outputs (phase 3) here.
-//! Text input (phase 5) lives in [`super::wayland_text_input`]; occlusion
-//! and activation are later phases;
-//! until they land the backend is opt-in (`LITTY_BACKEND=wayland`).
+//! Text input lives in [`super::wayland_text_input`]; visibility and
+//! activation live in their own modules;
+//! the backend stays opt-in pending cross-compositor validation
+//! (`LITTY_BACKEND=wayland`).
 //!
 //! Scale: a window draws its buffer at `logical size × scale` and shows it
 //! at the logical size through a `wp_viewport`, so a fractional scale
@@ -66,7 +67,7 @@ pub enum BackendChoice {
 }
 
 /// The backend `LITTY_BACKEND` names. X11 (XWayland on Wayland desktops)
-/// stays the default until the Wayland backend handles input; an unknown
+/// stays the default pending cross-compositor validation; an unknown
 /// value is an error the caller reports before using X11.
 pub fn choose_backend(litty_backend: Option<&str>) -> Result<BackendChoice, String> {
     match litty_backend.map(str::trim) {
@@ -295,6 +296,8 @@ pub(super) struct SharedState {
     /// Events for the app, drained by `poll_events`.
     pub(super) events: Vec<WindowEvent>,
     pacer: FramePacer,
+    visibility: super::wayland_visibility::Visibility,
+    pub(super) activation: super::wayland_activation::Activation,
     reported: Reported,
     /// Shown whenever a pointer enters the window.
     pub(super) cursor: Cursor,
@@ -367,6 +370,8 @@ pub(super) struct State {
     /// `None` when no timerfd could be made: keys then do not repeat.
     pub(super) repeat_timer: Option<RepeatTimer>,
     windows: Vec<(ObjectId, Weak<WindowShared>)>,
+    pub(super) activation_manager: Option<smithay_client_toolkit::reexports::protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1>,
+    pub(super) activation_input: Option<super::wayland_activation::InputGrant>,
     pub(super) text_inputs: Vec<super::wayland_text_input::TextInput>,
     pub(super) text_manager: Option<super::wayland_text_input::Manager>,
 }
@@ -424,6 +429,8 @@ fn connect() -> Result<Client, String> {
         repeat: KeyRepeat::default(),
         repeat_timer,
         windows: Vec::new(),
+        activation_manager: globals.bind(&qh, 1..=1, ()).ok(),
+        activation_input: None,
         text_inputs: Vec::new(),
         text_manager: globals.bind(&qh, 1..=1, ()).ok(),
     };
@@ -459,6 +466,27 @@ pub fn dispatch() {
     if let Err(e) = queue.dispatch_pending(state) {
         connection_lost(e);
     }
+}
+
+/// Expire each outstanding frame once. No deadline remains while hidden or
+/// idle; a real frame callback is what brings the window back.
+pub fn visibility_deadline() -> Option<std::time::Instant> {
+    let client = connected()?;
+    let mut guard = client.queue.lock();
+    let state = &mut guard.1;
+    let now = std::time::Instant::now();
+    let mut next: Option<std::time::Instant> = None;
+    let mut expired = false;
+    state.windows.retain(|(_, weak)| {
+        let Some(win) = weak.upgrade() else { return false; };
+        let mut st = win.state.lock();
+        if st.visibility.expire(now) { st.events.push(WindowEvent::Occluded(true)); expired = true; }
+        if let Some(at) = st.visibility.deadline() { next = Some(next.map_or(at, |old| old.min(at))); }
+        true
+    });
+    drop(guard);
+    if expired { super::app::wakeup_main_loop(); }
+    next
 }
 
 /// The key repeat timer fired: queue the repeated key for the next poll.
@@ -560,6 +588,8 @@ impl WaylandWindow {
             state: Mutex::new(SharedState {
                 events: Vec::new(),
                 pacer: FramePacer::default(),
+                visibility: super::wayland_visibility::Visibility::default(),
+                activation: super::wayland_activation::Activation::default(),
                 reported: Reported::new(logical, client.viewporter.is_some(), spec.decorations),
                 cursor: Cursor::default(),
                 outputs: Vec::new(),
@@ -588,6 +618,9 @@ impl WaylandWindow {
                 connection_lost(e);
             }
         }
+        if let Some(token) = super::wayland_activation::startup_token()
+            && let Some(manager) = &state.activation_manager
+        { manager.activate(token, surface); }
         drop(guard);
         // Input the round trips dispatched waits in the window's queue; the
         // loop must poll it before it blocks.
@@ -678,6 +711,7 @@ impl WaylandWindow {
             let mut st = self.0.shared.state.lock();
             let logical = st.reported.logical;
             let presenting = st.pacer.presenting();
+            if presenting { st.visibility.presenting(std::time::Instant::now()); }
             let changed = presenting && st.viewport_size != Some(logical);
             if changed {
                 st.viewport_size = Some(logical);
@@ -695,7 +729,9 @@ impl WaylandWindow {
     }
 
     pub fn present_skipped(&self) {
-        self.0.shared.state.lock().pacer.present_skipped();
+        let mut st = self.0.shared.state.lock();
+        st.pacer.present_skipped();
+        st.visibility.skipped();
     }
 
     /// Takes effect at once: `xdg_toplevel.set_title` is not double-buffered.
@@ -717,6 +753,26 @@ impl WaylandWindow {
         } else {
             self.0.window.unset_fullscreen();
         }
+    }
+
+    pub fn focus(&self) { self.activate(true); }
+
+    /// There is no distinct urgency/cancel-urgency request in xdg-activation.
+    /// A token without an input grant asks the compositor for attention; the
+    /// compositor decides whether to focus or highlight the window.
+    pub fn request_attention(&self, requested: bool) {
+        if requested { self.activate(false); }
+        else { self.0.shared.state.lock().activation.cancel(); }
+    }
+
+    fn activate(&self, focus: bool) {
+        let guard = self.0.client.queue.lock();
+        let state = &guard.1;
+        let Some(manager) = &state.activation_manager else { return; };
+        let grant = if focus { state.activation_input.as_ref() } else { None };
+        self.0.shared.state.lock().activation.request(manager, &self.0.client.qh,
+            self.0.window.wl_surface(), Arc::downgrade(&self.0.shared), grant);
+        super::app::wakeup_main_loop();
     }
 
     pub fn iconify(&self) {
@@ -754,7 +810,12 @@ impl CompositorHandler for State {
 
     fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _time: u32) {
         let Some(win) = self.window(surface) else { return };
-        let due = win.state.lock().pacer.frame_done();
+        let due = {
+            let mut st = win.state.lock();
+            let visible = st.visibility.frame();
+            if visible { st.events.push(WindowEvent::Occluded(false)); }
+            st.pacer.frame_done() || visible
+        };
         if due {
             super::app::request_redraw(win.id);
         }

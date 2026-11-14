@@ -40,6 +40,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod test_alloc;
 
 fn main() {
+    platform::capture_startup_activation();
     bench_startup::mark_main();
     let args: Vec<String> = std::env::args().collect();
     match cli::parse(&args) {

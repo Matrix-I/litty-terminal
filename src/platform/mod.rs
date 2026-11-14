@@ -20,7 +20,7 @@ use linux as imp;
 // The cross-platform API, listed by name (never `imp::*`): a function missing
 // on one platform fails that platform's build instead of silently vanishing.
 pub(crate) use imp::{
-    activate_app, add_tabbed_window, alert, alert_choice, apply_window_config, beep, caps_lock,
+    capture_startup_activation, activate_app, add_tabbed_window, alert, alert_choice, apply_window_config, beep, caps_lock,
     cleanup_window, clipboard_string, clipboard_write_string, init_clipboard, primary_string, primary_write_string, close_progress_dialog,
     configure_layer_drawables, confirm, install_menu,
     register_reopen_handler, release_free_memory, select_native_tab, set_dock_icon,

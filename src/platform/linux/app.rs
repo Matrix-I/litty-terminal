@@ -22,3 +22,6 @@ pub fn system_dark() -> bool {
 pub fn set_dock_icon() {}
 
 pub fn activate_app() {}
+
+/// Capture launcher activation before the app starts worker threads.
+pub fn capture_startup_activation() { super::native::wayland_activation::capture_startup_activation(); }

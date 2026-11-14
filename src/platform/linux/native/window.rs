@@ -267,10 +267,12 @@ impl NativeWindow {
         self.inner.lock().visible
     }
 
-    /// No-op on Wayland until `xdg_activation_v1` (plan phase 7).
+    /// Activation is subject to the compositor's focus policy on Wayland.
     pub fn focus_window(&self) {
         if let Some(x11) = self.x11() {
             x11.focus();
+        } else if let Some(wl) = self.wayland() {
+            wl.focus();
         }
     }
 
@@ -401,10 +403,12 @@ impl NativeWindow {
         }
     }
 
-    /// No-op on Wayland until `xdg_activation_v1` (plan phase 7).
+    /// Best-effort attention request; Wayland cannot revoke compositor urgency.
     pub fn request_attention(&self, requested: bool) {
-        if let Some(x11) = self.inner.lock().backend.as_ref().and_then(Backend::x11) {
+        if let Some(x11) = self.x11() {
             x11.request_attention(requested);
+        } else if let Some(wl) = self.wayland() {
+            wl.request_attention(requested);
         }
     }
 

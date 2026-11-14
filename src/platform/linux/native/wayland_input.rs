@@ -153,6 +153,7 @@ pub(super) struct Keyboard {
     /// `None` until the keymap arrives, or without libxkbcommon.
     keymap: Option<Keymap>,
     focus: Option<Weak<WindowShared>>,
+    focus_surface: Option<smithay_client_toolkit::reexports::client::protocol::wl_surface::WlSurface>,
     held: HeldKeys,
     composed: HeldKeys,
     /// Raw modifier mask, for keys without a keymap.
@@ -165,7 +166,7 @@ pub(super) struct Keyboard {
 
 impl Keyboard {
     fn new(wl: wl_keyboard::WlKeyboard, seat: wl_seat::WlSeat) -> Self {
-        Self { wl, seat, keymap: None, focus: None, held: HeldKeys::default(), composed: HeldKeys::default(), mask: 0, mods: Mods::default(), reported: None }
+        Self { wl, seat, keymap: None, focus: None, focus_surface: None, held: HeldKeys::default(), composed: HeldKeys::default(), mask: 0, mods: Mods::default(), reported: None }
     }
 
     fn key(&self, evdev: u32, pressed: bool, repeat: bool) -> KeyInput {
@@ -245,10 +246,12 @@ impl State {
                     _ => None,
                 };
             }
-            wl_keyboard::Event::Enter { surface, .. } => {
+            wl_keyboard::Event::Enter { surface, serial, .. } => {
+                self.activation_input = Some(super::wayland_activation::InputGrant::new(self.keyboards[index].seat.clone(), surface.clone(), serial));
                 let win = self.window(&surface);
                 let kb = &mut self.keyboards[index];
                 kb.focus = win.as_ref().map(Arc::downgrade);
+                kb.focus_surface = Some(surface);
                 kb.held.clear();
                 kb.composed.clear();
                 if let Some(keymap) = &mut kb.keymap { keymap.reset_compose(); }
@@ -257,13 +260,14 @@ impl State {
             wl_keyboard::Event::Leave { .. } => {
                 let kb = &mut self.keyboards[index];
                 kb.focus = None;
+                kb.focus_surface = None;
                 kb.held.clear();
                 kb.composed.clear();
                 if let Some(keymap) = &mut kb.keymap { keymap.reset_compose(); }
                 let change = self.repeat.stop(&id);
                 self.apply_repeat(change);
             }
-            wl_keyboard::Event::Key { key: evdev, state, .. } => {
+            wl_keyboard::Event::Key { key: evdev, state, serial, .. } => {
                 let kb = &mut self.keyboards[index];
                 let Some(win) = kb.focused() else { return };
                 let (pressed, compositor_repeat) = match state {
@@ -284,6 +288,9 @@ impl State {
                     if !text.is_empty() { deliver(&win, WindowEvent::Ime(crate::platform::gui::Ime::Commit(text))); }
                 } else if pressed || !u8::try_from(evdev).is_ok_and(|code| kb.composed.update(code, false)) {
                     deliver(&win, WindowEvent::Key(key));
+                }
+                if pressed && !compositor_repeat && let Some(surface) = &kb.focus_surface {
+                    self.activation_input = Some(super::wayland_activation::InputGrant::new(kb.seat.clone(), surface.clone(), serial));
                 }
                 let change = if compositor_repeat {
                     TimerChange::Keep
@@ -521,6 +528,9 @@ impl PointerHandler for State {
         let Some(index) = self.pointers.iter().position(|p| p.themed.pointer() == pointer) else { return };
         for event in events {
             let Some(win) = self.window(&event.surface) else { continue };
+            if let PointerEventKind::Press { serial, .. } = event.kind {
+                self.activation_input = Some(super::wayland_activation::InputGrant::new(self.pointers[index].seat.clone(), event.surface.clone(), serial));
+            }
             let p = &mut self.pointers[index];
             let (x, y) = event.position;
             // Positions arrive in logical pixels; the app works in buffer ones.
