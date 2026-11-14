@@ -503,6 +503,7 @@ impl EventHandler<AppEvent> for App {
                 let sync = now + std::time::Duration::from_millis(16);
                 deadline = Some(deadline.map_or(sync, |d| d.min(sync)));
             }
+            if s.occluded { continue; }
             // An animated custom shader: about 60 frames per second.
             let always = s.config.custom_shader_animation == Some(true);
             if !s.tabs.is_empty() && s.renderer.animating() && (s.focused || always) {

@@ -133,7 +133,8 @@ keybind = cmd+d=unbind
 
 | Variable | Values | Effect |
 |---|---|---|
-| `LITTY_BACKEND` | `x11` (default), `wayland` | Linux window system. `wayland` opens native Wayland windows (falls back to X11 if the compositor cannot be reached); it is a preview: keyboard, mouse, fractional scaling, Litty's own title bar (moving and resizing the window), text-input-v3 IME (checked with IBus Unikey Telex on GNOME), local dead keys/Compose, clipboard/primary selection and local file drops work; occlusion is a later phase, see the [Wayland backend plan](../plans/wayland-backend.md). |
+| `LITTY_BACKEND` | `x11` (default), `wayland` | Linux window system. `wayland` opens native Wayland windows (falls back to X11 if the compositor cannot be reached); it is a preview: keyboard, mouse, fractional scaling, Litty's own title bar (moving and resizing the window), text-input-v3 IME (checked with IBus Unikey Telex on GNOME), local dead keys/Compose, clipboard/primary selection, local file drops, frame-callback occlusion and compositor-approved activation work; cross-compositor validation is still pending, see the [Wayland backend plan](../plans/wayland-backend.md). |
+| `XDG_ACTIVATION_TOKEN` | Opaque launcher token | Linux Wayland only. Used once to request activation of the first window, then removed from the environment before any shell or helper is spawned. Focus and attention remain subject to compositor policy. |
 
 ## See also
 

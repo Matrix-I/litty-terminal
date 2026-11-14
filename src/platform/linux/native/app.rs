@@ -322,6 +322,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
             // 2. Poll each window's connection: its own for X11, the
             //    shared one (dispatched once here) for Wayland
             super::wayland::dispatch();
+            super::wayland::visibility_deadline();
             live_windows(&mut wins);
             for win in &wins {
                 let Some(backend) = win.backend() else { continue };
@@ -362,7 +363,11 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
             let timeout = if has_x11_pending || wayland_busy || flow_mode == 1 {
                 0 // Non-blocking poll if events are pending or poll requested
             } else {
-                -1 // Block on epoll (timerfd handles WaitUntil)
+                // A single bounded wait for an outstanding Wayland frame;
+                // no periodic polling after it is declared occluded.
+                super::wayland::visibility_deadline().map_or(-1, |at| {
+                    at.saturating_duration_since(Instant::now()).as_millis().saturating_add(1).min(i32::MAX as u128) as i32
+                })
             };
 
             let n = libc::epoll_wait(epoll_fd, events.as_mut_ptr(), events.len() as i32, timeout);

@@ -215,3 +215,6 @@ mod tests {
         assert!(seen.lock().unwrap().contains(&crate::platform::PlatformEvent::Reopen));
     }
 }
+
+/// Wayland launcher tokens do not apply to AppKit.
+pub fn capture_startup_activation() {}
