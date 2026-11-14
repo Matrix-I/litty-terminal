@@ -6,6 +6,7 @@ pub mod monitor;
 pub mod portal;
 pub mod wayland;
 mod wayland_input;
+mod wayland_data;
 mod wayland_text_input;
 pub mod window;
 pub mod x11;

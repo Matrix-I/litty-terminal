@@ -437,6 +437,14 @@ fn connect() -> Result<Client, String> {
     Ok(Client { conn, qh, xdg, viewporter, fractional, queue: Mutex::new((queue, state)) })
 }
 
+/// The clipboard queue hands off a drop on its own data device: GNOME
+/// routes DnD to the last bound device, so binding another would compete.
+pub fn receive_file_drop(conn: Connection, offer: smithay_clipboard::DndOffer) {
+    let Some(client) = connected() else { offer.destroy(); return; };
+    let target = client.queue.lock().1.window(&offer.surface);
+    super::wayland_data::receive_drop(conn, offer, target.as_ref().map(Arc::downgrade).unwrap_or_default());
+}
+
 /// Xlib exits the process when its connection breaks; do the same, saying why.
 fn connection_lost(err: impl std::fmt::Display) -> ! {
     eprintln!("litty: lost the connection to the Wayland compositor: {err}");
