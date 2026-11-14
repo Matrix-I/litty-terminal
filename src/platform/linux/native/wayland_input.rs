@@ -20,7 +20,7 @@ use smithay_client_toolkit::shm::{Shm, ShmHandler};
 
 use super::events::{HeldKeys, LinuxRawEvent, convert_linux_key, convert_raw_event};
 use super::wayland::{State, WindowShared};
-use super::xkb::{Keymap, fallback_mods};
+use super::xkb::{Keymap, fallback_mods, replace_keymap};
 use crate::platform::gui::{CursorIcon, PhysicalPosition, ScrollDelta, TouchPhase, WindowEvent};
 use crate::platform::input::{Key, KeyInput, Mods, NamedKey};
 
@@ -234,7 +234,7 @@ impl State {
         match event {
             wl_keyboard::Event::Keymap { format, fd, size } => {
                 let kb = &mut self.keyboards[index];
-                kb.keymap = match format {
+                let keymap = match format {
                     WEnum::Value(wl_keyboard::KeymapFormat::XkbV1) => match Keymap::from_fd(&fd, size) {
                         Ok(keymap) => keymap,
                         Err(e) => {
@@ -245,6 +245,7 @@ impl State {
                     // `no_keymap`: the compositor offers none; keys are evdev codes.
                     _ => None,
                 };
+                replace_keymap(&mut kb.keymap, keymap);
             }
             wl_keyboard::Event::Enter { surface, serial, .. } => {
                 self.activation_input = Some(super::wayland_activation::InputGrant::new(self.keyboards[index].seat.clone(), surface.clone(), serial));

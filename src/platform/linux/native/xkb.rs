@@ -34,6 +34,18 @@ pub struct Keymap {
 // thread-local state; the dispatch lock serializes every use.
 unsafe impl Send for Keymap {}
 
+/// Compose consumes keysyms, so its in-progress sequence survives keycode map
+/// changes (KWin temporarily swaps maps for injected keysyms). A missing map
+/// drops the sequence; focus loss and shortcuts still reset it explicitly.
+pub(super) fn replace_keymap(current: &mut Option<Keymap>, mut next: Option<Keymap>) {
+    if let (Some(previous), Some(replacement)) = (current.as_mut(), next.as_mut())
+        && let Some(compose) = previous.compose.take()
+    {
+        replacement.compose = Some(compose);
+    }
+    *current = next;
+}
+
 /// libxkbcommon, or `None` (reported once) when it is not installed.
 fn library() -> Option<&'static XkbCommon> {
     let lib = xkbcommon_dl::xkbcommon_option();
@@ -347,6 +359,57 @@ pub fn fallback_mods(depressed: u32, latched: u32, locked: u32) -> Mods {
 mod tests {
     use super::*;
     use crate::platform::input::{KeyCode, NamedKey, PhysicalKey};
+
+    #[test]
+    fn dead_key_survives_keymap_swap() {
+        let Some(german) = keymap(c"de") else { return };
+        let Some(us) = keymap(c"us") else { return };
+        let mut current = Some(german);
+        assert_eq!(current.as_mut().unwrap().compose(13), Some(String::new()));
+        replace_keymap(&mut current, Some(us));
+        assert_eq!(current.as_mut().unwrap().compose(18), Some("é".into()));
+    }
+
+    #[test]
+    fn compose_survives_multiple_keymap_swaps() {
+        let Some(menu) = keymap_with(c"us", c"compose:menu") else { return };
+        let Some(german) = keymap(c"de") else { return };
+        let Some(us) = keymap(c"us") else { return };
+        let mut current = Some(menu);
+        assert_eq!(current.as_mut().unwrap().compose(127), Some(String::new()));
+        replace_keymap(&mut current, Some(german));
+        assert_eq!(current.as_mut().unwrap().compose(24), Some(String::new()));
+        replace_keymap(&mut current, Some(us));
+        assert_eq!(current.as_mut().unwrap().compose(46), Some("©".into()));
+    }
+
+    #[test]
+    fn keymap_swaps_still_allow_focus_and_shortcuts_to_cancel_composition() {
+        let Some(german) = keymap(c"de") else { return };
+        let Some(us) = keymap(c"us") else { return };
+        let mut current = Some(german);
+        current.as_mut().unwrap().compose(13);
+        replace_keymap(&mut current, Some(us));
+        let current = current.as_mut().unwrap();
+        current.reset_compose();
+        assert_eq!(current.compose(18), None, "focus loss cancels after a swap");
+        current.compose.as_mut().unwrap().feed(xkbcommon_dl::keysyms::dead_acute);
+        current.update_mask(CTRL, 0, 0, 0);
+        assert_eq!(current.compose(KEY_C), None, "Ctrl+C cancels after a swap");
+        current.update_mask(0, 0, 0, 0);
+        assert_eq!(current.compose(18), None);
+    }
+
+    #[test]
+    fn missing_keymap_cancels_composition_before_a_later_map() {
+        let Some(german) = keymap(c"de") else { return };
+        let Some(us) = keymap(c"us") else { return };
+        let mut current = Some(german);
+        current.as_mut().unwrap().compose(13);
+        replace_keymap(&mut current, None);
+        replace_keymap(&mut current, Some(us));
+        assert_eq!(current.as_mut().unwrap().compose(18), None);
+    }
 
     #[test]
     fn dead_keys_and_compose_commit_unicode_and_reset() {

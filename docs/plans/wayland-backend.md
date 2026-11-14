@@ -119,8 +119,9 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    in a live GNOME session (temporary input-engine selection is restored).
    Headless KWin also enables text-input-v3 on focus, without injected text.
    Live KDE also passed Unikey Telex through text-input-v3, plus dead keys
-   and Compose with stable physical keycodes. Portal keysym injection swaps
-   keymaps and does not preserve composition. Candidate popup appearance and
+   and Compose with stable physical keycodes. A follow-up fix preserves Compose
+   state across keymap replacements; KDE portal keysym injection now also
+   passes (`é`, `©`), with regression tests. Candidate popup appearance and
    live wlroots IME composition remain unchecked.*
    `zwp_text_input_v3`: preedit drawn as on X11 (XIM),
    commit, and the cursor rectangle for the candidate window. Checked
@@ -212,8 +213,11 @@ items below still prevent declaring full backend acceptance.
 - [x] KWin live scale changes on the physical KDE panel; the older headless
   output-tool failure does not apply to this later live check.
 - [ ] Physical mixed-DPI monitors and cursor fallback scaling.
-- [ ] Composition across portal keysym injection/keymap swaps; stable
-  physical-keycode composition passed.
+- [x] Reproduce composition failure across portal keysym/keymap swaps
+  (`e`/`oc` instead of `é`/`©`); stable physical-keycode composition passed.
+- [x] Preserve composition across valid keymap swaps, add four regression
+  tests and pass the exact KDE portal keysym reproduction twice per sequence.
+  Focus/shortcut resets and missing-keymap cancellation remain tested.
 - [ ] Slow/GPU-stall behavior, hardware GPU validation and macOS closed-window
   memory measurements; Linux RSS does not establish macOS footprint budgets.
 - [ ] Complete platform API/no-op coverage audit against the acceptance rule:

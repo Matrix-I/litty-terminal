@@ -166,9 +166,11 @@ harnesses are in `/tmp/litty-kwin-validation` on the test host.
 - [ ] Hand-dragged client title bar and resize edges, window buttons, maximize,
   fullscreen and close behavior on each compositor.
 - [x] Dead keys and Compose with stable physical keycodes on live KDE.
-- [ ] Candidate popup appearance and position after zoom/resize/scale changes,
-  preedit reset and composition across synthetic keymap swaps. The portal
-  keysym attempt did not compose; the stable-keycode tests passed separately.
+- [x] Fix reproduced composition loss across synthetic keymap swaps. The
+  initial portal attempt yielded `e`/`oc`; the patched native client gives
+  `é`/`©` in the exact KDE reproduction, with four new regression tests.
+- [ ] Candidate popup appearance/position after zoom/resize/scale changes
+  and manual preedit reset acceptance.
 - [x] Real Dolphin multi-file drops on KDE, including Unicode/quotes/spaces
   and Copy source retention. Other file-manager/compositor combinations
   remain outside this evidence.
