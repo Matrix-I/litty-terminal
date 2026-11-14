@@ -43,8 +43,9 @@ latency/idle RAM limits. Keep those manual roadmap checks separate.
   gestures, window/workspace state and live output scaling. Temporary input
   used the standard Remote Desktop portal, not the GNOME-specific API.
 - [ ] Live sway IME/data transfer, candidate popup visuals, physical input and
-  mixed-DPI display checks remain open. Composition across synthetic portal
-  keysym/keymap swaps also remains limited.
+  mixed-DPI display checks remain open.
+- [x] Composition across synthetic KDE keysym/keymap swaps is fixed: four
+  new unit regressions and the exact live portal reproduction pass.
 
 See the [integrated report](../../docs/validation/wayland-integrated-2026-11-14.md)
 for the exact tested revision, environment failures/retries and acceptance scope.

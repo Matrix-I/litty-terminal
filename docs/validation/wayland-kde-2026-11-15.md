@@ -8,7 +8,8 @@ source is unchanged from merged backend commit `129dc36`.
 The native client used Vulkan and DMA-BUF buffers. Functional tests used the
 debug build; performance probes used the release build. Temporary configs,
 shells, files and window identities kept the probes separate from normal use.
-No application source was changed.
+No application source was changed during the baseline desktop tests. The
+Compose fix follow-up below records subsequent implementation changes.
 
 ## Passed checks
 
@@ -78,9 +79,9 @@ presentation timestamps or input-to-photon latency.
   Selecting the two test windows explicitly allowed the data checks to pass.
 - Portal keysym injection for dead_acute and Multi_key temporarily swaps
   KWin's keymap. Those sequences produced `e` and `oc`, respectively; Litty's
-  compose state is rebuilt on the map changes. Stable keycode/layout tests
-  passed separately. The keysym-injection case remains a limitation and is
-  not counted as a successful composition test.
+  compose state was rebuilt on the map changes. Stable keycode/layout tests
+  passed separately. This failure was subsequently fixed and the exact
+  keysym-injection case passed in the follow-up below.
 - Initial IME setup omitted KDE configuration notification, so IBus did not
   start. `kwriteconfig6 --notify` started it; a subsequent harness variable
   shadowing error was corrected before the complete Telex pass.
@@ -101,6 +102,35 @@ defaults before removing that file again. KDE's layout API then reported
 Temporary input control and KWin scripts were closed/unloaded. Raw logs and
 temporary harnesses remain under `/tmp/litty-kde-live`; they are not committed.
 
+## Compose keymap replacement fix follow-up
+
+Local fix on `fix/wayland-compose-keymap`, based on `fc374c2`. The dispatcher
+now transfers its existing Compose state into each valid replacement keymap,
+so temporary keycode-map changes cannot discard an in-progress keysym sequence.
+A missing/invalid keymap still drops it; focus loss and Ctrl/Alt/Super shortcuts
+retain their explicit reset behavior. The transfer adds no allocation or I/O.
+
+- [x] Fix the reproduced `e`/`oc` composition failure across portal keymap swaps.
+- [x] Regression first: dead-key and multi-map Compose tests failed before
+  the change, then passed. Additional cases cover focus/shortcut cancellation
+  and dropping composition when no keymap is available.
+- [x] All 20 XKB module tests passed.
+- [x] `cargo check` and `cargo check --target x86_64-unknown-linux-gnu` passed.
+- [x] `cargo test` outside the sandbox: 793 unit and 15 integration tests
+  passed, 17 ignored.
+- [x] `cargo clippy --all-targets -- -D warnings`, `cargo build` and
+  `git diff --check` passed.
+- [x] Live KDE portal keysym reproduction now gives `é` and `©`, each twice.
+  Every sequence logs four `wl_keyboard.keymap` events, proving temporary map
+  replacement was exercised. The native app exits 0 with no protocol errors.
+- [x] The temporary input permission session was closed. This follow-up did
+  not change the desktop's layout or input-method settings.
+
+The live trace/results are `/tmp/litty-kde-live/compose-fix-protocol.log` and
+`compose-fix-output.log`; red/green and full Cargo logs use the
+`/tmp/litty-compose-` prefix. macOS was not built locally for this fix; the
+changed implementation is confined to Linux's private native modules.
+
 ## Still open
 
 - [ ] Candidate popup appearance and placement after zoom/resize/scale
@@ -108,8 +138,6 @@ temporary harnesses remain under `/tmp/litty-kde-live`; they are not committed.
 - [ ] Human physical keyboard, touchpad/high-resolution wheel, window-button
   and visual sharpness/cursor alignment checks.
 - [ ] Physical mixed-DPI monitors, output hotplug and cursor-theme fallback.
-- [ ] Compose sequences delivered through keysym injection and transient
-  keymap swaps; stable physical keycode composition passed above.
 - [ ] Focus-stealing policy and launcher-token behavior on KDE beyond the
   observed hidden attention completion; notification click-through and
   existing-instance token forwarding remain application follow-ups.
