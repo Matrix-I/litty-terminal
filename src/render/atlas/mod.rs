@@ -74,7 +74,7 @@ impl MetricAdjust {
 }
 
 /// Cell size adjustments (width, height), read when the atlas is built.
-static CELL_ADJUST: Mutex<(MetricAdjust, MetricAdjust)> = parking_lot::const_mutex((MetricAdjust::None, MetricAdjust::None));
+static CELL_ADJUST: Mutex<(MetricAdjust, MetricAdjust)> = Mutex::new((MetricAdjust::None, MetricAdjust::None));
 /// `font-thicken`: heavier stems for every rasterized glyph.
 static THICKEN: AtomicBool = AtomicBool::new(false);
 

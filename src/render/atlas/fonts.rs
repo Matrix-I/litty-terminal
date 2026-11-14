@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 use super::system::NativeFont;
 use super::FontSet;
 
-pub(super) static FONT_CACHE: Mutex<Option<(Vec<String>, Arc<FontSet>)>> = parking_lot::const_mutex(None);
+pub(super) static FONT_CACHE: Mutex<Option<(Vec<String>, Arc<FontSet>)>> = Mutex::new(None);
 
 /// Load the primary monospace font and any available symbol/Nerd Font fallbacks.
 ///

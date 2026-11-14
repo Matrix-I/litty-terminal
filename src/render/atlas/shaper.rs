@@ -207,7 +207,7 @@ impl Shaper {
 }
 
 /// `font-feature` values (`-calt`, `ss01`, `liga=0`), read when an atlas is built.
-pub(super) static FONT_FEATURES: Mutex<Vec<FontFeature>> = parking_lot::const_mutex(Vec::new());
+pub(super) static FONT_FEATURES: Mutex<Vec<FontFeature>> = Mutex::new(Vec::new());
 
 /// Parse `font-feature` values (`-calt`, `+calt`, `calt`, `ss01`, `liga=0`, `calt=on`);
 /// unknown syntax is an error.
