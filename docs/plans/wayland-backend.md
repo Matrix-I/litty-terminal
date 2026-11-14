@@ -126,9 +126,24 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    `zwp_text_input_v3`: preedit drawn as on X11 (XIM),
    commit, and the cursor rectangle for the candidate window. Checked
    with IBus Unikey (Telex) under GNOME, as was done for X11.
-6. **Clipboard and drag and drop.** The existing `smithay-clipboard` path
-   on the window's own connection, plus primary selection
-   (`zwp_primary_selection`) and file drops (`wl_data_device`).
+6. **Clipboard and drag and drop.** *Done 2026-11-14 on
+   `feat/wayland-clipboard`. Clipboard and primary selection
+   use `smithay-clipboard` on the window's own connection. GNOME sends
+   data events to the most recently bound data device, so a local patch
+   of the existing 0.7.3 dependency adds a nonblocking DnD handoff on that
+   same device instead of binding a competing one. The patch and license
+   are in `patches/smithay-clipboard` (see `LITTY_PATCH.md`). Drops accept
+   only `text/uri-list` and Copy: local absolute file URIs are decoded,
+   remote hosts and control characters rejected, and paths delivered to
+   the existing shell-quoted paste path. Workers read outside the event
+   loop/grid lock, bounded to four transfers, 1 MiB, 4096 files and two
+   seconds; finish follows successful EOF/validation, destroy always
+   follows handoff. Checked on GNOME with a GTK4 peer: clipboard and
+   primary selection in both directions, plus two consecutive two-file
+   drops with spaces, quotes and Vietnamese in the names (Copy completion
+   and a clean exit with no protocol errors). `scripts/linux/wayland_data_smoke.py`
+   reproduces the live desktop checks. Not yet checked: KDE/wlroots data
+   transfer and real file-manager drops (GTK4 is the tested source).*
 7. **Occlusion and activation.** The compositor stops sending frame
    callbacks to a hidden window (minimized, covered, or on another
    workspace); `Occluded` follows them, as on macOS. `xdg_activation_v1` for
