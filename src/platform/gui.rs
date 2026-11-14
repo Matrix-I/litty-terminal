@@ -555,6 +555,18 @@ impl Window {
         }
     }
 
+    /// Whether the window system draws this window's frame and title bar,
+    /// whatever the spec asked for.
+    pub fn server_decorations(&self) -> bool {
+        match &self.0 {
+            // The system's title bar, made transparent.
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(_) => true,
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.server_decorations(),
+        }
+    }
+
     pub fn current_monitor(&self) -> Option<Monitor> {
         match &self.0 {
             #[cfg(target_os = "macos")]
@@ -637,6 +649,10 @@ pub enum WindowEvent {
     RedrawRequested,
     /// The window manager maximized, restored or fullscreened the window.
     StateChanged { maximized: bool, fullscreen: bool },
+    /// The window system now draws the window's frame (`true`) or leaves it
+    /// to the app (`false`). Wayland compositors decide per window (sway
+    /// frames tiled windows even when asked not to).
+    ServerDecorations(bool),
 }
 
 // ---- Event loop -------------------------------------------------------------

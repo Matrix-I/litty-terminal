@@ -87,10 +87,43 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    (integer `wl_output.scale` as the fallback), with monitor lookup for
    `current_monitor` and refresh rates. Centering new windows does not
    apply: Wayland clients cannot place their own windows.
-4. **Decorations.** `xdg-decoration` where the compositor offers server
-   side decorations; otherwise Litty's own title bar with move
+4. **Decorations.** *Done 2026-11-14 on `feat/wayland-decorations`.
+   Decision taken (2026-11-14): Litty's own title bar everywhere, as on
+   X11, so Wayland windows ask for client-side decorations; where the
+   compositor frames the window anyway (sway does for tiled windows, and
+   hands floating ones back) the app drops its title band, rounded
+   corners and resize edges, and brings them back when the frame is
+   handed back (`WindowEvent::ServerDecorations`). Moving and resizing
+   use `xdg_toplevel.move` and `resize` with the seat and serial of the
+   last button press on the window. Checked on headless sway (25 rows
+   tiled, 23 floating, 25 again). Not yet: a move or resize dragged by
+   hand (no virtual pointer here holds a button down), the compositor's
+   window menu (`show_window_menu`, not on X11 either), and tiled states
+   (`tiled_left` and so on) for corners and edges.* Originally:
+   `xdg-decoration` where the compositor offers server side decorations; otherwise Litty's own title bar with move
    (`xdg_toplevel.move`), resize edges, and window buttons.
-5. **Text input.** `zwp_text_input_v3`: preedit drawn as on X11 (XIM),
+5. **Text input.** *Done 2026-11-14 on
+   `feat/wayland-text-input`.
+   One optional `zwp_text_input_v3` per seat, enabled only on the focused
+   editable surface; preedit/commit applied atomically at `done`, reset
+   on leave/disable. Candidate rectangles convert buffer pixels to
+   surface-local logical pixels, including fractional scales. Content
+   purpose is terminal; surrounding text/deletion is not advertised
+   because the shell owns the editable line. The existing shared IME API
+   draws preedit without representing its internal selection. Dead keys
+   and Compose use libxkbcommon's locale table, with Ctrl/Alt/Super
+   shortcuts bypassing it and focus loss resetting it. Unit tests cover
+   Unicode composition, reset, shortcuts, commit/preedit ordering and
+   fractional candidate rectangles. The app caches pixel geometry rather
+   than just the grid cell, so zoom, scale and title-band changes refresh
+   the candidate rectangle too. Checked on GNOME: text-input-v3 bind,
+   enter, enable, terminal purpose, cursor rectangle, done and leave;
+   IBus Unikey Telex `tieengs vieetj` arrives at the PTY as `tiếng việt`,
+   with preedit/commit through v3 and a clean process exit. Reproduce with
+   `/usr/bin/python3 scripts/linux/wayland_text_input_smoke.py --telex`
+   in a live GNOME session (temporary input-engine selection is restored).
+   Not yet checked: candidate popup appearance, KDE/wlroots IME.*
+   `zwp_text_input_v3`: preedit drawn as on X11 (XIM),
    commit, and the cursor rectangle for the candidate window. Checked
    with IBus Unikey (Telex) under GNOME, as was done for X11.
 6. **Clipboard and drag and drop.** The existing `smithay-clipboard` path

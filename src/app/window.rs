@@ -78,7 +78,7 @@ fn build_window(
 
     // Linux draws its own title bar in the terminal's colors (the native frame
     // cannot be recolored); macOS makes its native title bar transparent instead.
-    let csd = cfg!(target_os = "linux");
+    let own_frame = cfg!(target_os = "linux");
     let (inner_size, position) = match adopt.as_ref() {
         // A torn-off tab keeps the size of its old window, so its grids do not reflow.
         Some(torn) => (torn.size, torn.position),
@@ -86,13 +86,16 @@ fn build_window(
     };
     let spec = WindowSpec {
         title: "Litty",
-        decorations: !csd,
+        decorations: !own_frame,
         visible: true,
-        transparent: cfg.background_opacity < 1.0 || csd,
+        transparent: cfg.background_opacity < 1.0 || own_frame,
         inner_size,
         position,
     };
     let window = Arc::new(event_loop.create_window(&spec)?);
+    // A Wayland compositor may frame the window anyway (sway does for tiled
+    // ones); a second title bar inside its frame would only waste a row.
+    let csd = own_frame && !window.server_decorations();
     platform::init_clipboard(&window);
     platform::set_tabbing_allowed(&window, false);
     window.set_visible(true);
@@ -200,7 +203,7 @@ fn build_window(
         history_search: HistorySearch::new(waker.clone()),
         search: SearchBar::new(),
         first_frame: true,
-        ime: ImeState { preedit: String::new(), cursor_cell: None },
+        ime: ImeState { preedit: String::new(), cursor_area: None },
         sync_pending: false,
         winch: super::winch::WinchResignal::default(),
         background_resize: super::winch::BackgroundResize::default(),
@@ -556,11 +559,10 @@ pub(super) fn render_active(s: &mut State) {
         let (cx, cy) = p.grid.lock().cursor_pos()?;
         Some((p.rect.row + cy, p.rect.col + cx))
     });
-    if cursor_cell.is_some() && cursor_cell != s.ime.cursor_cell {
-        s.ime.cursor_cell = cursor_cell;
-        if let Some((row, col)) = cursor_cell {
-            let (x, y) = s.renderer.cell_origin_px(row, col, bands);
-            let (cw, ch) = s.renderer.cell_size();
+    if let Some((row, col)) = cursor_cell {
+        let (x, y) = s.renderer.cell_origin_px(row, col, bands);
+        let (cw, ch) = s.renderer.cell_size();
+        if s.ime.cursor_area_changed([x, y, cw as f64, ch as f64]) {
             s.window.set_ime_cursor_area(PhysicalPosition::new(x, y), PhysicalSize::new(cw as f64, ch as f64));
         }
     }

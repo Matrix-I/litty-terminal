@@ -4,7 +4,8 @@
 //! window, Vulkan surface, configure and resize, close, title and app id,
 //! and frame callbacks pacing redraws; keyboard and pointer input (phase 2)
 //! live in [`super::wayland_input`]; scale and outputs (phase 3) here.
-//! Decorations, text input, occlusion and activation are later phases;
+//! Text input (phase 5) lives in [`super::wayland_text_input`]; occlusion
+//! and activation are later phases;
 //! until they land the backend is opt-in (`LITTY_BACKEND=wayland`).
 //!
 //! Scale: a window draws its buffer at `logical size × scale` and shows it
@@ -25,7 +26,8 @@ use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
 use smithay_client_toolkit::output::{Mode, OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::client::backend::{ObjectId, ReadEventsGuard, WaylandError};
 use smithay_client_toolkit::reexports::client::globals::registry_queue_init;
-use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_surface};
+use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_seat, wl_surface};
+use smithay_client_toolkit::reexports::protocols::xdg::shell::client::xdg_toplevel::ResizeEdge;
 use smithay_client_toolkit::reexports::client::{delegate_noop, Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use smithay_client_toolkit::reexports::protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
@@ -36,7 +38,7 @@ use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::SeatState;
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::xdg::XdgShell;
-use smithay_client_toolkit::shell::xdg::window::{Window, WindowConfigure, WindowDecorations, WindowHandler};
+use smithay_client_toolkit::shell::xdg::window::{DecorationMode, Window, WindowConfigure, WindowDecorations, WindowHandler};
 use smithay_client_toolkit::shm::Shm;
 use smithay_client_toolkit::{
     delegate_compositor, delegate_output, delegate_pointer, delegate_registry, delegate_seat, delegate_shm,
@@ -44,7 +46,9 @@ use smithay_client_toolkit::{
 };
 
 use super::wayland_input::{Cursor, KeyRepeat, Keyboard, Pointer, RepeatTimer};
-use crate::platform::gui::{CursorIcon, Monitor, PhysicalPosition, PhysicalSize, RawHandle, WindowEvent, WindowId, WindowSpec};
+use crate::platform::gui::{
+    CursorIcon, Monitor, PhysicalPosition, PhysicalSize, RawHandle, ResizeDirection, Unsupported, WindowEvent, WindowId, WindowSpec,
+};
 
 /// Matches the `.desktop` file, so the shell shows Litty's name and icon.
 const APP_ID: &str = "litty";
@@ -146,6 +150,9 @@ struct Configure {
     maximized: bool,
     fullscreen: bool,
     activated: bool,
+    /// The compositor draws the frame (`xdg-decoration` server side).
+    /// Without the protocol (GNOME) it never does.
+    server_decorations: bool,
 }
 
 impl From<&WindowConfigure> for Configure {
@@ -156,6 +163,7 @@ impl From<&WindowConfigure> for Configure {
             maximized: c.is_maximized(),
             fullscreen: c.is_fullscreen(),
             activated: c.is_activated(),
+            server_decorations: c.decoration_mode == DecorationMode::Server,
         }
     }
 }
@@ -204,11 +212,13 @@ struct Reported {
     maximized: bool,
     fullscreen: bool,
     activated: bool,
+    server_decorations: bool,
 }
 
 impl Reported {
-    /// A window of `logical` size at scale 1 until the compositor says more.
-    fn new(logical: (u32, u32), viewport: bool) -> Self {
+    /// A window of `logical` size at scale 1 until the compositor says
+    /// more, framed as it asked (`server_decorations`) until then too.
+    fn new(logical: (u32, u32), viewport: bool, server_decorations: bool) -> Self {
         Self {
             logical,
             source: ScaleSource { viewport, fractional: None, integer: 1 },
@@ -217,26 +227,28 @@ impl Reported {
             maximized: false,
             fullscreen: false,
             activated: false,
+            server_decorations,
         }
     }
 
     /// The compositor's preferred fractional scale, in 120ths.
     fn set_fractional(&mut self, scale_120: u32, out: &mut Vec<WindowEvent>) {
         self.source.fractional = Some(scale_120);
-        self.rescale(out);
+        self.rescale(out, false);
     }
 
     /// sctk's integer scale for the surface.
     fn set_integer(&mut self, factor: i32, out: &mut Vec<WindowEvent>) {
         self.source.integer = factor;
-        self.rescale(out);
+        self.rescale(out, false);
     }
 
     /// A new scale is one event, which carries the new buffer size along
     /// (`NativeWindow::observe` reads it back): a `Resized` before it would
     /// size the terminal for the old font first, sending the shell a
-    /// wrong SIGWINCH.
-    fn rescale(&mut self, out: &mut Vec<WindowEvent>) {
+    /// wrong SIGWINCH. `quiet` leaves a new size to another event that
+    /// carries it the same way.
+    fn rescale(&mut self, out: &mut Vec<WindowEvent>, quiet: bool) {
         let scale = self.source.factor();
         let size = PhysicalSize::new(scaled(self.logical.0, scale), scaled(self.logical.1, scale));
         let resized = size != self.size;
@@ -244,16 +256,19 @@ impl Reported {
         if scale != self.scale {
             self.scale = scale;
             out.push(WindowEvent::ScaleFactorChanged(scale));
-        } else if resized {
+        } else if resized && !quiet {
             out.push(WindowEvent::Resized(size));
         }
     }
 
     /// Apply a configure (sizes in logical pixels), appending an event for
-    /// each change.
+    /// each change. A frame handed over or back carries the new size too
+    /// (sway resizes as it floats or tiles a window), so the terminal is
+    /// laid out once, for the right title band.
     fn apply(&mut self, c: Configure, out: &mut Vec<WindowEvent>) {
         self.logical = (c.width.unwrap_or(self.logical.0), c.height.unwrap_or(self.logical.1));
-        self.rescale(out);
+        let decorations = c.server_decorations != self.server_decorations;
+        self.rescale(out, decorations);
         if (c.maximized, c.fullscreen) != (self.maximized, self.fullscreen) {
             (self.maximized, self.fullscreen) = (c.maximized, c.fullscreen);
             out.push(WindowEvent::StateChanged { maximized: c.maximized, fullscreen: c.fullscreen });
@@ -261,6 +276,10 @@ impl Reported {
         if c.activated != self.activated {
             self.activated = c.activated;
             out.push(WindowEvent::Focused(c.activated));
+        }
+        if decorations {
+            self.server_decorations = c.server_decorations;
+            out.push(WindowEvent::ServerDecorations(c.server_decorations));
         }
     }
 }
@@ -283,12 +302,31 @@ pub(super) struct SharedState {
     outputs: Vec<wl_output::WlOutput>,
     /// The viewport destination last committed.
     viewport_size: Option<(u32, u32)>,
+    /// The seat and serial of the last button press on the window: a move
+    /// or resize the compositor starts must name the press it follows.
+    pub(super) ime_allowed: bool,
+    pub(super) ime_rect: (PhysicalPosition<f64>, PhysicalSize<f64>),
+    pub(super) grab: Option<(wl_seat::WlSeat, u32)>,
 }
 
 impl SharedState {
     /// Buffer pixels per logical pixel: pointer positions arrive logical.
     pub(super) fn scale(&self) -> f64 {
         self.reported.scale
+    }
+}
+
+/// The `xdg_toplevel` edge a resize starts from.
+fn resize_edge(direction: ResizeDirection) -> ResizeEdge {
+    match direction {
+        ResizeDirection::North => ResizeEdge::Top,
+        ResizeDirection::South => ResizeEdge::Bottom,
+        ResizeDirection::East => ResizeEdge::Right,
+        ResizeDirection::West => ResizeEdge::Left,
+        ResizeDirection::NorthEast => ResizeEdge::TopRight,
+        ResizeDirection::NorthWest => ResizeEdge::TopLeft,
+        ResizeDirection::SouthEast => ResizeEdge::BottomRight,
+        ResizeDirection::SouthWest => ResizeEdge::BottomLeft,
     }
 }
 
@@ -329,6 +367,8 @@ pub(super) struct State {
     /// `None` when no timerfd could be made: keys then do not repeat.
     pub(super) repeat_timer: Option<RepeatTimer>,
     windows: Vec<(ObjectId, Weak<WindowShared>)>,
+    pub(super) text_inputs: Vec<super::wayland_text_input::TextInput>,
+    pub(super) text_manager: Option<super::wayland_text_input::Manager>,
 }
 
 impl State {
@@ -373,7 +413,7 @@ fn connect() -> Result<Client, String> {
     let viewporter = globals.bind(&qh, 1..=1, ()).ok();
     let fractional = globals.bind(&qh, 1..=1, ()).ok();
     let repeat_timer = RepeatTimer::new().map_err(|e| eprintln!("litty: {e}; keys do not repeat")).ok();
-    let state = State {
+    let mut state = State {
         registry: RegistryState::new(&globals),
         outputs: OutputState::new(&globals, &qh),
         seats: SeatState::new(&globals, &qh),
@@ -384,7 +424,12 @@ fn connect() -> Result<Client, String> {
         repeat: KeyRepeat::default(),
         repeat_timer,
         windows: Vec::new(),
+        text_inputs: Vec::new(),
+        text_manager: globals.bind(&qh, 1..=1, ()).ok(),
     };
+    for seat in state.seats.seats() {
+        state.add_text_input(&qh, seat);
+    }
     super::app::register_wayland_fd(conn.backend().poll_fd().as_raw_fd());
     if let Some(timer) = &state.repeat_timer {
         super::app::register_key_repeat_fd(timer.fd());
@@ -507,10 +552,13 @@ impl WaylandWindow {
             state: Mutex::new(SharedState {
                 events: Vec::new(),
                 pacer: FramePacer::default(),
-                reported: Reported::new(logical, client.viewporter.is_some()),
+                reported: Reported::new(logical, client.viewporter.is_some(), spec.decorations),
                 cursor: Cursor::default(),
                 outputs: Vec::new(),
                 viewport_size: None,
+                grab: None,
+                ime_allowed: false,
+                ime_rect: (PhysicalPosition::new(0.0, 0.0), PhysicalSize::new(1.0, 1.0)),
             }),
         });
         let surface = window.wl_surface();
@@ -539,6 +587,22 @@ impl WaylandWindow {
         Ok(Self(Arc::new(WaylandWindowInner { scaling, window, shared, client })))
     }
 
+    pub fn set_ime_allowed(&self, allowed: bool) {
+        let mut guard = self.0.client.queue.lock();
+        self.0.shared.state.lock().ime_allowed = allowed;
+        for input in &mut guard.1.text_inputs {
+            input.update(&self.0.shared);
+        }
+    }
+
+    pub fn set_ime_cursor_area(&self, position: PhysicalPosition<f64>, size: PhysicalSize<f64>) {
+        let mut guard = self.0.client.queue.lock();
+        self.0.shared.state.lock().ime_rect = (position, size);
+        for input in &mut guard.1.text_inputs {
+            input.update(&self.0.shared);
+        }
+    }
+
     /// The buffer size: the configured (or requested) size times the scale.
     pub fn inner_size(&self) -> PhysicalSize<u32> {
         self.0.shared.state.lock().reported.size
@@ -546,6 +610,26 @@ impl WaylandWindow {
 
     pub fn scale_factor(&self) -> f64 {
         self.0.shared.state.lock().reported.scale
+    }
+
+    /// Whether the compositor draws the frame (as configured so far).
+    pub fn server_decorations(&self) -> bool {
+        self.0.shared.state.lock().reported.server_decorations
+    }
+
+    /// `xdg_toplevel.move` for the last press on the window. The
+    /// compositor ignores it unless the button is still down.
+    pub fn drag_window(&self) -> Result<(), Unsupported> {
+        let (seat, serial) = self.0.shared.state.lock().grab.clone().ok_or(Unsupported)?;
+        self.0.window.move_(&seat, serial);
+        Ok(())
+    }
+
+    /// `xdg_toplevel.resize` from `direction`'s edge, for the last press.
+    pub fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), Unsupported> {
+        let (seat, serial) = self.0.shared.state.lock().grab.clone().ok_or(Unsupported)?;
+        self.0.window.resize(&seat, serial, resize_edge(direction));
+        Ok(())
     }
 
     /// The output the window entered last that the compositor still
@@ -838,11 +922,59 @@ mod tests {
     }
 
     fn reported(w: u32, h: u32) -> Reported {
-        Reported::new((w, h), true)
+        Reported::new((w, h), true, false)
     }
 
     fn configure(width: Option<u32>, height: Option<u32>) -> Configure {
-        Configure { width, height, maximized: false, fullscreen: false, activated: false }
+        Configure { width, height, maximized: false, fullscreen: false, activated: false, server_decorations: false }
+    }
+
+    /// Asked for its own frame, a window that the compositor frames anyway
+    /// (sway, tiled) hears so once, and again when the frame is handed back.
+    #[test]
+    fn forced_server_decorations_are_reported_on_change() {
+        let mut r = reported(800, 600);
+        let mut out = Vec::new();
+        let framed = Configure { server_decorations: true, ..configure(None, None) };
+        r.apply(framed, &mut out);
+        assert!(matches!(out[..], [WindowEvent::ServerDecorations(true)]), "{out:?}");
+        out.clear();
+        r.apply(framed, &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        r.apply(configure(None, None), &mut out);
+        assert!(matches!(out[..], [WindowEvent::ServerDecorations(false)]), "{out:?}");
+    }
+
+    /// Floating a tiled window on sway hands the frame back and resizes it
+    /// in one configure: one event, carrying the size, not a `Resized`
+    /// that would lay the terminal out for the old title band first.
+    #[test]
+    fn a_frame_change_carries_the_new_size() {
+        let mut r = reported(1024, 640);
+        let mut out = Vec::new();
+        r.apply(Configure { server_decorations: true, ..configure(Some(800), Some(500)) }, &mut out);
+        assert!(matches!(out[..], [WindowEvent::ServerDecorations(true)]), "{out:?}");
+        assert_eq!(r.size, PhysicalSize::new(800, 500));
+    }
+
+    /// Each of Litty's resize edges starts the compositor's resize from the
+    /// same edge; a swapped axis would grow the window the wrong way.
+    #[test]
+    fn resize_directions_map_to_their_edges() {
+        use ResizeDirection::*;
+        let pairs = [
+            (North, ResizeEdge::Top),
+            (South, ResizeEdge::Bottom),
+            (East, ResizeEdge::Right),
+            (West, ResizeEdge::Left),
+            (NorthEast, ResizeEdge::TopRight),
+            (NorthWest, ResizeEdge::TopLeft),
+            (SouthEast, ResizeEdge::BottomRight),
+            (SouthWest, ResizeEdge::BottomLeft),
+        ];
+        for (direction, edge) in pairs {
+            assert_eq!(resize_edge(direction), edge, "{direction:?}");
+        }
     }
 
     /// No size from the compositor keeps the window's own; nothing changes,
@@ -871,7 +1003,7 @@ mod tests {
     fn configure_reports_state_and_focus_changes_once() {
         let mut r = reported(800, 600);
         let mut out = Vec::new();
-        let max = Configure { width: Some(1920), height: Some(1080), maximized: true, fullscreen: false, activated: true };
+        let max = Configure { width: Some(1920), height: Some(1080), maximized: true, activated: true, ..configure(None, None) };
         r.apply(max, &mut out);
         assert!(
             matches!(
@@ -950,7 +1082,7 @@ mod tests {
     /// window stays at scale 1 and the compositor upscales it.
     #[test]
     fn without_a_viewport_the_scale_stays_one() {
-        let mut r = Reported::new((800, 600), false);
+        let mut r = Reported::new((800, 600), false, false);
         let mut out = Vec::new();
         r.set_fractional(240, &mut out);
         r.set_integer(2, &mut out);

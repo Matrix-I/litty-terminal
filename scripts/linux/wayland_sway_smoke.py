@@ -13,7 +13,11 @@ it reads from the terminal:
 - pointer: a new pointer is bound with a `wp_cursor_shape_v1` device and
   released when it goes away (the cursor on enter is checked by hand);
 - scale: at 150% the window gets the fractional scale, keeps its logical
-  size through a viewport and draws a buffer 1.5 times that size.
+  size through a viewport and draws a buffer 1.5 times that size;
+- decorations: sway frames tiled windows itself (`xdg-decoration` server
+  side) and leaves floating ones to the client, so Litty's own title band
+  must come and go with it: the terminal loses rows when the window floats
+  and gets them back when it is tiled again.
 """
 import os
 import pathlib
@@ -57,13 +61,17 @@ def main():
             'auto-update = off\nshell-integration = none\nconfirm-close-surface = false\n')
         runtime = root / 'runtime'
         runtime.mkdir(mode=0o700)
-        ready, quit_flag, typed = root / 'ready', root / 'quit', root / 'typed'
+        ready, quit_flag, typed, sizes = root / 'ready', root / 'quit', root / 'typed', root / 'sizes'
         shell = root / 'probe-shell'
-        # Records three lines from the terminal, then waits to be told to exit.
-        shell.write_text(f'''#!/bin/sh
+        # Records the lines typed into the terminal and its size ("rows cols")
+        # at start and on every resize, until told to exit.
+        shell.write_text(f'''#!/bin/bash
+trap "stty size >> '{sizes}'" WINCH
+stty size >> '{sizes}'
 : > '{ready}'
-for _ in 1 2 3; do IFS= read -r line; printf '%s\\n' "$line" >> '{typed}'; done
-while [ ! -e '{quit_flag}' ]; do sleep 0.1; done
+while [ ! -e '{quit_flag}' ]; do
+    IFS= read -r -t 0.2 line && printf '%s\\n' "$line" >> '{typed}'
+done
 ''')
         shell.chmod(0o700)
         config = root / 'sway.conf'
@@ -167,6 +175,43 @@ while [ ! -e '{quit_flag}' ]; do sleep 0.1; done
 
             wait_for(lambda: last_buffer(protocol()[scaled_at:]), lambda size: size == expected, f'a {expected[0]}x{expected[1]} buffer')
             print(f'PASS Wayland window at 150% shows {logical[0]}x{logical[1]} with a {expected[0]}x{expected[1]} buffer', flush=True)
+
+            def terminal_sizes():
+                return [tuple(map(int, line.split())) for line in sizes.read_text().splitlines()] if sizes.exists() else []
+
+            def decorations_after(start):
+                return re.findall(r'zxdg_toplevel_decoration_v1#\d+\.configure\((\d)\)', protocol()[start:])
+
+            def configured_size():
+                return re.findall(r'xdg_toplevel#\d+\.configure\((\d+), (\d+),', protocol())[-1]
+
+            # Litty asks to draw its own frame; tiled, sway draws it anyway.
+            assert decorations_after(0)[:1] == ['2'], decorations_after(0)
+            tiled = terminal_sizes()[-1]
+
+            def floating(enable, mode, rows):
+                start = len(protocol())
+                seen = len(terminal_sizes())
+                subprocess.run(['swaymsg', '-s', str(ipc), '[app_id=litty]', 'floating', 'enable' if enable else 'disable'],
+                               env=env, check=True, timeout=20, stdout=subprocess.DEVNULL)
+                wait_for(lambda: decorations_after(start), lambda modes: mode in modes, f'decoration mode {mode}')
+                # Sway hands the frame back only from a committed state: a
+                # toggle before Litty commits the acked configure gets no new
+                # mode. A person cannot toggle that fast; the smoke can.
+                wait_for(lambda: protocol()[start:],
+                         lambda log: re.search(r'ack_configure\(\d+\)[\s\S]*wl_surface#\d+\.commit\(\)', log),
+                         'commit after the decoration configure')
+                return wait_for(lambda: terminal_sizes()[seen:], lambda new: new and rows(new[-1][0]), 'terminal resize')[-1]
+
+            # Floating, the window keeps its size here, so the rows it loses
+            # are Litty's title band (two rows with its gap), all at once.
+            tiled_size = configured_size()
+            framed = floating(True, '1', lambda r: r < tiled[0])
+            assert configured_size() == tiled_size, (tiled_size, configured_size())
+            assert framed == (tiled[0] - 2, tiled[1]), (tiled, framed, terminal_sizes())
+            restored = floating(False, '2', lambda r: r == tiled[0])
+            assert restored == tiled, (tiled, restored)
+            print(f'PASS Wayland title band follows the compositor\'s frame ({tiled[0]} rows tiled, {framed[0]} floating)', flush=True)
 
             quit_flag.touch()
             code = app.wait(timeout=20)

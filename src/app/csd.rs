@@ -3,6 +3,7 @@
 //! for free: resize edges and the window-button actions.
 
 use super::state::State;
+use super::window::{refresh_tab_titles, sync_size};
 use crate::render::renderer::WindowControl;
 
 use crate::platform::gui::{CursorIcon, ResizeDirection};
@@ -81,6 +82,29 @@ pub(super) fn update_corner_radius(s: &mut State) {
     let full = s.window.is_maximized() || s.window.is_fullscreen();
     let radius = if s.csd && !full { CORNER_LOGICAL * s.window.scale_factor() } else { 0.0 };
     s.renderer.set_corner_radius(radius as f32);
+}
+
+/// The window system took the frame over (`server` true) or handed it back,
+/// maybe resizing the window as it did: Litty's title bar, rounded corners
+/// and resize edges follow, and the terminal is laid out once for the new
+/// size and band.
+pub(super) fn set_server_decorations(s: &mut State, server: bool) {
+    let size = s.window.inner_size();
+    if size.width > 0 && size.height > 0 {
+        s.renderer.resize(size.width, size.height);
+    }
+    let csd = !server;
+    if s.csd != csd {
+        s.csd = csd;
+        s.renderer.set_titlebar(csd);
+        if std::mem::take(&mut s.pointer.on_edge) {
+            s.window.set_cursor(s.pointer.pointer_icon);
+        }
+        refresh_tab_titles(s);
+    }
+    update_corner_radius(s);
+    sync_size(s);
+    s.window.request_redraw();
 }
 
 pub(super) fn toggle_maximized(s: &State) {
