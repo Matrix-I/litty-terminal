@@ -782,7 +782,7 @@ impl Grid {
                         // VTE invokes OscEnd even for CAN/SUB. Suppress that
                         // callback so cancellation cannot commit a prefix.
                         self.osc_discard = b != 0x07;
-                        parser.advance(self, b);
+                        parser.advance(self, &[b]);
                     }
                     self.osc_discard = false;
                     return;
@@ -801,10 +801,10 @@ impl Grid {
                             // Cancel before dispatch, then consume the rest of
                             // the string. A partial OSC 52 must never succeed.
                             self.osc_discard = true;
-                            parser.advance(self, 0x18);
+                            parser.advance(self, &[0x18]);
                         } else {
                             self.osc_len = Some(len + 1);
-                            parser.advance(self, b);
+                            parser.advance(self, &[b]);
                         }
                     }
                     return;
@@ -824,12 +824,17 @@ impl Grid {
 
         match (self.apc_state, b) {
             (0, 0x1b) => self.apc_state = 1,
-            (0, _) => parser.advance(self, b),
+            (0, _) => {
+                parser.advance(self, &[b]);
+                if matches!(b, 0xC2..=0xF4) {
+                    self.ground = false;
+                }
+            }
             (1, b']') => {
                 self.apc_state = 0;
                 self.apc_start = None;
-                parser.advance(self, 0x1b);
-                parser.advance(self, b']');
+                parser.advance(self, b"\x1b]");
+                self.ground = false;
                 self.osc_len = Some(0);
                 self.osc_discard = false;
                 self.osc_start = Some(std::time::Instant::now());
@@ -842,7 +847,8 @@ impl Grid {
             (1, _) => {
                 self.apc_state = 0;
                 self.apc_start = None;
-                parser.advance(self, 0x1b);
+                parser.advance(self, &[0x1b]);
+                self.ground = false;
                 self.feed_byte(parser, b);
             }
             (2, 0x1b) => self.apc_state = 3,
@@ -874,7 +880,8 @@ impl Grid {
                 self.apc_buf.clear();
                 self.apc_buf.shrink_to_fit();
                 self.apc_start = None;
-                parser.advance(self, 0x1b);
+                parser.advance(self, &[0x1b]);
+                self.ground = false;
                 self.feed_byte(parser, b);
             }
         }

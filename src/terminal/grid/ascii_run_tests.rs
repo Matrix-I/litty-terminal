@@ -175,6 +175,11 @@ fn invalid_utf8_before_an_ascii_run_is_resynchronized_by_vte() {
         data.extend_from_slice(b"abcdefghijklmnopqrstuvwxyz0123456789 more text");
         check_with(20, 5, b"", &data, &CHUNKS);
     }
+    // Truncated UTF-8 interrupted by ESC or a new UTF-8 lead byte flushes U+FFFD
+    // via Perform::print before entering Escape or buffering the new lead byte;
+    // `ground` must remain false for what follows.
+    check_with(20, 5, b"", b"\xf0\x9f\x1b[31mred\x1b[0m", &CHUNKS);
+    check_with(20, 5, b"", b"\xf0\x9f\xc3\xa9plain ascii run", &CHUNKS);
 }
 
 #[test]

@@ -120,9 +120,9 @@ pub struct RenderPipelines {
     pub render_pass_load: u64,
 }
 
-static SHARED_VK: parking_lot::Mutex<Option<(Arc<Device>, Arc<Queue>)>> = parking_lot::const_mutex(None);
+static SHARED_VK: parking_lot::Mutex<Option<(Arc<Device>, Arc<Queue>)>> = parking_lot::Mutex::new(None);
 pub(super) static SHARED_PIPES: parking_lot::Mutex<Option<(TextureFormat, RenderPipelines)>> =
-    parking_lot::const_mutex(None);
+    parking_lot::Mutex::new(None);
 
 /// Bytes of push constants a `custom-shader` pass gets (`postfx::Globals`);
 /// Vulkan guarantees at least 128.
@@ -1454,7 +1454,7 @@ pub fn shared_pipelines(device: &Device, format: TextureFormat) -> RenderPipelin
 /// Offscreen render passes per format, `(format, clear, load)`; at most one
 /// entry per `TextureFormat`, created on first use and kept, like the pipelines.
 static OFFSCREEN_PASSES: parking_lot::Mutex<Vec<(TextureFormat, VkRenderPass, VkRenderPass)>> =
-    parking_lot::const_mutex(Vec::new());
+    parking_lot::Mutex::new(Vec::new());
 
 /// `(clear, load)` render passes for drawing into a `format` render target,
 /// or `None` (reported) when they could not be created.

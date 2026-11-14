@@ -370,25 +370,19 @@ pub fn run_latency_benchmark() -> LatencyMetrics {
 
     // 4KB
     let t0 = Instant::now();
-    for byte in data_4kb.as_bytes() {
-        parser.advance(&mut grid, *byte);
-    }
+    parser.advance(&mut grid, data_4kb.as_bytes());
     let dur_4kb_ms = t0.elapsed().as_secs_f64() * 1000.0;
     println!("      • 4 KB  Config file read : {:>6.3} ms", dur_4kb_ms);
 
     // 64KB
     let t1 = Instant::now();
-    for byte in data_64kb.as_bytes() {
-        parser.advance(&mut grid, *byte);
-    }
+    parser.advance(&mut grid, data_64kb.as_bytes());
     let dur_64kb_ms = t1.elapsed().as_secs_f64() * 1000.0;
     println!("      • 64 KB Source code read : {:>6.3} ms", dur_64kb_ms);
 
     // 1MB
     let t2 = Instant::now();
-    for byte in data_1mb.as_bytes() {
-        parser.advance(&mut grid, *byte);
-    }
+    parser.advance(&mut grid, data_1mb.as_bytes());
     let dur_1mb_ms = t2.elapsed().as_secs_f64() * 1000.0;
     let mb_per_sec = (data_1mb.len() as f64 / (1024.0 * 1024.0)) / (dur_1mb_ms / 1000.0);
     println!("      • 1 MB  Data stream read : {:>6.3} ms ({bold}{:.1} MB/s{reset})", dur_1mb_ms, mb_per_sec);
@@ -580,9 +574,7 @@ pub fn run_render_stress_benchmark(line_count: usize) -> RenderStressMetrics {
 
     for chunk in chunks {
         let t_chunk = Instant::now();
-        for &byte in chunk {
-            parser.advance(&mut grid, byte);
-        }
+        parser.advance(&mut grid, chunk);
         let chunk_dur = t_chunk.elapsed();
         if chunk_dur > Duration::from_millis(16) {
             stall_count += 1;
@@ -608,9 +600,7 @@ pub fn run_render_stress_benchmark(line_count: usize) -> RenderStressMetrics {
     println!("\n  [3] Post-Stress Responsiveness Probe (Unblock / Hang check)...");
     let t_probe = Instant::now();
     let probe_cmd = b"\x1b[2K\rProbe Responsiveness OK\n";
-    for &byte in probe_cmd {
-        parser.advance(&mut grid, byte);
-    }
+    parser.advance(&mut grid, probe_cmd);
     let probe_ms = t_probe.elapsed().as_secs_f64() * 1000.0;
     println!("      • Post-stress reaction : {:>8.3} ms (Instant)", probe_ms);
 
@@ -713,9 +703,7 @@ pub fn run_critical_features_benchmark() -> FeatureMetrics {
     let mut parser = vte::Parser::new();
     for i in 0..5000 {
         let line = format!("Log line {:05} timestamp 2026-10-29 error_code=ERR_{:04} status=CRITICAL\n", i, i % 100);
-        for &b in line.as_bytes() {
-            parser.advance(&mut grid, b);
-        }
+        parser.advance(&mut grid, line.as_bytes());
     }
     let search_data = grid.search_text();
     let regex_pat = crate::terminal::regex_lite::Regex::new(r"ERR_\d{4}").expect("regex");
