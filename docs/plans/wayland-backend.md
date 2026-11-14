@@ -87,8 +87,20 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    (integer `wl_output.scale` as the fallback), with monitor lookup for
    `current_monitor` and refresh rates. Centering new windows does not
    apply: Wayland clients cannot place their own windows.
-4. **Decorations.** `xdg-decoration` where the compositor offers server
-   side decorations; otherwise Litty's own title bar with move
+4. **Decorations.** *Done 2026-11-14 on `feat/wayland-decorations`.
+   Decision taken (2026-11-14): Litty's own title bar everywhere, as on
+   X11, so Wayland windows ask for client-side decorations; where the
+   compositor frames the window anyway (sway does for tiled windows, and
+   hands floating ones back) the app drops its title band, rounded
+   corners and resize edges, and brings them back when the frame is
+   handed back (`WindowEvent::ServerDecorations`). Moving and resizing
+   use `xdg_toplevel.move` and `resize` with the seat and serial of the
+   last button press on the window. Checked on headless sway (25 rows
+   tiled, 23 floating, 25 again). Not yet: a move or resize dragged by
+   hand (no virtual pointer here holds a button down), the compositor's
+   window menu (`show_window_menu`, not on X11 either), and tiled states
+   (`tiled_left` and so on) for corners and edges.* Originally:
+   `xdg-decoration` where the compositor offers server side decorations; otherwise Litty's own title bar with move
    (`xdg_toplevel.move`), resize edges, and window buttons.
 5. **Text input.** `zwp_text_input_v3`: preedit drawn as on X11 (XIM),
    commit, and the cursor rectangle for the candidate window. Checked

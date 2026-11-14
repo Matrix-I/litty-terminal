@@ -78,7 +78,7 @@ fn build_window(
 
     // Linux draws its own title bar in the terminal's colors (the native frame
     // cannot be recolored); macOS makes its native title bar transparent instead.
-    let csd = cfg!(target_os = "linux");
+    let own_frame = cfg!(target_os = "linux");
     let (inner_size, position) = match adopt.as_ref() {
         // A torn-off tab keeps the size of its old window, so its grids do not reflow.
         Some(torn) => (torn.size, torn.position),
@@ -86,13 +86,16 @@ fn build_window(
     };
     let spec = WindowSpec {
         title: "Litty",
-        decorations: !csd,
+        decorations: !own_frame,
         visible: true,
-        transparent: cfg.background_opacity < 1.0 || csd,
+        transparent: cfg.background_opacity < 1.0 || own_frame,
         inner_size,
         position,
     };
     let window = Arc::new(event_loop.create_window(&spec)?);
+    // A Wayland compositor may frame the window anyway (sway does for tiled
+    // ones); a second title bar inside its frame would only waste a row.
+    let csd = own_frame && !window.server_decorations();
     platform::init_clipboard(&window);
     platform::set_tabbing_allowed(&window, false);
     window.set_visible(true);
