@@ -27,6 +27,7 @@ pub struct Keymap {
     ctrl: xkb_mod_index_t,
     alt: xkb_mod_index_t,
     logo: xkb_mod_index_t,
+    compose: Option<Compose>,
 }
 
 // The pointers are owned by this value alone and libxkbcommon keeps no
@@ -102,6 +103,7 @@ impl Keymap {
         }
         // The keymap keeps its own reference to the context.
         let keymap = new(ctx);
+        let compose = Compose::new(ctx);
         unsafe { (xkb.xkb_context_unref)(ctx) };
         if keymap.is_null() {
             return Err("cannot compile the keymap".into());
@@ -120,7 +122,21 @@ impl Keymap {
             ctrl: index(XKB_MOD_NAME_CTRL),
             alt: index(XKB_MOD_NAME_ALT),
             logo: index(XKB_MOD_NAME_LOGO),
+            compose,
         })
+    }
+
+    pub fn reset_compose(&mut self) {
+        if let Some(compose) = &mut self.compose { compose.reset(); }
+    }
+
+    /// `Some` consumes a composing press; an empty string is an unfinished
+    /// or cancelled sequence. Shortcuts bypass Compose.
+    pub fn compose(&mut self, evdev: u32) -> Option<String> {
+        let mods = self.mods();
+        if mods.ctrl || mods.alt || mods.sup { self.reset_compose(); return None; }
+        let sym = unsafe { (self.xkb.xkb_state_key_get_one_sym)(self.state, evdev.saturating_add(EVDEV_OFFSET)) };
+        self.compose.as_mut()?.feed(sym)
     }
 
     /// Apply `wl_keyboard.modifiers`.
@@ -205,6 +221,46 @@ impl Keymap {
         }
         key
     }
+}
+
+/// Owned Compose state; the dispatch lock also serializes its raw pointer.
+struct Compose {
+    lib: &'static xkbcommon_dl::XkbCommonCompose,
+    state: *mut xkbcommon_dl::xkb_compose_state,
+}
+impl Compose {
+    fn new(ctx: *mut xkbcommon_dl::xkb_context) -> Option<Self> {
+        use xkbcommon_dl::{xkb_compose_compile_flags as C, xkb_compose_state_flags as S};
+        let lib = xkbcommon_dl::xkbcommon_compose_option()?;
+        let locale = ["LC_ALL", "LC_CTYPE", "LANG"].iter().find_map(|name| std::env::var(name).ok().filter(|s| !s.is_empty())).unwrap_or_else(|| "C".into());
+        let locale = std::ffi::CString::new(locale).ok()?;
+        let table = unsafe { (lib.xkb_compose_table_new_from_locale)(ctx, locale.as_ptr(), C::XKB_COMPOSE_COMPILE_NO_FLAGS) };
+        if table.is_null() { return None; }
+        let state = unsafe { (lib.xkb_compose_state_new)(table, S::XKB_COMPOSE_STATE_NO_FLAGS) };
+        unsafe { (lib.xkb_compose_table_unref)(table) };
+        (!state.is_null()).then_some(Self { lib, state })
+    }
+    fn reset(&mut self) { unsafe { (self.lib.xkb_compose_state_reset)(self.state) }; }
+    fn feed(&mut self, sym: xkb_keysym_t) -> Option<String> {
+        use xkbcommon_dl::xkb_compose_status::*;
+        unsafe { (self.lib.xkb_compose_state_feed)(self.state, sym) };
+        match unsafe { (self.lib.xkb_compose_state_get_status)(self.state) } {
+            XKB_COMPOSE_NOTHING => None,
+            XKB_COMPOSE_COMPOSING => Some(String::new()),
+            XKB_COMPOSE_CANCELLED => { self.reset(); Some(String::new()) }
+            XKB_COMPOSE_COMPOSED => {
+                let len = unsafe { (self.lib.xkb_compose_state_get_utf8)(self.state, std::ptr::null_mut(), 0) }.max(0) as usize;
+                let mut buf = vec![0u8; len + 1];
+                unsafe { (self.lib.xkb_compose_state_get_utf8)(self.state, buf.as_mut_ptr().cast(), buf.len()) };
+                buf.truncate(len);
+                self.reset();
+                Some(String::from_utf8(buf).unwrap_or_default())
+            }
+        }
+    }
+}
+impl Drop for Compose {
+    fn drop(&mut self) { unsafe { (self.lib.xkb_compose_state_unref)(self.state) }; }
 }
 
 /// The named key a keysym stands for, and the side for modifiers; `None`
@@ -292,6 +348,43 @@ mod tests {
     use super::*;
     use crate::platform::input::{KeyCode, NamedKey, PhysicalKey};
 
+    #[test]
+    fn dead_keys_and_compose_commit_unicode_and_reset() {
+        use xkbcommon_dl::keysyms as k;
+        let Some(mut keymap) = keymap(c"us") else { return };
+        let compose = keymap.compose.as_mut().expect("Compose table for the current locale");
+        assert_eq!(compose.feed(k::dead_acute), Some(String::new()));
+        assert_eq!(compose.feed(k::e), Some("é".into()));
+        assert_eq!(compose.feed(k::Multi_key), Some(String::new()));
+        assert_eq!(compose.feed(k::o), Some(String::new()));
+        assert_eq!(compose.feed(k::c), Some("©".into()));
+        assert_eq!(compose.feed(k::a), None);
+        compose.feed(k::dead_acute);
+        compose.reset();
+        assert_eq!(compose.feed(k::e), None, "focus loss cancels composition");
+    }
+
+    #[test]
+    fn layout_dead_key_and_cancelled_sequence_do_not_leak_raw_text() {
+        let Some(mut keymap) = keymap(c"de") else { return };
+        assert_eq!(keymap.compose(13), Some(String::new()), "German acute key starts composition");
+        assert_eq!(keymap.compose(18), Some("é".into()));
+        assert_eq!(keymap.compose(13), Some(String::new()));
+        assert_eq!(keymap.compose(1), Some(String::new()), "Escape cancels without typing");
+        assert_eq!(keymap.compose(18), None, "next e uses the normal key path");
+    }
+
+    #[test]
+    fn shortcuts_cancel_local_composition() {
+        use xkbcommon_dl::keysyms as k;
+        let Some(mut keymap) = keymap(c"us") else { return };
+        keymap.compose.as_mut().unwrap().feed(k::dead_acute);
+        keymap.update_mask(4, 0, 0, 0);
+        assert_eq!(keymap.compose(46), None, "Ctrl+C is still a shell shortcut");
+        keymap.update_mask(0, 0, 0, 0);
+        assert_eq!(keymap.compose(18), None, "next e is not composed");
+    }
+
     // evdev codes
     const KEY_Y: u32 = 21;
     const KEY_A: u32 = 30;
@@ -376,7 +469,7 @@ mod tests {
         assert_eq!(chars(&key), (ch("с"), ch("c"), Some("с")));
     }
 
-    /// A dead key (Compose is phase 5) or a key mapped to nothing types
+    /// A dead key before Compose, or a key mapped to nothing, types
     /// nothing, not the US character printed on that key.
     #[test]
     fn a_key_without_text_in_the_layout_types_nothing() {

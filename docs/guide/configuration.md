@@ -133,7 +133,7 @@ keybind = cmd+d=unbind
 
 | Variable | Values | Effect |
 |---|---|---|
-| `LITTY_BACKEND` | `x11` (default), `wayland` | Linux window system. `wayland` opens native Wayland windows (falls back to X11 if the compositor cannot be reached); it is a preview: keyboard, mouse, fractional scaling and Litty's own title bar (moving and resizing the window) work, but input methods (IME, dead keys) and occlusion do not yet, see the [Wayland backend plan](../plans/wayland-backend.md). |
+| `LITTY_BACKEND` | `x11` (default), `wayland` | Linux window system. `wayland` opens native Wayland windows (falls back to X11 if the compositor cannot be reached); it is a preview: keyboard, mouse, fractional scaling, Litty's own title bar (moving and resizing the window), text-input-v3 IME (checked with IBus Unikey Telex on GNOME) and local dead keys/Compose work; occlusion is a later phase, see the [Wayland backend plan](../plans/wayland-backend.md). |
 
 ## See also
 

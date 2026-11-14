@@ -154,6 +154,7 @@ pub(super) struct Keyboard {
     keymap: Option<Keymap>,
     focus: Option<Weak<WindowShared>>,
     held: HeldKeys,
+    composed: HeldKeys,
     /// Raw modifier mask, for keys without a keymap.
     mask: u32,
     /// Modifiers as the compositor last stated them.
@@ -164,7 +165,7 @@ pub(super) struct Keyboard {
 
 impl Keyboard {
     fn new(wl: wl_keyboard::WlKeyboard, seat: wl_seat::WlSeat) -> Self {
-        Self { wl, seat, keymap: None, focus: None, held: HeldKeys::default(), mask: 0, mods: Mods::default(), reported: None }
+        Self { wl, seat, keymap: None, focus: None, held: HeldKeys::default(), composed: HeldKeys::default(), mask: 0, mods: Mods::default(), reported: None }
     }
 
     fn key(&self, evdev: u32, pressed: bool, repeat: bool) -> KeyInput {
@@ -249,12 +250,16 @@ impl State {
                 let kb = &mut self.keyboards[index];
                 kb.focus = win.as_ref().map(Arc::downgrade);
                 kb.held.clear();
+                kb.composed.clear();
+                if let Some(keymap) = &mut kb.keymap { keymap.reset_compose(); }
                 kb.reported = None;
             }
             wl_keyboard::Event::Leave { .. } => {
                 let kb = &mut self.keyboards[index];
                 kb.focus = None;
                 kb.held.clear();
+                kb.composed.clear();
+                if let Some(keymap) = &mut kb.keymap { keymap.reset_compose(); }
                 let change = self.repeat.stop(&id);
                 self.apply_repeat(change);
             }
@@ -273,7 +278,13 @@ impl State {
                 let Some(repeat) = track(&kb.held, evdev, pressed) else { return };
                 let key = kb.key(evdev, pressed, repeat);
                 kb.report_mods_for(&key, &win);
-                deliver(&win, WindowEvent::Key(key));
+                let composed = if pressed { kb.keymap.as_mut().and_then(|k| k.compose(evdev)) } else { None };
+                if let Some(text) = composed {
+                    if let Ok(code) = u8::try_from(evdev) { kb.composed.update(code, true); }
+                    if !text.is_empty() { deliver(&win, WindowEvent::Ime(crate::platform::gui::Ime::Commit(text))); }
+                } else if pressed || !u8::try_from(evdev).is_ok_and(|code| kb.composed.update(code, false)) {
+                    deliver(&win, WindowEvent::Key(key));
+                }
                 let change = if compositor_repeat {
                     TimerChange::Keep
                 } else if pressed {
@@ -323,9 +334,13 @@ impl State {
             return;
         }
         let Some((id, evdev)) = self.repeat.current().cloned() else { return };
-        let target = self.keyboards.iter().find(|k| k.wl.id() == id).and_then(|kb| Some((kb, kb.focused()?)));
+        let target = self.keyboards.iter_mut().find(|k| k.wl.id() == id).and_then(|kb| { let win = kb.focused()?; Some((kb, win)) });
         match target {
-            Some((kb, win)) => deliver(&win, WindowEvent::Key(kb.key(evdev, true, true))),
+            Some((kb, win)) => {
+                if let Some(text) = kb.keymap.as_mut().and_then(|k| k.compose(evdev)) {
+                    if !text.is_empty() { deliver(&win, WindowEvent::Ime(crate::platform::gui::Ime::Commit(text))); }
+                } else { deliver(&win, WindowEvent::Key(kb.key(evdev, true, true))); }
+            }
             None => {
                 let change = self.repeat.stop(&id);
                 self.apply_repeat(change);
@@ -552,7 +567,9 @@ impl SeatHandler for State {
         &mut self.seats
     }
 
-    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+    fn new_seat(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        self.add_text_input(qh, seat);
+    }
 
     fn new_capability(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, capability: Capability) {
         match capability {
@@ -583,6 +600,7 @@ impl SeatHandler for State {
     }
 
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        self.remove_text_input(&seat);
         self.remove_keyboards(&seat);
         self.remove_pointers(&seat);
     }

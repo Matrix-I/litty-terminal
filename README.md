@@ -20,6 +20,7 @@
 - **0.0% idle CPU** and 61 MB idle footprint with one window, 28 MB with all windows closed (`ControlFlow::Wait`, event-driven; macOS figures. On Linux: ~67 MB RSS / ~21 MB PSS with one window; see [Performance](docs/development/performance.md) for how each number is measured).
 - **Ghostty-compatible configuration** with live reload.
 - **Tabs, windows and splits** that inherit the working directory. Drag a tab title left or right to reorder tabs within a window, or drag it away from the tab bar to pull it out into a new window that follows the pointer, and move it over another window's tab bar to merge it there, as in Chrome.
+- **Native Wayland preview** with `LITTY_BACKEND=wayland`: keyboard, pointer, fractional scaling, client decorations and text-input-v3 IME, with local dead keys/Compose. X11 remains the default.
 - **Seamless title bar on Linux**: the window has no native frame; its title bar is drawn in the terminal's background color with minimize / maximize / close buttons, drag-to-move, double-click to maximize and resizable edges.
 - **Built-in history search, regex find, click-to-position cursor and hyperlink detection.** Cmd/Ctrl+Click opens web links, folders and common text, source, document and media files; other files (scripts, apps, installers, `.terminal`, `.webloc`, files without an extension) are only revealed in their folder, and OSC 8 `file://` links from other hosts are ignored.
 - **Automatic shell integration** (zsh, bash, fish, nushell, elvish) and the **Kitty keyboard / graphics protocols**, Sixel and full Unicode support.

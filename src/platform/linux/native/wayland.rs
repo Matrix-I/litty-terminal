@@ -4,7 +4,8 @@
 //! window, Vulkan surface, configure and resize, close, title and app id,
 //! and frame callbacks pacing redraws; keyboard and pointer input (phase 2)
 //! live in [`super::wayland_input`]; scale and outputs (phase 3) here.
-//! Decorations, text input, occlusion and activation are later phases;
+//! Text input (phase 5) lives in [`super::wayland_text_input`]; occlusion
+//! and activation are later phases;
 //! until they land the backend is opt-in (`LITTY_BACKEND=wayland`).
 //!
 //! Scale: a window draws its buffer at `logical size × scale` and shows it
@@ -303,6 +304,8 @@ pub(super) struct SharedState {
     viewport_size: Option<(u32, u32)>,
     /// The seat and serial of the last button press on the window: a move
     /// or resize the compositor starts must name the press it follows.
+    pub(super) ime_allowed: bool,
+    pub(super) ime_rect: (PhysicalPosition<f64>, PhysicalSize<f64>),
     pub(super) grab: Option<(wl_seat::WlSeat, u32)>,
 }
 
@@ -364,6 +367,8 @@ pub(super) struct State {
     /// `None` when no timerfd could be made: keys then do not repeat.
     pub(super) repeat_timer: Option<RepeatTimer>,
     windows: Vec<(ObjectId, Weak<WindowShared>)>,
+    pub(super) text_inputs: Vec<super::wayland_text_input::TextInput>,
+    pub(super) text_manager: Option<super::wayland_text_input::Manager>,
 }
 
 impl State {
@@ -408,7 +413,7 @@ fn connect() -> Result<Client, String> {
     let viewporter = globals.bind(&qh, 1..=1, ()).ok();
     let fractional = globals.bind(&qh, 1..=1, ()).ok();
     let repeat_timer = RepeatTimer::new().map_err(|e| eprintln!("litty: {e}; keys do not repeat")).ok();
-    let state = State {
+    let mut state = State {
         registry: RegistryState::new(&globals),
         outputs: OutputState::new(&globals, &qh),
         seats: SeatState::new(&globals, &qh),
@@ -419,7 +424,12 @@ fn connect() -> Result<Client, String> {
         repeat: KeyRepeat::default(),
         repeat_timer,
         windows: Vec::new(),
+        text_inputs: Vec::new(),
+        text_manager: globals.bind(&qh, 1..=1, ()).ok(),
     };
+    for seat in state.seats.seats() {
+        state.add_text_input(&qh, seat);
+    }
     super::app::register_wayland_fd(conn.backend().poll_fd().as_raw_fd());
     if let Some(timer) = &state.repeat_timer {
         super::app::register_key_repeat_fd(timer.fd());
@@ -547,6 +557,8 @@ impl WaylandWindow {
                 outputs: Vec::new(),
                 viewport_size: None,
                 grab: None,
+                ime_allowed: false,
+                ime_rect: (PhysicalPosition::new(0.0, 0.0), PhysicalSize::new(1.0, 1.0)),
             }),
         });
         let surface = window.wl_surface();
@@ -573,6 +585,22 @@ impl WaylandWindow {
         // loop must poll it before it blocks.
         super::app::wakeup_main_loop();
         Ok(Self(Arc::new(WaylandWindowInner { scaling, window, shared, client })))
+    }
+
+    pub fn set_ime_allowed(&self, allowed: bool) {
+        let mut guard = self.0.client.queue.lock();
+        self.0.shared.state.lock().ime_allowed = allowed;
+        for input in &mut guard.1.text_inputs {
+            input.update(&self.0.shared);
+        }
+    }
+
+    pub fn set_ime_cursor_area(&self, position: PhysicalPosition<f64>, size: PhysicalSize<f64>) {
+        let mut guard = self.0.client.queue.lock();
+        self.0.shared.state.lock().ime_rect = (position, size);
+        for input in &mut guard.1.text_inputs {
+            input.update(&self.0.shared);
+        }
     }
 
     /// The buffer size: the configured (or requested) size times the scale.
