@@ -38,8 +38,16 @@ latency/idle RAM limits. Keep those manual roadmap checks separate.
 - [x] An isolated KWin 6.3.6 virtual compositor passed window-state,
   minimize/workspace recovery and startup-scale checks. Its temporary harness
   is separate from `test.sh`; the standard container script does not run KWin.
-- [ ] Full KDE/sway desktop IME, clipboard payload/drop, physical input and
-  mixed-DPI display checks remain open.
+- [x] Live KDE Plasma 6.6.6 passed keyboard/repeat, stable-keycode composition,
+  Unikey Telex, clipboard/primary payloads, GTK4/Dolphin drops, client pointer
+  gestures, window/workspace state and live output scaling. Temporary input
+  used the standard Remote Desktop portal, not the GNOME-specific API.
+- [ ] Live sway IME/data transfer, candidate popup visuals, physical input and
+  mixed-DPI display checks remain open. Composition across synthetic portal
+  keysym/keymap swaps also remains limited.
 
 See the [integrated report](../../docs/validation/wayland-integrated-2026-11-14.md)
 for the exact tested revision, environment failures/retries and acceptance scope.
+
+The [live KDE report](../../docs/validation/wayland-kde-2026-11-15.md) records
+that follow-up separately; its temporary harness is not part of `test.sh`.

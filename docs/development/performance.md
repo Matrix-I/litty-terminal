@@ -79,6 +79,30 @@ backend. Linux `+bench-ram` reports RSS as footprint.
 See the [integrated validation report](../validation/wayland-integrated-2026-11-14.md)
 for sample limits, environment retries and remaining compositor acceptance.
 
+### Live KDE Plasma 6.6.6 follow-up — 2026-11-15
+
+The same application source was tested on the real KDE Wayland session,
+physical 1920x1080/60 Hz panel, release build and isolated configs. One sample
+per backend; CPU probes used a sleeping shell with cursor blink disabled.
+
+| Measurement | Native Wayland | X11 / XWayland on KDE |
+| :--- | :---: | :---: |
+| 1 window / 1 tab | 77.32 MB | 78.44 MB |
+| 1 window / 3 tabs | 77.50 MB | 78.66 MB |
+| 2 windows / 6 tabs | 77.76 MB | 78.98 MB |
+| Cleanup delta | +0.20 MB | +0.32 MB |
+| Idle CPU | 0 ticks / 5 s | 0 ticks / 5 s |
+
+- [x] Both backends passed `+bench-ram` window/tab budgets.
+- [x] Native continuous output requested 300 frames in 5.001 s (~60/s).
+- [x] The debug always-shader test used 0 CPU ticks and requested 0 frames
+  over 3 s while minimized; unminimize and workspace restoration resumed it.
+- [ ] These samples do not establish physical presentation latency, every
+  idle configuration, GPU-stall behavior or the macOS footprint budget.
+
+See the [live KDE report](../validation/wayland-kde-2026-11-15.md) for complete
+coverage, initial test-harness failures and restored desktop settings.
+
 ### Comparison with the Ubuntu default terminal
 
 Ptyxis (the default on this Ubuntu release), one window, one tab, idle zsh,

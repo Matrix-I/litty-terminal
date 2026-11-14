@@ -8,7 +8,9 @@ notification click callbacks and token forwarding to an existing instance
 remain separate follow-ups (see phase 7).
 All seven phase branches are merged in `main` at `129dc36`. The
 [integrated validation report](../validation/wayland-integrated-2026-11-14.md)
-records GNOME live and Weston/sway/KWin headless results and remaining checks.
+records GNOME live and Weston/sway/KWin headless results. The follow-up
+[live KDE report](../validation/wayland-kde-2026-11-15.md) covers Plasma 6.6.6
+on the physical display, including input/IME, Dolphin drops and live scaling.
 
 Source: [2026-11-11 review](../reviews/2026-11-11-linux-history-ai-graphics.md).
 
@@ -72,9 +74,10 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    drawn at 1210x775, 60 Hz from the output's current mode) and on
    headless sway at 150%. Integrated validation also passed live scale
    changes from 100% to 200% and moves between virtual outputs at 200%
-   and 125% on sway, plus KWin startup scales from 100% to 200%. Physical
-   mixed-DPI monitor moves, KWin live scale changes and the cursor theme
-   fallback's own scale remain unchecked.*
+   and 125% on sway, plus KWin startup scales from 100% to 200%.
+   Live KDE 6.6.6 output changes also passed 100–200% on the physical
+   panel. Physical mixed-DPI monitor moves and cursor-theme fallback scaling
+   remain unchecked.*
    `wp_fractional_scale_v1` and `wp_viewporter`
    (integer `wl_output.scale` as the fallback), with monitor lookup for
    `current_monitor` and refresh rates. Centering new windows does not
@@ -88,9 +91,9 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    handed back (`WindowEvent::ServerDecorations`). Moving and resizing
    use `xdg_toplevel.move` and `resize` with the seat and serial of the
    last button press on the window. Checked on headless sway (25 rows
-   tiled, 23 floating, 25 again). Not yet: a move or resize dragged by
-   hand (no virtual pointer here holds a button down), the compositor's
-   window menu (`show_window_menu`, not on X11 either), and tiled states
+   tiled, 23 floating, 25 again). Live KDE also passed title-bar move and
+   resize-edge gestures through portal pointer events. Physical hand input,
+   the compositor's window menu (`show_window_menu`, not on X11 either), and tiled states
    (`tiled_left` and so on) for corners and edges.* Originally:
    `xdg-decoration` where the compositor offers server side decorations; otherwise Litty's own title bar with move
    (`xdg_toplevel.move`), resize edges, and window buttons.
@@ -115,7 +118,10 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    `/usr/bin/python3 scripts/linux/wayland_text_input_smoke.py --telex`
    in a live GNOME session (temporary input-engine selection is restored).
    Headless KWin also enables text-input-v3 on focus, without injected text.
-   Not yet checked: candidate popup appearance, KDE/wlroots IME composition.*
+   Live KDE also passed Unikey Telex through text-input-v3, plus dead keys
+   and Compose with stable physical keycodes. Portal keysym injection swaps
+   keymaps and does not preserve composition. Candidate popup appearance and
+   live wlroots IME composition remain unchecked.*
    `zwp_text_input_v3`: preedit drawn as on X11 (XIM),
    commit, and the cursor rectangle for the candidate window. Checked
    with IBus Unikey (Telex) under GNOME, as was done for X11.
@@ -135,9 +141,10 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    primary selection in both directions, plus two consecutive two-file
    drops with spaces, quotes and Vietnamese in the names (Copy completion
    and a clean exit with no protocol errors). `scripts/linux/wayland_data_smoke.py`
-   reproduces the live desktop checks. Headless KWin receives clipboard and
-   primary offers. KDE/wlroots payload transfers and real file-manager drops
-   remain unchecked (GTK4 is the tested drop source).*
+   reproduces the live desktop checks. Headless KWin receives clipboard and primary offers. Live KDE passed
+   clipboard/primary payloads both ways with GTK4, GTK4 drops, and two
+   consecutive multi-file drops from Dolphin. Live wlroots payloads/drops
+   remain unchecked.*
 7. [x] **Occlusion and activation.** *Backend implemented 2026-11-14 on
    `feat/wayland-activation`. A presented frame with no callback for 500 ms
    emits `Occluded(true)` once; a callback restores visibility and owes a
@@ -169,14 +176,15 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
    and forwarding a token to an already-running process need those app
    integrations; the backend hooks and launcher-token path are implemented.
    Headless KWin 6.3.6 also passed minimize/workspace animation stop and
-   rendering recovery, hidden bell activation and clean close. Real KDE/sway
-   desktop activation policy, real-desktop minimize/workspace changes and
-   slow/GPU-stall behavior remain unchecked. The broader backend acceptance
+   rendering recovery, hidden bell activation and clean close. Live KDE also passed minimize, hidden bell attention and moving the
+   window away from/back to the current workspace. Broader focus policy,
+   GNOME/sway workspace transitions and slow/GPU-stall behavior remain open. The broader backend acceptance
    below remains outstanding.
 
 ## Acceptance checklist
 
-Evidence: [integrated validation](../validation/wayland-integrated-2026-11-14.md).
+Evidence: [integrated validation](../validation/wayland-integrated-2026-11-14.md)
+and [live KDE follow-up](../validation/wayland-kde-2026-11-15.md).
 The seven checked phases above track implementation; the unchecked desktop
 items below still prevent declaring full backend acceptance.
 
@@ -189,6 +197,10 @@ items below still prevent declaring full backend acceptance.
 - [x] Sway live scale changes 100–200% and virtual mixed-scale output moves.
 - [x] KWin headless resize, maximize/fullscreen, minimize/workspaces and close.
 - [x] KWin startup scales 100–200%; text-input focus and selection offers.
+- [x] Live KDE keyboard/repeat, stable-keycode dead keys/Compose and Telex IME.
+- [x] Live KDE clipboard/primary round trips, GTK4 and real Dolphin drops.
+- [x] Live KDE client move/resize, maximize/fullscreen, minimize/workspace
+  relocation, attention, live scales 100–200%, release RAM and idle CPU.
 - [x] Linux RAM benchmark budgets and sampled idle CPU; continuous-output pacing.
 - [x] X11 default, override and unavailable-Wayland fallback tested.
 - [x] Roadmap, configuration guide and validation/performance docs updated.
@@ -197,8 +209,11 @@ items below still prevent declaring full backend acceptance.
   multiple windows, minimize and workspace transitions on each compositor.
 - [ ] Candidate popup appearance/position after zoom/resize/scale changes;
   dead keys/Compose and preedit reset with real desktop input.
-- [ ] Physical mixed-DPI monitors, cursor fallback scaling and KWin live
-  scale changes (the headless output tool failed; startup scales passed).
+- [x] KWin live scale changes on the physical KDE panel; the older headless
+  output-tool failure does not apply to this later live check.
+- [ ] Physical mixed-DPI monitors and cursor fallback scaling.
+- [ ] Composition across portal keysym injection/keymap swaps; stable
+  physical-keycode composition passed.
 - [ ] Slow/GPU-stall behavior, hardware GPU validation and macOS closed-window
   memory measurements; Linux RSS does not establish macOS footprint budgets.
 - [ ] Complete platform API/no-op coverage audit against the acceptance rule:

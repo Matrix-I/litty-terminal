@@ -2,6 +2,9 @@
 
 Tested merged `main` at `129dc36806d0f92c75dfccff98e531431a396467`
 (all seven backend phases). No implementation changes were made in this audit.
+A [live KDE Plasma follow-up](./wayland-kde-2026-11-15.md) subsequently tested
+KWin 6.6.6 on the physical display; its results update the checklist below
+without replacing the earlier GNOME/headless measurements.
 
 ## Build and regression checks
 
@@ -123,14 +126,16 @@ absent; this is compositor coverage, not a complete Plasma session.
   Payload paste/readback was not exercised.
 - [x] Text-input-v3 enables on focus; compositor close exits 0 without
   Wayland protocol errors.
-- [ ] Live scale changes: `kscreen-doctor` reports `Cannot find output with
-  id 1` on the virtual output. Startup-scale checks passed separately using
-  only the container's `kwinoutputconfig.json`; this is not proof of live
-  scale changes on KWin.
-- [ ] Keyboard/IME composition, clipboard payload round trips, file drops,
-  client move/resize gestures and real focus-stealing policy on KDE.
-  `wtype` reports that KWin does not support its virtual keyboard protocol;
-  headless scripting did not inject input.
+- [x] Live scale changes were subsequently covered on real KDE 6.6.6 at
+  100–200%. In this older headless run, `kscreen-doctor` reported `Cannot find
+  output with id 1`; only startup scales passed there. See the linked live
+  follow-up for the physical-panel result.
+- [x] The later live KDE follow-up passed keyboard/repeat, stable-keycode
+  composition, Telex IME, clipboard payloads, GTK4/Dolphin drops and client
+  pointer move/resize gestures through a user-approved Remote Desktop portal.
+  The older headless run could not inject input with `wtype`.
+- [ ] Broader KDE focus-stealing policy and human physical input acceptance;
+  the later automated desktop tests do not close those checks.
 
 The harness initially needed corrections to its Qt rectangle assignment and
 fullscreen size assumption (the virtual mode is 1024x768), and foreground
@@ -145,23 +150,31 @@ harnesses are in `/tmp/litty-kwin-validation` on the test host.
 - [x] Weston and sway headless window/input/decoration smoke checks.
 - [x] Sway headless scale changes and moves between mixed-scale outputs.
 - [x] KWin headless window state, startup scales, minimize/workspace recovery.
+- [x] Live KDE input/IME, clipboard/primary payloads, GTK4/Dolphin drops, client
+  pointer gestures, live output scales and minimize/workspace relocation.
 - [x] Linux release RAM benchmark, sampled idle CPU and continuous output.
 - [x] X11 default, explicit override and unavailable-Wayland fallback.
 - [ ] Full manual GNOME/KDE/sway desktop acceptance, including the remaining
   checks below; headless results do not close this item.
 
-- [ ] Physical KDE/KWin and sway sessions: IME, clipboard, drops, window behavior
-  and focus policy. Headless sway checks cover only their documented subset.
+- [x] KDE physical session tested with synthetic portal input: Telex,
+  clipboard/primary payloads, Dolphin drops, client gestures and window state.
+- [ ] Full live sway IME, clipboard, drops and focus-policy acceptance;
+  headless sway checks cover only their documented subset.
 - [ ] Real keyboard layouts/remaps and repeat cancellation on focus loss; pointer
   wheel/touchpad behavior and cursor-theme fallback at different scales.
 - [ ] Hand-dragged client title bar and resize edges, window buttons, maximize,
   fullscreen and close behavior on each compositor.
-- [ ] Candidate popup appearance and position after zoom/resize/scale changes;
-  dead keys/Compose and preedit reset in real desktop use. Unit tests alone
-  do not establish desktop behavior.
-- [ ] Drops from real file managers, rather than the tested GTK4 peer.
-- [ ] Minimize/workspace transitions on real GNOME/KDE/sway sessions, and slow
-  compositor/GPU stalls. These transitions passed on headless KWin only;
+- [x] Dead keys and Compose with stable physical keycodes on live KDE.
+- [ ] Candidate popup appearance and position after zoom/resize/scale changes,
+  preedit reset and composition across synthetic keymap swaps. The portal
+  keysym attempt did not compose; the stable-keycode tests passed separately.
+- [x] Real Dolphin multi-file drops on KDE, including Unicode/quotes/spaces
+  and Copy source retention. Other file-manager/compositor combinations
+  remain outside this evidence.
+- [x] Live KDE minimize and test-window workspace relocation stop rendering
+  and recover when shown again, in addition to the prior headless results.
+- [ ] GNOME/sway minimize/workspace transitions and slow compositor/GPU stalls;
   callback starvation remains advisory occlusion.
 - [ ] Physical mixed-DPI monitors, cursor/pointer alignment and visual sharpness.
 - [ ] GPU validation layers were unavailable on the host; multi-window functional
