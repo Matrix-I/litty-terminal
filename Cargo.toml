@@ -10,11 +10,11 @@ name = "litty"
 path = "src/main.rs"
 
 [dependencies]
-# Grid bounds OSC streams before feeding VTE; std storage preserves complete
-# supported payloads instead of the default 1,024-byte no_std truncation.
-vte = { version = "0.13", default-features = false }
+# Grid bounds OSC streams before feeding VTE; default `std` storage preserves
+# complete supported payloads instead of the 1,024-byte `no_std` truncation.
+vte = "0.15"
 libc = "0.2"
-parking_lot = "0.12"
+parking_lot = "0.13"
 bytemuck = { version = "1", features = ["derive", "extern_crate_alloc"] }
 unicode-width = "0.2"
 unicode-normalization = "0.1"

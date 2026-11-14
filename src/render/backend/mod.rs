@@ -22,7 +22,7 @@ pub use linux_gpu::*;
 /// assumption. Tests run in parallel, so every test that uses the shared
 /// device takes this lock first.
 #[cfg(test)]
-pub static TEST_GPU: parking_lot::Mutex<()> = parking_lot::const_mutex(());
+pub static TEST_GPU: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// Supported 2D texture and surface pixel formats.
 #[allow(clippy::enum_variant_names)]

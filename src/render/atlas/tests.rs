@@ -287,7 +287,7 @@ fn line_metrics_prefers_the_font_when_it_has_them() {
 }
 
 /// Tests that change or depend on the global `font-feature` list take this.
-static FEATURES_LOCK: parking_lot::Mutex<()> = parking_lot::const_mutex(());
+static FEATURES_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 fn cells(text: &str, bold: bool) -> Vec<crate::terminal::grid::Cell> {
     let fg = if bold { crate::terminal::grid::FG_BOLD } else { 0 };

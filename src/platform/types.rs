@@ -85,7 +85,7 @@ pub struct SinkSlot(parking_lot::Mutex<Option<EventSink>>);
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl SinkSlot {
     pub const fn new() -> Self {
-        Self(parking_lot::const_mutex(None))
+        Self(parking_lot::Mutex::new(None))
     }
 
     pub fn set(&self, sink: EventSink) {

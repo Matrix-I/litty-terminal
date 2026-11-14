@@ -192,14 +192,15 @@ void main() {{
 /// Vulkan compiles here, which reports real errors with their line.
 fn validate(src: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    check(src)?;
+    let result = check(src).and_then(|()| crate::render::backend::validate_postfx(src));
+    #[cfg(not(target_os = "macos"))]
+    let result = crate::render::backend::validate_postfx(src);
     // A missing `}` makes the compiler fail in the wrapper after the user's
     // code; say where the mistake probably is.
-    crate::render::backend::validate_postfx(src)
-        .map_err(|e| match balance(user_code(src)) {
-            Ok(()) => e,
-            Err(hint) => format!("{e} ({hint} in your shader?)"),
-        })
+    result.map_err(|e| match balance(user_code(src)) {
+        Ok(()) => e,
+        Err(hint) => format!("{e} ({hint} in your shader?)"),
+    })
 }
 
 /// The user's shader within a wrapped source.
@@ -246,7 +247,7 @@ fn check(src: &str) -> Result<(), String> {
     if !user.contains("mainImage") {
         return Err("missing `mainImage` entry point".to_string());
     }
-    balance(user)?;
+    balance(user).map_err(|error| format!("{error} in your shader?"))?;
 
     let mut known: HashSet<&str> = [
         // Types & qualifiers
@@ -605,6 +606,17 @@ mod tests {
     fn a_missing_brace_points_at_the_users_shader() {
         let err = validate(&wrap("void mainImage(out vec4 o, in vec2 f) {\n o = vec4(1.0);\n")).unwrap_err();
         assert!(err.contains("unbalanced braces or parentheses in your shader?"), "{err}");
+    }
+
+    #[test]
+    fn unbalanced_parentheses_point_at_the_users_shader() {
+        for (user, hint) in [
+            ("void mainImage(out vec4 o, in vec2 f) { o = vec4(1.0; }", "unbalanced braces or parentheses"),
+            ("void mainImage(out vec4 o, in vec2 f) { o = vec4(1.0)); }", "unmatched `)`"),
+        ] {
+            let err = validate(&wrap(user)).unwrap_err();
+            assert!(err.contains(&format!("{hint} in your shader?")), "{err}");
+        }
     }
 
     /// Every window loads the shaders (and again on each config reload);
