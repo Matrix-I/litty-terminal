@@ -830,7 +830,7 @@ end-to-end trace.
 | Check | Result |
 | --- | --- |
 | Delivery from the packaged `com.litty.terminal` | Authorized (status 2); `addNotificationRequest` succeeded; Notification Center lists the identifier. |
-| Selective withdrawal on quit | Pass after the fix (above). Cmd+Q was not separately replayed. |
+| Selective withdrawal on quit | Pass after the fix (above), then replayed by the maintainer through Cmd+Q and Dock ▸ Quit (below). Logout not replayed. |
 | Retention eviction | 70 notifications from one process: Litty withdrew exactly #1–#6. #7 was also absent from Notification Center although Litty never withdrew it; not explained. |
 | Completion after eviction | The trace held back the OS submission of #1 for 150 s, past its eviction. On completion Litty withdrew it again and it is not listed. |
 | Completion after shutdown | Not replayable: the process exits after shutdown. Add and remove share one ordered connection. |
@@ -838,7 +838,7 @@ end-to-end trace.
 | Foreground after a forwarded click | Fails. The origin calls `activate`, the maintainer saw no window come forward. |
 | Single-instance click | Pass (maintainer: window came forward). |
 | Cold click after `kill -9` | Pass (maintainer: one window with a live shell). The relaunched process had exited before it could be inspected. |
-| Minimized, Cmd+H, native tabs | Not verified. The traces show none of the requested keystrokes reached the fixtures. |
+| Minimized, Cmd+H, native tabs | Pass after the Spaces fix (below), driven by the maintainer. |
 | Icon | Not separately confirmed in this session (confirmed earlier with the probe identity). |
 
 ### Foreground after forwarding: tried and reverted
@@ -870,15 +870,74 @@ instance forward is a known limitation on macOS 14+. LaunchServices state
 after the session: the stale development copies were unregistered (files
 kept) and the maintainer removed the installed app.
 
+### Window states and quit paths (maintainer-driven)
+
+The maintainer drove the keystrokes and clicks; each case ran one fixture
+from a clean state (all fixtures quit, private registry moved aside). The
+trace also recorded each window's `isOnActiveSpace` and the frontmost app.
+
+| Case | Result |
+| --- | --- |
+| Minimized, same desktop | Pass: the window is restored and comes forward. |
+| Not minimized, on another desktop | Pass: macOS switches to the window's desktop. |
+| Minimized, on another desktop, another app active | Failed before the fix, pass after (below). |
+| Cmd+H | Pass: the click arrived with the app hidden; the window came back. |
+| Native tabs, another tab selected | Pass: the origin tab is selected and the window comes forward. |
+| Cmd+Q | Pass: the process withdrew only its own identifier; another instance's notification stayed listed. |
+| Dock ▸ Quit | Pass: the process withdrew its identifier before exiting; a later query no longer lists it. |
+
+#### Minimized window on another Space (fixed)
+
+Reproduction: minimize the origin window on Desktop 1, switch to Desktop 2
+and another app, click the notification. The window animated open on
+Desktop 2, then disappeared; Litty became active and key, but the window
+stayed on Desktop 1 (`isOnActiveSpace` false) and macOS never switched.
+Restoring the same window from the Dock thumbnail does switch to Desktop 1.
+
+Cause: `activate_pane` deminiaturized and ordered the window front before
+the app was active (activation is asynchronous, about 0.55 s later). macOS
+switches Spaces on activation only when the window is already on its Space;
+mid-animation it was not. Two trace-library experiments confirmed it:
+ordering the window front again on activation switched Spaces after a
+visible flash; deferring the restore until activation switched without one.
+
+Fix: while another app is active, a minimized window is held until
+`applicationDidBecomeActive:` and then restored and ordered front. A
+`performSelector:afterDelay:` fallback restores it after 1.5 s if activation
+never arrives (forwarded clicks on macOS 14+). It is cancelled when
+activation comes in time, when a newer click replaces the held window, and
+when the window closes (the held reference is dropped too). The fallback
+only deminiaturizes: the window comes back without becoming key, and only
+when the run loop is in its default mode. The trace showed the fallback timer firing in
+Litty's event loop after 1.5 s. Unit tests cover the hold/take/deadline
+logic, the defer decision and activation taking the held window; the Space
+behaviour itself is not unit-testable and rests on these
+replays. After the first version of the fix the maintainer ran the reproduction
+four times. The final build was replayed twice more, both clicked from
+Notification Center with the window minimized and another app active; the
+maintainer reports the expected result both times. In those two traces
+activation arrived 4.1 s and 20.7 s after the click (no `usernoted` reopen
+event), so the 1.5 s fallback restored the window first, on its own Space.
+macOS then switched Spaces on activation, as for a window that was not
+minimized. Whether the switch followed on its own or after a user action
+was not separately confirmed. Each
+run switched to Desktop 1 without a flash, but only one click arrived with
+the window minimized and another app active. In one earlier attempt no
+activation followed the click (no `usernoted` reopen event). That run was
+not repeated, so the fallback's on-screen result there was not observed.
+
+Not run: logout.
+
 ### Open checklist (supersedes the list above)
 
 - [x] Real `com.litty.terminal` authorization and delivery. Icon not reconfirmed.
 - [x] Latest-build crash/cold-click replay: one fresh window with a shell.
 - [x] B receiving A's callback and forwarding to A across IPC.
 - [ ] Foreground after a forwarded click (known limitation above).
-- [ ] Minimized, Cmd+H-hidden and native-tab surfaces.
-- [x] Selective withdrawal on quit (Apple event path) and late completion
-  after eviction. Cmd+Q path not separately replayed.
+- [x] Minimized (including another Space), Cmd+H-hidden and native-tab
+  surfaces, after the Spaces fix above.
+- [x] Selective withdrawal on quit (`terminate`, Cmd+Q, Dock Quit) and late
+  completion after eviction. Logout not replayed.
 - [ ] Completion after shutdown: not replayed (the process exits after
   shutdown). It rests on add and remove sharing one ordered connection;
   awaiting maintainer acceptance.
