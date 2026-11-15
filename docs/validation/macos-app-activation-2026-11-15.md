@@ -787,3 +787,102 @@ is not the closed-window budget metric and is not investigated here.
   AppKit move warnings.
 - [x] Strict Opus review of the merged change. Its findings are fixed, guarded
   or accepted above, and the fix branch has its own review rounds.
+
+## Desktop Proof Session (fix branch)
+
+Build: `cargo build --release` of `fix/app-activation-review` plus the
+delegate fix below, packaged as `com.litty.terminal` (resources Info.plist and
+icon, ad-hoc signed) under `dist/pr84-proof/`. Fixtures ran with a temporary
+HOME (`auto-update = off`), a private `LITTY_ACTIVATION_DIR`, a disposable
+PTY child and an injected trace library (delivery, response, activation,
+withdrawal and an on-demand `getDeliveredNotifications` query). Notification
+Center state was read from inside a fixture process: a separate helper
+executable in the same bundle is a different notification client
+(authorization "not determined", empty list) and cannot observe it.
+
+### Delegate notifications never reached Litty (fixed)
+
+`app_delegate` called `setDelegate:` before `register_reopen_handler` added
+`applicationDidBecomeActive:`. AppKit subscribes a delegate to the
+`application*:` notifications only inside `setDelegate:`, so that method
+never ran in production: the Light/Dark re-check from bad59e3 was dead code.
+The direct-call unit test could not see this. The same gap meant a quit
+Apple event (Dock Quit, logout, `NSRunningApplication.terminate`) exited in
+`terminate:` before the event loop reached `shutdown_notifications`.
+
+Reproduction before the fix: B was quit with `terminate`; the trace showed
+the `quit` event and `NSApplicationWillTerminateNotification`, no
+`removeDeliveredNotificationsWithIdentifiers:`, and A's query still listed
+B's notification. Fix: add `applicationWillTerminate:` (calls the
+idempotent shutdown) and set the delegate again after adding the methods.
+The delegate test now posts the real AppKit notification; it failed first
+(`left: []`) and passes. After the fix, the same replay logs B withdrawing
+only its own identifier. A query from a third instance afterwards no longer
+lists B's notification, and the other two instances' notifications are
+still listed. Only `NSRunningApplication.terminate` was replayed: Dock Quit
+and logout send the same quit Apple event, but they were not run. The
+`applicationWillTerminate:` test checks only that the method exists. Calling
+it would set the process-wide shutdown flag, so its effect rests on this
+end-to-end trace.
+
+### OS evidence gathered
+
+| Check | Result |
+| --- | --- |
+| Delivery from the packaged `com.litty.terminal` | Authorized (status 2); `addNotificationRequest` succeeded; Notification Center lists the identifier. |
+| Selective withdrawal on quit | Pass after the fix (above). Cmd+Q was not separately replayed. |
+| Retention eviction | 70 notifications from one process: Litty withdrew exactly #1–#6. #7 was also absent from Notification Center although Litty never withdrew it; not explained. |
+| Completion after eviction | The trace held back the OS submission of #1 for 150 s, past its eviction. On completion Litty withdrew it again and it is not listed. |
+| Completion after shutdown | Not replayable: the process exits after shutdown. Add and remove share one ordered connection. |
+| Cross-process callback handoff | Observed. macOS delivered clicks to one instance (once the oldest, once a middle one), which forwarded over IPC to the exact origin. |
+| Foreground after a forwarded click | Fails. The origin calls `activate`, the maintainer saw no window come forward. |
+| Single-instance click | Pass (maintainer: window came forward). |
+| Cold click after `kill -9` | Pass (maintainer: one window with a live shell). The relaunched process had exited before it could be inspected. |
+| Minimized, Cmd+H, native tabs | Not verified. The traces show none of the requested keystrokes reached the fixtures. |
+| Icon | Not separately confirmed in this session (confirmed earlier with the probe identity). |
+
+### Foreground after forwarding: tried and reverted
+
+macOS 14+ activation is cooperative. These were each built, replayed and
+removed because none brought the origin forward:
+
+1. `yieldActivationToApplication:` in the receiver before the IPC request:
+   the receiver was never active when it yielded.
+2. The same yield one main-queue turn later: still inactive.
+3. `-[NSRunningApplication activateFromApplication:options:]` on the origin:
+   returned NO.
+4. Two-step: the receiver activates itself, then yields and forwards on
+   `applicationDidBecomeActive:` (750 ms fallback): the receiver never
+   became active, so only the fallback ran.
+
+### LaunchServices registrations explain the extra windows
+
+This Mac had many registered bundles with `com.litty.terminal`: the installed
+app plus `dist/` and temporary test copies. While fixtures ran, clicks
+launched or activated `~/Applications/Litty.app`, and a cold-launched app
+opens one fresh window by design. That explains the earlier "extra window"
+reports on this development machine. A single install has one
+registration. With only the fixture registered, activation still did not
+follow forwarded clicks consistently.
+
+Disposition: forwarded clicks select the exact pane; bringing another
+instance forward is a known limitation on macOS 14+. LaunchServices state
+after the session: the stale development copies were unregistered (files
+kept) and the maintainer removed the installed app.
+
+### Open checklist (supersedes the list above)
+
+- [x] Real `com.litty.terminal` authorization and delivery. Icon not reconfirmed.
+- [x] Latest-build crash/cold-click replay: one fresh window with a shell.
+- [x] B receiving A's callback and forwarding to A across IPC.
+- [ ] Foreground after a forwarded click (known limitation above).
+- [ ] Minimized, Cmd+H-hidden and native-tab surfaces.
+- [x] Selective withdrawal on quit (Apple event path) and late completion
+  after eviction. Cmd+Q path not separately replayed.
+- [ ] Completion after shutdown: not replayed (the process exits after
+  shutdown). It rests on add and remove sharing one ordered connection;
+  awaiting maintainer acceptance.
+- [x] Disposition for the intermittent reports (above). The AppKit
+  move warning is still a separate follow-up.
+- [ ] Runtime peer rejection with a different macOS UID.
+- [ ] macOS 11–13 runtime.
