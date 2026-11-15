@@ -66,6 +66,28 @@ struct App {
 }
 
 impl App {
+    fn start_activation_service(&mut self) {
+        if cfg!(target_os = "macos") && self.activation.is_none() && !self.bench_ram_mode
+            && self.gui_bench.is_none() && self.scroll_fps_run.is_none() {
+            let proxy = self.waker.proxy.clone();
+            let sink = Arc::new(move |request, reply| {
+                if let Err(AppEvent::Activation { reply, .. }) = proxy.send_event(AppEvent::Activation { request, reply })
+                    && reply.send(Err("application stopped".into())).is_err() {
+                    eprintln!("litty: activation client disconnected");
+                }
+            });
+            match platform::start_activation(sink) {
+                Ok(server) => self.activation = Some(server),
+                Err(error) => {
+                    #[cfg(target_os = "macos")]
+                    eprintln!("litty: activation service unavailable: {}", error.kind());
+                    #[cfg(target_os = "linux")]
+                    let _ = error;
+                }
+            }
+        }
+    }
+
     fn window_mut(&mut self, id: WindowId) -> Option<&mut State> {
         self.windows.iter_mut().find(|s| s.window.id() == id)
     }
@@ -78,6 +100,7 @@ impl App {
                 platform::activate_app();
                 s.window.request_redraw();
                 self.windows.push(s);
+                self.start_activation_service();
             }
             Err(e) => eprintln!("litty: failed to open window: {e}"),
         }
@@ -353,24 +376,7 @@ impl EventHandler<AppEvent> for App {
             return;
         }
 
-        if cfg!(target_os = "macos") && self.activation.is_none() && !self.bench_ram_mode {
-            let proxy = self.waker.proxy.clone();
-            let sink = Arc::new(move |request, reply| {
-                if let Err(AppEvent::Activation { reply, .. }) = proxy.send_event(AppEvent::Activation { request, reply })
-                    && reply.send(Err("application stopped".into())).is_err() {
-                    eprintln!("litty: activation client disconnected");
-                }
-            });
-            match platform::start_activation(sink) {
-                Ok(server) => self.activation = Some(server),
-                Err(error) => {
-                    #[cfg(target_os = "macos")]
-                    eprintln!("litty: activation service unavailable: {}", error.kind());
-                    #[cfg(target_os = "linux")]
-                    let _ = error;
-                }
-            }
-        }
+        self.start_activation_service();
         platform::register_reopen_handler(crate::event::platform_sink(self.waker.proxy.clone()));
         platform::install_menu();
         // Once per process, not per window: the icon stays set. A RAM run skips

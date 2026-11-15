@@ -3,11 +3,12 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <libproc.h>
+#include <string.h>
 
 typedef void (*LittyNotificationCallback)(const char *, uint64_t);
 static LittyNotificationCallback route;
 static atomic_bool cold_start;
-static atomic_bool suppress_reopen;
 static atomic_uint pending;
 static uint64_t sequence;
 static id launch_observer;
@@ -53,10 +54,6 @@ static BOOL valid_origin(NSString *value) {
     if (!pane_id) return;
     [self.seen addObject:identifier];
     if (self.seen.count > 64) [self.seen removeObjectAtIndex:0];
-    atomic_store(&suppress_reopen, true);
-    // The observed notification-associated reopen follows in this main-loop
-    // turn. Clear on the next turn so an unrelated later Dock click is preserved.
-    dispatch_async(dispatch_get_main_queue(), ^{ atomic_store(&suppress_reopen, false); });
     if (self.routeAction) self.routeAction(origin, pane_id);
 }
 - (void)handleIdentifier:(NSString *)identifier action:(NSString *)action origin:(NSString *)origin pane:(NSString *)pane completion:(void (^)(void))done {
@@ -101,7 +98,18 @@ bool litty_notifications_init(LittyNotificationCallback callback) {
     return true;
 }
 bool litty_notification_startup(void) { return atomic_load(&cold_start); }
-bool litty_notification_consume_reopen(void) { return atomic_exchange(&suppress_reopen, false); }
+static BOOL notification_reopen_source(AEEventClass event_class, AEEventID event_id, const char *sender_path);
+bool litty_notification_consume_reopen(void) {
+    // Inspect synchronously: currentAppleEvent is valid only during dispatch.
+    // Its sender PID is supplied by the OS, not by notification payload text.
+    NSAppleEventDescriptor *event = NSAppleEventManager.sharedAppleEventManager.currentAppleEvent;
+    if (!event || event.eventClass != kCoreEventClass || event.eventID != kAEReopenApplication) return false;
+    pid_t sender = [event attributeDescriptorForKeyword:keySenderPIDAttr].int32Value;
+    if (sender <= 0) return false;
+    char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
+    if (proc_pidpath(sender, path, sizeof(path)) <= 0) return false;
+    return notification_reopen_source(event.eventClass, event.eventID, path);
+}
 
 // A ticket is completed at most once by delivery, failure or deadline.
 @interface LittyNotificationTicket : NSObject { @public atomic_bool finished; atomic_bool submission_started; }
@@ -219,8 +227,6 @@ bool litty_notification_test_callbacks(void) {
         delegate.routeAction = ^(NSString *target, uint64_t pane) { routed++; exact = [target isEqual:origin] && pane == 42; };
         void (^done)(void) = ^{ completed++; };
         [delegate handleIdentifier:@"litty-pane-1" action:UNNotificationDefaultActionIdentifier origin:origin pane:@"42" completion:done];
-        BOOL suppression = litty_notification_consume_reopen();
-        BOOL consumed = !litty_notification_consume_reopen();
         [delegate handleIdentifier:@"litty-pane-1" action:UNNotificationDefaultActionIdentifier origin:origin pane:@"42" completion:done];
         [delegate handleIdentifier:@"litty-pane-2" action:UNNotificationDismissActionIdentifier origin:origin pane:@"42" completion:done];
         [delegate handleIdentifier:@"litty-pane-3" action:UNNotificationDefaultActionIdentifier origin:@"../bad" pane:@"42" completion:done];
@@ -228,7 +234,7 @@ bool litty_notification_test_callbacks(void) {
         [delegate handleIdentifier:@"litty-pane-5" action:UNNotificationDefaultActionIdentifier origin:origin pane:@"0" completion:done];
         delegate.closed = YES;
         [delegate handleIdentifier:@"litty-pane-after-close" action:UNNotificationDefaultActionIdentifier origin:origin pane:@"42" completion:done];
-        return routed == 1 && completed == 7 && exact && suppression && consumed;
+        return routed == 1 && completed == 7 && exact;
     }
 }
 
@@ -249,4 +255,18 @@ void litty_notifications_shutdown(void) {
     available = NO;
     // Already-enqueued blocks retain their objects. Their close checks stop
     // routing/submission and their completion handlers still run exactly once.
+}
+
+static BOOL notification_reopen_source(AEEventClass event_class, AEEventID event_id, const char *sender_path) {
+    // Observed notification reopens originate from the system notification
+    // daemon. Classify each event independently; never consume a later Dock click.
+    return event_class == kCoreEventClass && event_id == kAEReopenApplication
+        && sender_path && strcmp(sender_path, "/usr/sbin/usernoted") == 0;
+}
+bool litty_notification_test_reopen_provenance(void) {
+    return notification_reopen_source(kCoreEventClass, kAEReopenApplication, "/usr/sbin/usernoted")
+        && !notification_reopen_source(kCoreEventClass, kAEReopenApplication, "/System/Library/CoreServices/Dock.app/Contents/MacOS/Dock")
+        && !notification_reopen_source(kCoreEventClass, kAEReopenApplication, "/tmp/usernoted")
+        && !notification_reopen_source(kCoreEventClass, kAEReopenApplication, NULL)
+        && !notification_reopen_source(kCoreEventClass, kAEOpenApplication, "/usr/sbin/usernoted");
 }

@@ -1331,3 +1331,23 @@ reopen ordering finding remains open. Latest full suite: 685 unit + 1 + 14
 integration = 700 passed, 12 existing ignored. macOS/Linux checks, Apple x86_64
 check, Clippy and diff check pass. Native visual/focus acceptance remains pending.
 The user-authorized checkpoint is not a declaration that the whole plan is done.
+
+## Reopen Ordering Correction (after checkpoint 8df30d5)
+
+A dedicated probe recorded a live notification reopen as aevt/rapp with OS
+read-only sender PID 88005; its executable was verified as /usr/sbin/usernoted.
+Ordinary `open` produced aevt/rapp from a different sender. No Dock provenance
+is assumed without its separate visual test. Production now synchronously
+reads currentAppleEvent and resolves its sender with proc_pidpath; only the
+known system notification daemon's reopen is suppressed. The queued clear
+and sticky suppression flag were removed. Unknown/ordinary sources retain
+normal reopen behavior. This is host-observed provenance, not a documented
+cross-version guarantee; older macOS desktop acceptance remains unverified.
+The new classification regression failed first, then all five native tests
+passed. Full checks/build/review are being rerun after this source change.
+
+The second maintainer-requested checkpoint passes all required source checks
+and 701 tests (12 existing ignored). Supplemental review still requires an
+observable cold-start/menu/service regression. Desktop acceptance and required
+Opus review remain unfulfilled; see the validation report. Continue with that
+regression after committing this checkpoint; do not mark the feature complete.
