@@ -1,7 +1,7 @@
 //! Main-thread integration fixture; only the OS launch-classification boundary
 //! is injected. Menu dispatch, window creation, PTY and activation are real.
 use super::*;
-use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -112,7 +112,7 @@ impl EventHandler<AppEvent> for Lifecycle {
         let result = self.activate(ctx, [1; 16], platform::activation::ActivationAction::Pane(stale_id));
         assert_eq!(result, Ok(()), "stale-pane acknowledgement");
         assert!(self.app.windows.is_empty(), "stale pane click created a replacement window");
-        let cold_endpoint = PathBuf::from(format!("/tmp/litty-a1-{}", unsafe { libc::geteuid() }))
+        let cold_endpoint = registry()
             .join(origin).join("s");
         self.app.activation.take();
         assert!(!cold_endpoint.exists(), "cold service endpoint survived shutdown");
@@ -129,7 +129,7 @@ impl EventHandler<AppEvent> for Lifecycle {
         let service = self.app.activation.as_ref().expect("menu window did not start activation service");
         // Inspect only this process's endpoint; never discover or reuse another
         // user's running instance during an integration test.
-        let endpoint = PathBuf::from(format!("/tmp/litty-a1-{}", unsafe { libc::geteuid() }))
+        let endpoint = registry()
             .join(service.origin()).join("s");
         assert!(std::fs::symlink_metadata(&endpoint).expect("advertised endpoint").file_type().is_socket());
         let origin = service.origin().to_owned();
@@ -153,7 +153,25 @@ impl Drop for Lifecycle {
     }
 }
 
+/// This run's private activation registry: the fixture never advertises in,
+/// discovers or reaches the person's real per-user registry.
+fn registry() -> PathBuf {
+    PathBuf::from(std::env::var_os("LITTY_ACTIVATION_DIR").expect("private activation registry"))
+}
+
 pub(crate) fn run() {
+    // Short enough for a Unix socket path; 0700 and owned by this user.
+    let private = PathBuf::from(format!("/tmp/la-native-{}", std::process::id()));
+    // A run killed by the watchdog skips cleanup; with PID reuse its empty
+    // directory may still exist. remove_dir never deletes leftover entries.
+    if let Err(e) = std::fs::remove_dir(&private)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        panic!("stale private activation registry {}: {e}", private.display());
+    }
+    std::fs::DirBuilder::new().mode(0o700).create(&private).expect("private activation registry");
+    // SAFETY: called from main() before this process starts any other thread.
+    unsafe { std::env::set_var("LITTY_ACTIVATION_DIR", &private) };
     // Bound hangs in AppKit/driver initialization without sleeps or polling.
     let (done, completion) = mpsc::channel();
     let watchdog = std::thread::spawn(move || {
@@ -175,5 +193,7 @@ pub(crate) fn run() {
     platform::macos::set_notification_startup_for_test(None);
     done.send(()).expect("watchdog completion");
     watchdog.join().expect("watchdog");
+    // Every endpoint was removed on shutdown, so the registry must be empty.
+    std::fs::remove_dir(&private).expect("private activation registry left entries behind");
     println!("PASS: one cold-start window/PTY, stale pane ignored, menu window/service, hidden-tab pane activation, missing-dir rejection, benchmark exclusions, shutdown cleanup");
 }

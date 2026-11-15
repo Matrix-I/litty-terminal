@@ -133,8 +133,24 @@ fn private_dir(path: &Path, create: bool) -> io::Result<()> {
     }
     Ok(())
 }
+/// Points tests and the reuse harness at a private registry so they never
+/// discover or reach a person's running instances. It gets the same
+/// owner/mode/symlink checks as the default per-user directory.
+const ROOT_ENV: &str = "LITTY_ACTIVATION_DIR";
 fn root(create: bool) -> io::Result<PathBuf> {
-    let path = PathBuf::from(format!("/tmp/litty-a1-{}", uid()));
+    root_at(std::env::var_os(ROOT_ENV), create)
+}
+fn root_at(dir: Option<std::ffi::OsString>, create: bool) -> io::Result<PathBuf> {
+    let path = match dir {
+        Some(dir) if Path::new(&dir).is_absolute() => PathBuf::from(dir),
+        Some(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "activation directory must be absolute",
+            ));
+        }
+        None => PathBuf::from(format!("/tmp/litty-a1-{}", uid())),
+    };
     private_dir(&path, create)?;
     Ok(path)
 }
@@ -427,6 +443,11 @@ pub fn start_activation(sink: ActivationSink) -> io::Result<ActivationServer> {
     start_at(root(true)?, sink)
 }
 fn start_at(root: PathBuf, sink: ActivationSink) -> io::Result<ActivationServer> {
+    // Tombstones of crashed or killed instances are otherwise reaped only by a
+    // later `--reuse` scan; advertising is a cheap, bounded point to clean up.
+    if let Err(e) = discover(&root, process_alive) {
+        eprintln!("litty: activation registry cleanup failed: {}", e.kind());
+    }
     start_with_origin(root, sink, Origin::new()?)
 }
 fn start_with_origin(
@@ -587,53 +608,75 @@ fn reuse_at(root: &Path, cwd: &str) -> io::Result<bool> {
 }
 pub fn reuse_window(cwd: &str) -> io::Result<bool> {
     wire::validate_cwd(cwd)?;
-    match root(false) {
+    reuse_from(root(false), cwd)
+}
+fn reuse_from(dir: io::Result<PathBuf>, cwd: &str) -> io::Result<bool> {
+    match dir {
         Ok(dir) => reuse_at(&dir, cwd),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        // Another user may pre-create the fixed /tmp name. No instance of ours
+        // can be listening there, so start a new one instead of failing.
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            eprintln!("litty: ignoring unsafe activation directory; starting a new instance");
+            Ok(false)
+        }
         Err(e) => Err(e),
     }
 }
 
 /// Bounded notification forwarding runs independently of AppKit and grid locks.
-pub struct NotificationRouter(Option<JoinHandle<()>>);
+pub struct NotificationRouter {
+    worker: Option<JoinHandle<()>>,
+    stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
 impl Drop for NotificationRouter {
     fn drop(&mut self) {
+        // Queued clicks are dropped, not sent: each send may wait up to the
+        // transport deadline and would stall shutdown on the main thread.
+        self.stopping.store(true, std::sync::atomic::Ordering::SeqCst);
         super::set_notification_handler(None);
-        if self.0.take().is_some_and(|worker| worker.join().is_err()) {
+        if self.worker.take().is_some_and(|worker| worker.join().is_err()) {
             eprintln!("litty: notification router panicked");
+        }
+    }
+}
+fn route_queued(
+    receiver: &mpsc::Receiver<(String, u64)>,
+    stopping: &std::sync::atomic::AtomicBool,
+    deliver: impl Fn(&str, u64) -> io::Result<()>,
+) {
+    while let Ok((origin, pane)) = receiver.recv() {
+        if stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            continue;
+        }
+        if let Err(error) = deliver(&origin, pane)
+            && !matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+            )
+        {
+            eprintln!("litty: notification routing failed: {}", error.kind());
         }
     }
 }
 pub fn start_notification_router() -> io::Result<NotificationRouter> {
     let (sender, receiver) = mpsc::sync_channel::<(String, u64)>(4);
+    let stopping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_stopping = stopping.clone();
     let worker = thread::Builder::new()
         .name("notification-router".into())
         .stack_size(128 * 1024)
         .spawn(move || {
-            while let Ok((origin, pane)) = receiver.recv() {
-                let result = (|| {
-                    send(
-                        &root(false)?,
-                        &Origin::parse(&origin)?,
-                        ActivationAction::Pane(pane),
-                    )
-                })();
-                if let Err(error) = result
-                    && !matches!(
-                        error.kind(),
-                        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-                    )
-                {
-                    eprintln!("litty: notification routing failed: {}", error.kind());
-                }
-            }
+            route_queued(&receiver, &worker_stopping, |origin, pane| {
+                send(&root(false)?, &Origin::parse(origin)?, ActivationAction::Pane(pane))
+            })
         })?;
     super::set_notification_handler(Some(std::sync::Arc::new(move |origin, pane| {
         if sender.try_send((origin, pane)).is_err() {
             eprintln!("litty: notification routing queue unavailable");
         }
     })));
-    Ok(NotificationRouter(Some(worker)))
+    Ok(NotificationRouter { worker: Some(worker), stopping })
 }
 
 pub fn notify_pane(origin: Option<&str>, pane: u64, title: &str, body: &str) {
@@ -665,7 +708,13 @@ mod tests {
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
-            fs::remove_dir(&self.0).unwrap();
+            // A second panic while a failed test unwinds would abort the run
+            // and hide the original assertion.
+            if let Err(e) = fs::remove_dir(&self.0)
+                && !thread::panicking()
+            {
+                panic!("fixture {} not empty or missing: {e}", self.0.display());
+            }
         }
     }
     #[test]
@@ -895,6 +944,55 @@ mod tests {
         .unwrap();
         assert!(reuse_at(&f.0, "/tmp").is_err());
         drop(server);
+    }
+    #[test]
+    fn registry_override_must_be_absolute_and_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = Fixture::new();
+        assert_eq!(root_at(Some(f.0.clone().into()), false).unwrap(), f.0);
+        assert_eq!(
+            root_at(Some("relative/dir".into()), false).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        fs::set_permissions(&f.0, fs::Permissions::from_mode(0o755)).unwrap();
+        let unsafe_root = root_at(Some(f.0.clone().into()), false);
+        assert_eq!(unsafe_root.as_ref().unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        // A root another user controls cannot hold our instances: start fresh.
+        assert!(!reuse_from(unsafe_root, "/tmp").unwrap());
+        fs::set_permissions(&f.0, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            reuse_from(Err(io::Error::other("broken")), "/tmp").unwrap_err().kind(),
+            io::ErrorKind::Other
+        );
+    }
+    #[test]
+    fn advertising_reaps_dead_instance_tombstones() {
+        let f = Fixture::new();
+        // PIDs above the kernel's maximum never exist (kill reports ESRCH).
+        let dead = Origin::parse(&format!("{:016x}-7ffffff0-{}", 1, hex(&[9; 16]))).unwrap();
+        let tombstone = f.0.join(&dead.name);
+        private_dir(&tombstone, true).unwrap();
+        let server = start_at(f.0.clone(), Arc::new(|_, reply| reply.send(Ok(())).unwrap())).unwrap();
+        assert!(!tombstone.exists(), "dead instance tombstone survived advertising");
+        assert!(f.0.join(server.origin()).join("s").exists());
+        drop(server);
+    }
+    #[test]
+    fn stopping_router_drops_queued_clicks_instead_of_sending() {
+        let (sender, receiver) = mpsc::sync_channel(4);
+        let stopping = std::sync::atomic::AtomicBool::new(false);
+        for pane in 1..=3 {
+            sender.send(("origin".to_owned(), pane)).unwrap();
+        }
+        drop(sender);
+        let delivered = std::sync::Mutex::new(Vec::new());
+        route_queued(&receiver, &stopping, |_, pane| {
+            delivered.lock().unwrap().push(pane);
+            // Shutdown begins while the first click is being delivered.
+            stopping.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        });
+        assert_eq!(*delivered.lock().unwrap(), [1]);
     }
     #[test]
     fn late_acknowledgement_is_an_error_without_fallback_or_second_admission() {
