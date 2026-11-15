@@ -670,8 +670,9 @@ No source changed after that package, only review-status documentation.
 Base: `main` at `61fb5f0` (PR #83 merged). Fixes are on
 `fix/app-activation-review`. Verification after the fixes:
 `cargo check`, Linux all-target check, Clippy `-D warnings` and
-`git diff --check` pass. Unsandboxed `cargo test` gives 686 unit + 1 + 14
+`git diff --check` pass. Unsandboxed `cargo test` gives 692 unit + 1 + 14
 integration tests plus the native lifecycle PASS, with 12 existing ignored.
+The harness preflight unit tests (`test_reuse_harness.py`) pass.
 The README idle figures are release-measured values (see `performance.md`);
 they are not refreshed by this sample.
 
@@ -688,21 +689,45 @@ disposition:
 | No transport test for an acknowledgement after the deadline | Added `late_acknowledgement_is_an_error_without_fallback_or_second_admission`. It asserts: the request errors, the older instance is never tried, a second request is not admitted, and admission resumes after the held reply. A mutation that retries on `TimedOut` and drops the held admission makes it fail. |
 | No app-state test for exact-pane activation | The native lifecycle fixture now activates a pane in a hidden tab that sits under another pane's zoom and carries a bell. It asserts tab/pane selection, zoom and bell cleared, and a refreshed title. A missing NewWindow directory returns `Err` and does not add a window. Removing `state.active = at` makes it fail. |
 | Stale pre-merge statements and unverified real-ID claims in docs | Fixed in README, ROADMAP, the notification and CLI guides, and this report. |
-| Release-binary reuse harness evidence predates the native changes | Open. It has not been rerun on the merged source; see the checklist. |
+| Release-binary reuse harness evidence predates the native changes | Rerun on the fix-branch release build (merged source plus these fixes): PASS. See "Reuse harness rerun". |
 
 The app/PTY review's Minor finding is also fixed: exact-pane activation now
 refreshes tab titles like `select_tab`. The fixture caught the stale title
-before the fix. Other Minor findings are recorded as follow-ups, not fixed
-here:
+before the fix. Minor findings, second batch:
 
-- Stale endpoints are reaped only by `--reuse` scans.
-- No helper fallback when UN authorization fails.
-- A fixed `/tmp` root that another user can pre-create.
-- Router shutdown can block for a few seconds.
-- The hard-coded `usernoted` sender.
-- Harness isolation of the user's config/cache.
-- `pipe()` without atomic CLOEXEC in strict PTY setup.
-- The test registry is shared with real instances.
+| Finding | Disposition |
+| --- | --- |
+| Stale endpoints reaped only by `--reuse` scans | Fixed. Advertising a service also reaps verified-dead tombstones; a regression test covers it. |
+| Packaged build drops notifications when UN authorization fails | Fixed (maintainer decision). Denied or unavailable authorization falls back once to the identity-less helper, without click routing. An ObjC test covers denied, error and duplicate completion. |
+| Fixed `/tmp` root that another user can pre-create makes `--reuse` fail | Fixed. An unsafe root means no eligible instance of ours, so `--reuse` warns and starts a new process. |
+| Router shutdown can block for several seconds | Fixed. Queued clicks are dropped, not sent, once shutdown starts. Shutdown can still wait for one in-flight send, bounded by the 2 s transport deadline. |
+| Harness used the person's config, update cache and registry | Fixed. The harness uses a temporary HOME with `auto-update = off` and a private `LITTY_ACTIVATION_DIR`. Cleanup steps are independent and remove endpoints by child PID. |
+| Test registry shared with real instances | Fixed. The native lifecycle fixture uses a private `LITTY_ACTIVATION_DIR` and requires it to be empty at exit. |
+| `pipe()` without atomic CLOEXEC in strict PTY setup | Defensive hardening, not reproduced. Linux uses `pipe2(O_CLOEXEC)`. Darwin has no `pipe2` and still sets `FD_CLOEXEC` immediately. |
+| Test fixture `Drop` could panic during unwinding | Fixed. It no longer panics while a failed test unwinds. |
+| `tests/native_activation.rs` duplicates the module list | Guarded. A layering test fails when it diverges from `src/main.rs`. |
+| Probe built under `/tmp`, where authorization failed | Fixed. The probe builds under `dist/activation-test/`. |
+| Hard-coded `/usr/sbin/usernoted` sender | Accepted limitation. If a future macOS changes the sender, a click falls back to a generic Reopen. |
+
+`LITTY_ACTIVATION_DIR` overrides the registry directory for tests and
+harnesses. It must be an absolute path that is private (0700, owned by the
+user, not a symlink) and short enough for Unix socket paths.
+
+### Reuse harness rerun
+
+`python3 scripts/macos/test-reuse.py target/release/litty` on the fix-branch
+release build: PASS. It covered:
+
+- no-instance startup
+- Unicode PTY cwd
+- ordinary independent launch, which starts in the temporary HOME
+- newest-instance reuse
+- timeout without fallback
+- crash recovery
+- zero-window reuse
+
+The person's registry held 22 entries before and after, and both temporary
+directories were removed.
 
 ### Latest-build idle sample
 
@@ -720,18 +745,34 @@ own activation listener (plus one socket pair). Measured with
 | Wakeups | 0 package-idle, 98 interrupt (about 0.8/s) |
 | Instructions | 361 M |
 
-The closed-window 0 % idle CPU target is not met by this sample. The source
-of the wakeups is not identified, and there is no pre-PR baseline under the
-same method. A repeat sample was lost: during this run the test instance was
+This sample used the person's real config. The default `auto-update = check`
+can run startup network work inside the sample window. It is superseded by
+the paired comparison below. A repeat sample was lost: during this run the test instance was
 killed externally twice, while another agent's `litty-pr83-proof` bundle was
 running. The registry held about 20 tombstones of dead processes from earlier
 runs.
+
+### Paired idle comparison against the pre-#83 baseline
+
+Both builds were launched at the same time, each with its own temporary HOME
+(`auto-update = off`), a private registry and `SHELL=/usr/bin/true`. After
+30 s to settle, `proc_pid_rusage` sampled both over the same 180 s:
+
+| Build | CPU | Interrupt wakeups | Threads | phys_footprint (peak) |
+| --- | --- | --- | --- | --- |
+| fix branch | 24.6 ms (0.014 %) | 61 | 8 | 27 MB (44 MB) |
+| `0cbfb09` (before #83) | 29.0 ms (0.016 %) | 63 | 5 | 27 MB (31 MB) |
+
+#83 adds no measurable closed-window idle CPU or footprint. Both builds show
+the same residual of about 0.35 wakeups/s; this rounds to the README's
+0.0 % but is not exactly zero. The 13 MB higher peak while a window existed
+is not the closed-window budget metric and is not investigated here.
 
 ### Open checklist (supersedes the list above)
 
 - [ ] Real com.litty.terminal authorization/delivery/icon/click verification.
 - [ ] Actual latest-build native notification/crash/cold-click replay.
-- [ ] Rerun `scripts/macos/test-reuse.py` on the merged source.
+- [x] Rerun `scripts/macos/test-reuse.py` on the merged source (fix branch).
 - [ ] B receiving A's callback and forwarding to A across IPC/activation.
 - [ ] Minimized, Cmd+H-hidden and AppKit-native-tab surfaces. Exact-pane tab,
   zoom and title state is now covered; window deminiaturize is not.
@@ -740,9 +781,9 @@ runs.
   account. In code, the 0700 owner-checked root and `getpeereid` both reject.
 - [ ] macOS 11–13 runtime (`LSMinimumSystemVersion` 11.0). Intel macOS is
   unsupported and is no longer a gap.
-- [ ] Closed-window idle CPU: identify the ~0.8/s wakeups and compare against
-  a pre-PR baseline with the same `proc_pid_rusage` method.
+- [x] Closed-window idle CPU compared against the pre-#83 baseline: no
+  regression. The shared ~0.35/s residual predates this feature.
 - [ ] Accepted disposition/root cause for earlier intermittent reports and
   AppKit move warnings.
-- [x] Strict Opus review of the merged change. Its Important findings are
-  fixed or tracked above; this fix branch needs its own review round.
+- [x] Strict Opus review of the merged change. Its findings are fixed, guarded
+  or accepted above, and the fix branch has its own review rounds.
