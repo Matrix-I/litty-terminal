@@ -20,10 +20,13 @@ app bundle supplies the notification icon through its `Litty.icns` resource.
 Setting the terminal window title or Dock icon does not replace that resource.
 
 Click routing targets the originating live pane, including its current tab
-and window after a tab move. A closed pane or exited process is ignored;
-notification-only relaunch must not create a replacement shell. Those desktop
-flows, including visual icon/focus and Dock interaction, remain acceptance
-checks; unit and lifecycle tests do not establish all OS behavior.
+and window after a tab move. While Litty is running, a closed pane is ignored
+without creating a replacement window. If Litty has fully exited and an old
+notification relaunches it, Litty opens one fresh window using its normal
+startup directory. It does not restore the exited pane or its shell session.
+Clean quits withdraw that process's notifications; an old notification may
+remain after a crash. See the validation report for the maintainer's completed
+UI checks and the remaining runtime/review limits.
 
 Ordinary launches remain independent. Notification clicks route to their exact
 origin rather than the newest process selected by `+reuse`.

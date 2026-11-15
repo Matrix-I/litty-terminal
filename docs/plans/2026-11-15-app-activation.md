@@ -106,7 +106,7 @@ performance, security, naming/API compatibility, tests and design; request
 
 | Risk | Mitigation | Rollback |
 | --- | --- | --- |
-| Cold notification relaunch creates an unwanted shell | Characterize real bundle launch before changing startup; install the UN delegate before `finishLaunching`; distinguish explicit open intent from a notification-only launch | Keep the task incomplete if the real no-shell guarantee cannot be demonstrated; do not weaken it |
+| Cold notification relaunch duplicates a window or restores an exited pane | Install the UN delegate before `finishLaunching`; create one fresh normal window and reject the old process session; keep live stale-pane clicks windowless | Revert the amended cold-start path if the one-window/live-stale distinction fails |
 | Wrong process receives a notification response | Route exact session and pane via IPC; reject stale session; test two instances and restarts | Restore existing notification helper |
 | Wrong pane after tab tear-off/native-tab selection | Resolve stable pane ID against current app state at click time; reveal/unminimize selected window | Revert selection handler |
 | Spoofed, stalled or duplicate IPC | Same-user checked endpoints, bounded reads/time/queues, deduplication, exact-origin routing, error on uncertain delivery | Remove additive reuse dispatch; ordinary launches continue |
@@ -361,9 +361,10 @@ platform APIs for early notification initialization and pane-targeted delivery.
   Exact local session dispatches the pane action; another session routes to its
   specific endpoint, never discovery's newest instance. Missing origin returns
   without opening a window. Dismiss has no activation effect.
-- [ ] Apply Task 1's experimentally verified notification-only startup handling.
-  No default shell, generic Reopen or passive activate callback may create a
-  window for a stale notification. On shutdown withdraw session notifications
+- [ ] Apply the maintainer's amended startup policy: a notification-only cold
+  launch creates one fresh normal window; a stale pane in a running app must
+  not trigger a generic Reopen or create a replacement window.
+  On shutdown withdraw session notifications
   and release delegates/blocks/workers deterministically. A restarted process
   must reject old session identity even if its first pane ID is again 1.
 - [ ] Use macOS 14+ `activate` where available and older guarded compatibility
@@ -1429,3 +1430,36 @@ Maintainer reports the final numbered Dock/menu lifecycle test works. Record
 that UI gate as passed by user observation; the fixture counter reached 5
 and is not a per-action trace. Revised cold-start code/test alignment and the
 previously documented unresolved reports/environment/review limits remain.
+
+## Cold-Start Alignment Batch (after checkpoint 2ab51c0)
+
+Maintainer authorized the checkpoint, then implementation of the amendment.
+No public API, IPC format, config, dependency or keybinding change is needed.
+
+- [x] Update src/app/native_activation_test.rs first: assert one cold-start
+  window with a live fixed PTY and activation service; repeat resumed without
+  duplication; close its window and submit its now-stale pane ID through the
+  real AppEvent::Activation path; assert success without a window; then reset
+  the server and retain the real windowless menu/service regression. Run
+  cargo test --test native_activation outside sandbox; expect the old source
+  to fail the cold-window assertion.
+- [x] In src/app/mod.rs remove the notification-only initial-window early
+  return. Explicitly focus/activate the fresh cold window. Keep notification
+  launches' previous omission of automatic update checks (avoids adding a
+  network/update side effect to that path); ordinary startup stays unchanged.
+  Remove the obsolete private policy helper and its superseded no-shell unit
+  test from src/app/activation.rs, replacing their coverage with the stronger
+  main-thread lifecycle regression. Re-run it; expect PASS.
+- [x] Align README, ROADMAP, guide and current validation summary. Historical
+  plan/validation entries remain dated execution evidence, superseded by the
+  confirmed-requirements section and this batch. Run all required checks plus
+  Linux all-target/Apple x86 checking and release build, inspect the full diff,
+  self-review and request code-review-strict. Report unavailable review/runtime
+  gates honestly; no push or release is authorized.
+
+Batch verified: all required commands, Linux all-target/Apple x86 checks and
+release build pass; 700 ordinary tests plus native lifecycle PASS, 12 existing
+ignored. Supplemental review M4KtHM approves with no findings. Required Opus
+remains unavailable; the PR draft explicitly preserves that and all remaining
+proof gaps. The maintainer authorized opening a PR when the feature is done;
+no PR, push or release has yet been performed.

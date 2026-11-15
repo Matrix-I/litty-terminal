@@ -53,8 +53,11 @@ Separate from the completed Wayland preview phase; see the
   and notification-only startup handling are implemented on `feat/app-activation`.
   Notification permission, live response and cold-launch ordering were observed
   with the local probe. A real AppKit menu/window/PTY/service regression passes.
-  Real Litty icon/focus, stale-click and Dock acceptance remain open, along with
-  older macOS runtime and required Opus review; see the
+  The maintainer confirmed probe-identity icon/focus, stale-pane, moved-tab,
+  zoomed-split, two-process and Dock/menu UI checks. Cold relaunch opens one
+  fresh window; live stale-pane clicks do not. Real-ID authorization, older
+  macOS runtime, intermittent reports and required Opus review remain open;
+  see the
   [validation report](./docs/validation/macos-app-activation-2026-11-15.md).
 
 ## Verification debt

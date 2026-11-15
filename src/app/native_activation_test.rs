@@ -38,11 +38,42 @@ impl EventHandler<AppEvent> for Lifecycle {
     fn cycle_started(&mut self, _: bool) {}
     fn resumed(&mut self, ctx: &LoopCtx) {
         self.assert_benchmarks_do_not_advertise();
-        self.app.resumed(ctx);
-        assert!(self.app.windows.is_empty(), "notification-only launch created a window");
-        assert!(self.app.activation.is_none(), "notification-only launch advertised activation");
-
         // A stable real PTY child avoids executing the user's interactive shell.
+        gui_bench::set_pane_program(vec!["/bin/cat".into()]);
+        self.app.resumed(ctx);
+        assert_eq!(self.app.windows.len(), 1, "notification cold launch must create one fresh window");
+        let pane = self.app.windows[0].tabs[0].active_pane().expect("cold-start pane");
+        let stale_id = pane.id;
+        assert!(pane.pty.pid > 0);
+        // SAFETY: signal zero checks existence without sending a signal.
+        assert_eq!(unsafe { libc::kill(pane.pty.pid, 0) }, 0, "cold-start PTY is not alive");
+        let origin = self.app.activation.as_ref().expect("cold-start service").origin().to_owned();
+        self.app.resumed(ctx);
+        assert_eq!(self.app.windows.len(), 1, "repeated resume duplicated the cold window");
+        self.app.windows.clear();
+
+        let session_hex = origin.rsplit('-').next().expect("origin session");
+        let mut session = [0; 16];
+        for (i, byte) in session.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&session_hex[i * 2..i * 2 + 2], 16).expect("session hex");
+        }
+        let (reply, result) = mpsc::sync_channel(1);
+        self.app.user_event(ctx, AppEvent::Activation {
+            request: platform::activation::ActivationRequest {
+                id: [1; 16], session,
+                // This already-admitted fixture request must not expire mid-assertion.
+                expires_ns: u64::MAX,
+                action: platform::activation::ActivationAction::Pane(stale_id),
+            }, reply,
+        });
+        assert_eq!(result.try_recv().expect("stale-pane acknowledgement"), Ok(()));
+        assert!(self.app.windows.is_empty(), "stale pane click created a replacement window");
+        let cold_endpoint = PathBuf::from(format!("/tmp/litty-a1-{}", unsafe { libc::geteuid() }))
+            .join(origin).join("s");
+        self.app.activation.take();
+        assert!(!cold_endpoint.exists(), "cold service endpoint survived shutdown");
+
+        // Retain coverage of the windowless menu starting a missing service.
         gui_bench::set_pane_program(vec!["/bin/cat".into()]);
         self.app.user_event(ctx, platform::PlatformEvent::Menu(platform::MenuCommand::NewWindow).into());
         assert_eq!(self.app.windows.len(), 1, "windowless menu did not create a window");
@@ -99,5 +130,5 @@ pub(crate) fn run() {
     platform::macos::set_notification_startup_for_test(None);
     done.send(()).expect("watchdog completion");
     watchdog.join().expect("watchdog");
-    println!("PASS: notification-only cold start, real menu window/PTY, activation endpoint, benchmark exclusions, shutdown cleanup");
+    println!("PASS: one cold-start window/PTY, stale pane ignored, menu window/service, benchmark exclusions, shutdown cleanup");
 }
