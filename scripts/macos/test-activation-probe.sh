@@ -2,7 +2,10 @@
 # Build a separate test-only bundle; no terminal shell or private data is used.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-probe_dir=$(mktemp -d /tmp/litty-activation-probe.XXXXXX)
+# Notification authorization was observed only for a copy under dist/ (a
+# bundle launched from /tmp reproduced UNErrorDomain error 1).
+mkdir -p "$root/dist/activation-test"
+probe_dir=$(mktemp -d "$root/dist/activation-test/probe.XXXXXX")
 bundle="$probe_dir/LittyActivationProbe.app"
 mkdir -p "$bundle/Contents/MacOS"
 cat > "$bundle/Contents/Info.plist" <<'PLIST'
