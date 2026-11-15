@@ -9,7 +9,8 @@ optimization candidates are identified separately from reproduced failures.
 
 | Version | Record |
 | --- | --- |
-| [v0.13.0](./docs/plans/0.13.0.md) | Planned — every open item carried over from earlier records and this roadmap, to resolve in one release |
+| [v0.14.0](./docs/plans/0.14.0.md) | Planned — unfinished implementation and desktop acceptance carried from v0.13.0 |
+| [v0.13.0](./docs/plans/0.13.0.md) | Release preparation — Wayland preview, Linux shaders, macOS reuse/notifications, selection and atlas fixes; not yet published |
 | [v0.12.0](./docs/plans/0.12.0.md) | Release record (2026-11-13) — Linux Vulkan robustness and X11 integration (IME, monitors, theme, fullscreen, titles), security and robustness fixes, 10 MB scrollback default, alt-screen and non-ASCII parser speedups |
 | [v0.11.1](./docs/plans/0.11.1.md) | Release record (2026-11-11) — source review fixes (click-to-move panic, RIS, OSC titles, scroll margins), OSC 8 file-link hardening, faster OSC 8 interning and rows-only resize, SIGWINCH after resize bursts, macOS live-resize and window fixes |
 | [v0.11.0](./docs/plans/0.11.0.md) | Release record (2026-11-09) — ships the performance gap plan: new latency, startup and PTY throughput benchmarks, shaping cache, faster OSC 8 / Unicode paths, overlapped startup and lower idle memory; T1 and emoji interning carry over |
@@ -40,25 +41,14 @@ Detailed structural refactor plans and the Yosh implementation plan remain in
 `docs/plans/` and are linked from their release records. Outstanding structural
 follow-ups are in v0.8.0; shipped refactor results are in v0.7.1.
 
-## macOS app activation (in progress)
+## macOS app activation
 
-Separate from the completed Wayland preview phase; see the
-[implementation plan](./docs/plans/2026-11-15-app-activation.md).
-
-- [ ] Opt-in `+reuse` / `--reuse`, newest eligible instance, invoking cwd,
-  bounded same-user activation and exact-pane selection groundwork. Merged to
-  `main` (PR #83); desktop acceptance and post-merge review fixes remain pending.
-- [ ] Native notification click-through to the originating pane, including
-  stale notification/cold-start behavior. Native delivery, exact-origin routing
-  and notification-only startup handling are merged to `main` (PR #83).
-  Notification permission, live response and cold-launch ordering were observed
-  with the local probe. A real AppKit menu/window/PTY/service regression passes.
-  The maintainer confirmed probe-identity icon/focus, stale-pane, moved-tab,
-  zoomed-split, two-process and Dock/menu UI checks. Cold relaunch opens one
-  fresh window; live stale-pane clicks do not. Open items include real-ID
-  authorization, macOS 11–13 runtime, cross-UID runtime proof and
-  intermittent reports; see the
-  [validation report](./docs/validation/macos-app-activation-2026-11-15.md).
+Merged reuse and native notification integration ship in v0.13.0 with explicit
+limits. Real app-ID delivery, exact-pane routing, cold relaunch, window-state
+and quit-path checks are recorded in the
+[validation report](./docs/validation/macos-app-activation-2026-11-15.md).
+Remaining acceptance, cross-process foreground activation, older macOS and
+cross-UID runtime checks move to [v0.14.0](./docs/plans/0.14.0.md#macos-app-activation-acceptance).
 
 ## Verification debt
 
@@ -102,7 +92,7 @@ Separate from the completed Wayland preview phase; see the
 From [the 2026-11-11 review](./docs/reviews/2026-11-11-linux-history-ai-graphics.md). Not scheduled.
 
 - [x] **Linux: native Wayland backend preview.** All seven backend phases are implemented and merged (`129dc36`); opt in with `LITTY_BACKEND=wayland`. X11 remains the default.
-  - Moved to its own plan and branch (decided 2026-11-13): [Wayland backend](./docs/plans/wayland-backend.md). Not part of v0.13.0.
+  - Moved to its own plan and branch (decided 2026-11-13): [Wayland backend](./docs/plans/wayland-backend.md). The merged preview ships in v0.13.0; unfinished acceptance moves to v0.14.0.
   - [x] Phase 1 (window and surface) done on `feat/wayland-window` (2026-11-13), opt-in with `LITTY_BACKEND=wayland`: an `xdg_toplevel` (app id `litty`) on one shared connection, Vulkan surface, configure, resize, title, close, and redraws paced by frame callbacks. Checked on Ubuntu GNOME (mutter): the window opens and draws, idle costs 1 CPU tick per 5 s (cursor blink), and a headless Weston smoke test (`scripts/linux/wayland_smoke.py`) checks open, a compositor-driven resize, frame callbacks and close. Terminal output is paced too: `yes` in the window presents ~60 frames/s, each after its frame callback. Known cost: each presented frame allocates the `wl_callback` proxy wayland-rs creates for the frame request (no way to reuse one). The remaining backend phases have since landed; X11 stays the default.
   - [x] Phase 2 (input) done on `feat/wayland-input` (2026-11-14): keyboard through the compositor's xkb keymap (libxkbcommon loaded at run time with `xkbcommon-dl`, so the binary still links only libc), keys named by keysym so remaps such as `caps:escape` apply, client key repeat on a timerfd (and the compositor's own, `wl_keyboard` v10), pointer motion, buttons and wheel/touchpad scroll, and cursors through `wp_cursor_shape_v1` with a cursor-theme fallback. Checked on Ubuntu GNOME (mutter): the keymap compiles and the cursor shape is set on enter; a headless sway smoke test (`scripts/linux/wayland_sway_smoke.py`, `wtype`/`wlrctl`) checks shifted text, Ctrl, client key repeat and cursor-shape binding. Dead keys and Compose landed in phase 5; horizontal scroll remains unsupported.
   - [x] Phase 3 (scale and outputs) done on `feat/wayland-scale` (2026-11-14): `wp_fractional_scale_v1` through a `wp_viewport` (integer scale as the fallback, scale 1 without a viewporter), pointer and touchpad positions in buffer pixels, and `current_monitor` from the output the window is on (current mode size and refresh rate). Checked on Ubuntu GNOME at 125%: a 968x620 window draws a 1210x775 buffer and reports 60 Hz; the sway smoke test checks a 150% output (682x426 logical, 1023x639 buffer). Integrated checks passed scale changes 100–200% and moves between virtual sway outputs at 200% and 125%, plus KWin startup scales 100–200%. Live KDE 6.6.6 scale changes 100–200% also passed on the physical panel; physical mixed-DPI moves remain unchecked.

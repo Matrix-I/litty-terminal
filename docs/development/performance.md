@@ -7,6 +7,30 @@ collection reclaims unused entries.
 
 ## macOS
 
+Measured on 2026-11-15: v0.13.0 preparation at `30154c0` plus version/docs
+changes only, Apple M1 Pro, macOS 27.2. The full pre-release suite passed.
+The closed-window sample launched the packaged app directly with an isolated
+home and `SHELL=/usr/bin/true`; the shell exited before sampling.
+
+| Metric | Result | How it was measured |
+| :--- | :---: | :--- |
+| Idle footprint, 1 window / 1 tab | **58 MB** | `+bench-ram`, one run; includes GPU surfaces |
+| 1 window / 3 tabs | 74 MB | Same run |
+| 2 windows / 6 tabs | 122 MB | Same run |
+| After benchmark cleanup | 45 MB | Returns to one window / one tab; not the closed-window measurement |
+| Idle footprint, all windows closed | **20 MB** (peak 23 MB) | Packaged app; `footprint`, about 40 s after launch |
+| Closed-window idle CPU | **0.0%** displayed | `ps` CPU time 0:00.23 → 0:00.24 over 30.020 s (~0.033% of one core) |
+| PTY DSR roundtrip | Mean 0.016 ms, P99 0.022 ms | Pre-release suite; excludes shell/rendering |
+| 20k-line stress | 747,692 lines/s; worst chunk stall 1.17 ms | Pre-release suite |
+| Release binary size | macOS **2,338,368 bytes**; Linux **4,733,064 bytes** | Packaged macOS and glibc 2.34 cross-build; both below 5,000,000 bytes |
+
+README idle RAM/CPU badges use the closed-window packaged-app sample above.
+Startup, keystroke-to-frame, Linux runtime memory/CPU and PTY throughput were
+not re-measured. Their dated historical evidence below is retained separately.
+See [v0.13.0 validation](../validation/release-0.13.0.md) for coverage and gaps.
+
+### Historical v0.12.0 measurements
+
 Measured on 2026-11-13: Litty 0.12.0 release build (`cargo build --release`),
 Apple M1 Pro, macOS 27.2, one 2590 × 1492 px Retina window.
 

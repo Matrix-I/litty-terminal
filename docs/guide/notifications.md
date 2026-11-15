@@ -1,9 +1,9 @@
 # Desktop notifications
 
-Native macOS notification integration is merged to `main` (PR #83); desktop
-acceptance is still in progress. See the
+Native macOS notification integration is included in v0.13.0; remaining desktop
+acceptance moves to [v0.14.0](../plans/0.14.0.md#macos-app-activation-acceptance). See the
 [validation report](../validation/macos-app-activation-2026-11-15.md) for tested
-coverage and open checks. It is not claimed as a completed released feature.
+coverage and open checks. Cross-process foreground activation remains limited.
 
 Programs running inside Litty can request a notification using OSC 9 or OSC 777:
 
