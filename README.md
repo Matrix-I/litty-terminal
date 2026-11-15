@@ -1,11 +1,11 @@
 # Litty Terminal ⚡
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/version-0.12.0-blue.svg)]()
+[![Version](https://img.shields.io/badge/version-0.13.0-blue.svg)]()
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue.svg)]()
 [![GPU Backend](https://img.shields.io/badge/GPU-Metal%20%7C%20Vulkan-orange.svg)]()
 [![Idle CPU](https://img.shields.io/badge/idle%20CPU-0.0%25-green.svg)]()
-[![Idle RAM](https://img.shields.io/badge/idle%20RAM-63MB-success.svg)]()
+[![Idle RAM](https://img.shields.io/badge/idle%20RAM-20MB-success.svg)]()
 [![Binary Size](https://img.shields.io/badge/binary-%3C%205MB-informational.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -17,11 +17,11 @@
 
 - **Native GPU rendering** on Metal (macOS) and Vulkan (Linux): the whole grid in a single instanced draw call.
 - **12-byte cells in a zero-allocation ring buffer**, so heavy output never thrashes the heap.
-- **0.0% idle CPU** and 61 MB idle footprint with one window, 28 MB with all windows closed (`ControlFlow::Wait`, event-driven; macOS figures. On Linux: ~67 MB RSS / ~21 MB PSS with one window; see [Performance](docs/development/performance.md) for how each number is measured).
+- **0.0% idle CPU** and 58 MB idle footprint with one window, 20 MB with all windows closed (`ControlFlow::Wait`, event-driven; macOS figures. On Linux: ~67 MB RSS / ~21 MB PSS with one window; see [Performance](docs/development/performance.md) for how each number is measured).
 - **Ghostty-compatible configuration** with live reload. Extreme cell adjustments are automatically capped at 2,048 pixels per dimension to keep the glyph atlas valid.
 - **Tabs, windows and splits** that inherit the working directory. Drag a tab title left or right to reorder tabs within a window, or drag it away from the tab bar to pull it out into a new window that follows the pointer, and move it over another window's tab bar to merge it there, as in Chrome.
 - **Opt-in process reuse on macOS**: `litty +reuse` (or `--reuse`) opens a new window in the newest eligible Litty process at the invoking directory. Ordinary launches remain independent. See [CLI commands](docs/guide/updates-and-cli.md).
-- **Native macOS notifications (in development)**: packaged builds are designed to use Litty's app identity and icon for OSC 9 / OSC 777 notifications (delivery under the real `com.litty.terminal` identity is not yet verified; if permission is denied or unavailable, the standalone helper shows it without click routing), with click routing to their originating live pane. A notification that relaunches a fully exited app opens one fresh window. See [notifications](docs/guide/notifications.md) for permissions, examples and current validation limits.
+- **Native macOS notifications**: packaged builds use Litty's app identity for OSC 9 / OSC 777 notifications, with verified delivery and click routing to their originating live pane. If permission is denied or unavailable, the standalone helper shows them without click routing. Forwarded clicks between processes may select the pane without bringing its window forward on macOS 14+. A notification that relaunches a fully exited app opens one fresh window. See [notifications](docs/guide/notifications.md) for permissions, examples and current validation limits.
 - **Native Wayland preview** with `LITTY_BACKEND=wayland`: keyboard, pointer, fractional scaling, client decorations, text-input-v3 IME, clipboard/primary selection, file drops, frame-callback occlusion and compositor-approved activation, with local dead keys/Compose that survive compositor keymap updates. X11 remains the default. See the [validation results](docs/validation/wayland-integrated-2026-11-14.md) and [live KDE follow-up](docs/validation/wayland-kde-2026-11-15.md) for tested coverage and remaining checks.
 - **Seamless title bar on Linux**: the window has no native frame; its title bar is drawn in the terminal's background color with minimize / maximize / close buttons, drag-to-move, double-click to maximize and resizable edges.
 - **Built-in history search, regex find, click-to-position cursor and hyperlink detection.** Cmd/Ctrl+Click opens web links, folders and common text, source, document and media files; other files (scripts, apps, installers, `.terminal`, `.webloc`, files without an extension) are only revealed in their folder, and OSC 8 `file://` links from other hosts are ignored.
