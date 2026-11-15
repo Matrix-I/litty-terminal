@@ -21,9 +21,9 @@ bundle), Litty shows the notification through the standalone helper instead:
 it still appears, but without Litty's identity or click routing. After
 choosing Don't Allow, notifications therefore keep appearing under the
 helper's identity; turn them off in System Settings ▸ Notifications for that
-helper (Script Editor) if you do not want them. Delivery under the
-real `com.litty.terminal` identity has not yet been verified; the completed UI
-checks used a local probe identity. The app bundle supplies the notification
+helper (Script Editor) if you do not want them. Delivery, single-process
+click focus and cold-launch clicks have been verified under the real
+`com.litty.terminal` identity. The app bundle supplies the notification
 icon through its `Litty.icns` resource.
 Setting the terminal window title or Dock icon does not replace that resource.
 
@@ -32,9 +32,17 @@ and window after a tab move. While Litty is running, a closed pane is ignored
 without creating a replacement window. If Litty has fully exited and an old
 notification relaunches it, Litty opens one fresh window using its normal
 startup directory. It does not restore the exited pane or its shell session.
-Clean quits withdraw that process's notifications; an old notification may
-remain after a crash. See the validation report for the maintainer's completed
-UI checks and the remaining runtime/review limits.
+Clean quits withdraw that process's notifications, both through Cmd+Q and
+through quit requests from macOS such as Dock Quit. An old notification may
+remain after a crash.
+
+With several Litty processes running, macOS may hand a click to a process
+other than its origin. Litty forwards it, so the right pane is selected, but
+on macOS 14 and later the origin's window may stay behind other apps. Keep
+one installed copy of Litty.app: duplicate copies registered with the same
+bundle identifier can make macOS launch or activate the wrong copy. See the
+validation report for the maintainer's completed UI checks and the remaining
+runtime/review limits.
 
 Ordinary launches remain independent. Notification clicks route to their exact
 origin rather than the newest process selected by `+reuse`.
