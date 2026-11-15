@@ -66,23 +66,3 @@ impl App {
         }
     }
 }
-
-pub(super) fn opens_initial_window(
-    notification_launch: bool,
-    explicit_reuse: bool,
-    benchmark: bool,
-) -> bool {
-    !notification_launch || explicit_reuse || benchmark
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn notification_cold_start_does_not_create_a_shell() {
-        assert!(!opens_initial_window(true, false, false));
-        assert!(opens_initial_window(false, false, false));
-        assert!(opens_initial_window(true, true, false));
-        assert!(opens_initial_window(true, false, true));
-    }
-}

@@ -1,19 +1,19 @@
 # macOS App Activation — Partial Implementation Validation
 
 Date: 2026-11-15. Branch: `feat/app-activation`; base: `af3b5ed`.
-Implementation checkpoints `8df30d5` and `8fd884e` are committed locally;
-the lifecycle regression and later documentation remain uncommitted.
+Implementation checkpoints `8df30d5`, `8fd884e` and lifecycle/desktop checkpoint
+`2ab51c0` are committed locally. The amended cold-start change remains uncommitted.
 Native notification delivery/routing/startup handling is implemented, but full
 desktop acceptance remains incomplete. Later sections supersede earlier
 permission blockers and intermediate test counts; they preserve the execution
 record rather than asserting those blockers still apply.
 
-Current verification: 701 ordinary tests plus the real AppKit lifecycle runner
+Current verification: 700 ordinary tests plus the real AppKit lifecycle runner
 pass, 12 existing ignored; macOS/Linux checks, Clippy and release build pass.
-Supplemental review approves the lifecycle batch. Physical icon/focus,
-stale-click and Dock acceptance, older macOS runtime, exact 0% idle CPU and
-required Opus review remain unverified. The guide and ROADMAP now reflect this
-state without claiming completion.
+The maintainer confirmed the probe-identity UI checklist; this is distinct from
+real-ID delivery and a latest-build cold-click replay. Review of the amended
+code, older macOS/Intel runtime, exact 0% idle CPU and other proof gaps below
+remain open. Historical statements are superseded by the latest sections.
 
 ## Behavior and Real-App Evidence
 
@@ -606,3 +606,56 @@ Native stderr contains the previously recorded, undiagnosed AppKit warning
 for this manual flow. The revised cold-start implementation/test policy,
 old intermittent reports, real-ID authorization and review/runtime limits
 remain separate from these successful probe-identity UI checks.
+
+## Cold-Start Alignment Verification and PR Proof Checklist
+
+The requested checkpoint was committed as 2ab51c0 before source edits. The
+amended native lifecycle test failed first on the old policy: expected one
+window, actual zero (`/tmp/litty-cold-alignment-red.log`). After removing the
+obsolete startup gate, it passes one real cold-start window/live PTY, repeated
+resume without duplication, accepted stale-pane activation without a new window,
+windowless menu/service startup, benchmark exclusions and endpoint cleanup.
+The obsolete pure no-shell test was replaced by this stronger real regression;
+no tests were disabled or ignored to pass. Notification launches retain their
+previous omission of auto-update checks; ordinary startup is unchanged.
+
+After the last source edit: cargo check, Linux all-target check, Apple x86_64
+check, Clippy with -D warnings, release build and git diff --check pass.
+Unsandboxed cargo test: 685 unit + 1 + 14 integration = 700 ordinary tests,
+plus native lifecycle PASS; 12 existing ignored unchanged. Full test log:
+/tmp/litty-cold-alignment-full.log. A trailing EOF blank line caught by diff
+check was removed before final verification. Final review is pending.
+
+Self-review: cold startup creates exactly one fresh state; repeated resume
+returns while a window exists. Live stale targets retain the original scan
+and no-window behavior, exercised through an acknowledged AppEvent. IPC and
+platform APIs are unchanged. No grid lock, hot path, Cell, dependency,
+keybinding or security boundary changes. The fixture uses a fixed real PTY,
+an admitted non-expiring test request and this server's generated session;
+no sleeps, user-shell execution or network is required for its cold path.
+README, ROADMAP and the current guide now express the amended behavior.
+
+At the maintainer's request, the PR description is prepared at
+/tmp/litty-app-activation-pr.md with completed validation and explicit unchecked
+proof gaps. No PR has been opened. Keep these outstanding checks in the actual
+PR body rather than marking them done based on narrower evidence:
+
+- [ ] Real com.litty.terminal authorization/delivery/icon/click verification.
+- [ ] Actual latest-build native notification/crash/cold-click replay.
+- [ ] B receiving A's callback and forwarding to A across IPC/activation.
+- [ ] Minimized, Cmd+H-hidden and AppKit-native-tab surfaces.
+- [ ] Native OS clean-quit/selective withdrawal and late-completion races.
+- [ ] Runtime peer rejection with a different macOS UID.
+- [ ] Supported older macOS and Intel desktop runtime.
+- [ ] Latest-build closed-window idle CPU/footprint and worker/endpoint sample.
+- [ ] Accepted disposition/root cause for earlier intermittent reports and
+  AppKit move warnings; successful replays alone are not causal fixes.
+- [ ] Review of the latest complete change; mandated Opus and receiving-review
+  tooling remain unavailable. Supplemental review does not replace this gate.
+
+Final-source supplemental review of package M4KtHM: Approved, first round,
+no findings. It verified the amended cold-window behavior, repeated resume,
+acknowledged stale-pane no-op, retained menu/service regression, benchmark
+exclusions and PR proof checklist. Supplied suites were not rerun by the
+reviewer; remaining desktop/runtime/strict-model gaps are not established.
+No source changed after that package, only review-status documentation.

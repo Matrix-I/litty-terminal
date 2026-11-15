@@ -324,12 +324,6 @@ impl EventHandler<AppEvent> for App {
         if !self.windows.is_empty() {
             return;
         }
-        if !activation::opens_initial_window(platform::startup_is_notification(), self.startup_cwd.is_some(),
-            self.bench_ram_mode || self.gui_bench.is_some() || self.scroll_fps_run.is_some()) {
-            platform::register_reopen_handler(crate::event::platform_sink(self.waker.proxy.clone()));
-            platform::install_menu();
-            return;
-        }
         let initial = match self.startup_cwd.as_deref() {
             Some(cwd) => window::create_activation_window(event_loop, &self.waker, cwd),
             None => create_window(event_loop, &self.waker, None),
@@ -389,8 +383,17 @@ impl EventHandler<AppEvent> for App {
             platform::set_dock_icon();
         }
 
-        let cfg = &self.windows[0].config;
-        update::check_on_startup(cfg.auto_update, cfg.auto_update_channel);
+        if platform::startup_is_notification() {
+            // A notification relaunch opens a fresh window just like a normal
+            // launch. Live stale-pane clicks still only use on_activation.
+            self.windows[0].window.focus_window();
+            platform::activate_app();
+        } else {
+            // Notification launches previously skipped automatic updates; keep
+            // that path free of new update/network side effects.
+            let cfg = &self.windows[0].config;
+            update::check_on_startup(cfg.auto_update, cfg.auto_update_channel);
+        }
 
         platform::release_free_memory();
 
