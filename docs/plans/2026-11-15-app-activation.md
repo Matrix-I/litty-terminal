@@ -19,7 +19,11 @@ Confirmed by the maintainer on 2026-11-15:
 1. macOS only. Linux keeps its notification and startup behavior; new platform
    APIs have matching Linux twins and explicit unsupported/no-op behavior.
 2. A click selects the exact originating window/tab/pane, revealing hidden tabs
-   and splits. A closed pane is ignored; no replacement shell is created.
+   and splits. While the app is running, a closed pane is ignored; no
+   replacement shell is created. Maintainer amendment: after the app has
+   fully exited, clicking an old notification should launch one fresh normal
+   window. This supersedes the earlier notification-only no-shell cold-start
+   policy and the implementation/test appendices that assume it.
 3. Reuse is opt-in and creates a new window inside an existing process, with
    the caller's cwd. Normal invocations create independent processes.
 4. No eligible instance: start a new instance. Several: choose the most recently
@@ -1351,3 +1355,77 @@ and 701 tests (12 existing ignored). Supplemental review still requires an
 observable cold-start/menu/service regression. Desktop acceptance and required
 Opus review remain unfulfilled; see the validation report. Continue with that
 regression after committing this checkpoint; do not mark the feature complete.
+
+## Lifecycle Regression Follow-up (after checkpoint 8fd884e)
+
+- [x] Exercise the real notification-only startup and windowless menu path on
+  AppKit's main thread; assert a real window, live PTY child, advertised socket,
+  no service restart, benchmark exclusions, and endpoint cleanup.
+- [x] Prove sensitivity: removing the common open_window service-start call
+  fails with `menu window did not start activation service`; restoring it passes.
+- [x] Run all required checks, Linux all-target checking and release build.
+  Full tests pass 701 ordinary tests plus the native lifecycle executable;
+  12 existing ignored tests remain unchanged.
+- [ ] Complete real notification icon/focus and Dock acceptance, and required
+  Opus review. A refreshed real Litty test bundle has been launched; the
+  maintainer's visual result is pending. Supplemental re-review follows.
+
+The test target uses a separate main-thread executable because the Rust unit
+harness runs test functions on worker threads. Only launch classification is
+injected at the OS boundary. No production CLI, platform API or config format
+was added; the override and runner are compiled only for tests.
+
+Supplemental re-review of package MPoOnJ approves this regression batch with
+no findings. The earlier Important coverage gap is resolved. Desktop acceptance
+and required Opus review remain incomplete; no source edits followed review.
+
+Latest independent native idle sample: 24 MB footprint, ps reports 0.0% CPU,
+but accumulated CPU grows 0.02 s over 30.10 s. Exact zero remains unproven.
+Desktop revalidation still denies actual app UI access despite inventory
+success; the pending visual question is unanswered. Remaining desktop and
+required model/older OS gates need user input or an external-state change.
+
+Maintainer visual follow-up: the notification now shows the correct logo.
+Record the icon check as user-confirmed, without claiming a causal code fix.
+The sender identity was not specified; the separate real-ID diagnostic logged
+authorization unavailable. Click focus, stale/cold behavior and Dock acceptance
+remain open. See the validation report for the diagnostic evidence and limits.
+
+Maintainer live-click follow-up: the fresh probe-identity Litty test returns
+to its window without creating another window. Mark this single-pane UI check
+passed; moved/hidden panes, stale/cold behavior and Dock remain unconfirmed.
+A separately named stale-pane fixture is ready for the next manual check.
+
+Maintainer confirms the uninstrumented `Litty stale check #2` creates no new
+window/PTY and does not select another pane after its source window closes.
+This case passes; the earlier extra-window report remains unexplained, with
+no speculative code fix. A distinct crash/cold-start fixture is next; it is
+not covered by the preceding click confirmations.
+
+Hidden-tab UI follow-up: the maintainer initially observed correct SOURCE_A
+selection with the window still behind other UI while multiple test processes
+were alive. An isolated same-process diagnostic replay then passed both tab
+selection and foreground activation, confirmed by the maintainer and a later
+became-active event. No production fix was made. Preserve the earlier report
+as unresolved pending cross-process tracing; zoomed splits remain untested.
+
+Two-live-process UI follow-up passes by maintainer confirmation: A sent the
+notification, B started later and was active, then the click returned A to
+the foreground. Logs show the OS callback itself arrived in A. Callback receipt
+in B followed by IPC forwarding to A remains a distinct unverified case;
+this success is not a causal fix for the earlier foreground report.
+
+Maintainer confirms the uninstrumented same-process moved-tab UI check passes:
+SOURCE A was dragged into another window, hidden behind that window's other
+tab, then selected and brought forward by its original notification. Keep the
+zoomed-split check and revised cold-start source/test alignment open.
+
+Maintainer confirms the uninstrumented zoomed-split UI check passes: SOURCE A
+was hidden by zooming B, then the original notification revealed/selected A
+and brought its window forward without a new pane/window. The zoomed-split
+manual gate is satisfied; Dock/menu and revised cold-start alignment remain.
+
+Maintainer reports the final numbered Dock/menu lifecycle test works. Record
+that UI gate as passed by user observation; the fixture counter reached 5
+and is not a per-action trace. Revised cold-start code/test alignment and the
+previously documented unresolved reports/environment/review limits remain.

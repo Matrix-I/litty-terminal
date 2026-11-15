@@ -41,7 +41,19 @@ pub fn init_notifications() -> io::Result<()> {
     else { Err(io::Error::new(io::ErrorKind::Unsupported, "native notifications require an application bundle")) }
 }
 pub fn shutdown_notifications() { unsafe { litty_notifications_shutdown() } }
-pub fn startup_is_notification() -> bool { unsafe { litty_notification_startup() } }
+#[cfg(test)]
+thread_local! {
+    static STARTUP_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+#[cfg(test)]
+pub(crate) fn set_notification_startup_for_test(value: Option<bool>) {
+    STARTUP_OVERRIDE.set(value);
+}
+pub fn startup_is_notification() -> bool {
+    #[cfg(test)]
+    if let Some(value) = STARTUP_OVERRIDE.get() { return value; }
+    unsafe { litty_notification_startup() }
+}
 pub fn consume_notification_reopen() -> bool { unsafe { litty_notification_consume_reopen() } }
 pub fn show_pane_notification(origin: &str, pane: u64, title: &str, body: &str) -> io::Result<()> {
     if !valid_origin(origin) || pane == 0 || title.len() > 4096 || body.len() > 16384 {
