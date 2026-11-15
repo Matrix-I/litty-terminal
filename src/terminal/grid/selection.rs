@@ -3,6 +3,12 @@
 
 use super::*;
 
+/// Characters that end a double-clicked token, matching Ghostty's default
+/// `selection-word-chars`. Space, tab and NUL are blank cells, handled separately.
+fn is_word_boundary(c: char) -> bool {
+    matches!(c, '\'' | '"' | '│' | '`' | '|' | ':' | ';' | ',' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '$')
+}
+
 /// A text selection. The public API uses visible `(row, col)` coordinates; the grid
 /// stores rows as absolute line numbers so the selection stays on its text while
 /// output scrolls and while the viewport moves through history.
@@ -281,48 +287,87 @@ impl Grid {
         self.selected_text().unwrap_or_default()
     }
 
-    /// Columns of the run of non-blank cells around `(row, col)`; the placeholder
-    /// cell of a wide glyph belongs to the glyph.
-    pub(super) fn block_range(&self, row: usize, col: usize) -> Option<(usize, usize)> {
+    /// A wide glyph at the next row can leave an unused final cell before wrapping.
+    fn is_wide_wrap_padding(&self, line: usize, col: usize) -> bool {
+        col + 1 == self.cols
+            && self.line_wrapped(line)
+            && self.line_cells(line).is_some_and(|cells| cells[col].codepoint == 0)
+            && self.line_cells(line + 1).is_some_and(|cells| is_wide_cp(cells[0].codepoint))
+    }
+
+    /// Absolute bounds of the token at `(row, col)`, across soft wraps only.
+    fn block_selection(&self, row: usize, col: usize) -> Option<Selection> {
         if row >= self.rows + usize::from(self.scroll_fraction > 0.0) || col >= self.cols {
             return None;
         }
-        let r = self.display_row(row);
-        let filled = |c: usize| {
-            !Self::is_blank(r[c].codepoint) || (c > 0 && r[c].codepoint == 0 && is_wide_cp(r[c - 1].codepoint))
+        let filled = |pos: (usize, usize)| {
+            let Some(cells) = self.line_cells(pos.0) else { return false };
+            let cp = cells[pos.1].codepoint;
+            let wide_tail = pos.1 > 0 && cp == 0 && is_wide_cp(cells[pos.1 - 1].codepoint);
+            let delimiter = char::from_u32(cp).is_some_and(is_word_boundary);
+            wide_tail || self.is_wide_wrap_padding(pos.0, pos.1) || (!Self::is_blank(cp) && !delimiter)
         };
-        if !filled(col) {
+        let pos = (self.abs_line(row), col);
+        if !filled(pos) {
             return None;
         }
-        let mut sc = col;
-        while sc > 0 && filled(sc - 1) {
-            sc -= 1;
+        let mut start = pos;
+        loop {
+            let previous = if start.1 > 0 {
+                (start.0, start.1 - 1)
+            } else if start.0 > 0 && self.line_wrapped(start.0 - 1) {
+                (start.0 - 1, self.cols - 1)
+            } else {
+                break;
+            };
+            if !filled(previous) { break; }
+            start = previous;
         }
-        let mut ec = col;
-        while ec + 1 < r.len() && filled(ec + 1) {
-            ec += 1;
+        let mut end = pos;
+        loop {
+            let next = if end.1 + 1 < self.cols {
+                (end.0, end.1 + 1)
+            } else if self.line_wrapped(end.0) {
+                (end.0 + 1, 0)
+            } else {
+                break;
+            };
+            if !filled(next) { break; }
+            end = next;
         }
-        Some((sc, ec))
+        Some(Selection { start, end })
     }
 
-    /// Double-click: select the contiguous block of text at `(row, col)` and return
-    /// it. On a blank cell, fall back to the smart line selection.
+    /// Double-click selects the token between word boundaries (see
+    /// `is_word_boundary`), including continuations on soft-wrapped rows. Blank
+    /// cells and boundary characters retain the smart-line fallback.
     pub fn select_block(&mut self, row: usize, col: usize) -> String {
-        let Some((sc, ec)) = self.block_range(row, col) else {
+        let Some(selection) = self.block_selection(row, col) else {
             return self.select_smart_line(row, col);
         };
-        self.set_selection(Some(Selection { start: (row, sc), end: (row, ec) }));
+        if self.selection != Some(selection) {
+            self.selection = Some(selection);
+            self.all_dirty = true;
+        }
         self.selected_text().unwrap_or_default()
     }
 
-    /// Whether the selection is exactly the block at `(row, col)`, so a further
+    /// Whether the selection is exactly the token at `(row, col)`, so a further
     /// double-click there widens it to the line.
     pub fn is_block_selected(&self, row: usize, col: usize) -> bool {
-        let (Some(sel), Some((sc, ec))) = (self.selection, self.block_range(row, col)) else {
+        let (Some(sel), Some(block)) = (self.selection, self.block_selection(row, col)) else {
             return false;
         };
-        let line = self.abs_line(row);
-        sel.ordered() == ((line, sc), (line, ec))
+        sel.ordered() == block.ordered()
+    }
+
+    /// Further double-click on a selected token: widen it to the smart line,
+    /// unless it spans soft wraps, where a single row would shrink it.
+    pub fn widen_block(&mut self, row: usize, col: usize) -> String {
+        match self.block_selection(row, col) {
+            Some(block) if block.start.0 != block.end.0 => self.select_block(row, col),
+            _ => self.select_smart_line(row, col),
+        }
     }
 
     /// Select the entire visible line `row` (up to the last non-blank character)
@@ -360,7 +405,8 @@ impl Grid {
             let mut line = String::new();
             if sc <= ec {
                 let mut skip_next = false;
-                for cell in &row[sc..=ec] {
+                for (offset, cell) in row[sc..=ec].iter().enumerate() {
+                    if self.is_wide_wrap_padding(l, sc + offset) { continue; }
                     if skip_next {
                         skip_next = false;
                         continue;
