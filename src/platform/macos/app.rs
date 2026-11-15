@@ -37,7 +37,9 @@ pub fn register_reopen_handler(sink: crate::platform::EventSink) {
     }
     extern "C" fn on_activate(_this: Id, _cmd: Id, _notification: Id) {
         // Activation can follow an exact-pane/new-window request. A generic
-        // reopen here would immediately select a different window.
+        // reopen here would immediately select a different window, so only
+        // re-check a Light/Dark switch made while another app was in front.
+        EVENTS.emit(crate::platform::PlatformEvent::SystemAppearance { dark: system_dark() });
     }
 
     // SAFETY: the method implementations match the type encodings given.
@@ -230,7 +232,13 @@ mod tests {
             let delegate = send_id(app, c"delegate").expect("delegate");
             msg_send!(delegate, c"applicationDidBecomeActive:", std::ptr::null_mut::<c_void>() => Id);
         }
-        assert!(seen.lock().unwrap().is_empty(), "passive activation must not redirect focus");
+        // It must still re-check a Light/Dark switch made while another app
+        // was in front, without touching any window.
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [crate::platform::PlatformEvent::SystemAppearance { dark: system_dark() }],
+            "passive activation re-checks the appearance and must not redirect focus"
+        );
 
     }
 }
