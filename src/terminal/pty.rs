@@ -209,7 +209,14 @@ impl StrictSetup {
         let directory = above_stdio(directory.into())?;
         let mut fds = [-1; 2];
         // SAFETY: pipe writes two fresh descriptors; OwnedFd closes them on all errors.
-        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 { return Err(io::Error::last_os_error()); }
+        // Linux sets close-on-exec atomically, so a concurrent spawn on another
+        // thread cannot inherit the write end and stall the exec handshake.
+        // Darwin has no pipe2; above_stdio sets FD_CLOEXEC right after.
+        #[cfg(target_os = "linux")]
+        let opened = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+        #[cfg(not(target_os = "linux"))]
+        let opened = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        if opened != 0 { return Err(io::Error::last_os_error()); }
         let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
         let read = above_stdio(read)?;
         let write = above_stdio(write)?;
