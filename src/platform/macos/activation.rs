@@ -896,4 +896,48 @@ mod tests {
         assert!(reuse_at(&f.0, "/tmp").is_err());
         drop(server);
     }
+    #[test]
+    fn late_acknowledgement_is_an_error_without_fallback_or_second_admission() {
+        let f = Fixture::new();
+        let (older_tx, older_rx) = mpsc::sync_channel(4);
+        let older = start_with_origin(
+            f.0.clone(),
+            Arc::new(move |req, reply| {
+                older_tx.send(req.action).unwrap();
+                reply.send(Ok(())).unwrap();
+            }),
+            Origin::parse(&format!("{:016x}-1-{}", 10, hex(&[1; 16]))).unwrap(),
+        )
+        .unwrap();
+        // The newest instance's app holds its first acknowledgement past the
+        // deadline (it was delivered, so the caller must not try elsewhere).
+        let (held_tx, held_rx) = mpsc::sync_channel(1);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let newest = start_with_origin(
+            f.0.clone(),
+            Arc::new(move |_, reply| {
+                if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    held_tx.send(reply).unwrap();
+                } else {
+                    reply.send(Ok(())).unwrap();
+                }
+            }),
+            Origin::parse(&format!("{:016x}-1-{}", 20, hex(&[2; 16]))).unwrap(),
+        )
+        .unwrap();
+
+        assert!(reuse_at(&f.0, "/tmp").is_err(), "late acknowledgement must be an error");
+        let held = held_rx.recv_timeout(TIMEOUT).expect("request reached the newest app");
+        assert!(reuse_at(&f.0, "/tmp").is_err(), "busy app must not admit a second request");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(older_rx.try_recv().is_err(), "no fallback to an older instance");
+
+        held.send(Ok(())).unwrap();
+        assert!(reuse_at(&f.0, "/tmp").unwrap(), "consumed acknowledgement frees admission");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(older_rx.try_recv().is_err());
+        drop(newest);
+        drop(older);
+    }
 }
