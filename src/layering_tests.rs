@@ -116,3 +116,48 @@ fn render_layer_uses_only_terminal() {
     let bad = violations("render", &["terminal"]);
     assert!(bad.is_empty(), "render may only depend on terminal:\n{}", bad.join("\n"));
 }
+
+/// Non-test `mod` names declared in `text`, skipping `#[cfg(test)]` items.
+fn production_modules(text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut test_only = false;
+    for line in text.lines().map(str::trim) {
+        let decl = line.rsplit_once("] ").map_or(line, |(_, rest)| rest);
+        // `pub mod`, `pub(crate) mod` and `pub(super) mod` all declare a module.
+        let decl = match decl.strip_prefix("pub") {
+            Some(rest) if rest.starts_with(' ') => rest.trim_start(),
+            Some(rest) if rest.starts_with('(') => rest.split_once(") ").map_or(decl, |(_, after)| after),
+            _ => decl,
+        };
+        if let Some(name) = decl.strip_prefix("mod ").and_then(|rest| rest.strip_suffix(';')) {
+            if !test_only {
+                names.push(name.to_owned());
+            }
+            test_only = false;
+        } else {
+            test_only = line == "#[cfg(test)]";
+        }
+    }
+    names.sort();
+    names
+}
+
+/// tests/native_activation.rs recompiles the crate's modules by path because
+/// this binary crate has no library; a module added to main.rs must be listed
+/// there too, or that target silently diverges from the real binary.
+#[test]
+fn native_activation_test_compiles_every_production_module() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let read = |path: &str| std::fs::read_to_string(root.join(path)).expect("read source");
+    let main = production_modules(&read("src/main.rs"));
+    let mut native = production_modules(&read("tests/native_activation.rs"));
+    // Test-only infrastructure the native target needs for its own counting allocator.
+    native.retain(|name| !TEST_INFRA.contains(&name.as_str()));
+    assert_eq!(native, main, "keep tests/native_activation.rs in sync with src/main.rs");
+}
+
+#[test]
+fn production_modules_skip_test_only_declarations() {
+    let text = "mod a;\n#[cfg(test)]\nmod t;\npub mod b;\n#[path = \"x.rs\"] mod c;\npub(crate) mod d;\n";
+    assert_eq!(production_modules(text), ["a", "b", "c", "d"]);
+}
