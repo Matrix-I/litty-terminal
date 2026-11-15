@@ -7,7 +7,10 @@
 #include <string.h>
 
 typedef void (*LittyNotificationCallback)(const char *, uint64_t);
+typedef void (*LittyNotificationFallback)(const char *, const char *);
 static LittyNotificationCallback route;
+// Shows a notification without Litty's identity when it is not authorized.
+static LittyNotificationFallback fallback;
 static atomic_bool cold_start;
 static atomic_uint pending;
 static uint64_t sequence;
@@ -76,9 +79,10 @@ static BOOL valid_origin(NSString *value) {
 }
 @end
 
-bool litty_notifications_init(LittyNotificationCallback callback) {
+bool litty_notifications_init(LittyNotificationCallback callback, LittyNotificationFallback unauthorized) {
     if (![NSThread isMainThread]) return false;
     route = callback;
+    fallback = unauthorized;
     if (available) return true;
     NSBundle *bundle = NSBundle.mainBundle;
     if (![bundle.bundlePath.pathExtension isEqualToString:@"app"] || bundle.bundleIdentifier.length == 0) return false;
@@ -122,6 +126,39 @@ static BOOL finish(LittyNotificationTicket *ticket) {
 }
 static BOOL expire_submission(LittyNotificationTicket *ticket) {
     return atomic_load(&ticket->submission_started) && finish(ticket);
+}
+// Denied or unavailable authorization completes the ticket once. The text
+// still reaches the person through the identity-less helper (no click routing).
+static BOOL handle_authorization_failure(LittyNotificationTicket *ticket, BOOL granted, NSError *error, NSString *title, NSString *body) {
+    if (granted && !error) return NO;
+    if (finish(ticket)) {
+        fprintf(stderr, "litty: notification authorization unavailable; using helper\n");
+        if (fallback) fallback(title.UTF8String, body.UTF8String);
+    }
+    return YES;
+}
+static NSUInteger test_fallbacks;
+static BOOL test_fallback_exact;
+static void count_test_fallback(const char *title, const char *body) {
+    test_fallbacks++;
+    test_fallback_exact = title && body && strcmp(title, "Build") == 0 && strcmp(body, "done ✓") == 0;
+}
+bool litty_notification_test_authorization_fallback(void) {
+    LittyNotificationFallback saved = fallback;
+    fallback = count_test_fallback;
+    test_fallbacks = 0;
+    test_fallback_exact = NO;
+    NSError *failure = [NSError errorWithDomain:UNErrorDomain code:1 userInfo:nil];
+    LittyNotificationTicket *granted = [LittyNotificationTicket new];
+    BOOL granted_continues = !handle_authorization_failure(granted, YES, nil, @"Build", @"done ✓") && test_fallbacks == 0;
+    LittyNotificationTicket *denied = [LittyNotificationTicket new];
+    BOOL denied_handled = handle_authorization_failure(denied, NO, nil, @"Build", @"done ✓") && test_fallbacks == 1 && test_fallback_exact;
+    // A completion already finished (for example by shutdown) must not repeat it.
+    BOOL no_duplicate = handle_authorization_failure(denied, NO, nil, @"Build", @"done ✓") && test_fallbacks == 1;
+    LittyNotificationTicket *errored = [LittyNotificationTicket new];
+    BOOL error_handled = handle_authorization_failure(errored, YES, failure, @"Build", @"done ✓") && test_fallbacks == 2;
+    fallback = saved;
+    return granted_continues && denied_handled && no_duplicate && error_handled;
 }
 
 bool litty_notification_test_late_authorization(void) {
@@ -173,8 +210,7 @@ int litty_notification_show(const char *origin_bytes, uint64_t pane_id, const ch
         [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert completionHandler:^(BOOL granted, NSError *error) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (atomic_load(&shutting_down) || atomic_load(&ticket->finished)) { atomic_fetch_sub(&pending, 1); return; }
-                if (!granted || error) {
-                    if (finish(ticket)) fprintf(stderr, "litty: notification authorization unavailable\n");
+                if (handle_authorization_failure(ticket, granted, error, title, body)) {
                     atomic_fetch_sub(&pending, 1);
                     return;
                 }
