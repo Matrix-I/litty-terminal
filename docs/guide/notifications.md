@@ -1,7 +1,7 @@
 # Desktop notifications
 
-Native macOS notification integration is implemented on `feat/app-activation`;
-desktop acceptance is still in progress. See the
+Native macOS notification integration is merged to `main` (PR #83); desktop
+acceptance is still in progress. See the
 [validation report](../validation/macos-app-activation-2026-11-15.md) for tested
 coverage and open checks. It is not claimed as a completed released feature.
 
@@ -15,8 +15,13 @@ printf '\033]777;notify;Build finished;The build completed successfully\007'
 ## macOS app builds
 
 Run the packaged `Litty.app` for native notifications under Litty's identity.
-The first notification requests permission; allow it to enable delivery. The
-app bundle supplies the notification icon through its `Litty.icns` resource.
+The first notification requests permission; allow it to enable delivery. If
+permission is denied or unavailable (for example, a relocated or re-signed
+bundle), the notification is dropped: packaged builds do not fall back to the
+standalone helper, and the reason is only logged to stderr. Delivery under the
+real `com.litty.terminal` identity has not yet been verified; the completed UI
+checks used a local probe identity. The app bundle supplies the notification
+icon through its `Litty.icns` resource.
 Setting the terminal window title or Dock icon does not replace that resource.
 
 Click routing targets the originating live pane, including its current tab

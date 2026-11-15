@@ -1,5 +1,10 @@
 # macOS App Activation — Partial Implementation Validation
 
+> Status update: merged to `main` as `61fb5f0` via PR #83. The checkpoint
+> hashes below are pre-merge `feat/app-activation` commits and may not resolve
+> on `main`. See "Post-Merge Strict Review and Idle Sample" at the end for the
+> current open checklist.
+
 Date: 2026-11-15. Branch: `feat/app-activation`; base: `af3b5ed`.
 Implementation checkpoints `8df30d5`, `8fd884e` and lifecycle/desktop checkpoint
 `2ab51c0` are committed locally. The amended cold-start change remains uncommitted.
@@ -659,3 +664,85 @@ acknowledged stale-pane no-op, retained menu/service regression, benchmark
 exclusions and PR proof checklist. Supplied suites were not rerun by the
 reviewer; remaining desktop/runtime/strict-model gaps are not established.
 No source changed after that package, only review-status documentation.
+
+## Post-Merge Strict Review and Idle Sample
+
+Base: `main` at `61fb5f0` (PR #83 merged). Fixes are on
+`fix/app-activation-review`. Verification after the fixes:
+`cargo check`, Linux all-target check, Clippy `-D warnings` and
+`git diff --check` pass. Unsandboxed `cargo test` gives 686 unit + 1 + 14
+integration tests plus the native lifecycle PASS, with 12 existing ignored.
+The README idle figures are release-measured values (see `performance.md`);
+they are not refreshed by this sample.
+
+### Strict review (Opus)
+
+The required strict review ran with the `opus` model in three disjoint
+packages: platform, app/PTY/tests and docs/scripts. All three returned
+"Needs fixes", with 0 Critical findings. Important findings and their
+disposition:
+
+| Finding | Disposition |
+| --- | --- |
+| `applicationDidBecomeActive:` no longer re-checked Light/Dark (the re-check from 47f7b0e) | Fixed. Activation emits `SystemAppearance` without a Reopen. The delegate regression test failed first (no event) and now passes. |
+| No transport test for an acknowledgement after the deadline | Added `late_acknowledgement_is_an_error_without_fallback_or_second_admission`. It asserts: the request errors, the older instance is never tried, a second request is not admitted, and admission resumes after the held reply. A mutation that retries on `TimedOut` and drops the held admission makes it fail. |
+| No app-state test for exact-pane activation | The native lifecycle fixture now activates a pane in a hidden tab that sits under another pane's zoom and carries a bell. It asserts tab/pane selection, zoom and bell cleared, and a refreshed title. A missing NewWindow directory returns `Err` and does not add a window. Removing `state.active = at` makes it fail. |
+| Stale pre-merge statements and unverified real-ID claims in docs | Fixed in README, ROADMAP, the notification and CLI guides, and this report. |
+| Release-binary reuse harness evidence predates the native changes | Open. It has not been rerun on the merged source; see the checklist. |
+
+The app/PTY review's Minor finding is also fixed: exact-pane activation now
+refreshes tab titles like `select_tab`. The fixture caught the stale title
+before the fix. Other Minor findings are recorded as follow-ups, not fixed
+here:
+
+- Stale endpoints are reaped only by `--reuse` scans.
+- No helper fallback when UN authorization fails.
+- A fixed `/tmp` root that another user can pre-create.
+- Router shutdown can block for a few seconds.
+- The hard-coded `usernoted` sender.
+- Harness isolation of the user's config/cache.
+- `pipe()` without atomic CLOEXEC in strict PTY setup.
+- The test registry is shared with real instances.
+
+### Latest-build idle sample
+
+`cargo build --release` at `61fb5f0`, run with `SHELL=/usr/bin/true` in its
+own session. Its PTY exited and it had no children. It ran 8 threads, all
+blocked in a 10 s `sample`: the activation worker in `poll`, the notification
+router and history in semaphore waits, AppKit in `mach_msg`. It held only its
+own activation listener (plus one socket pair). Measured with
+`proc_pid_rusage` over 120.0 s, starting 20 s after launch:
+
+| Metric | Result |
+| --- | --- |
+| phys_footprint | 32.6 MB (peak 55 MB while a window existed); within the 50 MB budget |
+| CPU time | 161 ms over 120 s = 0.13 % |
+| Wakeups | 0 package-idle, 98 interrupt (about 0.8/s) |
+| Instructions | 361 M |
+
+The closed-window 0 % idle CPU target is not met by this sample. The source
+of the wakeups is not identified, and there is no pre-PR baseline under the
+same method. A repeat sample was lost: during this run the test instance was
+killed externally twice, while another agent's `litty-pr83-proof` bundle was
+running. The registry held about 20 tombstones of dead processes from earlier
+runs.
+
+### Open checklist (supersedes the list above)
+
+- [ ] Real com.litty.terminal authorization/delivery/icon/click verification.
+- [ ] Actual latest-build native notification/crash/cold-click replay.
+- [ ] Rerun `scripts/macos/test-reuse.py` on the merged source.
+- [ ] B receiving A's callback and forwarding to A across IPC/activation.
+- [ ] Minimized, Cmd+H-hidden and AppKit-native-tab surfaces. Exact-pane tab,
+  zoom and title state is now covered; window deminiaturize is not.
+- [ ] Native OS clean-quit/selective withdrawal and late-completion races.
+- [ ] Runtime peer rejection with a different macOS UID. This needs a second
+  account. In code, the 0700 owner-checked root and `getpeereid` both reject.
+- [ ] macOS 11–13 runtime (`LSMinimumSystemVersion` 11.0). Intel macOS is
+  unsupported and is no longer a gap.
+- [ ] Closed-window idle CPU: identify the ~0.8/s wakeups and compare against
+  a pre-PR baseline with the same `proc_pid_rusage` method.
+- [ ] Accepted disposition/root cause for earlier intermittent reports and
+  AppKit move warnings.
+- [x] Strict Opus review of the merged change. Its Important findings are
+  fixed or tracked above; this fix branch needs its own review round.
