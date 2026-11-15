@@ -41,14 +41,22 @@ pub fn register_reopen_handler(sink: crate::platform::EventSink) {
         // re-check a Light/Dark switch made while another app was in front.
         EVENTS.emit(crate::platform::PlatformEvent::SystemAppearance { dark: system_dark() });
     }
+    extern "C" fn on_will_terminate(_this: Id, _cmd: Id, _notification: Id) {
+        // A quit Apple event (Dock Quit, logout, `terminate`) exits inside
+        // `terminate:` and never returns to the event loop's own shutdown.
+        // Withdrawal is idempotent, so the Cmd+Q path may run it again.
+        crate::platform::shutdown_notifications();
+    }
 
     // SAFETY: the method implementations match the type encodings given.
     unsafe {
-        let Some(delegate) = shared_application().and_then(|app| app_delegate(app)) else { return };
+        let Some(app) = shared_application() else { return };
+        let Some(delegate) = app_delegate(app) else { return };
         let Some(delegate_cls) = send_id(delegate, c"class") else { return };
-        let methods: [(&CStr, *const (), &CStr); 2] = [
+        let methods: [(&CStr, *const (), &CStr); 3] = [
             (c"applicationShouldHandleReopen:hasVisibleWindows:", on_reopen as *const (), c"B@:@B"),
             (c"applicationDidBecomeActive:", on_activate as *const (), c"v@:@"),
+            (c"applicationWillTerminate:", on_will_terminate as *const (), c"v@:@"),
         ];
         for (name, imp, types) in methods {
             let selector = sel(name);
@@ -59,6 +67,13 @@ pub fn register_reopen_handler(sink: crate::platform::EventSink) {
                 }
             }
         }
+        // AppKit subscribes the delegate to the notifications behind
+        // `applicationDidBecomeActive:` / `applicationWillTerminate:` only
+        // inside `setDelegate:`. The methods were added after that call, so
+        // set the delegate again (via nil, in case the same object is ignored).
+        // NSApp holds it weakly; its owner keeps it alive in between.
+        msg_send!(app, c"setDelegate:", std::ptr::null_mut::<c_void>() => Id);
+        msg_send!(app, c"setDelegate:", delegate => Id);
     }
     observe_system_appearance();
 }
@@ -202,6 +217,11 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
+    #[link(name = "AppKit", kind = "framework")]
+    unsafe extern "C" {
+        static NSApplicationDidBecomeActiveNotification: Id;
+    }
+
     #[test]
     fn dock_reopen_reaches_the_sink_without_a_preexisting_app_delegate() {
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -214,6 +234,10 @@ mod tests {
             let delegate = send_id(app, c"delegate").expect("NSApp has a delegate after registration");
             assert!(responds_to(delegate, c"applicationShouldHandleReopen:hasVisibleWindows:"));
             assert!(responds_to(delegate, c"applicationDidBecomeActive:"));
+            // A quit Apple event (Dock Quit, logout, `terminate`) runs
+            // `terminate:`, which exits before the event loop returns, so
+            // the delegate is the only place to withdraw notifications.
+            assert!(responds_to(delegate, c"applicationWillTerminate:"));
             let handled = msg_send!(
                 delegate,
                 c"applicationShouldHandleReopen:hasVisibleWindows:",
@@ -227,10 +251,15 @@ mod tests {
         seen.lock().unwrap().clear();
         // Becoming active is not a Dock reopen: it must not redirect the exact
         // pane/window selected by a notification or an explicit reuse request.
+        // AppKit wires `application*:` notification methods to the delegate
+        // only in `setDelegate:`, so post the real notification instead of
+        // calling the method: a method added after `setDelegate:` never runs.
+        // SAFETY: AppKit's notification name is a live NSString constant.
         unsafe {
             let app = shared_application().expect("NSApplication");
-            let delegate = send_id(app, c"delegate").expect("delegate");
-            msg_send!(delegate, c"applicationDidBecomeActive:", std::ptr::null_mut::<c_void>() => Id);
+            let center = send_id(class(c"NSNotificationCenter").expect("NSNotificationCenter"), c"defaultCenter")
+                .expect("default center");
+            msg_send!(center, c"postNotificationName:object:", NSApplicationDidBecomeActiveNotification => Id, app => Id);
         }
         // It must still re-check a Light/Dark switch made while another app
         // was in front, without touching any window.
