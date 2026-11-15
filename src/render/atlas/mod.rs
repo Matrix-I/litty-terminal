@@ -42,6 +42,12 @@ use linux as system;
 #[cfg(all(test, target_os = "macos"))]
 pub(crate) use coretext::macos_coretext_rasterize;
 
+const MAX_ATLAS_SIDE: u32 = 4096;
+// Reserve at least four slots: blank and both halves of a wide glyph.
+const MAX_CELL_SIDE: u32 = MAX_ATLAS_SIDE / 2;
+// The largest scratch buffer holds two RGBA cells; all size products fit u32.
+const _: () = assert!(MAX_CELL_SIDE as u64 * MAX_CELL_SIDE as u64 * 8 <= u32::MAX as u64);
+
 /// `adjust-cell-width` / `adjust-cell-height`: grow or shrink the cell by
 /// pixels or by a percentage of the font's own metric.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
@@ -69,7 +75,8 @@ impl MetricAdjust {
             MetricAdjust::Px(px) => v as f32 + px as f32,
             MetricAdjust::Percent(p) => v as f32 * (1.0 + p / 100.0),
         };
-        adjusted.round().max(1.0) as u32
+        // Direct enum construction can supply NaN, whose integer cast is zero.
+        (adjusted.round().clamp(1.0, MAX_CELL_SIDE as f32) as u32).max(1)
     }
 }
 
@@ -243,11 +250,21 @@ impl Atlas {
         fonts: Arc<FontSet>,
         px: f32,
     ) -> Self {
+        let adjustments = *CELL_ADJUST.lock();
+        Self::new_with_adjustments(device, queue, fonts, px, adjustments)
+    }
+
+    fn new_with_adjustments(
+        device: &crate::render::backend::Device,
+        queue: &crate::render::backend::Queue,
+        fonts: Arc<FontSet>,
+        px: f32,
+        (adjust_w, adjust_h): (MetricAdjust, MetricAdjust),
+    ) -> Self {
         let font = &fonts.primary;
         let lm = line_metrics(font, px);
         let natural_w = font.advance_width('M', px).round().max(1.0) as u32;
         let natural_h = (lm.ascent - lm.descent + lm.line_gap).ceil().max(1.0) as u32;
-        let (adjust_w, adjust_h) = *CELL_ADJUST.lock();
         let cell_w = adjust_w.apply(natural_w);
         let cell_h = adjust_h.apply(natural_h);
         // Extra (or missing) height is split above and below the text.
@@ -255,7 +272,7 @@ impl Atlas {
 
         // 512×512 default (256KB VRAM for R8, 1MB for RGBA8); grows dynamically for large fonts.
         let mut size = 512u32;
-        while (size / cell_w) * (size / cell_h) < 256 && size < 4096 {
+        while (size / cell_w) * (size / cell_h) < 256 && size < MAX_ATLAS_SIDE {
             size *= 2;
         }
         let slots_per_row = size / cell_w;
@@ -311,10 +328,10 @@ impl Atlas {
         device: &crate::render::backend::Device,
         queue: &crate::render::backend::Queue,
     ) -> bool {
-        if !std::mem::take(&mut self.grow_needed) || self.size >= 4096 {
+        if !std::mem::take(&mut self.grow_needed) || self.size >= MAX_ATLAS_SIDE {
             return false;
         }
-        let new_size = (self.size * 2).min(4096);
+        let new_size = (self.size * 2).min(MAX_ATLAS_SIDE);
         let slots_per_row = new_size / self.cell_w;
         let n_slots = (slots_per_row * (new_size / self.cell_h)).min(u16::MAX as u32);
         if n_slots <= self.n_slots {

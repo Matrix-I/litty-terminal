@@ -1,6 +1,6 @@
 # Verified Audit Findings Fix Plan
 
-**Status:** Planned (unscheduled; linked from [v0.13.0](./0.13.0.md)).
+**Status:** Task 1 implemented 2026-11-15; Tasks 2–4 remain planned (linked from [v0.13.0](./0.13.0.md)).
 **Baseline:** `main` at `cc7e046` (clean tree, 2026-11-13, audited on macOS).
 **Scope:** Only findings confirmed as True Positives or requiring Linux runtime verification. Refuted speculative claims from earlier scans are recorded under [Verified Non-Issues](#verified-non-issues-do-not-fix) so they are not revisited.
 
@@ -32,6 +32,17 @@
 - [ ] Add unit tests in `src/render/atlas/tests.rs` (testing the pure geometry helper without mutating global `CELL_ADJUST`, plus an `Atlas::new` integration test at boundary sizes).
 
 ---
+
+### Task 1 disposition (2026-11-15)
+
+User chose automatic clamping. Final metrics now stay within 1–2048, leaving
+four slots at the maximum atlas size and bounding all scratch products below
+u32::MAX (compile-time assertion). Existing slot math is therefore safe without
+an extra fallible geometry interface or checked-multiplication failure path.
+Original implementation steps above remain as historical proposals, superseded
+by the [focused plan](./2026-11-15-atlas-cell-bounds.md).
+Font-size startup/reload/zoom differences were inspected; changing those semantics
+is outside this Atlas crash fix. Tests avoid mutating global CELL_ADJUST.
 
 ## Task 2: Handle negative `bmp.pitch` row order and checked alloc in `rasterize_color` (Low)
 

@@ -26,8 +26,8 @@ Litty reads its configuration from:
 | | `title` | String | Shell CWD / Title | Force a fixed window title instead of the running program's |
 | **Fonts & Typography** | `font-family` | String (name or file path) | System monospace | Monospace font family. Repeatable to define fallback chain in priority order |
 | | `font-size` | Float `6.0` .. `72.0` | `14.0` | Base font size in points (<kbd>Cmd+0</kbd> resets to this size) |
-| | `adjust-cell-width` | Percentage (`10%`) or px (`-1`, `2`) | `0` | Adjust cell width metric |
-| | `adjust-cell-height` | Percentage (`10%`) or px (`-1`, `2`) | `0` | Adjust cell height / line spacing |
+| | `adjust-cell-width` | Percentage (`10%`) or px (`-1`, `2`) | `0` | Adjust cell width metric; resulting raster cell width is clamped to 1–2,048 pixels |
+| | `adjust-cell-height` | Percentage (`10%`) or px (`-1`, `2`) | `0` | Adjust cell height / line spacing; resulting raster cell height is clamped to 1–2,048 pixels |
 | | `font-thicken` | `true`, `false` | `false` | Enable synthetic bold/thickening for thin fonts |
 | | `font-feature` | Comma-separated or repeatable | None | OpenType font features (e.g. `-calt`, `ss01`, `liga=0`) |
 | | `grapheme-width-method` | `unicode`, `legacy`, `wcswidth` | `unicode` | `unicode` enables DEC mode 2027 (emoji ZWJ clustering); `legacy` is 1 cell/codepoint |

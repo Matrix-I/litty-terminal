@@ -91,6 +91,12 @@ Separate from the completed Wayland preview phase; see the
   - Idle profile, macOS arm64 release build, 1 window/1 tab, no `yo` used (2026-11-01): CPU **0.0%** (CPU time flat at 0.49 s over 60 s, matches `ControlFlow::Wait`); RSS ~113 MB; `footprint` **84 MB**, of which 45 MB is IOSurface (window swapchain), ~11 MB Malloc Small, ~7 MB IOAccelerator. Meets the 85 MB `+bench-ram` budget but **not** the <50 MB invariant in `CLAUDE.md` if GPU surfaces are counted; heap alone is ~12 MB. The invariant needs a decision on what it measures. Per-session memory after `yo` is not measured.
   - Real-app keyboard checks (Ctrl+C, queued Enter, prompt repaint, editable prefill) were done by hand in a real GPU window (2026-11-02, v0.7.1). Linux feature checks are now complete per user confirmation (2026-11-04).
 
+## Atlas safety (2026-11-15)
+
+- [x] Extreme cell adjustments clamp to 1–2048 before atlas sizing, preventing
+  zero-slot division and scratch-size overflow. See the
+  [implementation and verification record](./docs/plans/2026-11-15-atlas-cell-bounds.md).
+
 ## Review follow-ups (2026-11-11)
 
 From [the 2026-11-11 review](./docs/reviews/2026-11-11-linux-history-ai-graphics.md). Not scheduled.
