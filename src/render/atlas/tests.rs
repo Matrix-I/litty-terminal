@@ -174,6 +174,49 @@ fn sized_fonts_keep_several_sizes() {
 }
 
 #[test]
+fn metric_adjust_caps_extreme_cell_dimensions() {
+    for adjust in [MetricAdjust::Px(4097), MetricAdjust::Px(i32::MAX), MetricAdjust::Percent(f32::MAX)] {
+        assert_eq!(adjust.apply(17), 2048, "{adjust:?}");
+    }
+    assert_eq!(MetricAdjust::None.apply(u32::MAX), 2048);
+    assert_eq!(MetricAdjust::Px(i32::MIN).apply(17), 1);
+    assert_eq!(MetricAdjust::Percent(-f32::MAX).apply(17), 1);
+    for size in [1, 17, 2047, 2048] {
+        assert_eq!(MetricAdjust::None.apply(size), size);
+    }
+}
+
+#[test]
+fn metric_adjust_keeps_nonfinite_internal_values_nonzero() {
+    assert_eq!(MetricAdjust::Percent(f32::NAN).apply(17), 1);
+    assert_eq!(MetricAdjust::Percent(f32::INFINITY).apply(17), 2048);
+    assert_eq!(MetricAdjust::Percent(f32::NEG_INFINITY).apply(17), 1);
+}
+
+#[test]
+fn atlas_caps_extreme_cell_dimensions_and_uploads_wide_glyphs() {
+    let _gpu = crate::render::backend::TEST_GPU.lock();
+    let (device, queue) = crate::render::backend::shared_device_and_queue();
+    let mut atlas = Atlas::new_with_adjustments(
+        &device, &queue, load_font(&[]), 16.0,
+        (MetricAdjust::parse("2147483647").unwrap(), MetricAdjust::parse("3.4028235e38%").unwrap()),
+    );
+    assert_eq!((atlas.cell_w, atlas.cell_h), (2048, 2048));
+    assert_eq!((atlas.size, atlas.slots_per_row, atlas.n_slots), (4096, 2, 4));
+    assert_eq!(atlas.scratch.len(), 2048 * 2048);
+    assert_eq!(atlas.color_scratch.len(), 2048 * 2048 * 4);
+    assert_eq!(atlas.wide_r8_scratch.len(), 2048 * 2048 * 2);
+    assert_eq!(atlas.wide_rgba_scratch.len(), 2048 * 2048 * 8);
+    atlas.begin_frame();
+    let slots = atlas.glyph_slots(&queue, '中' as u32, 2, GlyphStyle::default());
+    assert_ne!(slots.0, BLANK_SLOT);
+    assert_ne!(slots.1, BLANK_SLOT);
+    assert_ne!(slots.0, slots.1);
+    assert_eq!(atlas.glyph_slots(&queue, '中' as u32, 2, GlyphStyle::default()), slots);
+    assert!(!atlas.grow_if_needed(&device, &queue), "already at the texture limit");
+}
+
+#[test]
 fn metric_adjust_parses_pixels_and_percent() {
     assert_eq!(MetricAdjust::parse("2"), Ok(MetricAdjust::Px(2)));
     assert_eq!(MetricAdjust::parse("-1"), Ok(MetricAdjust::Px(-1)));
