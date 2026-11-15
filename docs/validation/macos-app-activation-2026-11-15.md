@@ -257,3 +257,46 @@ After the native authorization/cleanup fixes: full unsandboxed cargo test passes
 macOS/Linux checks, Apple x86_64 check and Clippy pass. The latest source still
 has the open reopen-ordering finding and unconfirmed real bundle icon/focus;
 checkpoint commit was explicitly requested despite those recorded limitations.
+
+## Reopen Source Fix
+
+Checkpoint `8df30d5` was committed at the maintainer's request. Work continued
+with a focused same-identity probe. Notification click logged aevt/rapp whose
+read-only sender PID resolved to /usr/sbin/usernoted; ordinary open logged a
+different sender. Production no longer uses a flag cleared on a main-queue
+turn. It inspects the current reopen event synchronously and suppresses only
+the system notification daemon source. The regression failed before this
+classifier, then all five native tests passed.
+
+After a notification-only cold launch, a later ordinary reopen now starts the
+activation service after successfully opening its first window. The existing
+startup service block was extracted for that lifecycle path. Real cold-then-Dock
+GUI acceptance for this additional path remains pending. The earlier full
+reopen-source suite passed 686 unit + 1 + 14 integration tests (701 total),
+12 ignored; final rerun follows the service-lifecycle adjustment.
+
+This eliminates the reviewed queue-timing dependency on this observed macOS
+source. Apple does not promise every supported OS version uses usernoted for
+this event; older macOS runtime remains unverified. Unknown event sources
+retain ordinary reopen behavior. Visual app icon/focus and actual Dock-source
+comparison remain pending maintainer confirmation, not claimed as passed.
+
+## Second Requested Checkpoint
+
+Final source checks before this checkpoint: `cargo check`,
+`cargo check --target x86_64-unknown-linux-gnu`,
+`cargo clippy --all-targets -- -D warnings`, and `git diff --check` pass.
+Unsandboxed `cargo test` passes 686 unit + 1 + 14 integration tests (701 total),
+with 12 existing ignored tests. No keybindings or public formats changed.
+Full diff and untracked-file inspection found only the five intended paths.
+
+Self-review: activation starts only after a successful window creation, once
+per live server, and remains excluded from all benchmark modes. Event-source
+inspection is synchronous, bounded and performs no grid locking or subprocess
+launch. Unknown senders preserve ordinary reopen behavior. Native tests cover
+source classification and callback completion, not physical desktop clicks.
+The supplemental reviewer confirmed the lifecycle fix but requested an
+observable cold-start/menu/service regression; that Important test gap remains
+open for the next batch. Required Opus review remains unavailable in this
+runtime; supplemental review does not satisfy that model requirement.
+This requested checkpoint is incomplete feature work, not final acceptance.

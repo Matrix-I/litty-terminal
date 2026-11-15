@@ -6,6 +6,8 @@ static HANDLER: parking_lot::Mutex<Option<Handler>> = parking_lot::Mutex::new(No
 unsafe extern "C" {
     fn litty_notifications_init(callback: extern "C" fn(*const c_char, u64)) -> bool;
     fn litty_notification_startup() -> bool;
+    #[cfg(test)]
+    fn litty_notification_test_reopen_provenance() -> bool;
     fn litty_notifications_shutdown();
     #[cfg(test)]
     fn litty_notification_test_callbacks() -> bool;
@@ -57,6 +59,10 @@ pub fn show_pane_notification(origin: &str, pane: u64, title: &str, body: &str) 
 mod tests {
     use super::*;
     #[test]
+    fn notification_reopen_is_classified_by_event_source_not_queue_timing() {
+        assert!(unsafe { litty_notification_test_reopen_provenance() });
+    }
+    #[test]
     fn first_notification_survives_a_late_human_authorization() {
         assert!(unsafe { litty_notification_test_late_authorization() });
     }
@@ -65,7 +71,7 @@ mod tests {
         assert!(unsafe { litty_notification_test_selective_shutdown() });
     }
     #[test]
-    fn native_callbacks_route_once_complete_all_paths_and_consume_reopen() {
+    fn native_callbacks_route_once_and_complete_all_paths() {
         assert!(unsafe { litty_notification_test_callbacks() });
     }
     #[test]
