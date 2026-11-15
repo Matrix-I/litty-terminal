@@ -27,8 +27,8 @@ original request may already have succeeded. Window activation follows macOS
 focus policy. Reuse is macOS-only; invoking it on Linux reports an unsupported
 operation. Existing processes must be running a build that supports reuse.
 
-Desktop notification click-through is a separate, unfinished integration;
-existing notification delivery behavior is unchanged by process reuse.
+Notification clicks route to their originating process, not the newest one
+selected by `+reuse`; see [desktop notifications](notifications.md).
 
 ---
 

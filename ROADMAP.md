@@ -46,18 +46,18 @@ Separate from the completed Wayland preview phase; see the
 [implementation plan](./docs/plans/2026-11-15-app-activation.md).
 
 - [ ] Opt-in `+reuse` / `--reuse`, newest eligible instance, invoking cwd,
-  bounded same-user activation and exact-pane selection groundwork. Implemented
-  on `feat/app-activation`; desktop acceptance and final review remain pending.
+  bounded same-user activation and exact-pane selection groundwork. Merged to
+  `main` (PR #83); desktop acceptance and post-merge review fixes remain pending.
 - [ ] Native notification click-through to the originating pane, including
   stale notification/cold-start behavior. Native delivery, exact-origin routing
-  and notification-only startup handling are implemented on `feat/app-activation`.
+  and notification-only startup handling are merged to `main` (PR #83).
   Notification permission, live response and cold-launch ordering were observed
   with the local probe. A real AppKit menu/window/PTY/service regression passes.
   The maintainer confirmed probe-identity icon/focus, stale-pane, moved-tab,
   zoomed-split, two-process and Dock/menu UI checks. Cold relaunch opens one
-  fresh window; live stale-pane clicks do not. Real-ID authorization, older
-  macOS runtime, intermittent reports and required Opus review remain open;
-  see the
+  fresh window; live stale-pane clicks do not. Open items include real-ID
+  authorization, macOS 11–13 runtime, cross-UID runtime proof, idle CPU and
+  intermittent reports; see the
   [validation report](./docs/validation/macos-app-activation-2026-11-15.md).
 
 ## Verification debt
