@@ -455,7 +455,7 @@ impl App {
                                     let line_text = {
                                         let mut g = pane.grid.lock();
                                         if std::mem::take(&mut s.pointer.click_on_selected_block) {
-                                            g.select_smart_line(pane_row, pane_col)
+                                            g.widen_block(pane_row, pane_col)
                                         } else {
                                             g.select_block(pane_row, pane_col)
                                         }

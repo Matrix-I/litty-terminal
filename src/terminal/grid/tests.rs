@@ -1479,6 +1479,137 @@ fn selection_and_line_copy() {
 }
 
 #[test]
+fn double_click_excludes_brackets_and_quotes() {
+    for (text, expected) in [
+        ("[fix/macos-delegate-notifications]", "fix/macos-delegate-notifications"),
+        ("'/Users/linh.nguyen/Desktop/personal/litty-terminal/.claude/worktrees/check-and-resolve-16cdb6'",
+         "/Users/linh.nguyen/Desktop/personal/litty-terminal/.claude/worktrees/check-and-resolve-16cdb6"),
+        ("\"./src/main.rs\"", "./src/main.rs"),
+    ] {
+        let mut g = Grid::new(120, 3);
+        feed(&mut g, text);
+        for col in 1..text.len() - 1 {
+            assert_eq!(g.select_block(0, col), expected, "{text}, column {col}");
+            assert!(g.is_block_selected(0, col));
+        }
+        assert!(!g.is_selected(0, 0));
+        assert!(!g.is_selected(0, text.len() - 1));
+    }
+}
+
+#[test]
+fn double_click_selects_entire_soft_wrapped_path() {
+    let path = "/Users/linh.nguyen/Desktop/personal/litty-terminal/.claude/worktrees/check-and-resolve-16cdb6";
+    let text = format!("'{path}'");
+    for width in [20, 50, 120] {
+        let mut g = Grid::new(width, 8);
+        feed(&mut g, &text);
+        for offset in 1..text.len() - 1 {
+            let (row, col) = (offset / width, offset % width);
+            assert_eq!(g.select_block(row, col), path, "width {width}, offset {offset}");
+            assert!(g.is_block_selected(row, col));
+            assert_eq!(g.selected_text().as_deref(), Some(path));
+        }
+        assert!(!g.is_selected(0, 0));
+        let last = text.len() - 1;
+        assert!(!g.is_selected(last / width, last % width));
+    }
+}
+
+#[test]
+fn double_click_preserves_hard_line_and_space_boundaries() {
+    let mut g = Grid::new(8, 4);
+    feed(&mut g, "abcdefgh\r\nijklmnop\r\nab cd");
+    assert_eq!(g.select_block(0, 7), "abcdefgh");
+    assert_eq!(g.select_block(1, 0), "ijklmnop");
+    assert_eq!(g.select_block(2, 1), "ab");
+    assert_eq!(g.select_block(2, 3), "cd");
+    assert_eq!(g.select_block(4, 0), "");
+}
+
+#[test]
+fn double_click_wrapped_token_can_start_outside_viewport() {
+    let mut g = Grid::new(8, 2);
+    feed(&mut g, "[abcdefghijklmnop]");
+    assert_eq!(g.history, 1);
+    assert_eq!(g.select_block(0, 2), "abcdefghijklmnop");
+    assert!(g.is_block_selected(1, 0));
+    g.scroll_display(1);
+    assert_eq!(g.select_block(0, 2), "abcdefghijklmnop");
+    assert!(g.is_selected(0, 1));
+    assert!(!g.is_selected(0, 0));
+    // Fractional scrolling renders one extra row, still in absolute coordinates.
+    g.scroll_pixels(-0.5, 1.0);
+    assert_eq!(g.select_block(2, 0), "abcdefghijklmnop");
+    assert!(g.is_block_selected(0, 2));
+}
+
+#[test]
+fn double_click_wrap_keeps_wide_glyph_placeholder() {
+    let mut g = Grid::new(4, 3);
+    feed(&mut g, "[ab中x]");
+    assert_eq!(g.select_block(1, 1), "ab中x");
+    assert!(g.is_selected(1, 0));
+    assert!(g.is_selected(1, 1));
+    assert!(!g.is_selected(1, 3));
+}
+
+#[test]
+fn double_click_wrap_preserves_explicit_space_before_wide_glyph() {
+    let mut g = Grid::new(4, 3);
+    feed(&mut g, "[ab 中x]");
+    assert_eq!(g.select_block(0, 1), "ab");
+    assert_eq!(g.select_block(1, 1), "中x");
+    g.set_selection(Some(Selection { start: (0, 1), end: (1, 2) }));
+    assert_eq!(g.selected_text().as_deref(), Some("ab 中x"));
+}
+
+#[test]
+fn double_click_stops_at_ghostty_word_boundaries() {
+    // Ghostty's default `selection-word-chars`: space, tab, ' " │ ` | : ; , ( ) [ ] { } < > $
+    for (text, col, expected) in [
+        ("(foo)", 2, "foo"),
+        ("{bar}", 2, "bar"),
+        ("<baz>", 2, "baz"),
+        ("`cmd`", 2, "cmd"),
+        ("a|b", 0, "a"),
+        ("src/main.rs:42", 3, "src/main.rs"),
+        ("src/main.rs:42", 13, "42"),
+        ("x;y", 2, "y"),
+        ("one,two", 5, "two"),
+        ("$HOME", 2, "HOME"),
+        ("a│b", 2, "b"),
+        ("a\tb", 0, "a"),
+        ("https://ghostty.org", 10, "//ghostty.org"),
+        ("don't", 1, "don"),
+    ] {
+        let mut g = Grid::new(40, 2);
+        feed(&mut g, text);
+        assert_eq!(g.select_block(0, col), expected, "{text:?}, column {col}");
+    }
+}
+
+#[test]
+fn double_click_again_keeps_wrapped_token() {
+    let mut g = Grid::new(8, 4);
+    feed(&mut g, "abcdefghijklmnop");
+    assert_eq!(g.select_block(1, 2), "abcdefghijklmnop");
+    assert!(g.is_block_selected(1, 2));
+    // A token spanning soft wraps already exceeds one row; widening to that
+    // row would shrink it.
+    assert_eq!(g.widen_block(1, 2), "abcdefghijklmnop");
+    assert!(g.is_selected(0, 0) && g.is_selected(1, 7));
+}
+
+#[test]
+fn double_click_again_widens_single_row_token_to_line() {
+    let mut g = Grid::new(40, 2);
+    feed(&mut g, "$ cat (notes)");
+    assert_eq!(g.select_block(0, 8), "notes");
+    assert_eq!(g.widen_block(0, 8), "cat (notes)");
+}
+
+#[test]
 fn double_click_selects_block_then_line() {
     let mut g = Grid::new(40, 3);
     feed(&mut g, "$ git log --oneline 中文x\r\n");
