@@ -56,7 +56,7 @@ Separate from the completed Wayland preview phase; see the
   The maintainer confirmed probe-identity icon/focus, stale-pane, moved-tab,
   zoomed-split, two-process and Dock/menu UI checks. Cold relaunch opens one
   fresh window; live stale-pane clicks do not. Open items include real-ID
-  authorization, macOS 11–13 runtime, cross-UID runtime proof, idle CPU and
+  authorization, macOS 11–13 runtime, cross-UID runtime proof and
   intermittent reports; see the
   [validation report](./docs/validation/macos-app-activation-2026-11-15.md).
 

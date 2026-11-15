@@ -17,8 +17,11 @@ printf '\033]777;notify;Build finished;The build completed successfully\007'
 Run the packaged `Litty.app` for native notifications under Litty's identity.
 The first notification requests permission; allow it to enable delivery. If
 permission is denied or unavailable (for example, a relocated or re-signed
-bundle), the notification is dropped: packaged builds do not fall back to the
-standalone helper, and the reason is only logged to stderr. Delivery under the
+bundle), Litty shows the notification through the standalone helper instead:
+it still appears, but without Litty's identity or click routing. After
+choosing Don't Allow, notifications therefore keep appearing under the
+helper's identity; turn them off in System Settings ▸ Notifications for that
+helper (Script Editor) if you do not want them. Delivery under the
 real `com.litty.terminal` identity has not yet been verified; the completed UI
 checks used a local probe identity. The app bundle supplies the notification
 icon through its `Litty.icns` resource.
