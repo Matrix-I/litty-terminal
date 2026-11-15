@@ -4,7 +4,12 @@ use std::{ffi::{c_char, CStr, CString}, io, sync::Arc};
 type Handler = Arc<dyn Fn(String, u64) + Send + Sync>;
 static HANDLER: parking_lot::Mutex<Option<Handler>> = parking_lot::Mutex::new(None);
 unsafe extern "C" {
-    fn litty_notifications_init(callback: extern "C" fn(*const c_char, u64)) -> bool;
+    fn litty_notifications_init(
+        callback: extern "C" fn(*const c_char, u64),
+        unauthorized: extern "C" fn(*const c_char, *const c_char),
+    ) -> bool;
+    #[cfg(test)]
+    fn litty_notification_test_authorization_fallback() -> bool;
     fn litty_notification_startup() -> bool;
     #[cfg(test)]
     fn litty_notification_test_reopen_provenance() -> bool;
@@ -35,9 +40,18 @@ extern "C" fn response(origin: *const c_char, pane: u64) {
     });
     if result.is_err() { eprintln!("litty: notification response callback failed"); }
 }
+extern "C" fn unauthorized(title: *const c_char, body: *const c_char) {
+    // Called on the main queue with NUL-terminated strings valid for this call.
+    let result = std::panic::catch_unwind(|| {
+        if title.is_null() || body.is_null() { return; }
+        let (title, body) = unsafe { (CStr::from_ptr(title), CStr::from_ptr(body)) };
+        crate::platform::process::show_notification(&title.to_string_lossy(), &body.to_string_lossy());
+    });
+    if result.is_err() { eprintln!("litty: notification fallback failed"); }
+}
 pub fn set_notification_handler(handler: Option<Handler>) { *HANDLER.lock() = handler; }
 pub fn init_notifications() -> io::Result<()> {
-    if unsafe { litty_notifications_init(response) } { Ok(()) }
+    if unsafe { litty_notifications_init(response, unauthorized) } { Ok(()) }
     else { Err(io::Error::new(io::ErrorKind::Unsupported, "native notifications require an application bundle")) }
 }
 pub fn shutdown_notifications() { unsafe { litty_notifications_shutdown() } }
@@ -73,6 +87,10 @@ mod tests {
     #[test]
     fn notification_reopen_is_classified_by_event_source_not_queue_timing() {
         assert!(unsafe { litty_notification_test_reopen_provenance() });
+    }
+    #[test]
+    fn denied_authorization_falls_back_to_the_helper_once() {
+        assert!(unsafe { litty_notification_test_authorization_fallback() });
     }
     #[test]
     fn first_notification_survives_a_late_human_authorization() {
