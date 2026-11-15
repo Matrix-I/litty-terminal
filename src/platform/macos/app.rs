@@ -2,6 +2,8 @@
 
 use std::ffi::{c_void, CStr};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use super::objc::*;
 
@@ -40,6 +42,8 @@ pub fn register_reopen_handler(sink: crate::platform::EventSink) {
         // reopen here would immediately select a different window, so only
         // re-check a Light/Dark switch made while another app was in front.
         EVENTS.emit(crate::platform::PlatformEvent::SystemAppearance { dark: system_dark() });
+        // ...but finish restoring the exact window a click asked for.
+        finish_deferred_restore();
     }
     extern "C" fn on_will_terminate(_this: Id, _cmd: Id, _notification: Id) {
         // A quit Apple event (Dock Quit, logout, `terminate`) exits inside
@@ -209,6 +213,142 @@ pub fn activate_app() {
     }
 }
 
+/// How long a minimized window waits for this app to become active before it
+/// is restored anyway. A click forwarded from another Litty process may never
+/// activate this one (macOS 14+ cooperative activation); the observed gap
+/// between a notification click and activation is about 0.55 s.
+const RESTORE_WAIT: Duration = Duration::from_millis(1500);
+
+/// The one minimized window waiting for activation to be restored.
+struct DeferredRestore<W> {
+    pending: Option<(W, Instant)>,
+}
+
+impl<W> DeferredRestore<W> {
+    const fn new() -> Self { Self { pending: None } }
+
+    /// Hold `window` until activation or `deadline`; returns the window it replaces.
+    fn hold(&mut self, window: W, deadline: Instant) -> Option<W> {
+        self.pending.replace((window, deadline)).map(|(old, _)| old)
+    }
+
+    /// Take the held window on activation, with whether it is still due at
+    /// `now` (past its deadline the scheduled fallback restores it instead).
+    fn take(&mut self, now: Instant) -> Option<(W, bool)> {
+        self.pending.take().map(|(window, deadline)| (window, now < deadline))
+    }
+
+    /// Drop the held window if `is_it` matches it (the window is going away).
+    fn forget(&mut self, is_it: impl FnOnce(&W) -> bool) -> Option<W> {
+        if self.pending.as_ref().is_some_and(|(window, _)| is_it(window)) {
+            self.pending.take().map(|(window, _)| window)
+        } else {
+            None
+        }
+    }
+}
+
+/// Whether restoring must wait for activation: only a minimized window while
+/// another app is active returns to a Space macOS would not switch to.
+fn defers_restore(app_active: bool, minimized: bool) -> bool {
+    !app_active && minimized
+}
+
+/// A window retained while it waits; released when dropped.
+struct Retained(Id);
+
+// SAFETY: created, used and dropped only on the main thread (AppKit callbacks
+// and the event loop); the Mutex below only satisfies `static`.
+unsafe impl Send for Retained {}
+
+impl Drop for Retained {
+    fn drop(&mut self) {
+        // SAFETY: balances the `retain` taken in `restore_and_focus`.
+        unsafe { msg_send!(self.0, c"release") }
+    }
+}
+
+static DEFERRED_RESTORE: Mutex<DeferredRestore<Retained>> = Mutex::new(DeferredRestore::new());
+
+fn deferred_restore() -> std::sync::MutexGuard<'static, DeferredRestore<Retained>> {
+    DEFERRED_RESTORE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Restore `window` from the Dock and bring it forward.
+///
+/// While another app is active, a restored window returns to its own Space,
+/// but macOS switches to that Space only when the window is already there as
+/// activation completes. Restoring first plays the animation on the current
+/// Space and leaves the window behind on the other one. Like the Dock, wait
+/// for activation, with a timed fallback in case activation never comes.
+pub(super) fn restore_and_focus(window: Id) {
+    // SAFETY: `window` is a live NSWindow; standard NSWindow/NSApplication calls.
+    unsafe {
+        let active = shared_application().is_some_and(|app| msg_send!(app, c"isActive"; -> bool));
+        if defers_restore(active, msg_send!(window, c"isMiniaturized"; -> bool)) {
+            let held = Retained(msg_send!(window, c"retain"; -> Id));
+            let replaced = deferred_restore().hold(held, Instant::now() + RESTORE_WAIT);
+            // Superseded by this newer click: do not restore it later on its
+            // own. Cancel before scheduling: the cancel matches every request
+            // for that window, so for the same window it would drop the new one.
+            if let Some(old) = replaced {
+                cancel_restore_fallback(old.0);
+            }
+            msg_send!(
+                window,
+                c"performSelector:withObject:afterDelay:",
+                sel(c"deminiaturize:") => Id,
+                std::ptr::null_mut::<c_void>() => Id,
+                RESTORE_WAIT.as_secs_f64() => f64
+            );
+            return;
+        }
+        msg_send!(window, c"deminiaturize:", std::ptr::null_mut::<c_void>() => Id);
+        msg_send!(window, c"makeKeyAndOrderFront:", std::ptr::null_mut::<c_void>() => Id);
+    }
+}
+
+/// On activation, restore the window `restore_and_focus` held back, if due.
+fn finish_deferred_restore() {
+    let Some((window, due)) = deferred_restore().take(Instant::now()) else { return };
+    if !due {
+        return;
+    }
+    // SAFETY: `window` is retained by `Retained`; standard NSObject/NSWindow calls.
+    unsafe {
+        // Restored meanwhile (a closing window was already forgotten).
+        if !msg_send!(window.0, c"isMiniaturized"; -> bool) {
+            return;
+        }
+        cancel_restore_fallback(window.0);
+        msg_send!(window.0, c"deminiaturize:", std::ptr::null_mut::<c_void>() => Id);
+        msg_send!(window.0, c"makeKeyAndOrderFront:", std::ptr::null_mut::<c_void>() => Id);
+    }
+}
+
+/// Cancel the timed `deminiaturize:` that `restore_and_focus` scheduled.
+fn cancel_restore_fallback(window: Id) {
+    // SAFETY: `window` is a live NSWindow; standard NSObject class method.
+    unsafe {
+        if let Some(object) = class(c"NSObject") {
+            msg_send!(
+                object,
+                c"cancelPreviousPerformRequestsWithTarget:selector:object:",
+                window => Id,
+                sel(c"deminiaturize:") => Id,
+                std::ptr::null_mut::<c_void>() => Id
+            );
+        }
+    }
+}
+
+/// `window` is closing: neither the fallback nor activation may restore it.
+pub(super) fn forget_deferred_restore(window: Id) {
+    cancel_restore_fallback(window);
+    let forgotten = deferred_restore().forget(|held| held.0 == window);
+    drop(forgotten);
+}
+
 /// Wayland launcher tokens do not apply to AppKit.
 pub fn capture_startup_activation() { super::activation::capture_start_time(); }
 
@@ -216,6 +356,7 @@ pub fn capture_startup_activation() { super::activation::capture_start_time(); }
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+    use std::time::Instant;
 
     #[link(name = "AppKit", kind = "framework")]
     unsafe extern "C" {
@@ -254,6 +395,13 @@ mod tests {
         // AppKit wires `application*:` notification methods to the delegate
         // only in `setDelegate:`, so post the real notification instead of
         // calling the method: a method added after `setDelegate:` never runs.
+        // Activation takes a window held back by `restore_and_focus`, so a
+        // later activation cannot restore it again. A past deadline keeps the
+        // stand-in object from receiving window messages.
+        // SAFETY: a plain NSObject balances the retain `Retained` releases.
+        let stand_in = unsafe { send_id(class(c"NSObject").expect("NSObject"), c"new").expect("NSObject") };
+        let expired = Instant::now().checked_sub(RESTORE_WAIT).expect("monotonic clock past RESTORE_WAIT");
+        drop(deferred_restore().hold(Retained(stand_in), expired));
         // SAFETY: AppKit's notification name is a live NSString constant.
         unsafe {
             let app = shared_application().expect("NSApplication");
@@ -268,6 +416,53 @@ mod tests {
             [crate::platform::PlatformEvent::SystemAppearance { dark: system_dark() }],
             "passive activation re-checks the appearance and must not redirect focus"
         );
+        assert!(deferred_restore().pending.is_none(), "activation must take the held restore");
 
+    }
+
+    #[test]
+    fn a_deferred_restore_runs_once_when_activation_arrives_in_time() {
+        let start = Instant::now();
+        let mut deferred = DeferredRestore::new();
+        assert!(deferred.hold("window", start + RESTORE_WAIT).is_none());
+        assert_eq!(deferred.take(start + RESTORE_WAIT / 2), Some(("window", true)));
+        // A later activation (Cmd+Tab, Dock) must not pull the window forward again.
+        assert_eq!(deferred.take(start + RESTORE_WAIT / 2), None);
+    }
+
+    #[test]
+    fn a_deferred_restore_is_left_to_the_fallback_after_its_deadline() {
+        let start = Instant::now();
+        let mut deferred = DeferredRestore::new();
+        deferred.hold("window", start + RESTORE_WAIT);
+        assert_eq!(deferred.take(start + RESTORE_WAIT), Some(("window", false)));
+        assert_eq!(deferred.take(start + RESTORE_WAIT), None);
+    }
+
+    #[test]
+    fn only_a_minimized_window_of_an_inactive_app_waits_for_activation() {
+        assert!(defers_restore(false, true));
+        assert!(!defers_restore(true, true), "an active app restores at once");
+        assert!(!defers_restore(false, false), "an open window needs no restore");
+        assert!(!defers_restore(true, false));
+    }
+
+    #[test]
+    fn a_closing_window_is_forgotten_but_another_one_is_kept() {
+        let start = Instant::now();
+        let mut deferred = DeferredRestore::new();
+        deferred.hold("window", start + RESTORE_WAIT);
+        assert_eq!(deferred.forget(|held| *held == "other"), None);
+        assert_eq!(deferred.forget(|held| *held == "window"), Some("window"));
+        assert_eq!(deferred.take(start), None);
+    }
+
+    #[test]
+    fn a_newer_deferred_restore_replaces_the_pending_one() {
+        let start = Instant::now();
+        let mut deferred = DeferredRestore::new();
+        deferred.hold("first", start + RESTORE_WAIT);
+        assert_eq!(deferred.hold("second", start + RESTORE_WAIT), Some("first"));
+        assert_eq!(deferred.take(start), Some(("second", true)));
     }
 }

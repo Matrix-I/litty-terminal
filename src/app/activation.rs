@@ -59,9 +59,7 @@ impl App {
             // As select_tab: the title/bell marker must not wait for the
             // throttled render-time refresh.
             refresh_tab_titles(state);
-            state.window.set_minimized(false);
-            state.window.set_visible(true);
-            state.window.focus_window();
+            state.window.restore_and_focus();
             platform::activate_app();
             state.renderer.invalidate();
             state.window.request_redraw();
