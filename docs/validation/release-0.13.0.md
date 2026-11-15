@@ -1,9 +1,12 @@
 # v0.13.0 Release Validation
 
-Status: locally verified release preparation for PR review; not tagged or published.
+Status: published as [v0.13.0](https://github.com/Matrix-I/litty-terminal/releases/tag/v0.13.0)
+on 2026-11-16 (UTC+07; 2026-11-15 17:20:58 UTC).
 Source: `30154c0` plus v0.13.0 version metadata and documentation only.
 No application source or dependency versions changed during preparation.
-Record the final release commit SHA after the preparation PR merges, before tagging.
+Release commit: `918aeaf90ab7db7b792e43eaab7c4e6040e21f5f` (merged PR #88).
+The merged tree matches the reviewed preparation; application source is unchanged
+from the verified baseline.
 
 ## Verification (2026-11-15, macOS arm64)
 
@@ -34,22 +37,21 @@ The 12 ignored tests were not enabled; passing suites do not establish their cov
   shell exits and window closes; after 10 s settling, CPU time
   0:00.23 → 0:00.24 over 30.020 s (~0.033% of one core), `ps` displays 0.0%.
   `footprint` exits 0: phys_footprint 20 MB, peak 23 MB. Single sample.
-- macOS binary: 2,338,368 bytes; Linux x86_64 binary: 4,733,064 bytes.
+- Local binaries: macOS 2,338,368 bytes; Linux x86_64 4,733,064 bytes.
   Both below the 5,000,000-byte budget; both contain `0.13.0` and the pinned key.
 - App ZIP: both CFBundle versions equal `0.13.0`.
 - Local macOS-only checksum manifest signature verifies against
   `resources/minisign.pub`. It is not the final combined release manifest.
 - Prepared assets and release notes are in ignored `dist/v0.13.0/`.
 
-## Known limitations and remaining publication gates
+## Known limitations
 
 - Docker/Podman daemon unavailable; inspected Podman VM configuration is 1 GiB,
   below the documented 4 GiB suite prerequisite. Linux runtime smoke suite and
   Debian/RPM packaging/install/remove were not rerun locally. The release CI
-  must build/test both packages before publishing its draft.
-- Combined six-asset checksum manifest and signature are not yet generated;
-  CI must produce and verify all eight release assets. Download/update checks
-  require the release to exist and remain post-publication work.
+  subsequently built/tested both packages, including install/remove, successfully.
+- Full desktop GUI launcher acceptance on the final Linux packages was not run.
+  Linux runtime smoke coverage below remains historical.
 - Latest Linux cross-build compiles but was not launched on a real Linux host.
   Earlier GNOME/KDE/Weston/sway validation remains historical, not a final-build run.
 - No new full desktop notification/reuse or physical input run; prior maintainer
@@ -61,6 +63,30 @@ The 12 ignored tests were not enabled; passing suites do not establish their cov
   shared-memory, APC retention, benchmark and architecture follow-ups.
 - Startup/input-latency/PTY-throughput figures and additional AI provider/old
   Nushell coverage were not re-measured. Older tables remain dated historical data.
+
+## Final CI and published-release verification
+
+[Release workflow 43739597576](https://github.com/Matrix-I/litty-terminal/actions/runs/43739597576)
+completed successfully at tagged commit `918aeaf`. All jobs passed: version,
+macOS release tests and bundling, Linux glibc 2.34 build, Debian and Fedora
+package tests and apt/dnf install/remove, signing and draft creation.
+
+- All eight release assets are public. Downloaded all assets again after publication;
+  all six SHA256 hashes and the minisign signature verify against `resources/minisign.pub`.
+  The manifest contains the exact `# litty-release: v0.13.0` marker.
+- CI binaries: macOS 2,338,368 bytes; Linux x86_64 4,732,408 bytes. Both
+  contain version 0.13.0 and the pinned public key and are below 5,000,000 bytes.
+- App ZIP: both bundle versions equal 0.13.0, pinned key is present, and the
+  extracted app passes `codesign --verify --deep --strict`.
+- An extra byte-equality assertion between bundled and standalone executables
+  failed because packaging signs the app copy after copying it. Byte equality is
+  not a packaging invariant; app signature/version/key verification passed instead.
+- Older-build update flow passed: downloaded and verified the v0.12.0 standalone
+  binary into a temporary directory, used an isolated HOME/config/cache, ran
+  `+check-update` (detects 0.13.0), `+update` (verified download and installation
+  succeed), then `+check-update` (current version 0.13.0, already latest).
+  No installed user app was modified. This proves the standalone macOS updater;
+  packaged-app replacement and the Linux updater were not exercised live.
 
 ## Generated suite report
 

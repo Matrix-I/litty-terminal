@@ -10,7 +10,7 @@ optimization candidates are identified separately from reproduced failures.
 | Version | Record |
 | --- | --- |
 | [v0.14.0](./docs/plans/0.14.0.md) | Planned — unfinished implementation and desktop acceptance carried from v0.13.0 |
-| [v0.13.0](./docs/plans/0.13.0.md) | Release preparation — Wayland preview, Linux shaders, macOS reuse/notifications, selection and atlas fixes; not yet published |
+| [v0.13.0](./docs/plans/0.13.0.md) | Release record (2026-11-16, UTC+07) — Wayland preview, Linux shaders, macOS reuse/notifications, selection and atlas fixes |
 | [v0.12.0](./docs/plans/0.12.0.md) | Release record (2026-11-13) — Linux Vulkan robustness and X11 integration (IME, monitors, theme, fullscreen, titles), security and robustness fixes, 10 MB scrollback default, alt-screen and non-ASCII parser speedups |
 | [v0.11.1](./docs/plans/0.11.1.md) | Release record (2026-11-11) — source review fixes (click-to-move panic, RIS, OSC titles, scroll margins), OSC 8 file-link hardening, faster OSC 8 interning and rows-only resize, SIGWINCH after resize bursts, macOS live-resize and window fixes |
 | [v0.11.0](./docs/plans/0.11.0.md) | Release record (2026-11-09) — ships the performance gap plan: new latency, startup and PTY throughput benchmarks, shaping cache, faster OSC 8 / Unicode paths, overlapped startup and lower idle memory; T1 and emoji interning carry over |
