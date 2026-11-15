@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Real macOS GUI/PTY reuse checks; no synthetic UI or user dotfile changes."""
+"""Real macOS GUI/PTY reuse checks; no synthetic UI or user dotfile changes.
+
+Every launched process uses a private activation registry
+(LITTY_ACTIVATION_DIR) and a temporary HOME, so the run never reaches a
+person's running Litty, reads their config, or touches their update cache.
+"""
 import argparse
 import os
 from pathlib import Path
@@ -29,13 +34,18 @@ def main():
     parser.add_argument("--hold", action="store_true", help="keep the zero-window instance for a manual idle probe, at most 45 seconds")
     args = parser.parse_args()
     binary = args.binary.resolve(strict=True)
-    registry = Path(f"/tmp/litty-a1-{os.geteuid()}")
-    # A global reuse request is unsafe in an existing user's service. Refuse
-    # before launching anything; do not run other Litty launches concurrently.
-    require_empty_registry(registry)
     processes = []
-    with tempfile.TemporaryDirectory(prefix="litty-reuse-e2e-", dir="/tmp") as temporary:
+    # /tmp keeps endpoint socket paths below the Unix socket path limit.
+    with tempfile.TemporaryDirectory(prefix="la-e2e-", dir="/tmp") as private, \
+            tempfile.TemporaryDirectory(prefix="litty-reuse-e2e-", dir="/tmp") as temporary:
+        registry = Path(private)
+        # mkdtemp creates 0700 and owned by us; still refuse anything unexpected.
+        require_empty_registry(registry)
         root = Path(temporary)
+        home = root / "home"
+        (home / ".litty").mkdir(parents=True)
+        # No network update check or "update available" notification from the harness.
+        (home / ".litty" / "config").write_text("auto-update = off\n")
         fifo = root / "shells"
         os.mkfifo(fifo, 0o600)
         pipe = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
@@ -54,7 +64,8 @@ def main():
             "exit 0\n"
         )
         shell.chmod(0o700)
-        environment = dict(os.environ, SHELL=str(shell))
+        environment = dict(os.environ, SHELL=str(shell), HOME=str(home),
+            LITTY_ACTIVATION_DIR=str(registry))
         for label in ("initial", "first tiếng việt", "newest", "after-crash"):
             (root / label).mkdir()
 
@@ -75,7 +86,6 @@ def main():
         def wait_endpoint(process):
             # Vnode notifications avoid timing sleeps and wait for real readiness.
             deadline = time.monotonic() + 10
-            registry.mkdir(mode=0o700, exist_ok=True)
             queue = select.kqueue()
             watched = {}
             try:
@@ -123,7 +133,9 @@ def main():
             second = subprocess.Popen([str(binary)], cwd=root / "newest", env=environment,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             processes.append(second)
-            assert message() == (second.pid, "default"), "ordinary launch must stay independent"
+            # An ordinary launch starts in HOME (here the temporary home), not the caller cwd.
+            observed = message()
+            assert observed == (second.pid, "home"), f"ordinary launch must stay independent: {observed}"
             wait_endpoint(second)
             assert client("newest").returncode == 0
             assert message() == (second.pid, "newest"), "newest eligible process must win"
@@ -142,17 +154,32 @@ def main():
                 if select.select([sys.stdin], [], [], 45)[0]:
                     sys.stdin.readline()
         finally:
+            # Each step is independent so one failure neither skips the rest
+            # nor hides the original assertion.
+            errors = []
             for process in processes:
-                if process.poll() is None:
-                    process.kill()
-                process.wait(timeout=5)
-            os.close(pipe)
-            for directory in owned_endpoints:
-                (directory / "s").unlink(missing_ok=True)
                 try:
-                    directory.rmdir()
-                except FileNotFoundError:
-                    pass
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=5)
+                except Exception as error:  # noqa: BLE001 - reported below
+                    errors.append(f"stop {process.pid}: {error}")
+            os.close(pipe)
+            # Killed children skip their own cleanup; their endpoints may not have
+            # been recorded if an assertion fired before readiness.
+            pids = {f"{process.pid:x}" for process in processes}
+            for entry in list(registry.iterdir()):
+                pieces = entry.name.split("-")
+                if entry in owned_endpoints or (len(pieces) == 3 and pieces[1] in pids):
+                    try:
+                        (entry / "s").unlink(missing_ok=True)
+                        entry.rmdir()
+                    except FileNotFoundError:
+                        pass
+                    except OSError as error:
+                        errors.append(f"remove {entry.name}: {error}")
+            if errors:
+                print("CLEANUP: " + "; ".join(errors), file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":
