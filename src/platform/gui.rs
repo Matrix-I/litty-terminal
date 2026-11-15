@@ -483,6 +483,18 @@ impl Window {
         }
     }
 
+    /// Un-minimize, show and focus the window for an explicit request (a
+    /// notification click): on macOS a minimized window waits for app
+    /// activation so it comes back on its own Space.
+    pub fn restore_and_focus(&self) {
+        match &self.0 {
+            #[cfg(target_os = "macos")]
+            WindowInner::Native(w) => w.restore_and_focus(),
+            #[cfg(target_os = "linux")]
+            WindowInner::NativeLinux(w) => w.restore_and_focus(),
+        }
+    }
+
     pub fn set_cursor(&self, icon: CursorIcon) {
         match &self.0 {
             #[cfg(target_os = "macos")]

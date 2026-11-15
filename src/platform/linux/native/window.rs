@@ -267,6 +267,13 @@ impl NativeWindow {
         self.inner.lock().visible
     }
 
+    /// Un-minimize, show and focus for an explicit request (a notification click).
+    pub fn restore_and_focus(&self) {
+        self.set_minimized(false);
+        self.set_visible(true);
+        self.focus_window();
+    }
+
     /// Activation is subject to the compositor's focus policy on Wayland.
     pub fn focus_window(&self) {
         if let Some(x11) = self.x11() {

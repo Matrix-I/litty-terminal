@@ -204,6 +204,7 @@ impl Drop for NativeWindowInner {
     fn drop(&mut self) {
         unsafe {
             if !self.ns_window.is_null() {
+                crate::platform::macos::app::forget_deferred_restore(self.ns_window);
                 let was_key = msg_send!(self.ns_window, c"isKeyWindow"; -> bool);
                 msg_send!(self.ns_window, c"close");
                 if was_key {
@@ -528,6 +529,10 @@ impl NativeWindow {
                 msg_send!(self.inner.ns_window, c"setTitle:", ns_title => Id);
             }
         }
+    }
+
+    pub fn restore_and_focus(&self) {
+        crate::platform::macos::app::restore_and_focus(self.inner.ns_window);
     }
 
     pub fn focus_window(&self) {
