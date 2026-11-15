@@ -38,13 +38,17 @@ pub(super) fn apply_font_settings(cfg: &config::Config) {
 
 /// Create a window with one tab whose shell starts in `cwd`.
 pub(super) fn create_window(event_loop: &LoopCtx, waker: &Waker, cwd: Option<&str>) -> std::io::Result<State> {
-    build_window(event_loop, waker, cwd, &mut None)
+    build_window(event_loop, waker, cwd, &mut None, false)
 }
 
 /// Open a window around a tab torn off another one. `torn` is emptied only once
 /// the window exists, so on failure the caller can still put the tab back.
 pub(super) fn create_window_for_tab(event_loop: &LoopCtx, waker: &Waker, torn: &mut Option<TornTab>) -> std::io::Result<State> {
-    build_window(event_loop, waker, None, torn)
+    build_window(event_loop, waker, None, torn, false)
+}
+
+pub(super) fn create_activation_window(event_loop: &LoopCtx, waker: &Waker, cwd: &str) -> std::io::Result<State> {
+    build_window(event_loop, waker, Some(cwd), &mut None, true)
 }
 
 fn build_window(
@@ -52,6 +56,7 @@ fn build_window(
     waker: &Waker,
     cwd: Option<&str>,
     adopt: &mut Option<TornTab>,
+    strict_cwd: bool,
 ) -> std::io::Result<State> {
     let cfg = config::Config::load();
     grid::set_default_colors(cfg.foreground, cfg.background);
@@ -142,12 +147,12 @@ fn build_window(
         None => {
             let (cols, rows) = renderer.grid_size_for_tabs(usize::from(csd));
             let (cw, ch) = renderer.cell_size();
-            let pane = spawn_pane(
+            let pane = spawn_pane_with_directory(
                 next_id(),
                 cols,
                 rows,
                 (cw, ch),
-                cwd,
+                cwd.map(|path| (path, strict_cwd)),
                 Some(cfg.shell_setup()),
                 waker,
             )?;
@@ -234,11 +239,18 @@ fn build_window(
 }
 
 pub(super) fn spawn_pane(
+    pane_id: u64, cols: usize, rows: usize, cell: (u32, u32), cwd: Option<&str>,
+    shell: Option<crate::terminal::shell_integration::ShellSetup>, waker: &Waker,
+) -> std::io::Result<Pane> {
+    spawn_pane_with_directory(pane_id, cols, rows, cell, cwd.map(|path| (path, false)), shell, waker)
+}
+
+fn spawn_pane_with_directory(
     pane_id: u64,
     cols: usize,
     rows: usize,
     (cw, ch): (u32, u32),
-    cwd: Option<&str>,
+    cwd: Option<(&str, bool)>,
     shell: Option<crate::terminal::shell_integration::ShellSetup>,
     waker: &Waker,
 ) -> std::io::Result<Pane> {
@@ -248,7 +260,10 @@ pub(super) fn spawn_pane(
             let args: Vec<&str> = argv.iter().map(String::as_str).collect();
             Pty::spawn_program(&argv[0], &args, &[], (cols as u16, rows as u16), (cw, ch))?
         }
-        None => Pty::spawn_in(cols as u16, rows as u16, cw, ch, cwd, shell)?,
+        None => match cwd {
+            Some((path, true)) => Pty::spawn_in_checked(cols as u16, rows as u16, cw, ch, path, shell)?,
+            _ => Pty::spawn_in(cols as u16, rows as u16, cw, ch, cwd.map(|(path, _)| path), shell)?,
+        },
     };
     let on_output = waker.clone();
     let proxy = waker.proxy.clone();

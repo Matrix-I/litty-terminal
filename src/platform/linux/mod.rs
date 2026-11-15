@@ -2,16 +2,18 @@
 //! namesake in `platform::macos`; most are explicit no-ops because the feature
 //! is macOS-only (Dock, native tabs, menu bar, Secure Keyboard Entry).
 
+mod activation;
 mod app;
 mod dialog;
 mod input;
 mod menu;
 mod native_clipboard;
+mod notifications;
 mod tabs;
 mod window;
 pub(crate) mod native;
 
-pub use self::{app::*, dialog::*, input::*, menu::*, native_clipboard::*, tabs::*, window::*};
+pub use self::{activation::*, app::*, dialog::*, input::*, menu::*, native_clipboard::*, notifications::*, tabs::*, window::*};
 
 mod filesystem;
 pub use filesystem::exchange_directories;

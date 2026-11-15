@@ -2,17 +2,19 @@
 //! integration. Talks to the Objective-C runtime directly (no third-party crates).
 //! The Linux twins of every public function live in `platform::linux`.
 
+mod activation;
 mod app;
 mod dialog;
 mod input;
 mod menu;
 mod native_clipboard;
+mod notifications;
 mod objc;
 mod tabs;
 mod window;
 pub(crate) mod native;
 
-pub use self::{app::*, dialog::*, input::*, menu::*, native_clipboard::*, tabs::*, window::*};
+pub use self::{activation::*, app::*, dialog::*, input::*, menu::*, native_clipboard::*, notifications::*, tabs::*, window::*};
 
 mod filesystem;
 pub use filesystem::exchange_directories;

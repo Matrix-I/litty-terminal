@@ -1,6 +1,7 @@
 //! OS integration that does not depend on window or terminal state:
 //! detached child processes, notifications, URL / file opening, clipboard.
 
+pub(crate) mod activation;
 pub(crate) mod clipboard;
 pub(crate) mod gui;
 pub(crate) mod input;
@@ -20,6 +21,10 @@ use linux as imp;
 // The cross-platform API, listed by name (never `imp::*`): a function missing
 // on one platform fails that platform's build instead of silently vanishing.
 pub(crate) use imp::{
+    ActivationServer, start_activation, reuse_window,
+    NotificationRouter, start_notification_router, notify_pane,
+    startup_is_notification,
+
     capture_startup_activation, activate_app, add_tabbed_window, alert, alert_choice, apply_window_config, beep, caps_lock,
     cleanup_window, clipboard_string, clipboard_write_string, init_clipboard, primary_string, primary_write_string, close_progress_dialog,
     configure_layer_drawables, confirm, install_menu,
@@ -27,6 +32,8 @@ pub(crate) use imp::{
     set_secure_input, set_secure_input_menu_state, set_tabbing_allowed,
     show_progress_dialog, system_dark,
 };
+#[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
+pub(crate) use imp::{init_notifications, shutdown_notifications, consume_notification_reopen};
 // Only called from macOS-gated code (see the cfg inventory in
 // docs/plans/2026-11-01-layered-layout.md); the Linux twin keeps the API symmetric.
 #[cfg_attr(not(target_os = "macos"), allow(unused_imports))]

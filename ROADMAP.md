@@ -40,6 +40,19 @@ Detailed structural refactor plans and the Yosh implementation plan remain in
 `docs/plans/` and are linked from their release records. Outstanding structural
 follow-ups are in v0.8.0; shipped refactor results are in v0.7.1.
 
+## macOS app activation (in progress)
+
+Separate from the completed Wayland preview phase; see the
+[implementation plan](./docs/plans/2026-11-15-app-activation.md).
+
+- [ ] Opt-in `+reuse` / `--reuse`, newest eligible instance, invoking cwd,
+  bounded same-user activation and exact-pane selection groundwork. Implemented
+  on `feat/app-activation`; desktop acceptance and final review remain pending.
+- [ ] Native notification click-through to the originating pane, including
+  stale notification/cold-start behavior. The local native launch probe returns
+  notification authorization error `UNErrorDomain=1`; live delivery and launch
+  characterization are blocked. No native notification completion is claimed.
+
 ## Verification debt
 
 - [x] Manually test Kitty keys in the real app: letters, `Ctrl`/`Alt`+letter, `Esc`, `Tab` vs `Ctrl+I`, key repeat (verify `key_without_modifiers()` on macOS)

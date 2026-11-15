@@ -2,6 +2,7 @@
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command {
+    Reuse,
     ListThemes,
     /// `+toggle-quick-terminal` from before the Quick Terminal was removed.
     QuickTerminalRemoved,
@@ -39,7 +40,9 @@ fn count_arg(args: &[String], i: usize, max: usize) -> Option<usize> {
 pub(crate) fn parse(args: &[String]) -> Command {
     let first = args.get(1).map(String::as_str).unwrap_or("");
     let is = |names: &[&str]| names.contains(&first);
-    if is(&["+list-themes", "--list-themes"]) {
+    if is(&["+reuse", "--reuse"]) {
+        Command::Reuse
+    } else if is(&["+list-themes", "--list-themes"]) {
         Command::ListThemes
     } else if is(&["+toggle-quick-terminal"]) {
         Command::QuickTerminalRemoved
@@ -101,6 +104,16 @@ mod tests {
 
     fn argv(a: &[&str]) -> Vec<String> {
         std::iter::once("litty").chain(a.iter().copied()).map(String::from).collect()
+    }
+
+    #[test]
+    fn reuse_spellings_are_explicit_and_benchmarks_stay_local() {
+        assert_eq!(parse(&argv(&["+reuse"])), Command::Reuse);
+        assert_eq!(parse(&argv(&["--reuse"])), Command::Reuse);
+        assert_eq!(parse(&argv(&[])), Command::Run {
+            bench_ram: false, bench_all: false, scroll_fps: false,
+        });
+        assert_eq!(parse(&argv(&["+bench-features"])), Command::BenchFeatures);
     }
 
     #[test]

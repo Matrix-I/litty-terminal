@@ -44,6 +44,13 @@ fn main() {
     bench_startup::mark_main();
     let args: Vec<String> = std::env::args().collect();
     match cli::parse(&args) {
+        cli::Command::Reuse => {
+            if let Err(error) = app::run_reuse() {
+                eprintln!("litty: reuse failed: {error}");
+                std::process::exit(1);
+            }
+        }
+
         cli::Command::ListThemes => {
             for name in config::bundled_theme_names() {
                 println!("{name}");

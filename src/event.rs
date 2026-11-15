@@ -10,6 +10,10 @@ use crate::update;
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     WakeUp,
+    Activation {
+        request: crate::platform::activation::ActivationRequest,
+        reply: std::sync::mpsc::SyncSender<crate::platform::activation::ActivationReply>,
+    },
     AiStatus { pane_id: u64, generation: u64, text: String },
     AiResult { pane_id: u64, generation: u64, outcome: Box<crate::ai::Outcome> },
     ChildExit(u64),
