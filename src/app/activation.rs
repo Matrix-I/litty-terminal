@@ -1,7 +1,7 @@
 //! Activation requests change app state only on its event loop.
 use super::{
     App,
-    window::{create_activation_window, sync_size},
+    window::{create_activation_window, refresh_tab_titles, sync_size},
 };
 use crate::platform::{
     self,
@@ -56,6 +56,9 @@ impl App {
             };
             state.active = at;
             sync_size(state);
+            // As select_tab: the title/bell marker must not wait for the
+            // throttled render-time refresh.
+            refresh_tab_titles(state);
             state.window.set_minimized(false);
             state.window.set_visible(true);
             state.window.focus_window();

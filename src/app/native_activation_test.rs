@@ -32,6 +32,63 @@ impl Lifecycle {
         }
         self.app.gui_bench = None;
     }
+
+    /// Deliver one admitted request to the app as the activation worker would.
+    fn activate(&mut self, ctx: &LoopCtx, id: [u8; 16], action: platform::activation::ActivationAction)
+        -> platform::activation::ActivationReply {
+        let origin = self.app.activation.as_ref().expect("activation service").origin().to_owned();
+        let session_hex = origin.rsplit('-').next().expect("origin session");
+        let mut session = [0; 16];
+        for (i, byte) in session.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&session_hex[i * 2..i * 2 + 2], 16).expect("session hex");
+        }
+        let (reply, result) = mpsc::sync_channel(1);
+        self.app.user_event(ctx, AppEvent::Activation {
+            request: platform::activation::ActivationRequest {
+                id, session,
+                // This already-admitted fixture request must not expire mid-assertion.
+                expires_ns: u64::MAX,
+                action,
+            }, reply,
+        });
+        result.try_recv().expect("activation acknowledgement")
+    }
+
+    /// A click on a pane in a hidden tab selects that tab and pane, clears a
+    /// zoom on another pane and the bell, and refreshes the window title.
+    fn assert_pane_activation_reveals_hidden_tab(&mut self, ctx: &LoopCtx) {
+        use platform::{MenuCommand, PlatformEvent};
+        let target = self.app.windows[0].tabs[0].active_pane().expect("first tab pane").id;
+        gui_bench::set_pane_program(vec!["/bin/cat".into()]);
+        self.app.user_event(ctx, PlatformEvent::Menu(MenuCommand::SplitRight).into());
+        let s = &mut self.app.windows[0];
+        assert_eq!(s.tabs[0].panes.len(), 2, "split did not add a pane");
+        assert_ne!(s.tabs[0].active_pane_id, target);
+        tabs::toggle_split_zoom(s);
+        assert!(s.tabs[0].zoomed_pane_id.is_some_and(|id| id != target));
+        gui_bench::set_pane_program(vec!["/bin/cat".into()]);
+        self.app.user_event(ctx, PlatformEvent::Menu(MenuCommand::NewTab).into());
+        let s = &mut self.app.windows[0];
+        // A render titles the window after the newly active tab.
+        window::refresh_tab_titles(s);
+        assert_eq!((s.tabs.len(), s.active, s.titled_tab), (2, 1, 1), "new tab is not the titled active tab");
+        s.tabs[0].bell = true;
+
+        let result = self.activate(ctx, [2; 16], platform::activation::ActivationAction::Pane(target));
+        assert_eq!(result, Ok(()));
+        let s = &self.app.windows[0];
+        assert_eq!(s.active, 0, "hidden tab was not selected");
+        assert_eq!(s.tabs[0].active_pane_id, target, "clicked pane was not selected");
+        assert_eq!(s.tabs[0].zoomed_pane_id, None, "zoom on another pane hides the clicked pane");
+        assert!(!s.tabs[0].bell, "bell marker survived selecting the tab");
+        assert_eq!(s.titled_tab, 0, "window title still names the previously active tab");
+
+        let windows = self.app.windows.len();
+        let missing = format!("/tmp/litty-missing-{}", std::process::id());
+        let result = self.activate(ctx, [3; 16], platform::activation::ActivationAction::NewWindow(missing));
+        assert!(result.is_err(), "missing directory must be an explicit error");
+        assert_eq!(self.app.windows.len(), windows, "missing directory must not open a fallback window");
+    }
 }
 
 impl EventHandler<AppEvent> for Lifecycle {
@@ -52,21 +109,8 @@ impl EventHandler<AppEvent> for Lifecycle {
         assert_eq!(self.app.windows.len(), 1, "repeated resume duplicated the cold window");
         self.app.windows.clear();
 
-        let session_hex = origin.rsplit('-').next().expect("origin session");
-        let mut session = [0; 16];
-        for (i, byte) in session.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&session_hex[i * 2..i * 2 + 2], 16).expect("session hex");
-        }
-        let (reply, result) = mpsc::sync_channel(1);
-        self.app.user_event(ctx, AppEvent::Activation {
-            request: platform::activation::ActivationRequest {
-                id: [1; 16], session,
-                // This already-admitted fixture request must not expire mid-assertion.
-                expires_ns: u64::MAX,
-                action: platform::activation::ActivationAction::Pane(stale_id),
-            }, reply,
-        });
-        assert_eq!(result.try_recv().expect("stale-pane acknowledgement"), Ok(()));
+        let result = self.activate(ctx, [1; 16], platform::activation::ActivationAction::Pane(stale_id));
+        assert_eq!(result, Ok(()), "stale-pane acknowledgement");
         assert!(self.app.windows.is_empty(), "stale pane click created a replacement window");
         let cold_endpoint = PathBuf::from(format!("/tmp/litty-a1-{}", unsafe { libc::geteuid() }))
             .join(origin).join("s");
@@ -81,6 +125,7 @@ impl EventHandler<AppEvent> for Lifecycle {
         assert!(pane.pty.pid > 0);
         // SAFETY: signal zero checks existence without sending a signal.
         assert_eq!(unsafe { libc::kill(pane.pty.pid, 0) }, 0, "PTY child is not alive");
+        self.assert_pane_activation_reveals_hidden_tab(ctx);
         let service = self.app.activation.as_ref().expect("menu window did not start activation service");
         // Inspect only this process's endpoint; never discover or reuse another
         // user's running instance during an integration test.
@@ -130,5 +175,5 @@ pub(crate) fn run() {
     platform::macos::set_notification_startup_for_test(None);
     done.send(()).expect("watchdog completion");
     watchdog.join().expect("watchdog");
-    println!("PASS: one cold-start window/PTY, stale pane ignored, menu window/service, benchmark exclusions, shutdown cleanup");
+    println!("PASS: one cold-start window/PTY, stale pane ignored, menu window/service, hidden-tab pane activation, missing-dir rejection, benchmark exclusions, shutdown cleanup");
 }
