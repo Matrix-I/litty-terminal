@@ -1,8 +1,19 @@
 # macOS App Activation — Partial Implementation Validation
 
-Date: 2026-11-15. Branch: `feat/app-activation`; plan/probe commit `ec69968`,
-implementation uncommitted. Base: `af3b5ed`. This report covers process reuse and
-pane-selection groundwork. Native notification click-through is incomplete.
+Date: 2026-11-15. Branch: `feat/app-activation`; base: `af3b5ed`.
+Implementation checkpoints `8df30d5` and `8fd884e` are committed locally;
+the lifecycle regression and later documentation remain uncommitted.
+Native notification delivery/routing/startup handling is implemented, but full
+desktop acceptance remains incomplete. Later sections supersede earlier
+permission blockers and intermediate test counts; they preserve the execution
+record rather than asserting those blockers still apply.
+
+Current verification: 701 ordinary tests plus the real AppKit lifecycle runner
+pass, 12 existing ignored; macOS/Linux checks, Clippy and release build pass.
+Supplemental review approves the lifecycle batch. Physical icon/focus,
+stale-click and Dock acceptance, older macOS runtime, exact 0% idle CPU and
+required Opus review remain unverified. The guide and ROADMAP now reflect this
+state without claiming completion.
 
 ## Behavior and Real-App Evidence
 
@@ -300,3 +311,298 @@ observable cold-start/menu/service regression; that Important test gap remains
 open for the next batch. Required Opus review remains unavailable in this
 runtime; supplemental review does not satisfy that model requirement.
 This requested checkpoint is incomplete feature work, not final acceptance.
+
+## Observable Lifecycle Regression
+
+Checkpoint `8fd884e` is committed locally. The following test-only batch remains
+uncommitted. `cargo test --test native_activation` runs a dedicated executable
+on main so AppKit can create real windows. It injects only the OS notification
+startup classification, then dispatches the actual platform NewWindow menu
+event through App::user_event. Assertions cover: no initial window/service,
+one menu-created window, a live /bin/cat PTY child, this process's socket file,
+stable service identity, all five benchmark exclusions, and socket removal
+after shutdown. No synthetic UI input or global reuse discovery is used.
+
+Mutation evidence: temporarily removing start_activation_service from the
+common open_window path produces `menu window did not start activation
+service` in `/tmp/litty-native-lifecycle-red.log`; restoring it passes. The
+watchdog initially mislabeled a disconnected completion channel as a deadline;
+it now distinguishes timeout from disconnection. The first fixture link also
+failed because mi_collect lacked mimalloc linkage; the test executable now
+explicitly links the existing dependency. No dependency was added or upgraded.
+
+Final commands after the last source edit:
+
+- `cargo check`: pass.
+- `cargo check --target x86_64-unknown-linux-gnu --all-targets`: pass, including
+  the new target; Linux explicitly reports the AppKit test is unavailable.
+- `cargo test` outside the sandbox: 686 unit + 1 + 14 integration tests pass,
+  plus the native lifecycle executable PASS; 12 existing ignored unchanged.
+  Log: `/tmp/litty-native-lifecycle-final.log`.
+- `cargo clippy --all-targets -- -D warnings`: pass after fixing fixture
+  reachability warnings. The separate fixture allows dead code/unused imports
+  from compiling the binary's modules without its CLI, and
+  items_after_test_module for inherited source ordering. Normal crate linting
+  retains its original policy; this scoped allowance does not skip any tests.
+- `cargo build --release`: pass.
+- `git diff --check`: pass.
+
+Self-review: only test startup classification is overridden, per-thread and
+absent from release builds. Real window/menu/service code is exercised; the
+fixture never launches the user's shell or sends requests to another process.
+The watchdog bounds native initialization; normal shutdown drops PTYs/server
+and verifies socket removal. No hot paths, locks, formats or dependencies
+change. The binary-only module list is duplicated in the fixture to avoid a
+production library/API refactor. Physical desktop clicks and older OS behavior
+remain outside this test's evidence. Required Opus and receiving-code-review
+sub-skill are unavailable locally; supplemental review remains supplementary.
+
+The refreshed real Litty bundle (authorized probe identity, Litty.icns, latest
+release binary) is running as PID 79480 with an empty stderr log. Visual
+icon/focus confirmation is pending, not counted as acceptance.
+
+Supplemental review of the final-source package MPoOnJ: Approved, one round,
+no findings. The reviewer traced the actual menu/window/service wiring,
+benchmark exclusions, isolated per-thread startup override, owned endpoint
+cleanup and scoped fixture lint policy. The previous Important coverage gap
+is resolved; none were rejected. Not verified by that reviewer: supplied logs
+were not rerun, native launch classification is injected, and physical desktop
+clicks/older OS behavior/required Opus remain outside its evidence. Only these
+review-status documentation paragraphs changed after source verification.
+
+## Native Idle Sample and Current Desktop Blocker
+
+A separate disposable instance of the latest native test bundle ran with
+SHELL=/usr/bin/true. Its PTY exited, no child processes remained, and its own
+activation socket existed. Closing the last pane follows App::on_child_exit;
+this sample did not directly observe an OS window count. Instance PID 80735
+was terminated and only its owned endpoint removed; the interactive
+notification test was preserved. Raw results: `/tmp/litty-native-idle.json`.
+
+- `footprint -p 80735`: phys_footprint 24 MB, peak 24 MB, exit 0.
+- Four ps samples over 30.10 seconds: 0:00.22, 0:00.23, 0:00.23, 0:00.24
+  CPU time; each reports 0.0% CPU. The 0.02 CPU s increase is approximately
+  0.07% over the measured interval; rounded ps output does not prove exact zero.
+- Native test stderr: empty.
+
+The documentation-only package i0MvB2 was supplementally approved without
+findings. No source changed after its reviewed 701-test/lifecycle verification.
+This measurement section was added afterwards and is not independently reviewed.
+
+Desktop access was revalidated: cua.getState returned an app inventory, but
+cua.getApp for the actual test bundle returned `Computer Use permissions are
+not granted`. Inventory success did not establish UI access. No mouse/keyboard
+action occurred, no settings changed, and no alternate UI automation was used.
+The earlier visual-result question is still unanswered. Actual notification
+icon/focus, stale-click and Dock verification therefore require user input or
+working computer-use access. Opus/older macOS requirements still need a
+suitable external environment; feature completion is not claimed.
+
+## Maintainer Icon Check
+
+The maintainer first reported the test notification's logo was incorrect,
+then confirmed `đã thấy dùng đúng logo` (the correct logo is now visible).
+The visual logo check is passed by maintainer observation. Focus, stale clicks,
+cold-start no-shell behavior and Dock checks have not been confirmed by this
+message. The notification title/sender identity was not specified, so this
+does not separately establish both bundle identities' acceptance.
+
+Diagnostics before that confirmation: the probe bundle's Litty.icns hash
+matches resources/Litty.icns; its plist names that resource, the signature
+seals it, and NSWorkspace resolves the probe ID to that bundle. Extracted
+small icon representations show the expected Litty logo. Several older
+iconless probes share com.litty.activation-probe, but a causal cache defect
+was not proven. No production code or icon resources were changed.
+
+A separate isolated bundle using the real com.litty.terminal identity was
+packaged from the latest release binary and exact resources/Info.plist/icon,
+signed and verified. Its fixed shell ran (PID 84496), but native stderr reports
+`notification authorization unavailable`; delivery from that identity was
+not established. It did not replace or terminate the installed user app.
+Do not attribute the maintainer's visual success to a code fix or assume this
+separate permission gate was resolved. Runtime test artifacts stay in dist.
+
+## Maintainer Live-Click Check
+
+The fresh authorized-probe test used the actual release Litty executable,
+window title `Litty native notification test`, and notification title
+`Litty activation test`. Process 84899 had a live /bin/cat PTY child 84903
+and empty native stderr before the click. The maintainer confirmed
+`đúng k tạo thêm cửa sổ` (correct, no additional window).
+Record the live single-pane focus/no-extra-window check as passed. This
+does not establish moved-tab, hidden-split, stale-pane or cold-launch behavior.
+
+Next manual fixture: `Litty stale-pane test`, process 85098. The maintainer
+is to close only that named test window before clicking its notification.
+No stale-pane result has been received yet.
+
+Stale-pane fixture follow-up: the PTY was still live when the maintainer asked
+to continue. After verifying PID 85101 was exactly /bin/cat with parent 85098,
+the agent sent SIGTERM only to that disposable child. A subsequent ps showed
+the app process 85098 alive and child 85101 gone; native stderr remains empty.
+This exercises the real child-exit pane-close path without UI input. The
+notification click/result is still pending and is not recorded as passed.
+
+Correction to the earlier informal cold-launch checklist: clean Cmd+Q calls
+litty_notifications_shutdown and withdraws only this process's notifications.
+Thus a clean quit may leave no notification to click. Testing a retained
+notification after a crash needs a separate owned-process crash fixture;
+do not require a clean-quit notification to remain visible or mark that path
+passed based only on the live or closed-pane check.
+
+## Reported Stale-Click Regression and Diagnostic Replay
+
+The maintainer reported that clicking with no windows opened one window and
+appeared hung, supplying a screenshot of `Litty stale-pane test` echoing input.
+The fixture runs /bin/cat, which echoes rather than executing shell commands;
+that explains its shell-like appearance but does not excuse an unwanted window.
+Treat the extra-window report as an open regression, not a passed stale check.
+The original test processes were no longer running when inspected, so their
+actual reopen provenance could not be recovered. Preserve the report without
+inventing a cause or claiming a fix.
+
+A bounded temporary diagnostic library under /tmp/litty-stale-click-diagnostic
+records native delivery/response and the current Apple event's sender metadata,
+without terminal text. It delegates to the original methods; no production
+source was edited. It was injected only into disposable process 86325 using
+the same test bundle (Mach-O UUID 1AE6BF6F-A13F-3CED-8D45-6B7AA38A739A).
+The diagnostic confirmed native delivery before the fixed /bin/cat child 86326
+was terminated. The maintainer then clicked `Litty stale-repro` and reported
+no window opened. The trace recorded aevt/rapp, sender PID 88005 resolving to
+/usr/sbin/usernoted, matching the existing suppression classifier.
+
+This replay passes but does not explain the earlier report; tracing can affect
+timing. A second `Litty stale-final` fixture (process 86653) runs without any
+diagnostic library. Its manual full-window-close then notification-click result
+is pending. No speculative production fix or new regression assertion has been
+added; bugfix-strict's reproduction/root-cause gate remains unresolved.
+
+## Uninstrumented Closed-Pane Confirmation
+
+The resent baseline fixture `Litty stale check #2` ran as process 87795,
+without DYLD_INSERT_LIBRARIES. The maintainer closed its window and clicked
+the notification. The app remained alive with no PTY child, and native stderr
+was empty. Asked whether UI also showed no replacement window or wrong-pane
+selection, the maintainer answered `yes`. Record this uninstrumented stale-pane
+case as passed. The earlier extra-window report remains an unexplained
+intermittent report; this confirmation is not evidence of a production fix.
+
+The next distinct fixture is `Litty cold-start check`. Native delivery will be
+confirmed before crashing only the originating disposable process and stopping
+the previous empty probe instance. A subsequent click must then cold-launch
+without creating a shell. No cold-start result is inferred from the earlier
+`clicked` message, which arrived before this new notification was prepared.
+
+## Cold-Start Requirement Amendment
+
+After clicking `Litty cold-start check`, the maintainer explicitly stated that
+cold-start should open a new window, as expected. Treat this as a requirement
+amendment: a fully exited app may create one fresh normal window when an old
+notification launches it. A stale pane in a still-running app remains ignored.
+Do not mark fresh-window cold-start behavior as a defect under the new policy.
+
+Before the click, native delivery was confirmed, originating process 88727
+was killed, and the only previous empty test process 87795 was stopped. No
+test-bundle process remained. After the click, process 88736 appeared; a later
+snapshot found no child shell but one activation endpoint. The maintainer's
+window observation and this later process snapshot cover different moments;
+neither should be replaced with an invented chronology.
+
+The source still has opens_initial_window(true, false, false) returning false,
+with a unit test asserting the old no-shell policy. That policy and its
+lifecycle fixture must be aligned with the amended requirement before
+completion is claimed. No source was changed in recording this amendment.
+
+## Hidden-Tab Selection and Foreground Check
+
+Uninstrumented `Litty hidden-pane #2` used process 90035 with source A and
+another tab B. The maintainer reported that clicking selected SOURCE_A but
+left the window behind other UI. This is an open foreground-activation report;
+correct tab selection alone does not pass the full check. Another disposable
+same-bundle process 89799 was also alive. The receiver process and activation
+state of that failing click were not captured, so a cross-process handoff
+problem is a hypothesis, not a proven cause.
+
+For a diagnostic replay, only those two old disposable processes were stopped.
+Process 90725 ran the same release test bundle with a temporary bounded trace
+of native response routing, window-front calls, activation requests and its
+own active/hidden state. The maintainer reported `ok, now very good`.
+The trace shows the native response and origin both in process 90725, followed
+by the activation request and NSApplicationDidBecomeActive with active=1,
+hidden=0, keyWindow present. The user-facing hidden-tab/foreground replay
+passes in this isolated diagnostic case. No production source was changed.
+
+Log: /tmp/litty-focus-diagnostic/events.log. It contains lifecycle/target-PID
+metadata, not terminal contents. Immediate active=0 after activate is followed
+by a later became-active event; an immediate query alone would misdiagnose
+this asynchronous API. The prior multi-instance foreground failure remains
+unexplained until the separate cross-process test is traced. Zoomed split
+reveal is not covered by this tab-only check. Reference: Apple's cooperative
+activation documentation requires yielding before cross-app activation and
+does not guarantee every activation request is granted.
+
+## Two-Process Foreground Check
+
+The controlled fixture /tmp/litty-two-process-vuf40uey launched source A as
+PID 91228 and confirmed native delivery before launching newer B as PID 91235.
+Both had distinct live /bin/cat PTYs and empty stderr. The maintainer worked
+from B, clicked `Litty 2-process: return A`, and reported `ok very good`.
+Record this two-live-process UI check as passed: the newer process did not
+steal the notification target, and A came forward.
+
+The trace in /tmp/litty-focus-diagnostic/events.log shows B active before
+the click, native-response in A with response-target=91228, then B resigning
+and A becoming active with a key window. macOS delivered the callback directly
+to its origin in this sample. Thus it does not establish the separate case
+where B receives A's callback and forwards it across IPC. The older foreground
+failure is still not causally explained; no production fix was made. Both
+temporary instances were limited to test fixtures; regular Litty was untouched.
+
+## Moved-Tab UI Check
+
+The uninstrumented fixture /tmp/litty-moved-tab-a0ds3p4m ran as process 91964.
+Its first pane SOURCE A emitted `Litty moved-tab #1`; subsequent panes were
+labeled KEEP TAB B and TARGET WINDOW C. The instructed flow was Cmd+T to keep
+the original window alive, Cmd+N to create C in the same process, drag SOURCE A
+to C, select C's other tab, then click the notification. The maintainer
+confirmed `ok tested, very good`. Record this moved-tab selection/foreground
+flow as user-confirmed passed. No diagnostic library or production code change
+was involved. This does not cover a zoomed split or the revised cold-start
+policy; those remain separate checks/work.
+
+The fixture counter is 4 (the maintainer created an additional pane beyond the
+three labeled setup panes). Native stderr contains AppKit's `Warning: Window
+move completed without beginning`. This warning was not diagnosed; the
+maintainer reported the requested UI flow succeeded. Do not claim stderr was
+empty or attribute the warning to an unrelated cause without evidence.
+
+## Zoomed-Split UI Check
+
+The uninstrumented fixture /tmp/litty-zoomed-split-x8capp_q ran as PID 92575.
+ZOOM SOURCE A emitted `Litty zoomed-split #1`; Cmd+D created ZOOM PANE B,
+and Cmd+Shift+Enter zoomed B to hide A. The instructed flow then switched to
+another app and clicked the original notification, expecting the test window
+to come forward, B's zoom to clear and A to be selected without creating a
+pane/window. The maintainer confirmed `ok tested, very good`. Record this
+zoomed-split reveal/selection/foreground check as user-confirmed passed.
+No production source change or diagnostic library was involved.
+Native stderr again contains `Warning: Window move completed without beginning`
+(twice). This is the same undiagnosed AppKit warning recorded above; no cause
+or fix is asserted based on the successful UI outcome.
+
+## Dock/Menu UI Check
+
+The numbered, uninstrumented fixture /tmp/litty-dock-menu-qak5o59v ran as
+PID 93139. The requested flow closed the last test window with its red button,
+clicked the test app's Dock icon to reopen, closed that window, then used
+Cmd+N while the app remained active. The maintainer reported `tested good`.
+Record the manual Dock/menu lifecycle flow as user-confirmed passed. The
+fixture counter reached 5, showing additional window creations beyond the
+three-window initial script; the counter alone does not establish which
+individual action created each window or prove one window per action.
+
+Native stderr contains the previously recorded, undiagnosed AppKit warning
+`Window move completed without beginning`. No production source was changed
+for this manual flow. The revised cold-start implementation/test policy,
+old intermittent reports, real-ID authorization and review/runtime limits
+remain separate from these successful probe-identity UI checks.

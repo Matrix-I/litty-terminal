@@ -39,6 +39,11 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[cfg(test)]
 mod test_alloc;
 
+// The normal unit harness cannot run AppKit on main. The dedicated executable
+// uses this same entry point; retain the reference when compiling either target.
+#[cfg(all(test, target_os = "macos"))]
+const _: fn() = app::run_native_activation_test;
+
 fn main() {
     platform::capture_startup_activation();
     bench_startup::mark_main();

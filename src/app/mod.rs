@@ -2,6 +2,10 @@
 //! mouse / keyboard / IME input.
 
 mod activation;
+#[cfg(all(test, target_os = "macos"))]
+mod native_activation_test;
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) use native_activation_test::run as run_native_activation_test;
 mod actions;
 mod ai_bridge;
 mod csd;

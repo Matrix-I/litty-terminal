@@ -9,6 +9,12 @@ license = "MIT"
 name = "litty"
 path = "src/main.rs"
 
+# AppKit window lifecycle checks must run on the executable's main thread.
+[[test]]
+name = "native_activation"
+path = "tests/native_activation.rs"
+harness = false
+
 [dependencies]
 # Grid bounds OSC streams before feeding VTE; default `std` storage preserves
 # complete supported payloads instead of the 1,024-byte `no_std` truncation.

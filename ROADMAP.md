@@ -49,9 +49,13 @@ Separate from the completed Wayland preview phase; see the
   bounded same-user activation and exact-pane selection groundwork. Implemented
   on `feat/app-activation`; desktop acceptance and final review remain pending.
 - [ ] Native notification click-through to the originating pane, including
-  stale notification/cold-start behavior. The local native launch probe returns
-  notification authorization error `UNErrorDomain=1`; live delivery and launch
-  characterization are blocked. No native notification completion is claimed.
+  stale notification/cold-start behavior. Native delivery, exact-origin routing
+  and notification-only startup handling are implemented on `feat/app-activation`.
+  Notification permission, live response and cold-launch ordering were observed
+  with the local probe. A real AppKit menu/window/PTY/service regression passes.
+  Real Litty icon/focus, stale-click and Dock acceptance remain open, along with
+  older macOS runtime and required Opus review; see the
+  [validation report](./docs/validation/macos-app-activation-2026-11-15.md).
 
 ## Verification debt
 
