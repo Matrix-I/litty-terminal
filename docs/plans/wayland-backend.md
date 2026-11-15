@@ -1,7 +1,9 @@
 # Native Wayland window backend — Plan
 
-Status: backend phases 1–7 implemented as an opt-in preview, not scheduled
-into a release. Split out of [v0.13.0](./0.13.0.md) on 2026-11-13.
+Status: preview phase complete (2026-11-15, maintainer scope decision).
+Backend phases 1–7 are implemented; this phase is closed at opt-in preview
+scope. Not scheduled into a release. Split out of
+[v0.13.0](./0.13.0.md) on 2026-11-13.
 `LITTY_BACKEND=wayland` opens native Wayland windows; X11 remains the
 default pending the cross-compositor validation below. Application-level
 notification click callbacks and token forwarding to an existing instance
@@ -186,8 +188,10 @@ passes the verification in `CLAUDE.md`, and leaves X11 unchanged.
 
 Evidence: [integrated validation](../validation/wayland-integrated-2026-11-14.md)
 and [live KDE follow-up](../validation/wayland-kde-2026-11-15.md).
-The seven checked phases above track implementation; the unchecked desktop
-items below still prevent declaring full backend acceptance.
+The preview phase is complete. The checked items record existing evidence;
+unchecked items are deferred beyond this phase for broader desktop acceptance
+and application integration. They do not block preview completion and are not
+claims of successful validation. X11 remains the default.
 
 - [x] All seven backend phases merged; merged-main Linux/macOS CI passes.
 - [x] Local checks, full Rust suite, Clippy and release build pass.
