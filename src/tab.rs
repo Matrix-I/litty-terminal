@@ -83,6 +83,16 @@ impl Tab {
         }
     }
 
+    /// Resolve notifications by stable identity after tab/window moves. A stale
+    /// target leaves the selection untouched and never creates a session.
+    pub(crate) fn select_pane(&mut self, id: u64) -> bool {
+        if !self.panes.iter().any(|pane| pane.id == id) { return false; }
+        self.active_pane_id = id;
+        if self.zoomed_pane_id != Some(id) { self.zoomed_pane_id = None; }
+        self.bell = false;
+        true
+    }
+
     pub fn active_pane(&self) -> Option<&Pane> {
         self.panes
             .iter()
@@ -161,6 +171,28 @@ pub struct HoveredPaneLink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pane_selection_follows_identity_and_reveals_hidden_split() {
+        let pane = |id| Pane::new(id, Arc::new(Mutex::new(Grid::new(80, 24))),
+            Pty::spawn_program("/bin/cat", &["cat"], &[], (80, 24), (8, 16)).unwrap());
+        let mut tab = Tab::new(10, pane(1));
+        tab.panes.push(pane(2));
+        tab.layout.split_pane(1, 2, crate::split::SplitDirection::Vertical);
+        tab.zoomed_pane_id = Some(2);
+        tab.bell = true;
+        assert!(tab.select_pane(1));
+        assert_eq!(tab.active_pane_id, 1);
+        assert_eq!(tab.zoomed_pane_id, None);
+        assert!(!tab.bell);
+        let mut tabs = [Tab::new(20, pane(3)), tab];
+        tabs.swap(0, 1);
+        assert_eq!(tabs.iter_mut().position(|tab| tab.select_pane(2)), Some(0));
+        tabs[0].panes.retain(|pane| pane.id != 2);
+        tabs[0].active_pane_id = 1;
+        assert!(!tabs[0].select_pane(2));
+        assert_eq!(tabs[0].active_pane_id, 1, "stale click must preserve selection");
+    }
 
     #[test]
     fn render_buffers_allocate_only_when_growing() {

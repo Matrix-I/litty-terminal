@@ -360,11 +360,15 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         let app = shared_application().expect("NSApplication");
         // Set activation policy to Regular (dock icon, window focus)
         msg_send!(app, c"setActivationPolicy:", 0isize => isize);
-        msg_send!(app, c"finishLaunching");
+        if let Err(error) = crate::platform::init_notifications()
+            && error.kind() != std::io::ErrorKind::Unsupported {
+            eprintln!("litty: native notification setup failed: {}", error.kind());
+        }
 
         let (tx, rx): (Sender<T>, Receiver<T>) = channel();
         let proxy = EventProxy::from_native(tx);
         let handler = RefCell::new(make(proxy));
+        msg_send!(app, c"finishLaunching");
 
         set_event_callback(|id, ev| {
             queue_event(id, ev);
@@ -378,7 +382,9 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         autoreleasepool(|| handler.borrow_mut().resumed(&loop_ctx));
         // Bring the first window to the front with keyboard focus, as winit did:
         // launched from a shell, the app is otherwise left behind it.
-        crate::platform::macos::app::activate_app();
+        if !crate::platform::startup_is_notification() {
+            crate::platform::macos::app::activate_app();
+        }
 
         let date_cls = class(c"NSDate").expect("NSDate");
         let default_run_loop_mode = ns_string("kCFRunLoopDefaultMode").expect("NSDefaultRunLoopMode");
@@ -441,6 +447,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
 
             msg_send!(pool, c"drain");
         }
+        crate::platform::shutdown_notifications();
     }
 }
 

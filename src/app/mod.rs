@@ -1,6 +1,7 @@
 //! Window and event-loop coordination: one `State` per window, action dispatch,
 //! mouse / keyboard / IME input.
 
+mod activation;
 mod actions;
 mod ai_bridge;
 mod csd;
@@ -51,6 +52,9 @@ use crate::platform::gui::{EventHandler, Flow, LogicalPosition, LoopCtx, Physica
 
 struct App {
     waker: Waker,
+    activation: Option<platform::ActivationServer>,
+    _notification_router: Option<platform::NotificationRouter>,
+    startup_cwd: Option<String>,
     /// One entry per window. Empty on macOS after the last window closes: the
     /// app stays in the Dock and a Dock click or menu action opens a new one.
     windows: Vec<State>,
@@ -293,7 +297,20 @@ impl EventHandler<AppEvent> for App {
         if !self.windows.is_empty() {
             return;
         }
-        let state = create_window(event_loop, &self.waker, None).expect("spawn initial PTY");
+        if !activation::opens_initial_window(platform::startup_is_notification(), self.startup_cwd.is_some(),
+            self.bench_ram_mode || self.gui_bench.is_some() || self.scroll_fps_run.is_some()) {
+            platform::register_reopen_handler(crate::event::platform_sink(self.waker.proxy.clone()));
+            platform::install_menu();
+            return;
+        }
+        let initial = match self.startup_cwd.as_deref() {
+            Some(cwd) => window::create_activation_window(event_loop, &self.waker, cwd),
+            None => create_window(event_loop, &self.waker, None),
+        };
+        let state = match initial {
+            Ok(state) => state,
+            Err(error) => { eprintln!("litty: cannot create initial window: {}", error.kind()); std::process::exit(1); }
+        };
         self.windows.push(state);
 
         if let Some(gui_bench::GuiBench::FirstFrame(run)) = &mut self.gui_bench {
@@ -336,6 +353,24 @@ impl EventHandler<AppEvent> for App {
             return;
         }
 
+        if cfg!(target_os = "macos") && self.activation.is_none() && !self.bench_ram_mode {
+            let proxy = self.waker.proxy.clone();
+            let sink = Arc::new(move |request, reply| {
+                if let Err(AppEvent::Activation { reply, .. }) = proxy.send_event(AppEvent::Activation { request, reply })
+                    && reply.send(Err("application stopped".into())).is_err() {
+                    eprintln!("litty: activation client disconnected");
+                }
+            });
+            match platform::start_activation(sink) {
+                Ok(server) => self.activation = Some(server),
+                Err(error) => {
+                    #[cfg(target_os = "macos")]
+                    eprintln!("litty: activation service unavailable: {}", error.kind());
+                    #[cfg(target_os = "linux")]
+                    let _ = error;
+                }
+            }
+        }
         platform::register_reopen_handler(crate::event::platform_sink(self.waker.proxy.clone()));
         platform::install_menu();
         // Once per process, not per window: the icon stays set. A RAM run skips
@@ -376,11 +411,12 @@ impl EventHandler<AppEvent> for App {
                     }
                 }
             }
+            AppEvent::Activation { request, reply } => self.on_activation(event_loop, request, reply),
             AppEvent::WakeUp => {
                 self.waker.rearm();
                 for s in &mut self.windows {
                     s.history_search.poll();
-                    handle_terminal_requests(s);
+                    handle_terminal_requests(s, self.activation.as_ref().map(|server| server.origin()));
                     handle_ai_requests(s, &self.waker);
                     // An occluded window draws again once it is shown (`Occluded(false)`);
                     // one that may not draw yet (Wayland frame pacing) asks for a redraw.
@@ -529,34 +565,42 @@ impl EventHandler<AppEvent> for App {
 }
 
 pub(crate) fn run(bench_ram_mode: bool, scroll_fps: bool) {
-    run_app(bench_ram_mode, scroll_fps.then(frame_metrics::ScrollRun::new), None);
+    run_app(bench_ram_mode, scroll_fps.then(frame_metrics::ScrollRun::new), None, None);
 }
 
 /// `+bench-input-latency`: the first pane runs `echo_child` (argv) instead of a
 /// shell; the app types `samples` keys into it and prints one JSON report line.
 pub(crate) fn run_input_latency(samples: usize, echo_child: Vec<String>) {
     gui_bench::set_pane_program(echo_child);
-    run_app(false, None, Some(gui_bench::GuiBench::InputLatency(gui_bench::InputLatencyRun::new(samples))));
+    run_app(false, None, Some(gui_bench::GuiBench::InputLatency(gui_bench::InputLatencyRun::new(samples))), None);
 }
 
 /// `+bench-pty-throughput-gui`: the first pane runs `stream_child` (argv), which
 /// writes one generated stream as fast as the app takes it.
 pub(crate) fn run_throughput_gui(stream_child: Vec<String>) {
     gui_bench::set_pane_program(stream_child);
-    run_app(false, None, Some(gui_bench::GuiBench::Throughput));
+    run_app(false, None, Some(gui_bench::GuiBench::Throughput), None);
 }
 
 /// `+bench-first-frame-child`: a normal startup (shell included, update check
 /// skipped) that prints its stage times once the first frame is complete.
 pub(crate) fn run_first_frame_child(spawn_ns: u64) {
-    run_app(false, None, Some(gui_bench::GuiBench::FirstFrame(gui_bench::FirstFrameRun::new(spawn_ns))));
+    run_app(false, None, Some(gui_bench::GuiBench::FirstFrame(gui_bench::FirstFrameRun::new(spawn_ns))), None);
 }
 
 /// Every GUI run: start the window-independent setup, then the event loop.
-fn run_app(bench_ram_mode: bool, scroll_fps_run: Option<frame_metrics::ScrollRun>, gui_bench: Option<gui_bench::GuiBench>) {
+fn run_app(bench_ram_mode: bool, scroll_fps_run: Option<frame_metrics::ScrollRun>, gui_bench: Option<gui_bench::GuiBench>, startup_cwd: Option<String>) {
     prewarm::start();
     crate::platform::gui::run(|proxy| App {
         waker: Waker { proxy, queued: Arc::new(AtomicBool::new(false)) },
+        activation: None,
+        _notification_router: if cfg!(target_os = "macos") && !bench_ram_mode && gui_bench.is_none() && scroll_fps_run.is_none() {
+            match platform::start_notification_router() {
+                Ok(router) => Some(router),
+                Err(error) => { eprintln!("litty: notification router unavailable: {}", error.kind()); None }
+            }
+        } else { None },
+        startup_cwd,
         windows: Vec::new(),
         bench_ram_mode,
         scroll_fps_run,
@@ -580,3 +624,13 @@ fn finish_gui_bench(event_loop: &LoopCtx, result: Result<String, String>) {
 
 #[cfg(test)]
 mod latency_benchmarks;
+
+/// Client dispatch precedes AppKit, prewarm workers and PTY creation.
+pub(crate) fn run_reuse() -> std::io::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let cwd = cwd.to_str().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "reuse directory must be UTF-8"))?;
+    if !platform::reuse_window(cwd)? {
+        run_app(false, None, None, Some(cwd.to_owned()));
+    }
+    Ok(())
+}

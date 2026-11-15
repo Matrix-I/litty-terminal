@@ -27,16 +27,17 @@ fn send_reopen() {
     EVENTS.emit(crate::platform::PlatformEvent::Reopen);
 }
 
-/// Reopen a window when the Dock icon is clicked or the app is activated.
+/// Reopen a window for an explicit Dock click, preserving passive activation.
 pub fn register_reopen_handler(sink: crate::platform::EventSink) {
     EVENTS.set(sink);
 
     extern "C" fn on_reopen(_this: Id, _cmd: Id, _app: Id, _has_visible_windows: bool) -> bool {
-        send_reopen();
+        if !crate::platform::consume_notification_reopen() { send_reopen(); }
         true
     }
     extern "C" fn on_activate(_this: Id, _cmd: Id, _notification: Id) {
-        send_reopen();
+        // Activation can follow an exact-pane/new-window request. A generic
+        // reopen here would immediately select a different window.
     }
 
     // SAFETY: the method implementations match the type encodings given.
@@ -181,13 +182,18 @@ pub fn activate_app() {
     // SAFETY: standard NSApplication call.
     unsafe {
         if let Some(app) = shared_application() {
-            msg_send!(app, c"activateIgnoringOtherApps:", true => bool);
+            if responds_to(app, c"activate") {
+                msg_send!(app, c"activate");
+            } else {
+                // Compatibility for macOS 11–13; the selector was replaced in 14.
+                msg_send!(app, c"activateIgnoringOtherApps:", true => bool);
+            }
         }
     }
 }
 
 /// Wayland launcher tokens do not apply to AppKit.
-pub fn capture_startup_activation() {}
+pub fn capture_startup_activation() { super::activation::capture_start_time(); }
 
 #[cfg(test)]
 mod tests {
@@ -216,5 +222,15 @@ mod tests {
             assert!(handled);
         }
         assert!(seen.lock().unwrap().contains(&crate::platform::PlatformEvent::Reopen));
+        seen.lock().unwrap().clear();
+        // Becoming active is not a Dock reopen: it must not redirect the exact
+        // pane/window selected by a notification or an explicit reuse request.
+        unsafe {
+            let app = shared_application().expect("NSApplication");
+            let delegate = send_id(app, c"delegate").expect("delegate");
+            msg_send!(delegate, c"applicationDidBecomeActive:", std::ptr::null_mut::<c_void>() => Id);
+        }
+        assert!(seen.lock().unwrap().is_empty(), "passive activation must not redirect focus");
+
     }
 }

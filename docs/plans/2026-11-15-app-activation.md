@@ -81,7 +81,7 @@ performance, security, naming/API compatibility, tests and design; request
   wall-clock time, or discovery order. No polling while idle.
 - Versioned request envelopes carry a session, request ID and either a cwd or
   pane ID. There is no arbitrary command/env execution operation. Bounds:
-  16 KiB frame, 4 KiB cwd, 64 candidate instances, one active transport worker
+  16 KiB frame, 4 KiB cwd, 4096 registry entries per client scan, one active transport worker
   per server, 2 s transport deadline and 64 cached request outcomes retained through each request's monotonic expiry. Expired frames are rejected; live outcomes are never evicted to admit another request. Reject
   overflow visibly. Requests are deduplicated; acknowledge window creation
   only after the application has successfully created it.
@@ -281,7 +281,7 @@ Ready to commit: task files — `feat(macos): add bounded instance activation tr
 Files: `src/cli.rs`, `src/main.rs`, `src/event.rs`, `src/app/mod.rs`,
 `src/app/user_event.rs`, new `src/app/activation.rs`; use existing tab/window
 helpers. Consume transport/sink; produce an app event holding the request and
-reply sender, `run_reuse(cwd: String)` and pane-selection handler.
+reply sender, `run_reuse() -> std::io::Result<()>` and pane-selection handler.
 
 - [ ] Add CLI regression tests before the new variant:
 
@@ -1201,3 +1201,133 @@ mod tests {
     }
 }
 ```
+
+## Execution Checkpoint — 2026-11-15 (in progress)
+
+- Plan/probe committed as `ec69968`; implementation remains uncommitted on
+  `feat/app-activation` at the maintainer's request to proceed.
+- Common codec/path/replay tests: 4 red with stubs, then 4 green.
+- macOS transport tests: 2 red with start stub, then 4 green outside sandbox.
+  Unix socket creation is sandbox-restricted. Separately, standard
+  `UnixStream::set_read_timeout` returns EINVAL for a simple socket pair even
+  outside sandbox on this host. Nonblocking I/O plus existing `poll` deadlines
+  replaces socket timeout options; no behavior/interface change is intended.
+- Initial strict PTY tests: missing method/argument red, then full PTY module
+  17 passed outside sandbox, including nonexistent shell/error propagation.
+- Current macOS `cargo check` and Linux x86_64 cross-check passed with zero
+  warnings after removing notification-only APIs until native gate opens.
+- CLI reuse variant, ordinary-instance service, initial cwd and exact-pane app
+  handler are wired. Full CLI/app/GUI acceptance is not yet verified.
+- Passive activation regression reproduces Reopen emission on the unchanged
+  base callback; callback now avoids generic Reopen. Green rerun is pending.
+- Supplemental interim review found three issues to fix with regressions:
+  low descriptor numbers can overwrite strict PTY error pipes; timed-out
+  requests can accumulate queued app events; crash tombstones can fill the
+  instance-discovery cap. Do not mark these tasks complete before fixes.
+- Notification probe authorization returned UNErrorDomain=1. A question asking
+  permission to enable the test probe's notifications is pending. No native
+  delivery/click/cold-start implementation or acceptance is claimed.
+- Remaining gates: strict full-code native plan appendix and Opus reviewer are
+  unavailable/unfulfilled, as described above; final independent supplemental
+  review, full suite, Clippy/builds and real app flow still must run.
+
+## Execution Checkpoint 2 — Reuse Acceptance
+
+- Real release GUI/PTY/CLI harness passes no-instance startup, Unicode/spaced
+  directory handoff, normal independent launch, newest eligible selection,
+  stopped-process timeout without fallback, crash cleanup and zero-window reuse.
+- Closed-window sample: 29 MB physical footprint; CPU time 0:00.23 unchanged
+  across at least five seconds. See the [partial validation report](../validation/macos-app-activation-2026-11-15.md).
+- Interim review findings were reproduced and fixed: descriptors above stdio
+  for both setup pipes and PTYs; interrupted/short errno writes; one admission
+  held through app consumption after timeout; verified-dead private endpoint
+  pruning before bounded discovery. Registry scanning now caps at 4096 entries
+  rather than counting 64 crash tombstones as eligible instances.
+- macOS/Linux checks and Clippy pass with zero warnings. The first complete
+  outside-sandbox suite passed 690 tests total, 12 existing ignored. The final
+  rerun after added error-write/closed-stdio assertions is in progress.
+- Native notification Task 4 is still blocked by the authorization/launch
+  characterization gate. The permission question remains pending.
+
+## Execution Checkpoint 3 — Final Partial Handoff
+
+- Latest source passes `cargo check`, Linux x86_64 check, Apple x86_64 check,
+  Clippy with denied warnings, release build and full outside-sandbox tests:
+  679 unit + 1 + 14 integration tests passed (694 total), 12 existing ignored.
+  Python harness safety suite: 2 passed. No new ignored tests.
+- Release CLI/GPU/PTY acceptance was rerun after the fixes and passes. The
+  guarded harness refuses populated/unsafe registries; do not launch other
+  Litty instances concurrently with the test.
+- Latest closed-window footprint is 30 MB. CPU time increased 0.01 s over at
+  least five seconds; 0% idle CPU is not established by that sample. The earlier
+  29 MB sample had flat CPU time. No unrelated cause is asserted.
+- Review round 1 corrections are implemented with red/green regressions:
+  idempotent concurrent endpoint deletion, private monotonic helper, safe
+  harness preflight, and captured-directory rename/removal/search permissions.
+  APFS resolved-path identity is checked because its removed directory can
+  retain a nonzero link count. See the partial validation report for details.
+- Code remains uncommitted; only planning/probe commits were requested. No
+  implementation merge, push or release is authorized or performed.
+- Native notification delivery/routing/cold-start remains unimplemented. The
+  notification permission request is still pending; the temporary probe was
+  stopped after confirming its identity, rather than left running indefinitely.
+- Strict Opus review and full literal native implementation planning remain
+  unfulfilled/unavailable. Do not report the whole feature or plan complete.
+
+The appendices above preserve the initial reference implementations, not a
+patch to reapply over the current source. Current source and these execution
+checkpoints supersede their socket-timeout, cleanup and API-visibility details.
+
+## Execution Checkpoint 4 — Supplemental Review Complete
+
+- Round 2 platform, app/PTY and docs/harness reviews approve the partial reuse
+  scope with no remaining Critical/Important findings in that scope. All
+  round-1 fixable findings were verified fixed; none were rejected.
+- The approval is supplemental only. Required Opus review/full native planning
+  remain unfulfilled. Native notifications, older OS runtime/cross-user checks
+  and exact 0% idle CPU remain open, as the validation report records.
+- Native notification work is awaiting explicit permission to enable the
+  local test probe's notifications. Repeated continue requests resume work;
+  they have not been treated as consent to change system settings.
+- No source edits followed the 694-test verification and final release
+  acceptance. Only review-status documentation was appended.
+
+## Notification Permission Follow-up
+
+The maintainer explicitly authorized enabling notifications for the local probe.
+The attempt to open System Settings through computer use failed with
+`Computer Use permissions are not granted`. No setting was changed. This is
+a separate tool-access blocker from the probe's notification authorization
+error; the earlier request for permission is now answered. Native notification
+characterization remains incomplete until computer control is enabled or the
+maintainer enables the probe's notification setting manually.
+
+## Execution Checkpoint 5 — Notification Permission Granted
+
+The maintainer reports allowing notifications; process 26938's log confirms
+authorization and delivery success. Live-click/cold-start characterization can
+now proceed on the registered project-directory probe. Earlier permission
+blocker notes are historical, superseded by this observation.
+
+## Execution Checkpoint 6 — Cold Launch Characterized
+
+- Process 26938 live default-action callback was followed by becameActive and
+  reopen. After the probe processes exited, a click cold-launched process
+  34052. Before the response callback, didFinish contained default=0 and
+  NSApplicationLaunchUserNotificationKey whose class was UNNotificationResponse.
+- This observed modern UN payload supports startup classification before PTY
+  creation; no timer or legacy-class assumption is needed. The earlier launch
+  gate is resolved for this machine/bundle. Older macOS runtime remains to test.
+- Native implementation now in progress: early delegate setup, bounded exact
+  origin routing, native delivery and generic-reopen suppression. Cold-start
+  policy regression failed first (would create shell) before production logic.
+  All acceptance/checks must rerun after these source changes.
+
+## Checkpoint Commit Authorized
+
+The maintainer requested committing the current implementation before continuing.
+This checkpoint includes reuse and native notification groundwork; the native
+reopen ordering finding remains open. Latest full suite: 685 unit + 1 + 14
+integration = 700 passed, 12 existing ignored. macOS/Linux checks, Apple x86_64
+check, Clippy and diff check pass. Native visual/focus acceptance remains pending.
+The user-authorized checkpoint is not a declaration that the whole plan is done.

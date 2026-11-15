@@ -170,7 +170,129 @@ fn shell_integration_for(
     crate::terminal::shell_integration::prepare(shell_name, kind?, |k| std::env::var(k).ok())
 }
 
+/// Keep setup/PTY descriptors out of the dup2 destinations even when the
+/// invoking process inherited closed standard streams.
+fn above_stdio(fd: OwnedFd) -> io::Result<OwnedFd> {
+    if fd.as_raw_fd() >= 3 {
+        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 { return Err(io::Error::last_os_error()); }
+        return Ok(fd);
+    }
+    // SAFETY: duplicates our live descriptor above stdio, with close-on-exec.
+    let high = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+    if high < 0 { return Err(io::Error::last_os_error()); }
+    Ok(unsafe { OwnedFd::from_raw_fd(high) })
+}
+
+/// Owned before fork; only raw descriptors are used in the child.
+struct StrictSetup { directory: OwnedFd, read: OwnedFd, write: OwnedFd }
+impl StrictSetup {
+    fn open(cwd: &str) -> io::Result<Self> {
+        use std::os::unix::fs::OpenOptionsExt;
+        // A cwd needs search permission, not permission to enumerate entries.
+        // Darwin O_SEARCH is in sys/fcntl.h but not exposed by libc 0.2.
+        #[cfg(target_os = "macos")]
+        const SEARCH: libc::c_int = 0x40000000 | libc::O_DIRECTORY;
+        #[cfg(target_os = "linux")]
+        const SEARCH: libc::c_int = libc::O_PATH;
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        const SEARCH: libc::c_int = libc::O_RDONLY;
+        let open = |access| std::fs::OpenOptions::new().read(true)
+            .custom_flags(access | libc::O_DIRECTORY | libc::O_CLOEXEC).open(cwd);
+        #[cfg(target_os = "macos")]
+        let directory = match open(SEARCH) {
+            // Older macOS kernels lack O_SEARCH; retain ordinary-directory support.
+            Err(error) if error.raw_os_error() == Some(libc::EINVAL) => open(libc::O_RDONLY)?,
+            result => result?,
+        };
+        #[cfg(not(target_os = "macos"))]
+        let directory = open(SEARCH)?;
+        let directory = above_stdio(directory.into())?;
+        let mut fds = [-1; 2];
+        // SAFETY: pipe writes two fresh descriptors; OwnedFd closes them on all errors.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 { return Err(io::Error::last_os_error()); }
+        let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        let read = above_stdio(read)?;
+        let write = above_stdio(write)?;
+        Ok(Self { directory, read, write })
+    }
+}
+
+/// The parent bounds child setup to two seconds, including repeated EINTR.
+fn write_setup_error(errno: i32, mut write: impl FnMut(&[u8]) -> Result<usize, i32>) {
+    let bytes = errno.to_ne_bytes();
+    let mut sent = 0;
+    while sent < bytes.len() {
+        match write(&bytes[sent..]) {
+            Ok(n) if n > 0 && n <= bytes.len() - sent => sent += n,
+            Err(libc::EINTR) => continue,
+            _ => return,
+        }
+    }
+}
+
+/// Only TLS errno access, write and _exit after fork; no allocations/unwinding.
+unsafe fn child_setup_failure(fd: RawFd) -> ! {
+    #[cfg(target_os = "macos")]
+    let errno = unsafe { *libc::__error() };
+    #[cfg(target_os = "linux")]
+    let errno = unsafe { *libc::__errno_location() };
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let errno = libc::EIO;
+    unsafe { child_setup_failure_code(fd, errno) }
+}
+
+unsafe fn child_setup_failure_code(fd: RawFd, errno: i32) -> ! {
+    write_setup_error(errno, |bytes| {
+        let wrote = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+        if wrote >= 0 { return Ok(wrote as usize); }
+        #[cfg(target_os = "macos")]
+        let error = unsafe { *libc::__error() };
+        #[cfg(target_os = "linux")]
+        let error = unsafe { *libc::__errno_location() };
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let error = libc::EIO;
+        Err(error)
+    });
+    unsafe { libc::_exit(127) }
+}
+
+fn wait_exec(fd: RawFd) -> io::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut bytes = [0; 4];
+    let mut filled = 0;
+    loop {
+        let left = deadline.checked_duration_since(std::time::Instant::now())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "shell setup timed out"))?;
+        let mut poll = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        // SAFETY: fd is owned by the caller throughout poll/read; buffer is writable.
+        let rc = unsafe { libc::poll(&mut poll, 1, left.as_millis().max(1).min(i32::MAX as u128) as i32) };
+        if rc < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted { continue; }
+            return Err(error);
+        }
+        if rc == 0 { return Err(io::Error::new(io::ErrorKind::TimedOut, "shell setup timed out")); }
+        let read = unsafe { libc::read(fd, bytes[filled..].as_mut_ptr().cast(), bytes.len() - filled) };
+        if read == 0 { return if filled == 0 { Ok(()) } else { Err(io::Error::new(io::ErrorKind::UnexpectedEof, "incomplete shell setup error")) }; }
+        if read < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted { continue; }
+            return Err(error);
+        }
+        filled += read as usize;
+        if filled == bytes.len() { return Err(io::Error::from_raw_os_error(i32::from_ne_bytes(bytes))); }
+    }
+}
+
 impl Pty {
+    /// A requested activation directory must not silently fall back to home.
+    pub(crate) fn spawn_in_checked(
+        cols: u16, rows: u16, cell_w: u32, cell_h: u32, cwd: &str,
+        integration: Option<crate::terminal::shell_integration::ShellSetup>,
+    ) -> io::Result<Pty> {
+        Self::spawn_shell(cols, rows, cell_w, cell_h, Some(cwd), integration, true)
+    }
+
     pub fn spawn_in(
         cols: u16,
         rows: u16,
@@ -179,11 +301,18 @@ impl Pty {
         cwd: Option<&str>,
         integration: Option<crate::terminal::shell_integration::ShellSetup>,
     ) -> io::Result<Pty> {
+        Self::spawn_shell(cols, rows, cell_w, cell_h, cwd, integration, false)
+    }
+
+    fn spawn_shell(
+        cols: u16, rows: u16, cell_w: u32, cell_h: u32, cwd: Option<&str>,
+        integration: Option<crate::terminal::shell_integration::ShellSetup>, strict: bool,
+    ) -> io::Result<Pty> {
         let shell = std::env::var("SHELL")
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| if cfg!(target_os = "macos") { "/bin/zsh".into() } else { "/bin/bash".into() });
-        Self::spawn_command(&shell, None, &[], cols, rows, cell_w, cell_h, cwd, integration)
+        Self::spawn_command(&shell, None, &[], cols, rows, cell_w, cell_h, cwd, integration, strict)
     }
 
     /// Run `program` with `args` (argv[0] included) on a fresh PTY through the same
@@ -196,7 +325,7 @@ impl Pty {
         (cols, rows): (u16, u16),
         (cell_w, cell_h): (u32, u32),
     ) -> io::Result<Pty> {
-        Self::spawn_command(program, Some(args), env, cols, rows, cell_w, cell_h, None, None)
+        Self::spawn_command(program, Some(args), env, cols, rows, cell_w, cell_h, None, None, false)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -210,7 +339,24 @@ impl Pty {
         cell_h: u32,
         cwd: Option<&str>,
         integration: Option<crate::terminal::shell_integration::ShellSetup>,
+        strict: bool,
     ) -> io::Result<Pty> {
+        let setup = if strict {
+            Some(StrictSetup::open(cwd.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing activation directory"))?)?)
+        } else { None };
+        Self::spawn_prepared_command(shell, argv_override, extra_env, cols, rows, cell_w, cell_h, cwd, integration, setup)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_prepared_command(
+        shell: &str, argv_override: Option<&[&str]>, extra_env: &[(&str, &str)],
+        cols: u16, rows: u16, cell_w: u32, cell_h: u32, cwd: Option<&str>,
+        integration: Option<crate::terminal::shell_integration::ShellSetup>, setup: Option<StrictSetup>,
+    ) -> io::Result<Pty> {
+        let strict = setup.is_some();
+        let setup_write = setup.as_ref().map_or(-1, |s| s.write.as_raw_fd());
+        let setup_read = setup.as_ref().map_or(-1, |s| s.read.as_raw_fd());
+        let setup_dir = setup.as_ref().map_or(-1, |s| s.directory.as_raw_fd());
         let shell_name = shell.rsplit('/').next().unwrap_or("sh").to_string();
 
         // Everything the child needs is prepared before fork(): after fork only
@@ -228,7 +374,7 @@ impl Pty {
         let injected_env = injection.map(|i| i.env).unwrap_or_default();
 
         let target_dir = cwd
-            .filter(|d| !d.is_empty() && std::path::Path::new(d).is_dir())
+            .filter(|d| !d.is_empty() && (strict || std::path::Path::new(d).is_dir()))
             .map( String::from )
             .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".into()));
 
@@ -299,6 +445,16 @@ impl Pty {
                 return Err(io::Error::last_os_error());
             }
 
+            if strict {
+                use std::os::fd::IntoRawFd;
+                let owned_master = OwnedFd::from_raw_fd(master);
+                let owned_slave = OwnedFd::from_raw_fd(slave);
+                let owned_master = above_stdio(owned_master)?;
+                let owned_slave = above_stdio(owned_slave)?;
+                master = owned_master.into_raw_fd();
+                slave = owned_slave.into_raw_fd();
+            }
+
             // UTF-8 aware line editing (correct backspace over multibyte chars).
             let mut tio: libc::termios = std::mem::zeroed();
             if libc::tcgetattr(slave, &mut tio) == 0 {
@@ -335,12 +491,38 @@ impl Pty {
                     libc::close(slave);
                 }
                 libc::close(master);
+                if setup_dir >= 0 {
+                    libc::close(setup_read);
+                    let mut directory_stat: libc::stat = std::mem::zeroed();
+                    if libc::fstat(setup_dir, &mut directory_stat) != 0 { child_setup_failure(setup_write); }
+                    if directory_stat.st_nlink == 0 { child_setup_failure_code(setup_write, libc::ENOENT); }
+                    #[cfg(target_os = "macos")]
+                    {
+                        // APFS may retain a nonzero link count for an unlinked
+                        // directory. Resolve its current name and verify identity
+                        // without changing the parent process's working directory.
+                        let mut name = [0 as libc::c_char; libc::PATH_MAX as usize];
+                        let mut current: libc::stat = std::mem::zeroed();
+                        if libc::fcntl(setup_dir, libc::F_GETPATH, name.as_mut_ptr()) < 0
+                            || libc::stat(name.as_ptr(), &mut current) != 0 {
+                            child_setup_failure(setup_write);
+                        }
+                        if current.st_dev != directory_stat.st_dev || current.st_ino != directory_stat.st_ino {
+                            child_setup_failure_code(setup_write, libc::ENOENT);
+                        }
+                    }
+                    if libc::fchdir(setup_dir) != 0 { child_setup_failure(setup_write); }
+                }
                 // Close all inherited file descriptors >= 3 so no PTY masters, sockets,
                 // or driver handles leak into the shell.
                 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-                if libc::close_range(3, !0, 0) != 0 {
-                    for fd in 3.._max_fd {
-                        libc::close(fd);
+                {
+                    let closed = if setup_write >= 3 {
+                        (setup_write == 3 || libc::close_range(3, (setup_write - 1) as u32, 0) == 0)
+                            && libc::close_range((setup_write + 1) as u32, !0, 0) == 0
+                    } else { libc::close_range(3, !0, 0) == 0 };
+                    if !closed {
+                        for fd in 3.._max_fd { if fd != setup_write { libc::close(fd); } }
                     }
                 }
                 #[cfg(any(
@@ -349,16 +531,17 @@ impl Pty {
                     target_os = "netbsd",
                     target_os = "dragonfly"
                 ))]
-                libc::closefrom(3);
+                if setup_write < 3 { libc::closefrom(3); }
+                else { for fd in 3.._max_fd { if fd != setup_write { libc::close(fd); } } }
                 #[cfg(target_os = "macos")]
                 {
                     if !open_fds.is_empty() {
                         for &fd in &open_fds {
-                            libc::close(fd);
+                            if fd != setup_write { libc::close(fd); }
                         }
                     } else {
                         for fd in 3.._max_fd {
-                            libc::close(fd);
+                            if fd != setup_write { libc::close(fd); }
                         }
                     }
                 }
@@ -371,7 +554,7 @@ impl Pty {
                     target_os = "dragonfly"
                 )))]
                 for fd in 3.._max_fd {
-                    libc::close(fd);
+                    if fd != setup_write { libc::close(fd); }
                 }
                 // Rust ignores SIGPIPE; ignored dispositions survive exec, so reset them.
                 for sig in [libc::SIGPIPE, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGCHLD, libc::SIGHUP] {
@@ -380,13 +563,25 @@ impl Pty {
                 let mut set: libc::sigset_t = std::mem::zeroed();
                 libc::sigemptyset(&mut set);
                 libc::sigprocmask(libc::SIG_SETMASK, &set, std::ptr::null_mut());
-                libc::chdir(start_dir.as_ptr());
+                if setup_dir < 0 { libc::chdir(start_dir.as_ptr()); }
                 libc::execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr());
+                if setup_write >= 0 { child_setup_failure(setup_write); }
                 libc::_exit(127);
             }
 
             // ---- parent ----
             libc::close(slave);
+            if let Some(setup) = setup {
+                let StrictSetup { directory, read, write } = setup;
+                drop(directory);
+                drop(write);
+                if let Err(error) = wait_exec(read.as_raw_fd()) {
+                    libc::close(master);
+                    libc::kill(pid, libc::SIGKILL);
+                    reap_child(pid);
+                    return Err(error);
+                }
+            }
             let master = OwnedFd::from_raw_fd(master);
             set_cloexec(master.as_raw_fd());
             // Non-blocking master: the I/O threads poll it together with the shutdown pipe.
@@ -1115,6 +1310,127 @@ mod tests {
             assert_eq!(n, 0, "child process must have closed inherited write pipe end");
         }
         pty.write(b"exit\r").unwrap();
+    }
+
+    #[test]
+    fn setup_error_payload_survives_interrupted_and_short_writes() {
+        let mut bytes = Vec::new();
+        let mut interrupted = false;
+        write_setup_error(libc::ENOENT, |payload| {
+            if !interrupted { interrupted = true; return Err(libc::EINTR); }
+            bytes.push(payload[0]);
+            Ok(1)
+        });
+        assert_eq!(bytes, libc::ENOENT.to_ne_bytes());
+    }
+
+    #[test]
+    fn captured_directory_survives_rename_and_rejects_removal() {
+        let root = std::path::PathBuf::from(format!("/tmp/litty-captured-directory-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                for name in ["original", "renamed", "removed", ""] {
+                    if let Err(error) = std::fs::remove_dir(self.0.join(name))
+                        && error.kind() != io::ErrorKind::NotFound {
+                        eprintln!("strict directory fixture cleanup failed: {}", error.kind());
+                    }
+                }
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let original = root.join("original");
+        let renamed = root.join("renamed");
+        std::fs::create_dir(&original).unwrap();
+        let setup = StrictSetup::open(original.to_str().unwrap()).unwrap();
+        std::fs::rename(&original, &renamed).unwrap();
+        let pty = Pty::spawn_prepared_command("/bin/pwd", Some(&["pwd", "-P"]), &[], 80, 24, 8, 16,
+            Some(original.to_str().unwrap()), None, Some(setup)).unwrap();
+        let grid = Arc::new(Mutex::new(Grid::new(80, 24)));
+        let (done, received) = mpsc::sync_channel(1);
+        pty.spawn_reader(grid.clone(), || {}, move || { done.send(()).unwrap(); }).unwrap();
+        received.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        let text: String = grid.lock().display_row(0).iter()
+            .filter_map(|cell| char::from_u32(cell.codepoint)).collect();
+        let expected = std::fs::canonicalize(&renamed).unwrap();
+        drop(pty);
+        let removed = root.join("removed");
+        std::fs::create_dir(&removed).unwrap();
+        let setup = StrictSetup::open(removed.to_str().unwrap()).unwrap();
+        std::fs::remove_dir(&removed).unwrap();
+        let result = Pty::spawn_prepared_command("/bin/pwd", Some(&["pwd", "-P"]), &[], 80, 24, 8, 16,
+            Some(removed.to_str().unwrap()), None, Some(setup));
+        let rejected = result.is_err();
+        drop(result);
+        std::fs::remove_dir(&renamed).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+        assert_eq!(text.trim_matches(|c: char| c.is_whitespace() || c == '\0'), expected.to_str().unwrap());
+        assert!(rejected, "an unlinked captured directory must fail instead of opening at home");
+    }
+
+    #[test]
+    fn strict_directory_needs_search_permission_not_read_permission() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::path::PathBuf::from(format!("/tmp/litty-search-directory-{}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o111)).unwrap();
+        let result = Pty::spawn_command("/bin/pwd", Some(&["pwd", "-P"]), &[], 80, 24, 8, 16,
+            Some(path.to_str().unwrap()), None, true);
+        let accepted = result.is_ok();
+        let failure = result.as_ref().err().map(|error| (error.kind(), error.raw_os_error()));
+        drop(result);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir(&path).unwrap();
+        assert!(accepted, "a searchable cwd is valid even without directory read permission: {failure:?}");
+    }
+
+    #[test]
+    fn strict_shell_directory_rejects_missing_and_regular_files() {
+        let missing = format!("/tmp/litty-missing-cwd-{}", std::process::id());
+        assert!(Pty::spawn_in_checked(80, 24, 8, 16, &missing, None).is_err());
+        assert!(Pty::spawn_in_checked(80, 24, 8, 16, "/etc/passwd", None).is_err());
+    }
+
+    #[test]
+    fn strict_exec_failure_is_reported_with_closed_standard_descriptors() {
+        const CHILD: &str = "LITTY_TEST_ACTIVATION_CLOSED_STDIO";
+        if std::env::var_os(CHILD).is_some() {
+            // Isolated test subprocess: never close the test runner's stdio.
+            unsafe { libc::alarm(5); libc::close(0); libc::close(1); libc::close(2); }
+            let result = Pty::spawn_command("/litty/nonexistent-shell", None, &[], 80, 24, 8, 16, Some("/tmp"), None, true);
+            let failed = result.is_err();
+            drop(result);
+            if !failed { std::process::exit(1); }
+            let pty = Pty::spawn_command("/bin/sh", Some(&["sh", "-c", "read line; printf 'low-fd:%s' \"$line\""]), &[], 80, 24, 8, 16, Some("/tmp"), None, true).unwrap();
+            pty.write(b"working\n").unwrap();
+            let mut captured = Vec::new();
+            let mut found = false;
+            for _ in 0..4 {
+                let mut poll = libc::pollfd { fd: pty.master.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+                if unsafe { libc::poll(&mut poll, 1, 500) } <= 0 { continue; }
+                let mut bytes = [0; 256];
+                let read = unsafe { libc::read(pty.master.as_raw_fd(), bytes.as_mut_ptr().cast(), bytes.len()) };
+                if read <= 0 { break; }
+                captured.extend_from_slice(&bytes[..read as usize]);
+                if captured.windows(b"low-fd:working".len()).any(|text| text == b"low-fd:working") {
+                    found = true;
+                    break;
+                }
+            }
+            drop(pty);
+            std::process::exit(if found { 0 } else { 1 });
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "terminal::pty::tests::strict_exec_failure_is_reported_with_closed_standard_descriptors", "--nocapture"])
+            .env(CHILD, "1").status().unwrap();
+        assert!(status.success(), "closed stdio must not turn exec failure into success");
+    }
+
+    #[test]
+    fn strict_setup_reports_child_exec_errors() {
+        let result = Pty::spawn_command("/litty/nonexistent-shell", None, &[], 80, 24, 8, 16, Some("/tmp"), None, true);
+        assert!(result.is_err(), "a failed exec must not acknowledge a running shell");
     }
 
     #[test]

@@ -10,7 +10,7 @@ use crate::Pane;
 use crate::platform::gui::CursorIcon;
 
 use crate::platform::clipboard::copy_to_clipboard;
-use crate::platform::process::{play_sound, show_notification};
+use crate::platform::process::play_sound;
 
 /// Surface rejected input instead of silently dropping it. Enqueues are
 /// atomic, so a failed paste is reported as a whole rather than truncated.
@@ -38,7 +38,7 @@ pub(super) fn write_pane_input(
 
 /// Service requests raised by the PTY parser outside the grid lock: clipboard,
 /// notifications, the bell, and mouse pointer shape.
-pub(super) fn handle_terminal_requests(s: &mut State) {
+pub(super) fn handle_terminal_requests(s: &mut State, notification_origin: Option<&str>) {
     let mut titles_dirty = false;
     let mut attention = false;
     let mut ring = false;
@@ -62,7 +62,7 @@ pub(super) fn handle_terminal_requests(s: &mut State) {
                 if s.last_notification.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1)) {
                     s.last_notification = Some(std::time::Instant::now());
                     let title = if title.is_empty() { "Litty".to_string() } else { title };
-                    show_notification(&title, &body);
+                    platform::notify_pane(notification_origin, pane.id, &title, &body);
                 }
             }
             if bell {
