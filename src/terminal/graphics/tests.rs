@@ -217,6 +217,30 @@ fn kitty_shared_memory_transmission() {
     assert!(gone, "unlinked after reading");
 }
 
+/// A writer that shrinks the object after `fstat` must not kill the terminal
+/// with `SIGBUS`; the stale length just yields fewer bytes.
+#[test]
+#[cfg(target_os = "linux")]
+fn kitty_shared_memory_truncated_after_fstat_reads_short() {
+    let name = format!("/litty-test-trunc-{}", std::process::id());
+    let cname = std::ffi::CString::new(name).unwrap();
+    // SAFETY: plain POSIX calls on descriptors this test owns.
+    unsafe {
+        let fd = libc::shm_open(cname.as_ptr(), libc::O_CREAT | libc::O_RDWR, 0o600);
+        assert!(fd >= 0);
+        // Unlinked at once so a failing assertion leaves nothing in /dev/shm.
+        libc::shm_unlink(cname.as_ptr());
+        assert_eq!(libc::pwrite(fd, [7u8; 16].as_ptr().cast(), 16, 0), 16);
+        let stale_len = 8192;
+        assert_eq!(libc::ftruncate(fd, 4), 0);
+        let whole = read_shm_bytes(fd, stale_len, 0, 0);
+        let past_end = read_shm_bytes(fd, stale_len, 100, 8);
+        libc::close(fd);
+        assert_eq!(whole.as_deref(), Ok(&[7u8; 4][..]));
+        assert_eq!(past_end.as_deref(), Ok(&[][..]));
+    }
+}
+
 #[test]
 fn kitty_chunked_png_and_query() {
     // A 1x1 red PNG.
