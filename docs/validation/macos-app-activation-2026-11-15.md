@@ -957,6 +957,23 @@ the sender exited. So the late-completion re-withdrawal in
 Limits: a test bundle rather than Litty.app, one Mac and one macOS version,
 and observed behavior rather than an Apple-documented ordering guarantee.
 
+### AppKit move warning (checked 2026-11-16)
+
+AppKit's `Warning: Window move completed without beginning` was recorded in
+the moved-tab, zoomed-split and Dock/menu fixtures above, all before
+`f729a79`. Two code paths were suspects: `drag_window` calls
+`performWindowDragWithEvent:` from the handler before `sendEvent:` delivers
+the same mouse-down (`native/app.rs`, `native/window.rs`), and tab drags set
+the window origin directly.
+
+The maintainer ran a release build of `main` (`7e08655`) from a separate
+terminal with full stderr visible and did each of: single click on empty tab
+bar space, drag by empty tab bar space, drag by the native title bar, tear a
+tab off into a new window, close with the red button and reopen from the
+Dock. No warning appeared. The item is closed as not reproduced; reopen it if
+the warning returns. Notification-click flows in a packaged bundle were not
+repeated for this check.
+
 ### Open checklist (supersedes the list above)
 
 - [x] Real `com.litty.terminal` authorization and delivery. Icon not reconfirmed.
@@ -971,7 +988,7 @@ and observed behavior rather than an Apple-documented ordering guarantee.
 - [x] Completion after shutdown: replayed with a test bundle, 0 leftovers
   in 20 rounds (see "Completion after shutdown" above).
 - [x] Disposition for the intermittent reports (above). The AppKit
-  move warning is still a separate follow-up.
+  move warning was not reproduced on 2026-11-16 (see above).
 - [x] Descoped 2026-11-16 (maintainer): runtime peer rejection with a
   different macOS UID.
 - [x] Descoped 2026-11-16 (maintainer): macOS 11–13 runtime.
