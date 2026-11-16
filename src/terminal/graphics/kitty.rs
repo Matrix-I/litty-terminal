@@ -420,12 +420,7 @@ pub(crate) fn decode_kitty(c: &KittyCommand, payload: &[u8]) -> Result<(u32, u32
             }
             // SAFETY: `fd` is open and owned here; it is closed after the object is unlinked.
             let data = unsafe {
-                let mut st: libc::stat = core::mem::zeroed();
-                let res = if libc::fstat(fd, &mut st) != 0 || st.st_size < 0 {
-                    Err("EIO:cannot map shared memory".to_string())
-                } else {
-                    read_shm_bytes(fd, st.st_size as usize, c.offset, c.size)
-                };
+                let res = shm_len(fd).and_then(|len| read_shm_bytes(fd, len, c.offset, c.size));
                 libc::shm_unlink(name.as_ptr());
                 libc::close(fd);
                 res
@@ -485,6 +480,19 @@ pub(super) fn compose_pixel(dst: &mut [u8], src: &[u8], replace: bool) {
         }
     }
     dst[3] = out_a as u8;
+}
+
+/// Length of the shared memory object behind `fd`, from `fstat`.
+pub(super) fn shm_len(fd: libc::c_int) -> Result<usize, String> {
+    // SAFETY: `fstat` only writes the zeroed `stat` it is given; a bad `fd` fails with `EBADF`.
+    let (res, st) = unsafe {
+        let mut st: libc::stat = core::mem::zeroed();
+        (libc::fstat(fd, &mut st), st)
+    };
+    if res != 0 || st.st_size < 0 {
+        return Err("EIO:cannot stat shared memory".to_string());
+    }
+    Ok(st.st_size as usize)
 }
 
 /// Copy `size` bytes (0 = to the end) from `offset` of a shared memory object

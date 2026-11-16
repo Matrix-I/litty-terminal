@@ -241,6 +241,13 @@ fn kitty_shared_memory_truncated_after_fstat_reads_short() {
     }
 }
 
+/// `fstat` failing is reported as a stat error: nothing has been mapped yet,
+/// and Linux never maps shared memory at all.
+#[test]
+fn kitty_shared_memory_fstat_failure_reports_stat_error() {
+    assert_eq!(shm_len(-1), Err("EIO:cannot stat shared memory".to_string()));
+}
+
 #[test]
 fn kitty_chunked_png_and_query() {
     // A 1x1 red PNG.
