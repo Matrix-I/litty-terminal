@@ -35,8 +35,45 @@ jobs:
           fi
           git diff --check "$base" HEAD
 
+  changes:
+    name: Detect Rust changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      rust: ${{ steps.diff.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: diff
+        name: Diff against base
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # Anything cargo compiles, embeds (include_str!/include_bytes!) or
+          # is configured by; this workflow itself so CI edits get tested.
+          pattern='(\.rs$|^Cargo\.(toml|lock)$|^\.cargo/|^rust-toolchain|^src/|^assets/|^resources/|^patches/|^tests/|^examples/|^\.github/workflows/ci\.yml$)'
+          # New branch, force-push or missing base: run everything.
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] \
+            || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "base '$BASE' unusable; running cargo"
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$BASE" HEAD)
+          printf 'changed files:\n%s\n' "$changed"
+          if printf '%s\n' "$changed" | grep -Eq "$pattern"; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "rust=false" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
     name: ${{ matrix.os }}
+    needs: changes
+    # Skipped before any runner starts; the `CI ok` gate below is the
+    # required check, since a skipped matrix job never reports per-OS names.
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     strategy:
@@ -57,3 +94,23 @@ jobs:
         run: cargo test --no-run
       - name: cargo test
         run: cargo test
+
+  ci-ok:
+    name: CI ok
+    needs: [changes, test]
+    # Runs even when `test` is skipped or fails, so it always reports.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check job results
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          echo "changes=$CHANGES test=$TEST"
+          [ "$CHANGES" = "success" ] || { echo "::error::change detection $CHANGES"; exit 1; }
+          case "$TEST" in
+            success|skipped) ;;
+            *) echo "::error::test $TEST"; exit 1 ;;
+          esac
