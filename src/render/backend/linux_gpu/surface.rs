@@ -3,7 +3,7 @@
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use crate::platform::gui::{RawHandle, Window};
+use crate::render::window::{RawHandle, RenderWindow};
 
 use super::device::{shared_pipelines, Device, Queue, VulkanCore};
 use super::ffi::*;
@@ -99,7 +99,7 @@ impl SurfaceFrame {
 }
 
 impl Surface {
-    pub fn new(window: &Window, device: &Device) -> Self {
+    pub fn new(window: &dyn RenderWindow, device: &Device) -> Self {
         let mut surface_khr = 0u64;
         let mut image_avail_sem = 0u64;
         let mut fence = 0u64;
@@ -564,7 +564,7 @@ mod tests {
         use super::super::super::device::shared_device_and_queue;
         use super::super::super::pass::CommandEncoder;
         use super::*;
-        use crate::platform::gui::{LogicalSize, WindowSpec};
+        use crate::platform::gui::{LogicalSize, Window, WindowSpec};
         use crate::platform::linux::native::window::NativeWindow;
 
         const FRAME_TIMEOUT: Duration = Duration::from_secs(10);

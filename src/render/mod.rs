@@ -14,6 +14,7 @@ pub(crate) mod frame_metrics;
 pub(crate) mod image_layer;
 pub(crate) mod postfx;
 pub(crate) mod renderer;
+pub(crate) mod window;
 
 /// Everything the renderer draws of the history search popup, borrowed from
 /// whoever owns the interactive state.
