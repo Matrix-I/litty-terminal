@@ -418,33 +418,13 @@ pub(crate) fn decode_kitty(c: &KittyCommand, payload: &[u8]) -> Result<(u32, u32
             if fd < 0 {
                 return Err("ENOENT:shared memory not found".into());
             }
-            // Mapped, since macOS cannot read() shared memory objects.
-            // SAFETY: a read-only mapping dropped before the object is unlinked and closed.
+            // SAFETY: `fd` is open and owned here; it is closed after the object is unlinked.
             let data = unsafe {
                 let mut st: libc::stat = core::mem::zeroed();
                 let res = if libc::fstat(fd, &mut st) != 0 || st.st_size < 0 {
                     Err("EIO:cannot map shared memory".to_string())
                 } else {
-                    let map_len = st.st_size as usize;
-                    if map_len == 0 {
-                        Ok(Vec::new())
-                    } else {
-                        let ptr = libc::mmap(core::ptr::null_mut(), map_len, libc::PROT_READ, libc::MAP_SHARED, fd, 0);
-                        if ptr == libc::MAP_FAILED {
-                            Err("EIO:cannot map shared memory".to_string())
-                        } else {
-                            let start = (c.offset as usize).min(map_len);
-                            let end = if c.size == 0 { map_len } else { (start + c.size as usize).min(map_len) };
-                            let res = if end - start > STORE_LIMIT {
-                                Err("EINVAL:too large".to_string())
-                            } else {
-                                let slice = core::slice::from_raw_parts((ptr as *const u8).add(start), end - start);
-                                Ok(slice.to_vec())
-                            };
-                            libc::munmap(ptr, map_len);
-                            res
-                        }
-                    }
+                    read_shm_bytes(fd, st.st_size as usize, c.offset, c.size)
                 };
                 libc::shm_unlink(name.as_ptr());
                 libc::close(fd);
@@ -505,6 +485,59 @@ pub(super) fn compose_pixel(dst: &mut [u8], src: &[u8], replace: bool) {
         }
     }
     dst[3] = out_a as u8;
+}
+
+/// Copy `size` bytes (0 = to the end) from `offset` of a shared memory object
+/// whose `fstat` length was `len`. Mapped, since macOS cannot read() shared
+/// memory objects.
+///
+/// # Safety
+/// `fd` must be an open shared memory descriptor; it stays open.
+#[cfg(target_os = "macos")]
+pub(super) unsafe fn read_shm_bytes(fd: libc::c_int, len: usize, offset: u32, size: u32) -> Result<Vec<u8>, String> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    // SAFETY: a read-only mapping of `len` bytes, unmapped before returning.
+    unsafe {
+        let ptr = libc::mmap(core::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_SHARED, fd, 0);
+        if ptr == libc::MAP_FAILED {
+            return Err("EIO:cannot map shared memory".to_string());
+        }
+        let start = (offset as usize).min(len);
+        let end = if size == 0 { len } else { (start + size as usize).min(len) };
+        let res = if end - start > STORE_LIMIT {
+            Err("EINVAL:too large".to_string())
+        } else {
+            Ok(core::slice::from_raw_parts((ptr as *const u8).add(start), end - start).to_vec())
+        };
+        libc::munmap(ptr, len);
+        res
+    }
+}
+
+/// Linux reads instead of mapping: another same-UID process can shrink a
+/// `/dev/shm` object after `fstat`, and touching mapped pages past the new end
+/// raises `SIGBUS` (`MAP_PRIVATE` too). A read just comes back short.
+///
+/// # Safety
+/// `fd` must be an open shared memory descriptor; it stays open.
+#[cfg(not(target_os = "macos"))]
+pub(super) unsafe fn read_shm_bytes(fd: libc::c_int, len: usize, offset: u32, size: u32) -> Result<Vec<u8>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    use std::os::fd::FromRawFd;
+    let start = (offset as usize).min(len);
+    let end = if size == 0 { len } else { (start + size as usize).min(len) };
+    if end - start > STORE_LIMIT {
+        return Err("EINVAL:too large".to_string());
+    }
+    // SAFETY: borrows the caller's descriptor; `ManuallyDrop` leaves closing to the caller.
+    let file = core::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
+    let mut file: &std::fs::File = &file;
+    file.seek(SeekFrom::Start(start as u64)).map_err(|_| "EIO:cannot read shared memory")?;
+    let mut data = Vec::new();
+    file.take((end - start) as u64).read_to_end(&mut data).map_err(|_| "EIO:cannot read shared memory")?;
+    Ok(data)
 }
 
 /// Read `size` bytes (0 = to the end) from `offset`, within the store limit.
