@@ -227,6 +227,6 @@ claims of successful validation. X11 remains the default.
 - [x] Complete platform API/no-op coverage audit against the acceptance rule:
   every window function must be implemented or explicitly explain its no-op.
   Done 2026-11-16; see [v0.14.0](./0.14.0.md#wayland-acceptance-and-app-integration)
-  for the one open gap (`release_free_memory`).
+  for the one gap found (`release_free_memory`, closed the same day).
 - [ ] Application follow-ups: notification click callbacks and token forwarding
   to an existing instance. Backend hooks do not supply these integrations.

@@ -67,7 +67,7 @@ backend). Load average about 0.5.
 | Idle RSS, 1 window, 1 tab | **66.8 MB** | `litty +bench-ram`, step 1 (on Linux the benchmark's "footprint" equals RSS) |
 | Idle RSS, 1 window, 3 tabs | 67.1 MB | Same run, step 2 |
 | Idle RSS, 2 windows, 6 tabs | 68.0 MB | Same run, step 3 |
-| After windows closed | 68.0 MB (leak delta +1.2 MB) | Same run, step 4: RSS does not shrink on Linux, unlike the macOS footprint |
+| After windows closed | 68.0 MB (leak delta +1.2 MB) | Same run, step 4: RSS did not shrink on Linux, unlike the macOS footprint. Since 2026-11-16 closing tabs and windows calls `malloc_trim`; three runs then gave a leak delta of +0.5–0.7 MB (see `docs/plans/0.14.0.md`) |
 | Idle PSS, 1 window, 1 tab | **20–22 MB** | `Pss` from `/proc/<pid>/smaps_rollup`, 6–40 s after launch. PSS splits shared libraries (Mesa, Wayland, libc) among the processes using them, so it is the fairer number next to RSS |
 | Idle CPU | **~0.0%** | 1 window, idle shell: 1 tick (10 ms) of CPU over 30 s (`/proc/<pid>/stat`) |
 | Startup to first frame | **63.5–73.8 ms** (mean 68.1, p50 67.9) | `litty +bench-first-frame 10`, 9 runs after the first (65.6 ms); `init` about 48 ms, `gpu` about 12 ms |
