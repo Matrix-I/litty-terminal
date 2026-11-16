@@ -928,6 +928,35 @@ not repeated, so the fallback's on-screen result there was not observed.
 
 Not run: logout.
 
+### Completion after shutdown (replayed 2026-11-16)
+
+`sh scripts/macos/test-shutdown-race.sh` builds a separate test bundle
+(`com.litty.activation-probe`, already authorized) from
+`scripts/macos/shutdown_race_probe.m`. Each round submits 64 notifications,
+issues the same `removePending` / `removeDelivered` calls as
+`litty_notifications_shutdown` before the adds are acknowledged, then calls
+`exit(0)` at once. It runs both in the submitting main-queue turn and one turn
+later. A second process waits 10 s and counts the remaining `race-*`
+notifications, pending or delivered.
+
+| Run (macOS 27.2.1, build 26B131) | Leftover after exit |
+| --- | --- |
+| Negative control, no withdrawal (3 rounds) | 6, 7, 12 |
+| Withdrawal in the same turn (10 rounds × 64) | 0 every round |
+| Withdrawal one turn later (10 rounds × 64) | 0 every round |
+
+When the withdrawal started, at most 4 of the 64 adds had been acknowledged
+(0 in the first ten rounds). The rest were acknowledged during the remove
+calls, after the adds and before exit. So the withdrawal really raced
+in-flight adds and was applied after them. That is the ordering this item
+relied on. Without the withdrawal, notifications still appear seconds after
+the sender exited. So the late-completion re-withdrawal in
+`notifications.m` cannot cover shutdown: only the withdrawal sent before
+`exit` does.
+
+Limits: a test bundle rather than Litty.app, one Mac and one macOS version,
+and observed behavior rather than an Apple-documented ordering guarantee.
+
 ### Open checklist (supersedes the list above)
 
 - [x] Real `com.litty.terminal` authorization and delivery. Icon not reconfirmed.
@@ -939,9 +968,8 @@ Not run: logout.
   surfaces, after the Spaces fix above.
 - [x] Selective withdrawal on quit (`terminate`, Cmd+Q, Dock Quit) and late
   completion after eviction. Logout not replayed.
-- [ ] Completion after shutdown: not replayed (the process exits after
-  shutdown). It rests on add and remove sharing one ordered connection;
-  awaiting maintainer acceptance.
+- [x] Completion after shutdown: replayed with a test bundle, 0 leftovers
+  in 20 rounds (see "Completion after shutdown" above).
 - [x] Disposition for the intermittent reports (above). The AppKit
   move warning is still a separate follow-up.
 - [x] Descoped 2026-11-16 (maintainer): runtime peer rejection with a
