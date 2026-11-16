@@ -933,7 +933,8 @@ Not run: logout.
 - [x] Real `com.litty.terminal` authorization and delivery. Icon not reconfirmed.
 - [x] Latest-build crash/cold-click replay: one fresh window with a shell.
 - [x] B receiving A's callback and forwarding to A across IPC.
-- [ ] Foreground after a forwarded click (known limitation above).
+- [x] Foreground after a forwarded click: accepted as a known limitation
+  on macOS 14+ (maintainer decision, 2026-11-16).
 - [x] Minimized (including another Space), Cmd+H-hidden and native-tab
   surfaces, after the Spaces fix above.
 - [x] Selective withdrawal on quit (`terminate`, Cmd+Q, Dock Quit) and late
@@ -943,5 +944,6 @@ Not run: logout.
   awaiting maintainer acceptance.
 - [x] Disposition for the intermittent reports (above). The AppKit
   move warning is still a separate follow-up.
-- [ ] Runtime peer rejection with a different macOS UID.
-- [ ] macOS 11–13 runtime.
+- [x] Descoped 2026-11-16 (maintainer): runtime peer rejection with a
+  different macOS UID.
+- [x] Descoped 2026-11-16 (maintainer): macOS 11–13 runtime.
