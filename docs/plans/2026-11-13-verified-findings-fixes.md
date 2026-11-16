@@ -1,6 +1,6 @@
 # Verified Audit Findings Fix Plan
 
-**Status:** Task 1 implemented 2026-11-15; Tasks 2–4 remain planned (linked from [v0.13.0](./0.13.0.md)).
+**Status:** Task 1 implemented 2026-11-15; Task 4 checked on macOS and Tasks 2–3 implemented on Linux 2026-11-16 (tracked in [v0.14.0](./0.14.0.md)).
 **Baseline:** `main` at `cc7e046` (clean tree, 2026-11-13, audited on macOS).
 **Scope:** Only findings confirmed as True Positives or requiring Linux runtime verification. Refuted speculative claims from earlier scans are recorded under [Verified Non-Issues](#verified-non-issues-do-not-fix) so they are not revisited.
 
@@ -54,8 +54,12 @@ is outside this Atlas crash fix. Tests avoid mutating global CELL_ADJUST.
 - Remaining minor gap: unlike `blit_ft_bitmap` (`linux.rs:594-598`), `rasterize_color` (`linux.rs:766`) does not reverse row indexing when `bmp.pitch < 0` (resulting in a vertically flipped glyph if a strike uses negative pitch), checks `sw * sh * 4` (`linux.rs:764`) without `checked_mul`, and assumes `(sw as usize) * 4 <= pitch`.
 
 **Implementation steps:**
-- [ ] Extract a pure BGRA-to-RGBA conversion helper in `src/render/atlas/linux.rs` (or a shared cross-platform helper if appropriate, keeping `layering_tests.rs` rules intact) that checks `sw.checked_mul(sh)` / `checked_mul(4)`, validates `(sw as usize) * 4 <= pitch`, and indexes row `if bmp.pitch >= 0 { y } else { sh as usize - 1 - y }`.
-- [ ] Add unit tests covering positive pitch, negative pitch, and dimension overflow without requiring a live X11/Vulkan session.
+- [x] Extract a pure BGRA-to-RGBA conversion helper in `src/render/atlas/linux.rs` (or a shared cross-platform helper if appropriate, keeping `layering_tests.rs` rules intact) that checks `sw.checked_mul(sh)` / `checked_mul(4)`, validates `(sw as usize) * 4 <= pitch`, and indexes row `if bmp.pitch >= 0 { y } else { sh as usize - 1 - y }`.
+- [x] Add unit tests covering positive pitch, negative pitch, and dimension overflow without requiring a live X11/Vulkan session.
+  Done 2026-11-16 as `bgra_to_straight_rgba` with five tests. On 64-bit targets
+  the stride and buffer-length guards reject extreme sizes before any product
+  can overflow, so the `checked_mul` branches only matter on 32-bit targets
+  and are not reached by the tests.
 
 ---
 
@@ -69,9 +73,14 @@ is outside this Atlas crash fix. Tests avoid mutating global CELL_ADJUST.
 - Linux `/dev/shm` (`tmpfs`) was **not** tested on this macOS host (`cargo check --target x86_64-unknown-linux-gnu` passed, Linux binary not executed). On Linux, a hostile same-UID process truncating the SHM object between `fstat` and `slice.to_vec()` could trigger `SIGBUS` under either `MAP_SHARED` or `MAP_PRIVATE` (same-UID threat model already has `ptrace`/`kill`).
 
 **Implementation steps:**
-- [ ] On a real Linux host, verify two behaviors first: (1) whether concurrent `ftruncate(fd, 0)` on `/dev/shm/*` induces `SIGBUS` on `mmap`, and (2) whether `read()` / `pread()` on `shm_open` descriptors works cleanly on Linux `tmpfs`.
-- [ ] If supported cleanly on Linux, gate `mmap(..., MAP_SHARED, ...)` under `#[cfg(target_os = "macos")]` and use `#[cfg(not(target_os = "macos"))]` bounded `File::from_raw_fd(fd)` + `read_range` (already at `kitty.rs:511-519`) so Linux avoids mapping externally shrinkable `/dev/shm` objects.
-- [ ] Add a Linux-only test in `src/terminal/graphics/tests.rs` exercising `t=s` when the writer truncates the object concurrently.
+- [x] On a real Linux host, verify two behaviors first: (1) whether concurrent `ftruncate(fd, 0)` on `/dev/shm/*` induces `SIGBUS` on `mmap`, and (2) whether `read()` / `pread()` on `shm_open` descriptors works cleanly on Linux `tmpfs`.
+- [x] If supported cleanly on Linux, gate `mmap(..., MAP_SHARED, ...)` under `#[cfg(target_os = "macos")]` and use `#[cfg(not(target_os = "macos"))]` bounded `File::from_raw_fd(fd)` + `read_range` (already at `kitty.rs:511-519`) so Linux avoids mapping externally shrinkable `/dev/shm` objects.
+  Done 2026-11-16 with a dedicated `read_shm_bytes` (seek + read bounded by the
+  `fstat` length, offset/size and `STORE_LIMIT`) instead of `read_range`, which
+  keeps the mmap path's `EINVAL:too large` reply; the descriptor stays owned by
+  the caller (`ManuallyDrop`). SIGBUS under both `MAP_SHARED` and `MAP_PRIVATE`
+  and clean short `pread` were confirmed first on Ubuntu (kernel 7.0).
+- [x] Add a Linux-only test in `src/terminal/graphics/tests.rs` exercising `t=s` when the writer truncates the object concurrently.
 
 ---
 
