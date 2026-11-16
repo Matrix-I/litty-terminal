@@ -16,6 +16,7 @@ mod inspector;
 mod keyboard;
 mod pointer;
 mod prewarm;
+mod render_window;
 mod search_ui;
 mod state;
 mod tab_anim;

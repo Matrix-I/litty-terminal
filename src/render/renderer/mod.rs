@@ -239,7 +239,7 @@ impl Renderer {
     ) -> Self {
         let size = window.inner_size();
         let (device, queue) = gpu::shared_device();
-        let mut surface = Surface::new(&window, &device);
+        let mut surface = Surface::new(&*window, &device);
         let format = surface.default_format();
         let transparent = bg_opacity < 1.0;
         let extent = extent::Extent::new(size.width, size.height);

@@ -1,6 +1,6 @@
 //! Swapchain surface backed directly by a `CAMetalLayer` attached to the window's `NSView`.
 
-use crate::platform::gui::{RawHandle, Window};
+use crate::render::window::{RawHandle, RenderWindow};
 
 use super::device::{Device, Queue};
 use super::ffi::*;
@@ -31,7 +31,7 @@ impl SurfaceFrame {
 }
 
 impl Surface {
-    pub fn new(window: &Window, device: &Device) -> Self {
+    pub fn new(window: &dyn RenderWindow, device: &Device) -> Self {
         let Some(RawHandle::AppKit { ns_view }) = window.raw_handle() else {
             panic!("expected AppKit window handle on macOS");
         };
@@ -190,6 +190,49 @@ mod tests {
             drop(surface);
 
             assert!(msg_send!(view, c"layer"; -> Id).is_null(), "the view no longer holds the layer");
+            msg_send!(view, c"release");
+        }
+    }
+
+    /// A bare test view as the renderer's window.
+    struct ViewWindow(Id);
+    // SAFETY: the test uses the view on its own thread only.
+    unsafe impl Send for ViewWindow {}
+    unsafe impl Sync for ViewWindow {}
+
+    impl RenderWindow for ViewWindow {
+        fn raw_handle(&self) -> Option<RawHandle> {
+            Some(RawHandle::AppKit { ns_view: self.0 })
+        }
+        fn scale_factor(&self) -> f64 {
+            2.0
+        }
+        fn inner_size(&self) -> (u32, u32) {
+            (20, 20)
+        }
+        fn pre_present_notify(&self) {}
+        fn present_skipped(&self) {}
+    }
+
+    /// The view shows only the surface's own layer, double-buffered, with
+    /// no help from the platform layer: two Retina drawables are ~15 MB each.
+    #[test]
+    fn a_configured_surface_keeps_two_drawables() {
+        let (device, _queue) = crate::render::backend::shared_device_and_queue();
+        unsafe {
+            let rect = NSRect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 };
+            let view = msg_send!(class(c"NSView").unwrap(), c"alloc"; -> Id);
+            let view = msg_send!(view, c"initWithFrame:", rect => NSRect; -> Id);
+            let window = ViewWindow(view);
+            let mut surface = Surface::new(&window, &device);
+            let config = SurfaceConfig { width: 20, height: 20, format: surface.default_format(), transparent: false };
+            surface.configure(&device, &config);
+
+            let layer = msg_send!(view, c"layer"; -> Id);
+            assert_eq!(layer, surface.layer.as_ptr(), "the view shows the surface's own layer");
+            assert_eq!(msg_send!(layer, c"maximumDrawableCount"; -> usize), 2);
+
+            drop(surface);
             msg_send!(view, c"release");
         }
     }
