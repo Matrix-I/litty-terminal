@@ -974,9 +974,28 @@ Dock. No warning appeared. The item is closed as not reproduced; reopen it if
 the warning returns. Notification-click flows in a packaged bundle were not
 repeated for this check.
 
+### Logout withdrawal and icon (replayed 2026-11-16)
+
+The maintainer cleared Notification Center, then, with the packaged
+`Litty.app` running, posted two OSC 777 notifications ("Logout test", Litty A
+and Litty B) and one control through `osascript` (Script Editor identity).
+Before logout, Notification Center grouped A and B under "Litty" with the
+Litty icon, so they went through the app's own identity, not the
+Script Editor helper fallback. The maintainer then logged out with
+"Reopen windows when logging back in" unchecked and logged back in without
+starting Litty. Only the control remained; A and B were withdrawn.
+Screenshots before and after were reviewed in the session (macOS 27.2.1).
+
+An earlier attempt was inconclusive: Notification Center still held many
+notifications from 2026-11-15 fixture processes, so A and B could not be
+told apart from scroll-off. Those stale entries came from processes that
+had already exited before the logout. Withdrawal covers only the live
+process, so they are expected and not a logout failure.
+
 ### Open checklist (supersedes the list above)
 
-- [x] Real `com.litty.terminal` authorization and delivery. Icon not reconfirmed.
+- [x] Real `com.litty.terminal` authorization and delivery. Icon reconfirmed
+  on 2026-11-16 (see "Logout withdrawal and icon" above).
 - [x] Latest-build crash/cold-click replay: one fresh window with a shell.
 - [x] B receiving A's callback and forwarding to A across IPC.
 - [x] Foreground after a forwarded click: accepted as a known limitation
@@ -984,7 +1003,8 @@ repeated for this check.
 - [x] Minimized (including another Space), Cmd+H-hidden and native-tab
   surfaces, after the Spaces fix above.
 - [x] Selective withdrawal on quit (`terminate`, Cmd+Q, Dock Quit) and late
-  completion after eviction. Logout not replayed.
+  completion after eviction. Logout replayed on 2026-11-16: withdrawn,
+  control kept (see above).
 - [x] Completion after shutdown: replayed with a test bundle, 0 leftovers
   in 20 rounds (see "Completion after shutdown" above).
 - [x] Disposition for the intermittent reports (above). The AppKit
