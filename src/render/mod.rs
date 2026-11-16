@@ -3,7 +3,7 @@
 //! images and frame timing.
 //!
 //! Layer rule (enforced by the `layering_tests` module): uses only `render`
-//! and `terminal`, plus the tolerated edges listed there.
+//! and `terminal`, plus test infrastructure listed there.
 
 pub(crate) mod atlas;
 pub(crate) mod backend;

@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use crate::platform::gui::Window;
+use crate::render::window::RenderWindow;
 
 mod extent;
 mod frame;
@@ -131,7 +131,7 @@ pub struct Renderer {
     frames_submitted: u64,
     /// Told right before each present (Wayland frame pacing). Weak: the app
     /// drops the renderer before its window, and never through this.
-    window: std::sync::Weak<Window>,
+    window: std::sync::Weak<dyn RenderWindow>,
     surface: Surface,
     device: Arc<Device>,
     queue: Arc<Queue>,
@@ -231,18 +231,18 @@ impl Renderer {
     }
 
     pub fn new(
-        window: Arc<Window>,
+        window: Arc<dyn RenderWindow>,
         font: Arc<FontSet>,
         font_px: f32,
         bg_opacity: f32,
         cursor_style: u32,
     ) -> Self {
-        let size = window.inner_size();
+        let (window_width, window_height) = window.inner_size();
         let (device, queue) = gpu::shared_device();
         let mut surface = Surface::new(&*window, &device);
         let format = surface.default_format();
         let transparent = bg_opacity < 1.0;
-        let extent = extent::Extent::new(size.width, size.height);
+        let extent = extent::Extent::new(window_width, window_height);
         let (width, height) = extent.drawable_size();
         let config = SurfaceConfig {
             width,
