@@ -1,4 +1,4 @@
-//! Window look and behavior: vibrancy, blur, color space, title-bar zoom, Metal drawables.
+//! Window look and behavior: vibrancy, blur, color space, title-bar zoom.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
@@ -8,32 +8,6 @@ use crate::platform::gui::Window;
 use crate::platform::{ColorSpace, WindowLook};
 
 use super::objc::*;
-
-/// Configure CAMetalLayer maximumDrawableCount = 2 (double buffering)
-/// to minimize latency and save ~10 MB of framebuffer RAM per window.
-pub fn configure_layer_drawables(window: &Window) {
-    let Some((ns_view, _)) = ns_window_of(window) else { return };
-    unsafe {
-        let mut target_layer = None;
-        if let Some(layer) = send_id(ns_view, c"layer") {
-            if responds_to(layer, c"setMaximumDrawableCount:") {
-                target_layer = Some(layer);
-            } else if let Some(sublayers) = send_id(layer, c"sublayers") {
-                let count = msg_send!(sublayers, c"count"; -> usize);
-                for i in 0..count {
-                    let sub = msg_send!(sublayers, c"objectAtIndex:", i => usize; -> Id);
-                    if responds_to(sub, c"setMaximumDrawableCount:") {
-                        target_layer = Some(sub);
-                        break;
-                    }
-                }
-            }
-        }
-        if let Some(layer) = target_layer {
-            msg_send!(layer, c"setMaximumDrawableCount:", 2 => usize);
-        }
-    }
-}
 
 pub fn apply_window_config(window: &Window, look: &WindowLook) {
     let Some((ns_view, ns_window)) = ns_window_of(window) else { return };

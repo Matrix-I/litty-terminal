@@ -27,7 +27,7 @@ pub(crate) use imp::{
 
     capture_startup_activation, activate_app, add_tabbed_window, alert, alert_choice, apply_window_config, beep, caps_lock,
     cleanup_window, clipboard_string, clipboard_write_string, init_clipboard, primary_string, primary_write_string, close_progress_dialog,
-    configure_layer_drawables, confirm, install_menu,
+    confirm, install_menu,
     register_reopen_handler, release_free_memory, select_native_tab, set_dock_icon,
     set_secure_input, set_secure_input_menu_state, set_tabbing_allowed,
     show_progress_dialog, system_dark,

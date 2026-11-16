@@ -1,7 +1,5 @@
 //! Window look and behavior: macOS only.
 
-pub fn configure_layer_drawables(_window: &crate::platform::gui::Window) {}
-
 pub fn apply_window_config(_window: &crate::platform::gui::Window, _look: &crate::platform::WindowLook) {}
 
 pub fn cleanup_window(_window: &crate::platform::gui::Window) {}

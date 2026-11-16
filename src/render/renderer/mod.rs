@@ -251,7 +251,6 @@ impl Renderer {
             transparent,
         };
         surface.configure(&device, &config);
-        crate::platform::configure_layer_drawables(&window);
 
         let atlas = Atlas::new(&device, &queue, font, font_px);
         let pipelines = gpu::shared_pipeline(&device, format);
