@@ -760,24 +760,89 @@ pub(super) fn rasterize_color(buf: &mut [u8], w: u32, h: u32, px: f32, text: &st
             return false;
         }
         let (sw, sh) = (bmp.width, bmp.rows);
-        let pitch = bmp.pitch.unsigned_abs() as usize;
-        let mut rgba = vec![0u8; (sw * sh * 4) as usize];
-        for y in 0..sh as usize {
-            let src_row = core::slice::from_raw_parts(bmp.buffer.add(y * pitch), (sw as usize) * 4);
-            let dst_row = &mut rgba[y * (sw as usize) * 4..(y + 1) * (sw as usize) * 4];
-            for (d, s) in dst_row.as_chunks_mut::<4>().0.iter_mut().zip(src_row.as_chunks::<4>().0) {
-                let a = s[3] as u32;
-                if a > 0 && a < 255 {
-                    d[0] = ((s[2] as u32 * 255 + a / 2) / a).min(255) as u8;
-                    d[1] = ((s[1] as u32 * 255 + a / 2) / a).min(255) as u8;
-                    d[2] = ((s[0] as u32 * 255 + a / 2) / a).min(255) as u8;
-                    d[3] = s[3];
-                } else {
-                    *d = [s[2], s[1], s[0], s[3]];
-                }
-            }
-        }
+        let Some(len) = (sh as usize).checked_mul(bmp.pitch.unsigned_abs() as usize) else {
+            return false;
+        };
+        // FreeType's `buffer` is the lowest address of the block for either pitch sign.
+        let src = core::slice::from_raw_parts(bmp.buffer, len);
+        let Some(rgba) = bgra_to_straight_rgba(src, sw, sh, bmp.pitch) else {
+            return false;
+        };
         blit_fit(&rgba, sw, sh, buf, w, h);
         true
+    }
+}
+
+/// Converts a FreeType premultiplied BGRA bitmap (`rows * |pitch|` bytes, lowest
+/// address first) into top-down straight-alpha RGBA. A negative pitch stores the
+/// bottom row first, matching `blit_ft_bitmap`. `None` when the sizes overflow or
+/// `src` is shorter than the bitmap claims.
+fn bgra_to_straight_rgba(src: &[u8], width: u32, rows: u32, pitch: i32) -> Option<Vec<u8>> {
+    let row_bytes = (width as usize).checked_mul(4)?;
+    let stride = pitch.unsigned_abs() as usize;
+    if row_bytes > stride || (rows as usize).checked_mul(stride)? > src.len() {
+        return None;
+    }
+    let mut rgba = vec![0u8; row_bytes.checked_mul(rows as usize)?];
+    for (y, dst_row) in rgba.chunks_exact_mut(row_bytes).enumerate() {
+        let mem_row = if pitch >= 0 { y } else { rows as usize - 1 - y };
+        let src_row = &src[mem_row * stride..mem_row * stride + row_bytes];
+        for (d, s) in dst_row.as_chunks_mut::<4>().0.iter_mut().zip(src_row.as_chunks::<4>().0) {
+            let a = s[3] as u32;
+            if a > 0 && a < 255 {
+                d[0] = ((s[2] as u32 * 255 + a / 2) / a).min(255) as u8;
+                d[1] = ((s[1] as u32 * 255 + a / 2) / a).min(255) as u8;
+                d[2] = ((s[0] as u32 * 255 + a / 2) / a).min(255) as u8;
+                d[3] = s[3];
+            } else {
+                *d = [s[2], s[1], s[0], s[3]];
+            }
+        }
+    }
+    Some(rgba)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bgra_to_straight_rgba;
+
+    // Two 1-px rows with 4 bytes of row padding: top row opaque blue, bottom row opaque red (BGRA).
+    const TOP_BLUE: [u8; 4] = [255, 0, 0, 255];
+    const BOTTOM_RED: [u8; 4] = [0, 0, 255, 255];
+
+    #[test]
+    fn positive_pitch_keeps_top_row_first_and_skips_padding() {
+        let src = [TOP_BLUE, [9; 4], BOTTOM_RED, [9; 4]].concat();
+        let out = bgra_to_straight_rgba(&src, 1, 2, 8).unwrap();
+        assert_eq!(out, [0, 0, 255, 255, 255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn negative_pitch_stores_bottom_row_first() {
+        let src = [BOTTOM_RED, [9; 4], TOP_BLUE, [9; 4]].concat();
+        let out = bgra_to_straight_rgba(&src, 1, 2, -8).unwrap();
+        assert_eq!(out, [0, 0, 255, 255, 255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn unpremultiplies_partial_alpha() {
+        // Premultiplied BGRA (0, 0, 64, 128) is straight red 128 at alpha 128.
+        let out = bgra_to_straight_rgba(&[0, 0, 64, 128], 1, 1, 4).unwrap();
+        assert_eq!(out, [128, 0, 0, 128]);
+    }
+
+    #[test]
+    fn rejects_pitch_narrower_than_row_and_short_buffers() {
+        assert_eq!(bgra_to_straight_rgba(&[0; 16], 2, 2, 4), None);
+        assert_eq!(bgra_to_straight_rgba(&[0; 15], 2, 2, 8), None);
+        assert_eq!(bgra_to_straight_rgba(&[0; 15], 1, 2, -8), None);
+    }
+
+    #[test]
+    fn rejects_extreme_dimensions_without_overflow() {
+        // On 64-bit targets the guards reject these before any product can
+        // overflow; the checked products matter on 32-bit targets.
+        assert_eq!(bgra_to_straight_rgba(&[], u32::MAX, u32::MAX, i32::MIN), None);
+        assert_eq!(bgra_to_straight_rgba(&[], 1, u32::MAX, i32::MAX), None);
     }
 }
