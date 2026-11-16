@@ -6,6 +6,7 @@ pub fn set_notification_handler(_: Option<Arc<dyn Fn(String, u64) + Send + Sync>
 pub fn init_notifications() -> io::Result<()> { Ok(()) }
 #[allow(dead_code)] // Native notification cleanup is macOS-only.
 pub fn shutdown_notifications() {}
+/// Linux helper notifications never relaunch the app on click.
 pub fn startup_is_notification() -> bool { false }
 #[allow(dead_code)] // Linux has no AppKit reopen callback.
 pub fn consume_notification_reopen() -> bool { false }
