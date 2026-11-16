@@ -564,8 +564,6 @@ mod tests {
         use super::super::super::device::shared_device_and_queue;
         use super::super::super::pass::CommandEncoder;
         use super::*;
-        use crate::platform::gui::{LogicalSize, Window, WindowSpec};
-        use crate::platform::linux::native::window::NativeWindow;
 
         const FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -573,7 +571,7 @@ mod tests {
             device: Arc<Device>,
             queue: Arc<Queue>,
             surface: Surface,
-            _window: Window,
+            _window: Box<dyn RenderWindow>,
             // Last: released after the surface is gone.
             _frames: parking_lot::MutexGuard<'static, ()>,
         }
@@ -592,16 +590,8 @@ mod tests {
             // first frame and add their own checked calls.
             // SAFETY: the shared device is live; `GPU` is held.
             unsafe { vk.uploads.lock().flush(vk) };
-            let spec = WindowSpec {
-                title: "litty-vulkan-fault-test",
-                decorations: true,
-                visible: true,
-                transparent: false,
-                inner_size: LogicalSize::new(200.0, 100.0),
-                position: None,
-            };
-            let window = Window::from_native_linux(NativeWindow::create(&spec).ok()?);
-            let mut surface = Surface::new(&window, &device);
+            let window = crate::test_window::native_window("litty-vulkan-fault-test", 200.0, 100.0)?;
+            let mut surface = Surface::new(&*window, &device);
             let config = SurfaceConfig { format: surface.default_format(), width: 200, height: 100, transparent: false };
             surface.configure(&device, &config);
             // Probing with `acquire_frame` would reset the fence without a

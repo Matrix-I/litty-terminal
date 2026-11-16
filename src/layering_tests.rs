@@ -10,12 +10,10 @@
 use std::path::Path;
 
 /// Crate-root modules any layer may use from `#[cfg(test)]` code.
-const TEST_INFRA: &[&str] = &["test_alloc"];
+const TEST_INFRA: &[&str] = &["test_alloc", "test_window"];
 
 /// `(layer, used crate module, why it is still allowed)`.
-const TOLERATED: &[(&str, &str, &str)] = &[
-    ("render", "platform", "Renderer::new configures Metal drawables between surface setup and atlas creation"),
-];
+const TOLERATED: &[(&str, &str, &str)] = &[];
 
 /// First path segment of every `crate::` path in `src`, including each
 /// branch of a `use crate::{a, b::{c, d}}` group.

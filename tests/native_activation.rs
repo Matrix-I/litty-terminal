@@ -31,6 +31,7 @@ use mimalloc as _;
 #[path = "../src/tab.rs"] mod tab;
 #[path = "../src/terminal/mod.rs"] mod terminal;
 #[path = "../src/test_alloc.rs"] mod test_alloc;
+#[path = "../src/test_window.rs"] mod test_window;
 #[path = "../src/update/mod.rs"] mod update;
 
 pub(crate) use platform::input;
