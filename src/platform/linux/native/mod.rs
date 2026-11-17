@@ -1,6 +1,7 @@
 //! Native Linux windowing and unified epoll event loop (Milestone 3 / Phase 4.2).
 
 pub mod app;
+mod dbus;
 pub mod events;
 pub mod monitor;
 pub mod portal;
