@@ -44,8 +44,12 @@ pub fn set_dock_icon() {}
 /// (`xdg_activation` on Wayland), never the whole application.
 pub fn activate_app() {}
 
-/// Capture launcher activation before the app starts worker threads.
-pub fn capture_startup_activation() { super::native::wayland_activation::capture_startup_activation(); }
+/// Capture launcher activation and the start time that names this
+/// instance's activation socket, before the app starts worker threads.
+pub fn capture_startup_activation() {
+    super::activation::capture_start_time();
+    super::native::wayland_activation::capture_startup_activation();
+}
 
 #[cfg(all(test, target_env = "gnu"))]
 mod tests {
