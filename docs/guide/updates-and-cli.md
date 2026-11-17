@@ -13,7 +13,7 @@ Litty includes a built-in, zero-dependency self-updater that checks for releases
 - **Atomic macOS app updates**: the updater extracts and signs a complete bundle in a private directory beside the installed app, then swaps both directories atomically. Staging, signing or swap failures leave the installed bundle intact. A filesystem without atomic swap support returns an error.
 - Only one update runs at a time (a lock in `~/.cache/litty/updates`, shared with `litty +update`), and every network request has connect and transfer timeouts.
 
-## Reuse an existing macOS process
+## Reuse an existing process
 
 Run `litty +reuse` (or `litty --reuse`) to open a new window in the most
 recently started eligible Litty process, with the shell in your current working
@@ -23,9 +23,12 @@ update/theme utility commands do not join the reuse service.
 
 If a request is rejected or its acknowledgement times out, the command exits
 with an error. It does not automatically open another window, because the
-original request may already have succeeded. Window activation follows macOS
-focus policy. Reuse is macOS-only; invoking it on Linux reports an unsupported
-operation. Existing processes must be running a build that supports reuse.
+original request may already have succeeded. Window activation follows the
+desktop's focus policy. On Linux the registry lives in
+`$XDG_RUNTIME_DIR/litty-a1` (or `/tmp/litty-a1-<uid>` without a runtime
+directory), and on Wayland the command passes its launcher's activation token
+to the running process so the compositor can focus the new window. Existing
+processes must be running a build that supports reuse.
 
 Notification clicks route to their originating process, not the newest one
 selected by `+reuse`; see [desktop notifications](notifications.md).
