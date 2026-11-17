@@ -12,6 +12,10 @@ pub(super) const DBUS_TYPE_UINT32: c_int = b'u' as c_int;
 pub(super) const DBUS_TYPE_VARIANT: c_int = b'v' as c_int;
 pub(super) const DBUS_MESSAGE_TYPE_METHOD_RETURN: c_int = 2;
 pub(super) const DBUS_MESSAGE_TYPE_ERROR: c_int = 3;
+pub(super) const DBUS_TYPE_INT32: c_int = b'i' as c_int;
+pub(super) const DBUS_TYPE_ARRAY: c_int = b'a' as c_int;
+pub(super) const DBUS_TYPE_DICT_ENTRY: c_int = b'e' as c_int;
+pub(super) const DBUS_MESSAGE_TYPE_SIGNAL: c_int = 4;
 /// Portals nest the value in up to two variants (`Read` vs `ReadOne`).
 const MAX_VARIANT_DEPTH: usize = 4;
 
@@ -82,8 +86,8 @@ pub(super) struct DBusLib {
     #[cfg(test)]
     pub(super) dbus_message_set_serial: unsafe extern "C" fn(*mut Msg, u32),
     #[cfg(test)]
+    pub(super) dbus_message_get_signature: unsafe extern "C" fn(*mut Msg) -> *const c_char,
     pub(super) dbus_message_iter_open_container: unsafe extern "C" fn(*mut DBusMessageIter, c_int, *const c_char, *mut DBusMessageIter) -> u32,
-    #[cfg(test)]
     pub(super) dbus_message_iter_close_container: unsafe extern "C" fn(*mut DBusMessageIter, *mut DBusMessageIter) -> u32,
 }
 
@@ -131,8 +135,8 @@ impl DBusLib {
                 #[cfg(test)]
                 dbus_message_set_serial: sym(handle, c"dbus_message_set_serial")?,
                 #[cfg(test)]
+                dbus_message_get_signature: sym(handle, c"dbus_message_get_signature")?,
                 dbus_message_iter_open_container: sym(handle, c"dbus_message_iter_open_container")?,
-                #[cfg(test)]
                 dbus_message_iter_close_container: sym(handle, c"dbus_message_iter_close_container")?,
             })
         }

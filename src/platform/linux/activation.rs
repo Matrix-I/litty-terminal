@@ -664,11 +664,73 @@ fn reuse_from(dir: io::Result<PathBuf>, cwd: &str, token: Option<&str>) -> io::R
     }
 }
 
-pub struct NotificationRouter;
-pub fn start_notification_router() -> std::io::Result<NotificationRouter> {
-    Ok(NotificationRouter)
+/// Bounded notification forwarding runs independently of the event loop and grid locks.
+pub struct NotificationRouter {
+    worker: Option<JoinHandle<()>>,
+    stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
-pub fn notify_pane(_: Option<&str>, _: u64, title: &str, body: &str) {
+impl Drop for NotificationRouter {
+    fn drop(&mut self) {
+        // Queued clicks are dropped, not sent: each send may wait up to the
+        // transport deadline and would stall shutdown on the main thread.
+        self.stopping.store(true, std::sync::atomic::Ordering::SeqCst);
+        super::set_notification_handler(None);
+        if self.worker.take().is_some_and(|worker| worker.join().is_err()) {
+            eprintln!("litty: notification router panicked");
+        }
+    }
+}
+fn route_queued(
+    receiver: &mpsc::Receiver<(String, u64)>,
+    stopping: &std::sync::atomic::AtomicBool,
+    deliver: impl Fn(&str, u64) -> io::Result<()>,
+) {
+    while let Ok((origin, pane)) = receiver.recv() {
+        if stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            continue;
+        }
+        if let Err(error) = deliver(&origin, pane)
+            && !matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+            )
+        {
+            eprintln!("litty: notification routing failed: {}", error.kind());
+        }
+    }
+}
+pub fn start_notification_router() -> io::Result<NotificationRouter> {
+    let (sender, receiver) = mpsc::sync_channel::<(String, u64)>(4);
+    let stopping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_stopping = stopping.clone();
+    let worker = thread::Builder::new()
+        .name("notification-router".into())
+        .stack_size(128 * 1024)
+        .spawn(move || {
+            route_queued(&receiver, &worker_stopping, |origin, pane| {
+                send(&root(false)?, &Origin::parse(origin)?, ActivationAction::Pane(pane), None)
+            })
+        })?;
+    super::set_notification_handler(Some(std::sync::Arc::new(move |origin, pane| {
+        if sender.try_send((origin, pane)).is_err() {
+            eprintln!("litty: notification routing queue unavailable");
+        }
+    })));
+    Ok(NotificationRouter { worker: Some(worker), stopping })
+}
+
+pub fn notify_pane(origin: Option<&str>, pane: u64, title: &str, body: &str) {
+    if let Some(origin) = origin {
+        match super::show_pane_notification(origin, pane, title, body) {
+            Ok(()) => return,
+            Err(error) if error.kind() == io::ErrorKind::Unsupported => {}
+            Err(error) => {
+                eprintln!("litty: notification submission failed: {}", error.kind());
+                return;
+            }
+        }
+    }
+    // No activation server (benchmarks) or no notification bus: shown without click routing.
     crate::platform::process::show_notification(title, body);
 }
 
@@ -1068,5 +1130,22 @@ mod tests {
         assert_eq!(reuse_at(&f.0, "/tmp", Some("")).unwrap_err().kind(), io::ErrorKind::InvalidData);
         assert!(accepted.try_recv().is_err());
         drop(server);
+    }
+    #[test]
+    fn stopping_router_drops_queued_clicks_instead_of_sending() {
+        let (sender, receiver) = mpsc::sync_channel(4);
+        let stopping = std::sync::atomic::AtomicBool::new(false);
+        for pane in 1..=3 {
+            sender.send(("origin".to_owned(), pane)).unwrap();
+        }
+        drop(sender);
+        let delivered = std::sync::Mutex::new(Vec::new());
+        route_queued(&receiver, &stopping, |_, pane| {
+            delivered.lock().unwrap().push(pane);
+            // Shutdown begins while the first click is being delivered.
+            stopping.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        });
+        assert_eq!(*delivered.lock().unwrap(), [1]);
     }
 }

@@ -4,6 +4,7 @@ pub mod app;
 mod dbus;
 pub mod events;
 pub mod monitor;
+pub(super) mod notify_bus;
 pub mod portal;
 pub mod wayland;
 mod wayland_input;
