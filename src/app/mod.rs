@@ -72,7 +72,7 @@ struct App {
 
 impl App {
     fn start_activation_service(&mut self) {
-        if cfg!(target_os = "macos") && self.activation.is_none() && !self.bench_ram_mode
+        if cfg!(any(target_os = "macos", target_os = "linux")) && self.activation.is_none() && !self.bench_ram_mode
             && self.gui_bench.is_none() && self.scroll_fps_run.is_none() {
             let proxy = self.waker.proxy.clone();
             let sink = Arc::new(move |request, reply| {
@@ -83,12 +83,7 @@ impl App {
             });
             match platform::start_activation(sink) {
                 Ok(server) => self.activation = Some(server),
-                Err(error) => {
-                    #[cfg(target_os = "macos")]
-                    eprintln!("litty: activation service unavailable: {}", error.kind());
-                    #[cfg(target_os = "linux")]
-                    let _ = error;
-                }
+                Err(error) => eprintln!("litty: activation service unavailable: {}", error.kind()),
             }
         }
     }
