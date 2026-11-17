@@ -769,6 +769,14 @@ impl WaylandWindow {
         let guard = self.0.client.queue.lock();
         let state = &guard.1;
         let Some(manager) = &state.activation_manager else { return; };
+        if focus && let Some(token) = super::wayland_activation::take_external_token() {
+            // A token from `+reuse` or a notification click already carries the
+            // user's intent; a new request would lack it and only highlight.
+            self.0.shared.state.lock().activation.cancel();
+            manager.activate(token, self.0.window.wl_surface());
+            super::app::wakeup_main_loop();
+            return;
+        }
         let grant = if focus { state.activation_input.as_ref() } else { None };
         self.0.shared.state.lock().activation.request(manager, &self.0.client.qh,
             self.0.window.wl_surface(), Arc::downgrade(&self.0.shared), grant);

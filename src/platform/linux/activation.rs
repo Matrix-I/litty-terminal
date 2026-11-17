@@ -2,6 +2,7 @@
 use crate::platform::activation::{
     self as wire, ActivationAction, ActivationRequest, ActivationSink, Outcomes, TIMEOUT,
 };
+use super::activation_wire;
 use std::{
     fs,
     io::{self, Read, Write},
@@ -342,7 +343,7 @@ fn connect(path: &Path) -> io::Result<DeadlineStream> {
     peer(&stream)?;
     Ok(DeadlineStream { stream, deadline })
 }
-fn send(root: &Path, origin: &Origin, action: ActivationAction) -> io::Result<()> {
+fn send(root: &Path, origin: &Origin, action: ActivationAction, token: Option<&str>) -> io::Result<()> {
     private_dir(&root.join(&origin.name), false)?;
     let path = root.join(&origin.name).join("s");
     let meta = fs::symlink_metadata(&path)?;
@@ -359,7 +360,7 @@ fn send(root: &Path, origin: &Origin, action: ActivationAction) -> io::Result<()
             .ok_or_else(wire::invalid)?,
         action,
     };
-    wire::write_frame(&mut stream, &req.encode()?)
+    wire::write_frame(&mut stream, &activation_wire::encode(&req, token)?)
         .map_err(|e| io::Error::new(e.kind(), format!("activation write: {e}")))?;
     match wire::read_frame(&mut stream)
         .map_err(|e| io::Error::new(e.kind(), format!("activation reply: {e}")))?
@@ -401,7 +402,7 @@ fn serve_one(
         stream,
         deadline: Instant::now() + TIMEOUT,
     };
-    let req = ActivationRequest::decode(&wire::read_frame(&mut stream)?)?;
+    let (req, token) = activation_wire::decode(&wire::read_frame(&mut stream)?)?;
     let result = (|| {
         if req.session != session {
             return Err(wire::invalid());
@@ -414,6 +415,11 @@ fn serve_one(
                 io::ErrorKind::WouldBlock,
                 "activation application queue is busy",
             ));
+        }
+        if let Some(token) = &token {
+            // Before the app sees the request, so the focus it triggers can
+            // use the token. A replay returned above and never gets here.
+            super::native::wayland_activation::offer_activation_token(token);
         }
         let (reply, rx) = mpsc::sync_channel(1);
         sink(req.clone(), reply);
@@ -619,12 +625,12 @@ fn discover(root: &Path, alive: impl Fn(u32) -> bool) -> io::Result<Vec<Origin>>
     Ok(origins)
 }
 
-fn reuse_at(root: &Path, cwd: &str) -> io::Result<bool> {
+fn reuse_at(root: &Path, cwd: &str, token: Option<&str>) -> io::Result<bool> {
     wire::validate_cwd(cwd)?;
     let mut origins = discover(root, process_alive)?;
     origins.sort_by(|a, b| b.started.cmp(&a.started).then(b.name.cmp(&a.name)));
     for origin in origins {
-        match send(root, &origin, ActivationAction::NewWindow(cwd.into())) {
+        match send(root, &origin, ActivationAction::NewWindow(cwd.into()), token) {
             Ok(()) => return Ok(true),
             Err(e)
                 if matches!(
@@ -641,11 +647,12 @@ fn reuse_at(root: &Path, cwd: &str) -> io::Result<bool> {
 }
 pub fn reuse_window(cwd: &str) -> io::Result<bool> {
     wire::validate_cwd(cwd)?;
-    reuse_from(root(false), cwd)
+    let token = super::native::wayland_activation::startup_token_peek();
+    reuse_from(root(false), cwd, token.as_deref())
 }
-fn reuse_from(dir: io::Result<PathBuf>, cwd: &str) -> io::Result<bool> {
+fn reuse_from(dir: io::Result<PathBuf>, cwd: &str, token: Option<&str>) -> io::Result<bool> {
     match dir {
-        Ok(dir) => reuse_at(&dir, cwd),
+        Ok(dir) => reuse_at(&dir, cwd, token),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
         // Another user may pre-create the fixed /tmp name. No instance of ours
         // can be listening there, so start a new one instead of failing.
@@ -706,7 +713,7 @@ mod tests {
     #[test]
     fn real_transport_selects_latest_and_cleans_up() {
         let f = Fixture::new();
-        assert!(!reuse_at(&f.0, "/tmp").unwrap());
+        assert!(!reuse_at(&f.0, "/tmp", None).unwrap());
         let (tx, rx) = mpsc::sync_channel(4);
         let first = tx.clone();
         let a = start_with_origin(
@@ -728,13 +735,13 @@ mod tests {
         )
         .unwrap();
         assert!(b.origin.started >= a.origin.started);
-        assert!(reuse_at(&f.0, "/tmp/tiếng việt").unwrap());
+        assert!(reuse_at(&f.0, "/tmp/tiếng việt", None).unwrap());
         assert_eq!(
             rx.recv_timeout(TIMEOUT).unwrap(),
             (2, ActivationAction::NewWindow("/tmp/tiếng việt".into()))
         );
         drop(b);
-        assert!(reuse_at(&f.0, "/tmp").unwrap());
+        assert!(reuse_at(&f.0, "/tmp", None).unwrap());
         assert_eq!(rx.recv_timeout(TIMEOUT).unwrap().0, 1);
         drop(a);
         assert_eq!(fs::read_dir(&f.0).unwrap().count(), 0);
@@ -821,14 +828,14 @@ mod tests {
             Origin::parse(&format!("{:016x}-1-{}", 20, hex(&[2; 16]))).unwrap(),
         )
         .unwrap();
-        send(&fixture.0, &old.origin, ActivationAction::Pane(42)).unwrap();
+        send(&fixture.0, &old.origin, ActivationAction::Pane(42), None).unwrap();
         assert_eq!(
             received.recv_timeout(TIMEOUT).unwrap(),
             (1, ActivationAction::Pane(42))
         );
         let stale = old.origin.clone();
         drop(old);
-        assert!(send(&fixture.0, &stale, ActivationAction::Pane(42)).is_err());
+        assert!(send(&fixture.0, &stale, ActivationAction::Pane(42), None).is_err());
         assert!(
             received.try_recv().is_err(),
             "stale origin must never target another instance"
@@ -913,7 +920,7 @@ mod tests {
             Arc::new(|_, reply| reply.send(Err("failed".into())).unwrap()),
         )
         .unwrap();
-        assert!(reuse_at(&f.0, "/tmp").is_err());
+        assert!(reuse_at(&f.0, "/tmp", None).is_err());
         drop(server);
     }
     #[test]
@@ -929,10 +936,10 @@ mod tests {
         let unsafe_root = root_at(Some(f.0.clone().into()), None, false);
         assert_eq!(unsafe_root.as_ref().unwrap_err().kind(), io::ErrorKind::PermissionDenied);
         // A root another user controls cannot hold our instances: start fresh.
-        assert!(!reuse_from(unsafe_root, "/tmp").unwrap());
+        assert!(!reuse_from(unsafe_root, "/tmp", None).unwrap());
         fs::set_permissions(&f.0, fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(
-            reuse_from(Err(io::Error::other("broken")), "/tmp").unwrap_err().kind(),
+            reuse_from(Err(io::Error::other("broken")), "/tmp", None).unwrap_err().kind(),
             io::ErrorKind::Other
         );
     }
@@ -979,14 +986,14 @@ mod tests {
         )
         .unwrap();
 
-        assert!(reuse_at(&f.0, "/tmp").is_err(), "late acknowledgement must be an error");
+        assert!(reuse_at(&f.0, "/tmp", None).is_err(), "late acknowledgement must be an error");
         let held = held_rx.recv_timeout(TIMEOUT).expect("request reached the newest app");
-        assert!(reuse_at(&f.0, "/tmp").is_err(), "busy app must not admit a second request");
+        assert!(reuse_at(&f.0, "/tmp", None).is_err(), "busy app must not admit a second request");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(older_rx.try_recv().is_err(), "no fallback to an older instance");
 
         held.send(Ok(())).unwrap();
-        assert!(reuse_at(&f.0, "/tmp").unwrap(), "consumed acknowledgement frees admission");
+        assert!(reuse_at(&f.0, "/tmp", None).unwrap(), "consumed acknowledgement frees admission");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert!(older_rx.try_recv().is_err());
         drop(newest);
@@ -1008,5 +1015,58 @@ mod tests {
         assert_eq!(made, f.0.join("litty-a1"));
         assert_eq!(fs::metadata(&made).unwrap().permissions().mode() & 0o777, 0o700);
         fs::remove_dir(made).unwrap();
+    }
+    #[test]
+    fn reuse_forwards_its_token_once_and_replays_never_reoffer() {
+        use crate::platform::linux::native::wayland_activation::{tests::TOKEN_TESTS, take_external_token};
+        let _serial = TOKEN_TESTS.lock();
+        take_external_token();
+        let f = Fixture::new();
+        let (sent, accepted) = mpsc::sync_channel(4);
+        let server = start_at(
+            f.0.clone(),
+            Arc::new(move |request, reply| {
+                sent.send(request.action).unwrap();
+                reply.send(Ok(())).unwrap();
+            }),
+        )
+        .unwrap();
+        assert!(reuse_at(&f.0, "/tmp", Some("launcher-token")).unwrap());
+        assert_eq!(accepted.recv_timeout(TIMEOUT).unwrap(), ActivationAction::NewWindow("/tmp".into()));
+        assert_eq!(take_external_token().as_deref(), Some("launcher-token"));
+
+        let request = ActivationRequest {
+            id: [7; 16],
+            session: server.origin.session,
+            expires_ns: monotonic_ns().unwrap() + TIMEOUT.as_nanos() as u64,
+            action: ActivationAction::Pane(42),
+        };
+        let exchange = || {
+            let mut connection = connect(&f.0.join(&server.origin.name).join("s")).unwrap();
+            wire::write_frame(&mut connection, &activation_wire::encode(&request, Some("click-token")).unwrap()).unwrap();
+            wire::read_frame(&mut connection).unwrap()
+        };
+        assert_eq!(exchange(), [0]);
+        assert_eq!(take_external_token().as_deref(), Some("click-token"));
+        assert_eq!(exchange(), [0], "a replay gets the recorded answer");
+        assert_eq!(take_external_token(), None, "a replay must not offer its token again");
+        drop(server);
+    }
+
+    #[test]
+    fn an_invalid_token_is_an_error_and_reaches_no_app() {
+        let f = Fixture::new();
+        let (sent, accepted) = mpsc::sync_channel(4);
+        let server = start_at(
+            f.0.clone(),
+            Arc::new(move |request, reply| {
+                sent.send(request.action).unwrap();
+                reply.send(Ok(())).unwrap();
+            }),
+        )
+        .unwrap();
+        assert_eq!(reuse_at(&f.0, "/tmp", Some("")).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert!(accepted.try_recv().is_err());
+        drop(server);
     }
 }

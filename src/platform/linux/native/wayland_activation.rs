@@ -24,7 +24,32 @@ pub fn capture_startup_activation() {
     });
 }
 pub(super) fn startup_token() -> Option<String> { STARTUP.get()?.lock().take() }
-fn valid_token(token: &str) -> bool { !token.is_empty() && token.len() <= 4096 && !token.contains('\0') }
+/// The launcher token without using it up: `+reuse` hands it to the running
+/// instance, yet keeps it for its own first window if none answers.
+pub(crate) fn startup_token_peek() -> Option<String> { STARTUP.get()?.lock().clone() }
+pub(crate) fn valid_token(token: &str) -> bool { !token.is_empty() && token.len() <= 4096 && !token.contains('\0') }
+
+/// How long a token handed over by another process or the notification
+/// server stays usable: compositors expire unused tokens within seconds.
+const EXTERNAL_TOKEN_TTL: Duration = Duration::from_secs(10);
+/// A token handed over by another process or the notification server, and when.
+static EXTERNAL: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+
+/// Keep `token` for the next explicit focus; `false` (and nothing kept) when
+/// it is not a usable token.
+pub(crate) fn offer_activation_token(token: &str) -> bool {
+    if !valid_token(token) {
+        return false;
+    }
+    *EXTERNAL.lock() = Some((token.to_owned(), Instant::now()));
+    true
+}
+/// The handed-over token, once, while it is still fresh.
+pub(crate) fn take_external_token() -> Option<String> { take_fresh(&mut EXTERNAL.lock(), Instant::now()) }
+fn take_fresh(slot: &mut Option<(String, Instant)>, now: Instant) -> Option<String> {
+    let (token, at) = slot.take()?;
+    (now.saturating_duration_since(at) <= EXTERNAL_TOKEN_TTL).then_some(token)
+}
 
 pub(super) struct InputGrant {
     seat: WlSeat,
@@ -83,8 +108,36 @@ impl Dispatch<XdgActivationTokenV1, Request> for State {
 delegate_noop!(State: ignore XdgActivationV1);
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// Tests that touch the process-wide handed-over token or the notification
+    /// handler run one at a time.
+    pub(crate) static TOKEN_TESTS: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn handed_over_tokens_are_one_shot_and_expire() {
+        let start = Instant::now();
+        let mut slot = Some(("t".to_owned(), start));
+        assert_eq!(take_fresh(&mut slot, start + EXTERNAL_TOKEN_TTL).as_deref(), Some("t"));
+        assert_eq!(take_fresh(&mut slot, start), None, "a token is used once");
+        let mut stale = Some(("t".to_owned(), start));
+        assert_eq!(take_fresh(&mut stale, start + EXTERNAL_TOKEN_TTL + Duration::from_millis(1)), None);
+        assert!(stale.is_none(), "a stale token is dropped, not kept");
+    }
+
+    #[test]
+    fn only_valid_tokens_are_offered() {
+        let _serial = TOKEN_TESTS.lock();
+        take_external_token();
+        assert!(!offer_activation_token(""));
+        assert!(!offer_activation_token("a\0b"));
+        assert!(!offer_activation_token(&"a".repeat(4097)));
+        assert_eq!(take_external_token(), None);
+        assert!(offer_activation_token("fresh"));
+        assert_eq!(take_external_token().as_deref(), Some("fresh"));
+        assert_eq!(take_external_token(), None);
+    }
     #[test]
     fn launcher_tokens_are_bounded_opaque_values() {
         assert!(valid_token("opaque_token/with:punctuation"));
