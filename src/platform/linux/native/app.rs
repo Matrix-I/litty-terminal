@@ -61,6 +61,23 @@ pub fn register_key_repeat_fd(fd: RawFd) {
     }
 }
 
+/// Watch the notification bus socket (event 7); `false` when it cannot be
+/// watched, so the caller closes the bus rather than leave replies unread.
+pub fn watch_notification_bus(fd: RawFd) -> bool {
+    watch_bus_fd(*EPOLL_FD.lock(), fd)
+}
+
+fn watch_bus_fd(epoll: Option<RawFd>, fd: RawFd) -> bool {
+    let Some(epoll) = epoll else { return false };
+    let mut ev = libc::epoll_event { events: libc::EPOLLIN as u32, u64: 7 };
+    if unsafe { libc::epoll_ctl(epoll, libc::EPOLL_CTL_ADD, fd, &mut ev) } == 0 {
+        return true;
+    }
+    let err = std::io::Error::last_os_error();
+    eprintln!("litty: cannot watch the notification bus ({err}); notifications use notify-send");
+    false
+}
+
 fn watch_key_repeat(epoll: RawFd, fd: RawFd) {
     let mut ev = libc::epoll_event { events: libc::EPOLLIN as u32, u64: 6 };
     if unsafe { libc::epoll_ctl(epoll, libc::EPOLL_CTL_ADD, fd, &mut ev) } != 0 {
@@ -312,6 +329,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         let mut window_events: Vec<WindowEvent> = Vec::new();
         let mut pending: Vec<(WindowId, WindowEvent)> = Vec::new();
         let mut redraws: Vec<WindowId> = Vec::new();
+        let mut notification_effects: Vec<super::notify_bus::Effect> = Vec::new();
 
         while !native_ctx.exit_flag.load(Ordering::SeqCst) {
             // 1. Process user events from proxy
@@ -399,6 +417,8 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
                         }
                     } else if tag == 6 {
                         key_repeat_due = true;
+                    } else if tag == 7 {
+                        notification_bus_readable(epoll_fd, &mut notification_effects);
                     }
                 }
             }
@@ -451,10 +471,81 @@ fn portal_readable(epoll_fd: RawFd, portal_fd: Option<RawFd>) {
     }
 }
 
+/// Read the notification bus: show refused notifications with the helper
+/// and route clicks to their pane. Stop watching a bus that went away, or
+/// `EPOLLHUP` would spin the loop.
+fn notification_bus_readable(epoll_fd: RawFd, effects: &mut Vec<super::notify_bus::Effect>) {
+    if super::notify_bus::dispatch(effects).is_err() {
+        // Deregister before the socket closes, so a reused fd number is never removed.
+        if let Some(fd) = super::notify_bus::watch_fd() {
+            unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut()) };
+        }
+        super::notify_bus::close(effects);
+    }
+    for effect in effects.drain(..) {
+        apply_notification_effect(effect);
+    }
+}
+
+/// Show a refused notification with the helper, or hand a click (and the
+/// token the server sent with it) on to the notification router.
+fn apply_notification_effect(effect: super::notify_bus::Effect) {
+    match effect {
+        super::notify_bus::Effect::Fallback { title, body } => {
+            crate::platform::process::show_notification(&title, &body);
+        }
+        super::notify_bus::Effect::Click { origin, pane, token } => {
+            if let Some(token) = token {
+                super::wayland_activation::offer_activation_token(&token);
+            }
+            crate::platform::linux::deliver_notification_click(origin, pane);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::platform::linux::native::window::detached;
+
+    /// A click offers the server's token for the focus it triggers, then
+    /// reaches the router with its pane.
+    #[test]
+    fn a_click_offers_its_token_and_reaches_the_router() {
+        use super::super::wayland_activation::{take_external_token, tests::TOKEN_TESTS};
+        let _serial = TOKEN_TESTS.lock();
+        take_external_token();
+        let (sent, received) = std::sync::mpsc::channel();
+        crate::platform::linux::set_notification_handler(Some(std::sync::Arc::new(move |origin, pane| {
+            sent.send((origin, pane)).unwrap();
+        })));
+        apply_notification_effect(super::super::notify_bus::Effect::Click {
+            origin: "o".into(),
+            pane: 3,
+            token: Some("click-token".into()),
+        });
+        crate::platform::linux::set_notification_handler(None);
+        assert_eq!(received.try_recv().unwrap(), ("o".to_owned(), 3));
+        assert_eq!(take_external_token().as_deref(), Some("click-token"));
+    }
+
+    /// A bus socket epoll refuses is reported, so the bus is closed and
+    /// notifications fall back instead of their replies going unread.
+    #[test]
+    fn notification_bus_sockets_are_watched_only_when_epoll_accepts_them() {
+        assert!(!watch_bus_fd(None, 0), "no event loop");
+        let epoll = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+        assert!(epoll >= 0);
+        assert!(!watch_bus_fd(Some(epoll), -1));
+        let mut pipe = [0; 2];
+        assert_eq!(unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        assert!(watch_bus_fd(Some(epoll), pipe[0]));
+        unsafe {
+            libc::close(pipe[0]);
+            libc::close(pipe[1]);
+            libc::close(epoll);
+        }
+    }
 
     /// A bus socket epoll refuses is never read: the portal is closed, so
     /// its signals do not pile up unread and the failure is not silent.

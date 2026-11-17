@@ -603,7 +603,7 @@ fn run_app(bench_ram_mode: bool, scroll_fps_run: Option<frame_metrics::ScrollRun
     crate::platform::gui::run(|proxy| App {
         waker: Waker { proxy, queued: Arc::new(AtomicBool::new(false)) },
         activation: None,
-        _notification_router: if cfg!(target_os = "macos") && !bench_ram_mode && gui_bench.is_none() && scroll_fps_run.is_none() {
+        _notification_router: if cfg!(any(target_os = "macos", target_os = "linux")) && !bench_ram_mode && gui_bench.is_none() && scroll_fps_run.is_none() {
             match platform::start_notification_router() {
                 Ok(router) => Some(router),
                 Err(error) => { eprintln!("litty: notification router unavailable: {}", error.kind()); None }
