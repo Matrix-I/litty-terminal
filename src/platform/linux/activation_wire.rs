@@ -43,3 +43,51 @@ pub(super) fn decode(bytes: &[u8]) -> io::Result<(ActivationRequest, Option<Stri
     Ok((ActivationRequest::decode(inner)?, Some(token.to_owned())))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::activation::ActivationAction;
+
+    fn request(action: ActivationAction) -> ActivationRequest {
+        ActivationRequest { id: [1; 16], session: [2; 16], expires_ns: 200, action }
+    }
+
+    #[test]
+    fn frames_round_trip_with_and_without_a_token() {
+        for action in [ActivationAction::NewWindow("/tmp/tiếng việt".into()), ActivationAction::Pane(42)] {
+            let r = request(action);
+            assert_eq!(encode(&r, None).unwrap(), r.encode().unwrap(), "no token is a plain LTA1 frame");
+            assert_eq!(decode(&r.encode().unwrap()).unwrap(), (r.clone(), None));
+            let framed = encode(&r, Some("tok:en/1")).unwrap();
+            assert_eq!(&framed[..4], b"LTA2");
+            assert_eq!(decode(&framed).unwrap(), (r, Some("tok:en/1".to_owned())));
+        }
+    }
+
+    #[test]
+    fn malformed_token_frames_are_rejected() {
+        let r = request(ActivationAction::Pane(42));
+        let framed = encode(&r, Some("token")).unwrap();
+        for cut in 0..framed.len() {
+            assert!(decode(&framed[..cut]).is_err(), "cut at {cut}");
+        }
+        let mut extra = framed.clone();
+        extra.push(0);
+        assert!(decode(&extra).is_err());
+        for token in ["", "a\0b", &"a".repeat(4097)] {
+            assert!(encode(&r, Some(token)).is_err());
+        }
+        let inner = r.encode().unwrap();
+        let frame = |token: &[u8], inner: &[u8]| {
+            let mut out = b"LTA2".to_vec();
+            out.extend_from_slice(&(token.len() as u16).to_be_bytes());
+            out.extend_from_slice(token);
+            out.extend_from_slice(inner);
+            out
+        };
+        assert!(decode(&frame(b"", &inner)).is_err(), "empty token");
+        assert!(decode(&frame(b"\xff\xfe", &inner)).is_err(), "token not UTF-8");
+        assert!(decode(&frame(b"a\0", &inner)).is_err(), "token with NUL");
+        assert!(decode(&frame(b"t", &framed)).is_err(), "nested LTA2");
+    }
+}
