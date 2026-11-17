@@ -295,9 +295,12 @@ unsafe impl Send for Bus {}
 
 impl Bus {
     fn open() -> Option<Self> {
-        let address = dbus::session_address()?;
+        Self::open_at(&dbus::session_address()?)
+    }
+
+    fn open_at(address: &CStr) -> Option<Self> {
         let lib = DBusLib::load()?;
-        let (conn, fd) = dbus::open_session(&lib, &address)?;
+        let (conn, fd) = dbus::open_session(&lib, address)?;
         // No error out-parameter: the match is sent without waiting for the reply.
         unsafe { (lib.dbus_bus_add_match)(conn, SIGNAL_MATCH.as_ptr(), std::ptr::null_mut()) };
         Some(Self { lib, conn, fd, tracker: Tracker::default() })
@@ -322,6 +325,12 @@ impl Bus {
             // which always follows on the socket.
             (lib.dbus_connection_flush)(self.conn);
         }
+        // libdbus accepts messages on a lost connection and drops them; a
+        // loss found while writing also closes the socket, so the event loop
+        // never hears of it.
+        if !self.connected() {
+            return Err(unavailable("notification bus disconnected"));
+        }
         self.tracker.sent(serial, route, title.to_owned(), body.to_owned());
         Ok(())
     }
@@ -337,10 +346,14 @@ impl Bus {
             unsafe { (self.lib.dbus_message_unref)(msg) };
             effects.extend(self.tracker.on(incoming));
         }
-        if unsafe { (self.lib.dbus_connection_get_is_connected)(self.conn) } == 0 {
+        if !self.connected() {
             return Err(Disconnected);
         }
         Ok(())
+    }
+
+    fn connected(&self) -> bool {
+        unsafe { (self.lib.dbus_connection_get_is_connected)(self.conn) != 0 }
     }
 }
 
@@ -383,10 +396,35 @@ pub(in crate::platform::linux) fn show(origin: &str, pane: u64, title: &str, bod
             _ => State::Closed,
         };
     }
-    let State::Open(bus) = &mut *state else {
+    let mut effects = Vec::new();
+    let sent = send_on(&mut state, Route { origin: origin.to_owned(), pane }, title, body, &c_title, &c_body, &mut effects);
+    drop(state);
+    for effect in effects {
+        super::app::apply_notification_effect(effect);
+    }
+    sent
+}
+
+/// Send on the open bus in `state`. A bus found lost on the way closes, and
+/// calls it never answered become `Fallback` effects in `effects`.
+fn send_on(
+    state: &mut State,
+    route: Route,
+    title: &str,
+    body: &str,
+    c_title: &CStr,
+    c_body: &CStr,
+    effects: &mut Vec<Effect>,
+) -> io::Result<()> {
+    let State::Open(bus) = state else {
         return Err(unavailable("no notification bus"));
     };
-    bus.send(Route { origin: origin.to_owned(), pane }, title, body, &c_title, &c_body)
+    let sent = bus.send(route, title, body, c_title, c_body);
+    if !bus.connected() {
+        bus.tracker.abandon(effects);
+        *state = State::Closed;
+    }
+    sent
 }
 
 /// The bus socket the event loop watches, while the bus is open.
@@ -513,6 +551,87 @@ mod tests {
         assert!(watch_fd().is_none());
         assert_eq!(show(ORIGIN, 1, "t\0", "b").unwrap_err().kind(), io::ErrorKind::InvalidInput);
         *BUS.lock() = State::Unopened;
+    }
+
+    /// A private `dbus-daemon`, so a test can take the bus away.
+    struct PrivateBus {
+        daemon: std::process::Child,
+        address: CString,
+        /// Holds the socket, which a killed daemon leaves behind.
+        dir: std::path::PathBuf,
+    }
+
+    impl PrivateBus {
+        fn start() -> Option<Self> {
+            use std::io::BufRead;
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static NEXT: AtomicU32 = AtomicU32::new(0);
+            let dir = std::env::temp_dir()
+                .join(format!("litty-bus-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            std::fs::create_dir(&dir).unwrap();
+            let spawned = std::process::Command::new("dbus-daemon")
+                .args(["--session", "--nofork", "--print-address=1"])
+                .arg(format!("--address=unix:dir={}", dir.display()))
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            let mut daemon = match spawned {
+                Ok(daemon) => daemon,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    eprintln!("dbus-daemon not installed; skipping");
+                    std::fs::remove_dir(&dir).unwrap();
+                    return None;
+                }
+                Err(error) => panic!("dbus-daemon did not start: {error}"),
+            };
+            let mut line = String::new();
+            let stdout = daemon.stdout.take().unwrap();
+            std::io::BufReader::new(stdout).read_line(&mut line).unwrap();
+            let address = CString::new(line.trim()).unwrap();
+            Some(Self { daemon, address, dir })
+        }
+
+        /// Kill the daemon and wait until its end of every connection is closed.
+        fn stop(&mut self) {
+            self.daemon.kill().unwrap();
+            self.daemon.wait().unwrap();
+        }
+    }
+
+    // Reports instead of panicking: a panic while a failed test unwinds aborts.
+    impl Drop for PrivateBus {
+        fn drop(&mut self) {
+            if let Ok(None) = self.daemon.try_wait()
+                && let Err(error) = self.daemon.kill().and_then(|()| self.daemon.wait().map(drop))
+            {
+                eprintln!("dbus-daemon {} left running: {error}", self.daemon.id());
+            }
+            if let Err(error) = std::fs::remove_dir_all(&self.dir) {
+                eprintln!("{} left behind: {error}", self.dir.display());
+            }
+        }
+    }
+
+    /// A bus that goes away before the event loop sees its hangup is noticed
+    /// by the next send: the bus closes, the notification is refused so the
+    /// caller uses `notify-send`, and calls the server never answered fall back.
+    #[test]
+    fn a_bus_lost_before_a_send_closes_and_falls_back() {
+        if lib().is_none() {
+            return;
+        }
+        let Some(mut daemon) = PrivateBus::start() else { return };
+        let mut bus = Bus::open_at(&daemon.address).expect("private bus");
+        bus.tracker.sent(1000, route(1), "earlier".into(), "unanswered".into());
+        let mut state = State::Open(Box::new(bus));
+        daemon.stop();
+
+        let mut effects = Vec::new();
+        let sent = send_on(&mut state, route(2), "now", "body", c"now", c"body", &mut effects);
+
+        assert_eq!(sent.map_err(|e| e.kind()), Err(io::ErrorKind::Unsupported));
+        assert_eq!(effects, [Effect::Fallback { title: "earlier".into(), body: "unanswered".into() }]);
+        assert!(matches!(state, State::Closed));
     }
 
     fn lib() -> Option<DBusLib> {

@@ -489,7 +489,7 @@ fn notification_bus_readable(epoll_fd: RawFd, effects: &mut Vec<super::notify_bu
 
 /// Show a refused notification with the helper, or hand a click (and the
 /// token the server sent with it) on to the notification router.
-fn apply_notification_effect(effect: super::notify_bus::Effect) {
+pub(super) fn apply_notification_effect(effect: super::notify_bus::Effect) {
     match effect {
         super::notify_bus::Effect::Fallback { title, body } => {
             crate::platform::process::show_notification(&title, &body);
