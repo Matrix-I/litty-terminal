@@ -3,6 +3,7 @@
 //! is macOS-only (Dock, native tabs, menu bar, Secure Keyboard Entry).
 
 mod activation;
+mod activation_wire;
 mod app;
 mod dialog;
 mod input;
