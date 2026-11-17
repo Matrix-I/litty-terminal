@@ -36,13 +36,16 @@ impl SearchBar {
         SearchBar { is_open: false, query: String::new(), regex: true, invalid: false, pane_id: None, current: None, total: 0, snapshot: None }
     }
 
-    /// Open the box, keeping the previous query (like most terminals and browsers).
     pub fn open(&mut self) {
         self.is_open = true;
     }
 
+    /// Close the box and drop the query, so the next open starts empty. The
+    /// regex toggle is a mode, not part of the search, and survives.
     pub fn close(&mut self) {
         self.is_open = false;
+        self.query.clear();
+        self.invalid = false;
         self.snapshot = None;
         self.pane_id = None;
         self.current = None;
@@ -151,6 +154,19 @@ mod tests {
         bar.regex = regex;
         bar.query = query.to_string();
         bar.compile().map(|re| g.search_text().find(&re)).unwrap_or_default()
+    }
+
+    #[test]
+    fn reopening_after_close_starts_with_empty_query() {
+        let mut bar = SearchBar::new();
+        bar.open();
+        bar.query = "old".to_string();
+        bar.invalid = true;
+        bar.close();
+        bar.open();
+        assert!(bar.query.is_empty());
+        assert!(!bar.invalid);
+        assert!(bar.compile().is_none());
     }
 
     #[test]
