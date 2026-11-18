@@ -85,8 +85,10 @@ pub(super) unsafe fn alloc_host_buffer(
             && !ptr.is_null();
         if !ready {
             (lib.vkDestroyBuffer)(device, buf, std::ptr::null());
+            released("vkDestroyBuffer");
             if mem != 0 {
                 (lib.vkFreeMemory)(device, mem, std::ptr::null());
+                released("vkFreeMemory");
             }
             return None;
         }

@@ -59,6 +59,8 @@ pub(super) mod fault {
         named: Option<(&'static str, usize)>,
         /// Every result checked so far, in order, with whether it was failed.
         log: Vec<(String, bool)>,
+        /// Every object destroyed so far, by the call that destroyed it.
+        released: Vec<String>,
     }
 
     pub(in crate::render::backend::linux_gpu) use crate::render::backend::TEST_GPU as GPU;
@@ -72,6 +74,7 @@ pub(super) mod fault {
     /// Everything checked since the plan was set.
     pub(in crate::render::backend::linux_gpu) struct Report {
         log: Vec<(String, bool)>,
+        released: Vec<String>,
     }
 
     impl Report {
@@ -99,6 +102,11 @@ pub(super) mod fault {
         pub(in crate::render::backend::linux_gpu) fn passed(&self, what: &str) -> usize {
             self.log.iter().filter(|(name, failed)| name == what && !failed).count()
         }
+
+        /// Objects destroyed with `what`.
+        pub(in crate::render::backend::linux_gpu) fn released(&self, what: &str) -> usize {
+            self.released.iter().filter(|name| *name == what).count()
+        }
     }
 
     /// Fail the n-th checked Vulkan result (0-based) from now on this thread.
@@ -119,7 +127,17 @@ pub(super) mod fault {
     /// Stop injecting and return what was checked meanwhile.
     pub(in crate::render::backend::linux_gpu) fn finish() -> Report {
         // The whole plan goes: a failure left armed would hit later calls.
-        Report { log: PLAN.with(|p| p.borrow_mut().take().map(|plan| plan.log).unwrap_or_default()) }
+        let plan = PLAN.with(|p| p.borrow_mut().take()).unwrap_or_default();
+        Report { log: plan.log, released: plan.released }
+    }
+
+    /// Note that an object was destroyed with `what`.
+    pub(in crate::render::backend::linux_gpu) fn release(what: &str) {
+        PLAN.with(|p| {
+            if let Some(plan) = p.borrow_mut().as_mut() {
+                plan.released.push(what.to_owned());
+            }
+        });
     }
 
     /// `Some(error)` when the call named `what` must fail instead of running.
@@ -154,6 +172,17 @@ pub(super) fn guarded(what: &str, call: impl FnOnce() -> i32) -> i32 {
 pub(super) fn guarded(_what: &str, call: impl FnOnce() -> i32) -> i32 {
     call()
 }
+
+/// Note that an object was destroyed with `what`, so tests can check that a
+/// failed setup undoes everything it created.
+#[cfg(test)]
+pub(super) fn released(what: &str) {
+    fault::release(what);
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+pub(super) fn released(_what: &str) {}
 
 /// Make a Vulkan call, then let a test replace its result with a failure.
 /// For calls whose failure still did their work, such as a present that

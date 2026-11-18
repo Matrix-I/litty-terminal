@@ -208,6 +208,97 @@ fn graphics_family(families: &[VkQueueFamilyProperties]) -> Option<u32> {
         .map(|i| i as u32)
 }
 
+type GetInstanceProcAddr = unsafe extern "C" fn(VkInstance, *const c_char) -> *const c_void;
+/// `vkDestroy*` / `vkFree*` for a non-dispatchable child of a device.
+type DestroyChild = unsafe extern "C" fn(VkDevice, u64, *const c_void);
+
+/// What `VulkanCore::try_init` has created so far. Dropping it destroys all
+/// of it, newest first, so a setup that fails part way leaves nothing
+/// behind; `keep` hands everything over once setup has succeeded.
+struct Partial {
+    get_proc: GetInstanceProcAddr,
+    instance: VkInstance,
+    /// Null until the device exists.
+    device: VkDevice,
+    /// Children of `device` in creation order, with the call that destroys each.
+    children: Vec<(&'static CStr, u64)>,
+}
+
+impl Partial {
+    fn new(get_proc: GetInstanceProcAddr, instance: VkInstance) -> Self {
+        Self { get_proc, instance, device: std::ptr::null_mut(), children: Vec::new() }
+    }
+
+    /// Record a child of the device; a null handle (creation failed) is skipped.
+    fn child(&mut self, destroy: &'static CStr, handle: u64) {
+        if handle != 0 {
+            self.children.push((destroy, handle));
+        }
+    }
+
+    /// Setup succeeded: everything recorded now belongs to the caller.
+    fn keep(mut self) {
+        self.children.clear();
+        self.device = std::ptr::null_mut();
+        self.instance = std::ptr::null_mut();
+    }
+
+    /// The entry point `name` resolves to for this instance. Every one asked
+    /// for is core Vulkan 1.0, so a missing one is a broken loader: reported,
+    /// and that object is left behind.
+    unsafe fn load(&self, name: &CStr) -> Option<*const c_void> {
+        let p = unsafe { (self.get_proc)(self.instance, name.as_ptr()) };
+        if p.is_null() {
+            eprintln!("litty: the Vulkan loader has no {name:?}; a failed setup leaves objects behind");
+            return None;
+        }
+        Some(p)
+    }
+}
+
+impl Drop for Partial {
+    #[allow(clippy::missing_transmute_annotations)]
+    fn drop(&mut self) {
+        // SAFETY: every handle was created from `instance` / `device` by
+        // `try_init`, nothing was submitted to the device, and children go
+        // before their device, the device before its instance.
+        unsafe {
+            // A parent must outlive its children: if a child cannot be
+            // destroyed, its device and instance are left behind too.
+            let mut device_gone = true;
+            if !self.device.is_null() {
+                let mut children_gone = true;
+                for &(destroy, handle) in self.children.iter().rev() {
+                    if let Some(p) = self.load(destroy) {
+                        let destroy_child: DestroyChild = std::mem::transmute(p);
+                        destroy_child(self.device, handle, std::ptr::null());
+                        released(destroy.to_str().unwrap_or_default());
+                    } else {
+                        children_gone = false;
+                    }
+                }
+                if !children_gone {
+                    device_gone = false;
+                } else if let Some(p) = self.load(c"vkDestroyDevice") {
+                    let destroy_device: unsafe extern "C" fn(VkDevice, *const c_void) = std::mem::transmute(p);
+                    destroy_device(self.device, std::ptr::null());
+                    released("vkDestroyDevice");
+                } else {
+                    device_gone = false;
+                }
+            }
+            if device_gone
+                && !self.instance.is_null()
+                && let Some(p) = self.load(c"vkDestroyInstance")
+            {
+                let destroy_instance: unsafe extern "C" fn(VkInstance, *const c_void) = std::mem::transmute(p);
+                destroy_instance(self.instance, std::ptr::null());
+                released("vkDestroyInstance");
+            }
+        }
+    }
+}
+
 impl VulkanCore {
     #[allow(non_snake_case)]
     // `load_fn!` transmutes to the fn-pointer type of the struct field it initialises; spelling out
@@ -306,10 +397,12 @@ impl VulkanCore {
                 ext_count: exts_ws.len() as u32,
                 pp_exts: exts_ws.as_ptr(),
             };
-            if vkCreateInstance(&inst_info as *const _ as *const c_void, std::ptr::null(), &mut instance) != VK_SUCCESS {
+            if guarded("vkCreateInstance", || vkCreateInstance(&inst_info as *const _ as *const c_void, std::ptr::null(), &mut instance)) != VK_SUCCESS {
                 eprintln!("litty: could not create a Vulkan instance");
                 return None;
             }
+            // From here on, every early return destroys what was created.
+            let mut partial = Partial::new(vkGetInstanceProcAddr, instance);
 
             macro_rules! load_fn {
                 ($name:ident) => {{
@@ -462,10 +555,11 @@ impl VulkanCore {
             let mut device: VkDevice = std::ptr::null_mut();
             // Without VK_KHR_swapchain nothing could ever be presented, so a
             // device created without it would only fail later.
-            if vkCreateDevice(phys, &dev_info as *const _ as *const c_void, std::ptr::null(), &mut device) != VK_SUCCESS {
+            if guarded("vkCreateDevice", || vkCreateDevice(phys, &dev_info as *const _ as *const c_void, std::ptr::null(), &mut device)) != VK_SUCCESS {
                 eprintln!("litty: could not create the Vulkan device");
                 return None;
             }
+            partial.device = device;
 
             let lib = VkLib {
                 _handle: handle,
@@ -560,11 +654,13 @@ impl VulkanCore {
             };
             let mut cmd_pool = 0u64;
             // A failure from here on leaves the app without a GPU (`vk: None`),
-            // which draws nothing, instead of using null handles. What was
-            // created is leaked: this runs once per process.
+            // which draws nothing, instead of using null handles; `partial`
+            // destroys what was created.
             if !vk_try("vkCreateCommandPool", || (lib.vkCreateCommandPool)(device, &pool_info as *const _ as *const c_void, std::ptr::null(), &mut cmd_pool)) {
                 return None;
             }
+            // Its command buffers go with it.
+            partial.child(c"vkDestroyCommandPool", cmd_pool);
 
             #[repr(C)]
             struct CmdAlloc {
@@ -592,6 +688,10 @@ impl VulkanCore {
             let image_mod = create_shader_module(&lib, device, IMAGE_SPV);
             let nearest_sampler = create_vk_sampler(&lib, device, VK_FILTER_NEAREST);
             let linear_sampler = create_vk_sampler(&lib, device, VK_FILTER_LINEAR);
+            partial.child(c"vkDestroyShaderModule", shader_mod);
+            partial.child(c"vkDestroyShaderModule", image_mod);
+            partial.child(c"vkDestroySampler", nearest_sampler);
+            partial.child(c"vkDestroySampler", linear_sampler);
             if [shader_mod, image_mod, nearest_sampler, linear_sampler].contains(&0) {
                 return None;
             }
@@ -631,6 +731,7 @@ impl VulkanCore {
             if !vk_try("vkCreateDescriptorSetLayout", || (lib.vkCreateDescriptorSetLayout)(device, &cells_dl_info as *const _ as *const c_void, std::ptr::null(), &mut cells_dset_layout)) {
                 return None;
             }
+            partial.child(c"vkDestroyDescriptorSetLayout", cells_dset_layout);
 
             let image_bindings = [
                 Binding { binding: 0, descriptor_type: VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, descriptor_count: 1, stage_flags: VK_SHADER_STAGE_ALL_GRAPHICS, p_immutable_samplers: std::ptr::null() },
@@ -648,6 +749,7 @@ impl VulkanCore {
             if !vk_try("vkCreateDescriptorSetLayout", || (lib.vkCreateDescriptorSetLayout)(device, &image_dl_info as *const _ as *const c_void, std::ptr::null(), &mut image_dset_layout)) {
                 return None;
             }
+            partial.child(c"vkDestroyDescriptorSetLayout", image_dset_layout);
 
             #[repr(C)]
             struct PipeLayoutInfo {
@@ -672,6 +774,7 @@ impl VulkanCore {
             if !vk_try("vkCreatePipelineLayout", || (lib.vkCreatePipelineLayout)(device, &c_pl_info as *const _ as *const c_void, std::ptr::null(), &mut cells_pipe_layout)) {
                 return None;
             }
+            partial.child(c"vkDestroyPipelineLayout", cells_pipe_layout);
 
             let mut image_pipe_layout = 0u64;
             let i_pl_info = PipeLayoutInfo {
@@ -686,6 +789,7 @@ impl VulkanCore {
             if !vk_try("vkCreatePipelineLayout", || (lib.vkCreatePipelineLayout)(device, &i_pl_info as *const _ as *const c_void, std::ptr::null(), &mut image_pipe_layout)) {
                 return None;
             }
+            partial.child(c"vkDestroyPipelineLayout", image_pipe_layout);
 
             // `custom-shader` passes sample a render target through its
             // image descriptor set; their uniforms are push constants, since
@@ -710,6 +814,7 @@ impl VulkanCore {
             if !vk_try("vkCreatePipelineLayout", || (lib.vkCreatePipelineLayout)(device, &p_pl_info as *const _ as *const c_void, std::ptr::null(), &mut postfx_pipe_layout)) {
                 return None;
             }
+            partial.child(c"vkDestroyPipelineLayout", postfx_pipe_layout);
 
             #[repr(C)]
             struct PoolSize {
@@ -743,6 +848,8 @@ impl VulkanCore {
             if !vk_try("vkCreateDescriptorPool", || (lib.vkCreateDescriptorPool)(device, &dp_info as *const _ as *const c_void, std::ptr::null(), &mut desc_pool)) {
                 return None;
             }
+            // Its descriptor sets go with it, as with `image_desc_pool`.
+            partial.child(c"vkDestroyDescriptorPool", desc_pool);
             let image_pool_sizes = [
                 PoolSize { ty: VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count: IMAGE_DESCRIPTOR_SETS },
                 PoolSize { ty: VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count: IMAGE_DESCRIPTOR_SETS },
@@ -760,6 +867,7 @@ impl VulkanCore {
             if !vk_try("vkCreateDescriptorPool", || (lib.vkCreateDescriptorPool)(device, &image_dp_info as *const _ as *const c_void, std::ptr::null(), &mut image_desc_pool)) {
                 return None;
             }
+            partial.child(c"vkDestroyDescriptorPool", image_desc_pool);
 
             #[repr(C)]
             struct DsetAlloc {
@@ -782,9 +890,17 @@ impl VulkanCore {
                 return None;
             }
 
-            let (ubuf0, _, uptr0) = super::resources::alloc_host_buffer(&lib, device, &mem_props, 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)?;
-            let (ubuf1, _, uptr1) = super::resources::alloc_host_buffer(&lib, device, &mem_props, 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)?;
-            let (iubuf, _, iuptr) = super::resources::alloc_host_buffer(&lib, device, &mem_props, 64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)?;
+            let mut uniform_buffer = |byte_len| {
+                let (buf, mem, ptr) = super::resources::alloc_host_buffer(&lib, device, &mem_props, byte_len, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)?;
+                // Recorded memory first, so the buffer is destroyed before it.
+                partial.child(c"vkFreeMemory", mem);
+                partial.child(c"vkDestroyBuffer", buf);
+                Some((buf, ptr))
+            };
+            let (ubuf0, uptr0) = uniform_buffer(256)?;
+            let (ubuf1, uptr1) = uniform_buffer(256)?;
+            let (iubuf, iuptr) = uniform_buffer(64)?;
+            partial.keep();
 
             Some(Arc::new(Self {
                 lib,
@@ -1515,20 +1631,33 @@ mod tests {
     /// frame (command buffers, descriptor sets, shaders, uniform buffers),
     /// so a failure at any of them must give no device (the app then runs
     /// without a GPU) instead of one holding a null handle.
+    ///
+    /// Each failed setup must also destroy everything it created: a device
+    /// left behind keeps its driver threads (lavapipe starts one per CPU),
+    /// so this loop once used up a container's PID limit.
     #[test]
     fn device_setup_gives_no_device_at_any_failure() {
-        // Instances made (and, on failure, left behind) here share the
-        // loader with other tests' swapchains.
+        // Instances made here share the loader with other tests' swapchains.
         let _gpu = fault::GPU.lock();
         fault::observe();
         // SAFETY: a fresh instance and device, independent of the shared one.
         let healthy = unsafe { VulkanCore::try_init() };
-        let checks = fault::finish().checked();
+        let observed = fault::finish();
+        let checks = observed.checked();
         if healthy.is_none() {
             eprintln!("no usable Vulkan device; skipping");
             return;
         }
         drop(healthy);
+        // A new kind of object in `try_init` must be listed below, so the
+        // loop checks that a failed setup destroys it too.
+        for name in observed.names() {
+            let creates = name.starts_with("vkCreate") || name.starts_with("vkAllocate");
+            assert!(
+                !creates || POOLED.contains(&name) || CREATED_AND_DESTROYED.iter().any(|(create, _)| *create == name),
+                "{name} is not in CREATED_AND_DESTROYED"
+            );
+        }
         assert!(checks > 10, "setup checks its results ({checks} checks)");
         for n in 0..checks {
             fault::fail_nth(n);
@@ -1537,8 +1666,34 @@ mod tests {
             let report = fault::finish();
             assert_eq!(report.injected(), 1, "check {n} of {checks} was reached");
             assert!(core.is_none(), "a device was handed out after check {n} of {checks} failed");
+            for (create, destroy) in CREATED_AND_DESTROYED {
+                assert_eq!(
+                    report.passed(create),
+                    report.released(destroy),
+                    "after check {n} ({}) failed: every {create} must be undone by {destroy}",
+                    report.names()[n],
+                );
+            }
         }
     }
+
+    /// Allocations freed with their pool rather than on their own.
+    const POOLED: [&str; 2] = ["vkAllocateCommandBuffers", "vkAllocateDescriptorSets"];
+
+    /// Every object `try_init` creates, with the call that destroys it.
+    /// Command buffers and descriptor sets go with their pools (`POOLED`).
+    const CREATED_AND_DESTROYED: [(&str, &str); 10] = [
+        ("vkCreateInstance", "vkDestroyInstance"),
+        ("vkCreateDevice", "vkDestroyDevice"),
+        ("vkCreateCommandPool", "vkDestroyCommandPool"),
+        ("vkCreateShaderModule", "vkDestroyShaderModule"),
+        ("vkCreateSampler", "vkDestroySampler"),
+        ("vkCreateDescriptorSetLayout", "vkDestroyDescriptorSetLayout"),
+        ("vkCreatePipelineLayout", "vkDestroyPipelineLayout"),
+        ("vkCreateDescriptorPool", "vkDestroyDescriptorPool"),
+        ("vkCreateBuffer", "vkDestroyBuffer"),
+        ("vkAllocateMemory", "vkFreeMemory"),
+    ];
 
     #[test]
     fn instance_extensions_take_only_what_the_loader_offers() {
