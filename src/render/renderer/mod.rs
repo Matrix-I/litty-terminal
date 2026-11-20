@@ -318,6 +318,49 @@ pub enum TabBarAction {
     TitleBar,
 }
 
+/// Geometry of the bands at the top of the window, for mapping a click to a [`TabBarAction`].
+#[derive(Debug, Clone, Copy)]
+struct TabBarHit {
+    /// A title bar band sits at the top (Linux client-side decorations).
+    titlebar: bool,
+    tabs: usize,
+    bar_h: f64,
+    strip_top: f64,
+    cols: usize,
+}
+
+impl TabBarHit {
+    /// Action for a press on column `col` at `y_px` pixels from the top of the window.
+    fn action(self, col: usize, y_px: f64) -> Option<TabBarAction> {
+        // Title bar band: window buttons, the rest drags the window.
+        if self.titlebar && (0.0..self.bar_h).contains(&y_px) {
+            return Some(match ui::tab_bar::control_at(self.cols, col) {
+                Some(control) => TabBarAction::Control(control),
+                None => TabBarAction::TitleBar,
+            });
+        }
+        // The strip is drawn only for two tabs or more (`State::bands`); with one
+        // tab its band is the terminal's first row.
+        if self.tabs <= 1 || y_px < self.strip_top || y_px >= self.strip_top + self.bar_h {
+            return None;
+        }
+        let tab_cols_total = ui::tab_bar::strip_columns(self.cols);
+        if col >= tab_cols_total {
+            return Some(TabBarAction::NewTab);
+        }
+        let tab_i = ui::tab_bar::slot_at(tab_cols_total, self.tabs, col);
+        let (c0, c1) = ui::tab_bar::span(tab_cols_total, self.tabs, tab_i);
+        let span = c1.saturating_sub(c0);
+
+        // Click close button ('✕') at left corner of tab (c0..=c0+2)
+        if ui::tab_bar::shows_close(span) && col <= c0 + 2 {
+            return Some(TabBarAction::CloseTab(tab_i));
+        }
+
+        Some(TabBarAction::Select(tab_i))
+    }
+}
+
 impl Renderer {
     /// Offset in pixels of a window position inside the cell under it (for SGR
     /// pixel mouse reports).
@@ -554,37 +597,15 @@ impl Renderer {
     }
 
     pub fn hit_test_tab_bar(&self, x_px: f64, y_px: f64, titles: &[String]) -> Option<TabBarAction> {
-        let n = titles.len();
-        let has_strip = !self.titlebar || n > 1;
-        let bar_h = self.tab_bar_height();
         let col = ((x_px - self.origin().0 as f64).max(0.0) as u32 / self.atlas.cell_w.max(1)) as usize;
-
-        // Title bar band: window buttons, the rest drags the window.
-        if self.titlebar && (0.0..bar_h).contains(&y_px) {
-            let cols = self.grid_size().0;
-            return Some(match ui::tab_bar::control_at(cols, col) {
-                Some(control) => TabBarAction::Control(control),
-                None => TabBarAction::TitleBar,
-            });
+        TabBarHit {
+            titlebar: self.titlebar,
+            tabs: titles.len(),
+            bar_h: self.tab_bar_height(),
+            strip_top: self.tab_strip_top(),
+            cols: self.grid_size().0,
         }
-        let strip_top = self.tab_strip_top();
-        if !has_strip || y_px < strip_top || y_px >= strip_top + bar_h {
-            return None;
-        }
-        let tab_cols_total = self.tab_cols_total();
-        if col >= tab_cols_total {
-            return Some(TabBarAction::NewTab);
-        }
-        let tab_i = ui::tab_bar::slot_at(tab_cols_total, n, col);
-        let (c0, c1) = ui::tab_bar::span(tab_cols_total, n, tab_i);
-        let span = c1.saturating_sub(c0);
-
-        // Click close button ('✕') at left corner of tab (c0..=c0+2)
-        if ui::tab_bar::shows_close(span) && col <= c0 + 2 {
-            return Some(TabBarAction::CloseTab(tab_i));
-        }
-
-        Some(TabBarAction::Select(tab_i))
+        .action(col, y_px)
     }
 
     /// Physical pixel position of the top-left corner of terminal cell `(row, col)`

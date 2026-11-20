@@ -98,3 +98,35 @@ fn test_tab_bar_action_variants() {
     assert_ne!(TabBarAction::Select(0), TabBarAction::CloseTab(0));
     assert_eq!(TabBarAction::NewTab, TabBarAction::NewTab);
 }
+
+/// Tab bar geometry of an 80-column window with 10x20 px cells and no title bar band (macOS).
+fn strip_only(tabs: usize) -> super::TabBarHit {
+    super::TabBarHit { titlebar: false, tabs, bar_h: 20.0 * super::TAB_BAR_CELLS, strip_top: 0.0, cols: 80 }
+}
+
+#[test]
+fn a_lone_tab_has_no_strip_to_click() {
+    // macOS with one tab draws no strip: the first terminal row starts at the top
+    // of the window, so its clicks (double-click to select, a click near the
+    // traffic lights) must reach the terminal, not select or close the tab.
+    let hit = strip_only(1);
+    assert_eq!(hit.action(30, 10.0), None, "double-click on the first row");
+    assert_eq!(hit.action(1, 10.0), None, "click under the close button must not close the tab");
+}
+
+#[test]
+fn two_tabs_keep_their_strip_actions() {
+    let hit = strip_only(2);
+    assert_eq!(hit.action(1, 10.0), Some(super::TabBarAction::CloseTab(0)));
+    assert_eq!(hit.action(50, 10.0), Some(super::TabBarAction::Select(1)));
+    assert_eq!(hit.action(79, 10.0), Some(super::TabBarAction::NewTab));
+    assert_eq!(hit.action(50, 40.0), None, "below the strip");
+}
+
+#[test]
+fn the_title_bar_band_stays_clickable_with_a_lone_tab() {
+    let hit = super::TabBarHit { titlebar: true, ..strip_only(1) };
+    assert_eq!(hit.action(30, 10.0), Some(super::TabBarAction::TitleBar));
+    assert_eq!(hit.action(79, 10.0), Some(super::TabBarAction::Control(super::WindowControl::Close)));
+    assert_eq!(hit.action(30, 50.0), None, "no strip under the title bar with one tab");
+}
