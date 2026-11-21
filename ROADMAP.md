@@ -10,6 +10,7 @@ optimization candidates are identified separately from reproduced failures.
 | Version | Record |
 | --- | --- |
 | [v0.15.0](./docs/plans/0.15.0.md) | Planned — Linux/Wayland desktop acceptance carried from v0.14.0; unscheduled |
+| [v0.14.1](./docs/plans/0.14.1.md) | Prepared (2026-11-21) — PATCH: `background-opacity` on X11 and default cells, premultiplied translucent frames, macOS cursor blink, lone-tab first-row clicks |
 | [v0.14.0](./docs/plans/0.14.0.md) | Release record (2026-11-18) — macOS reliability (covered-window benchmark, render/platform edge removal, activation acceptance), Linux `+reuse` and notification click-through over D-Bus, Kitty shared-memory and emoji fixes |
 | [v0.13.0](./docs/plans/0.13.0.md) | Release record (2026-11-16, UTC+07) — Wayland preview, Linux shaders, macOS reuse/notifications, selection and atlas fixes |
 | [v0.12.0](./docs/plans/0.12.0.md) | Release record (2026-11-13) — Linux Vulkan robustness and X11 integration (IME, monitors, theme, fullscreen, titles), security and robustness fixes, 10 MB scrollback default, alt-screen and non-ASCII parser speedups |
