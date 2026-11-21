@@ -77,6 +77,25 @@ pub struct Surface {
     fence: VkFence,
     width: u32,
     height: u32,
+    /// The swapchain's compositor reads its pixels as premultiplied.
+    premultiplied: bool,
+}
+
+/// The composite alpha mode for a swapchain: the first of premultiplied,
+/// post-multiplied and inherited the surface supports when `transparent`,
+/// else (or with none of them) opaque; and whether that mode reads the
+/// presented pixels as premultiplied.
+fn pick_composite_alpha(transparent: bool, supported: u32) -> (u32, bool) {
+    let modes = [
+        VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+        VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+        VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+    ];
+    let mode = match modes.into_iter().find(|&mode| transparent && supported & mode != 0) {
+        Some(mode) => mode,
+        None => VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+    };
+    (mode, mode == VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR)
 }
 
 unsafe impl Send for Surface {}
@@ -209,7 +228,16 @@ impl Surface {
             fence,
             width: 1,
             height: 1,
+            premultiplied: false,
         }
+    }
+
+    /// Whether the compositor reads presented pixels as premultiplied, so a
+    /// translucent frame must be premultiplied before it is presented. False
+    /// for opaque, post-multiplied and inherited modes, which take straight
+    /// color (or ignore alpha).
+    pub fn presents_premultiplied(&self) -> bool {
+        self.premultiplied
     }
 
     #[inline]
@@ -255,19 +283,8 @@ impl Surface {
             let max_images = if caps.max_image_count > 0 { caps.max_image_count } else { min_images };
             let image_count = min_images.min(max_images);
 
-            let alpha = if config.transparent {
-                if (caps.supported_composite_alpha & VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR) != 0 {
-                    VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR
-                } else if (caps.supported_composite_alpha & VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR) != 0 {
-                    VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR
-                } else if (caps.supported_composite_alpha & VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR) != 0 {
-                    VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR
-                } else {
-                    VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
-                }
-            } else {
-                VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
-            };
+            let (alpha, premultiplied) = pick_composite_alpha(config.transparent, caps.supported_composite_alpha);
+            self.premultiplied = premultiplied;
 
             #[repr(C)]
             struct SwapInfo {
@@ -540,6 +557,27 @@ impl Drop for Surface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A transparent window takes the first alpha mode the compositor offers,
+    /// premultiplied first; an opaque one (or none offered) is opaque. Only
+    /// the premultiplied mode reads the frame as premultiplied.
+    #[test]
+    fn composite_alpha_prefers_premultiplied_when_transparent() {
+        let all = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
+            | VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR
+            | VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR
+            | VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+        assert_eq!(pick_composite_alpha(true, all), (VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR, true));
+        let no_pre = all & !VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR;
+        assert_eq!(pick_composite_alpha(true, no_pre), (VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR, false));
+        let inherit = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR | VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+        assert_eq!(pick_composite_alpha(true, inherit), (VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR, false));
+        assert_eq!(
+            pick_composite_alpha(true, VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR),
+            (VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, false)
+        );
+        assert_eq!(pick_composite_alpha(false, all), (VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, false));
+    }
 
     #[test]
     fn framebuffer_target_tracks_register_and_forget() {

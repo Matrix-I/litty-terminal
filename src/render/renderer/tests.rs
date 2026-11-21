@@ -74,17 +74,18 @@ fn precise_scroll_gpu_pixels() {
     }
 }
 
-/// `background-opacity`: the frame is cleared to the default background at
-/// that opacity, and empty default-background cells drawn over it must keep
-/// it. Blending their alpha over the clear's stacked it (0.5 came out 0.75).
-#[test]
-fn default_background_cells_keep_the_configured_opacity() {
+/// Two empty default-background cells, then two with an explicit red
+/// background, drawn as `Renderer::submit` draws a frame at
+/// `background-opacity` 0.5 over a #203040 default background, then its
+/// `output_alpha` passes (`premultiply`, `corners`; none when both are
+/// false). Returns the RGBA rows, top first; `None` without a GPU.
+fn render_translucent_frame(premultiply: bool, corners: bool) -> Option<Vec<u8>> {
     let _gpu = crate::render::backend::TEST_GPU.lock();
     use super::*;
     let (device, queue) = backend::shared_device_and_queue();
     if !device.has_gpu() {
         eprintln!("no GPU; skipping");
-        return;
+        return None;
     }
     let format = TextureFormat::Rgba8Unorm;
     let pipelines = backend::shared_pipelines(&device, format);
@@ -102,12 +103,13 @@ fn default_background_cells_keep_the_configured_opacity() {
         bg_opacity: opacity,
         default_bg: 0x2030_4000,
         pane_count: 1,
+        // As `Renderer::submit` passes `corner_radius` to the corner shader.
+        tab_pad: [0, 6.0f32.to_bits(), 0],
         ..Default::default()
     };
     // No scroll-in row: `extra_start` past the cells.
     let viewports = [Viewport { cols: 4, rows: 1, extra_start: 4, bottom: 16.0, ..Default::default() }];
     let viewport_buf = HostBuffer::from_slice(&device, &viewports);
-    // Two empty default-background cells, then two with an explicit red background.
     let explicit_red = Instance { bg: 0xFF00_0080, ..Default::default() };
     let cells = [Instance::default(), Instance::default(), explicit_red, explicit_red];
     let instances = HostBuffer::from_slice(&device, &cells);
@@ -118,14 +120,80 @@ fn default_background_cells_keep_the_configured_opacity() {
         let mut pass = encoder.begin_render_pass(texture.raw_ptr(), Some(clear));
         pass.draw_cells(&pipelines.cells, &instances, &uniforms, &viewport_buf, &dummy, &dummy_color, sampler, 4);
     }
+    if premultiply || corners {
+        let mut pass = encoder.begin_render_pass(texture.raw_ptr(), None);
+        super::frame::output_alpha(&mut pass, &pipelines, &uniforms, premultiply, corners);
+    }
     encoder.submit_and_wait();
     let mut pixels = vec![0u8; 256 * 16];
     texture.read_pixels(&mut pixels, 256);
-    let px = |x: usize| &pixels[8 * 256 + x * 4..8 * 256 + x * 4 + 4];
-    let alpha = px(8)[3];
+    Some(pixels)
+}
+
+/// RGBA of pixel (`x`, `y`) of a 64-pixel-wide frame from `render_translucent_frame`.
+fn rgba(frame: &[u8], x: usize, y: usize) -> &[u8] {
+    &frame[y * 256 + x * 4..][..4]
+}
+
+fn near(got: &[u8], want: [u8; 4]) -> bool {
+    got.iter().zip(want).all(|(&g, w)| g.abs_diff(w) <= 1)
+}
+
+/// `background-opacity`: the frame is cleared to the default background at
+/// that opacity, and empty default-background cells drawn over it must keep
+/// it. Blending their alpha over the clear's stacked it (0.5 came out 0.75).
+#[test]
+fn default_background_cells_keep_the_configured_opacity() {
+    let Some(frame) = render_translucent_frame(false, false) else { return };
+    let alpha = rgba(&frame, 8, 8)[3];
     assert!(alpha.abs_diff(128) <= 1, "default background alpha {alpha}, expected about 128");
-    assert_eq!(px(8)[..3], [0x20, 0x30, 0x40], "default background color");
-    assert_eq!(px(40), [255, 0, 0, 255], "an explicit background stays opaque");
+    assert_eq!(rgba(&frame, 8, 8)[..3], [0x20, 0x30, 0x40], "default background color");
+    assert_eq!(rgba(&frame, 40, 8), [255, 0, 0, 255], "an explicit background stays opaque");
+}
+
+/// Compositors (premultiplied Vulkan surfaces, non-opaque `CAMetalLayer`s)
+/// read the frame as premultiplied: a straight #203040 at half opacity
+/// showed as #203040 plus half the desktop, brighter than configured.
+/// Only a translucent frame on a compositor that reads premultiplied alpha
+/// is premultiplied; straight-alpha compositors would show it too dark.
+#[test]
+fn only_a_translucent_frame_for_a_premultiplied_compositor_is_premultiplied() {
+    use super::frame::needs_premultiply;
+    assert!(needs_premultiply(0.5, true));
+    assert!(!needs_premultiply(0.5, false), "straight-alpha compositor");
+    assert!(!needs_premultiply(1.0, true), "opaque frame");
+    assert!(!needs_premultiply(1.0, false));
+}
+
+#[test]
+fn a_translucent_frame_is_presented_premultiplied() {
+    let Some(frame) = render_translucent_frame(true, false) else { return };
+    assert!(near(rgba(&frame, 8, 8), [0x10, 0x18, 0x20, 128]), "default background {:?}", rgba(&frame, 8, 8));
+    assert_eq!(rgba(&frame, 40, 8), [255, 0, 0, 255], "opaque pixels are unchanged");
+}
+
+/// Corners fade after the premultiply, so every pixel of the default
+/// background, the partly cut anti-aliased corner edge included, is the
+/// background color times its alpha. Fading first would scale that edge's
+/// color by the cut twice.
+#[test]
+fn rounded_corners_fade_a_premultiplied_frame() {
+    let Some(frame) = render_translucent_frame(true, true) else { return };
+    assert_eq!(rgba(&frame, 0, 0), [0, 0, 0, 0], "outside the rounded corner");
+    let mut edge = 0;
+    // The two default-background cells: x 0..32.
+    for y in 0..16 {
+        for x in 0..32 {
+            let p = rgba(&frame, x, y);
+            let a = u32::from(p[3]);
+            for (c, straight) in p[..3].iter().zip([0x20u32, 0x30, 0x40]) {
+                let want = (straight * a + 127) / 255;
+                assert!(u32::from(*c).abs_diff(want) <= 1, "({x}, {y}) {p:?} is not premultiplied");
+            }
+            edge += usize::from(a > 0 && a < 128);
+        }
+    }
+    assert!(edge > 0, "the corner has a partly cut edge to check");
 }
 
 #[test]

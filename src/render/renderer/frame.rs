@@ -4,7 +4,7 @@
 use super::pane_row::{build_pane_row, PaneRowCtx};
 use super::ui::{self, DirtyRows};
 use super::{scrollbar_thumb, RenderPane, Renderer, TabBarView, Uniforms, Viewport, MAX_SHIFTED_TABS};
-use crate::render::backend::{CommandEncoder, SurfaceFrame};
+use crate::render::backend::{CommandEncoder, RenderPass, RenderPipelines, SurfaceFrame};
 use crate::terminal::grid::Hyperlink;
 use crate::render::HistoryView;
 use crate::terminal::search::SearchBar;
@@ -584,9 +584,11 @@ impl Renderer {
         if let Some(fx) = &mut self.postfx {
             frame = fx.run(&self.device, &self.queue, &mut encoder, frame, self.mouse_px);
         }
-        if self.corner_radius > 0.0 && self.transparent_surface {
+        let corners = self.corner_radius > 0.0 && self.transparent_surface;
+        let premultiply = needs_premultiply(self.bg_opacity, self.surface.presents_premultiplied());
+        if corners || premultiply {
             let mut pass = encoder.begin_render_pass(frame.texture_ptr(), None);
-            pass.draw_corners(&self.pipelines.corner, &u);
+            output_alpha(&mut pass, &self.pipelines, &u, premultiply, corners);
         }
         let window = self.window.upgrade();
         if let Some(window) = &window {
@@ -598,5 +600,30 @@ impl Renderer {
             window.present_skipped();
         }
         self.frames_submitted += 1;
+    }
+}
+
+/// Whether a frame must be premultiplied before it is presented: it is
+/// translucent and the compositor reads it premultiplied. Other compositors
+/// read straight alpha, and an opaque frame is the same in either form.
+pub(super) fn needs_premultiply(bg_opacity: f32, presents_premultiplied: bool) -> bool {
+    bg_opacity < 1.0 && presents_premultiplied
+}
+
+/// The passes that finish a frame's alpha for the compositor, in one pass
+/// over the presented target. A translucent frame is drawn with straight
+/// alpha; when the compositor reads it premultiplied (`premultiply`), its
+/// colors are first multiplied by their alpha. The rounded corners then fade
+/// color and alpha together, which keeps either form. An opaque frame needs
+/// no premultiply: its alpha is 1 wherever the corners do not reach.
+pub(super) fn output_alpha(
+    pass: &mut RenderPass, pipelines: &RenderPipelines, u: &Uniforms, premultiply: bool, corners: bool,
+) {
+    if premultiply {
+        // `draw_corners` is a full-target draw of `vs_corner`.
+        pass.draw_corners(&pipelines.premultiply, u);
+    }
+    if corners {
+        pass.draw_corners(&pipelines.corner, u);
     }
 }

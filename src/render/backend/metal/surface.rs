@@ -11,6 +11,8 @@ pub struct Surface {
     ns_view: Id,
     layer: ObjPtr,
     in_flight: InFlight,
+    /// The layer is non-opaque: Core Animation reads it as premultiplied.
+    premultiplied: bool,
 }
 
 // SAFETY: `Surface` is accessed on the main event-loop thread via `&mut Renderer`.
@@ -58,8 +60,15 @@ impl Surface {
                 ns_view,
                 layer: ObjPtr(layer),
                 in_flight: InFlight::default(),
+                premultiplied: false,
             }
         }
+    }
+
+    /// Whether the compositor reads presented pixels as premultiplied, so a
+    /// translucent frame must be premultiplied before it is presented.
+    pub fn presents_premultiplied(&self) -> bool {
+        self.premultiplied
     }
 
     #[inline]
@@ -79,6 +88,7 @@ impl Surface {
             }
             msg_send!(layer, c"setPixelFormat:", mtl_pixel_format(config.format) => usize);
             msg_send!(layer, c"setOpaque:", !config.transparent => bool);
+            self.premultiplied = config.transparent;
             let size = CGSize {
                 width: config.width.max(1) as f64,
                 height: config.height.max(1) as f64,
@@ -185,7 +195,7 @@ mod tests {
             let layer = msg_send!(class(c"CAMetalLayer").unwrap(), c"new"; -> Id);
             msg_send!(view, c"setWantsLayer:", true => bool);
             msg_send!(view, c"setLayer:", layer => Id);
-            let surface = Surface { ns_view: view, layer: ObjPtr(layer), in_flight: InFlight::default() };
+            let surface = Surface { ns_view: view, layer: ObjPtr(layer), in_flight: InFlight::default(), premultiplied: false };
 
             drop(surface);
 
@@ -231,6 +241,9 @@ mod tests {
             let layer = msg_send!(view, c"layer"; -> Id);
             assert_eq!(layer, surface.layer.as_ptr(), "the view shows the surface's own layer");
             assert_eq!(msg_send!(layer, c"maximumDrawableCount"; -> usize), 2);
+            assert!(!surface.presents_premultiplied(), "an opaque layer reads straight alpha");
+            surface.configure(&device, &SurfaceConfig { transparent: true, ..config });
+            assert!(surface.presents_premultiplied(), "Core Animation reads a non-opaque layer premultiplied");
 
             drop(surface);
             msg_send!(view, c"release");
