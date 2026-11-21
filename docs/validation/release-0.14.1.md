@@ -1,9 +1,9 @@
 # v0.14.1 Release Validation
 
-Status: prepared 2026-11-21; not yet tagged.
+Status: published as [v0.14.1](https://github.com/Matrix-I/litty-terminal/releases/tag/v0.14.1)
+on 2026-11-21 (15:36:12 UTC).
 Source: `42320d7` plus v0.14.1 version metadata and documentation only.
-Release commit: `chore(release): prepare v0.14.1` (SHA filled in after the
-last amend).
+Release commit: `2ceacfa` (`chore(release): prepare v0.14.1`), pushed to `main`.
 
 ## Verification
 
@@ -58,8 +58,32 @@ as v0.13.0.
 
 ## Known limitations
 
-- The Linux release binary size was not measured locally; the CI binary is
-  to be checked against the 5,000,000-byte budget before publication.
 - `scripts/linux/test.sh` (container smoke suite) was not run.
 - The ignored tests were not enabled (live AI providers, GPU pixel probes,
   manual benchmarks).
+- The older-build update flow (`+check-update` / `+update` from v0.14.0) was
+  not exercised on macOS or Linux.
+
+## Final CI and published-release verification
+
+[Release workflow 44919409940](https://github.com/Matrix-I/litty-terminal/actions/runs/44919409940)
+completed successfully at tagged commit `2ceacfa`: version check, macOS
+aarch64, Linux x86_64, Debian and Fedora packages, signing and draft
+creation. [CI run 44919406892](https://github.com/Matrix-I/litty-terminal/actions/runs/44919406892)
+on `main` at the same commit also passed.
+
+Checked on Ubuntu x86_64 after downloading every asset of the draft:
+
+- All eight release assets are present; all six SHA-256 hashes verify.
+  The manifest contains exactly one `# litty-release: v0.14.1` marker.
+- The minisign signature (and its trusted comment) verifies against
+  `resources/minisign.pub`; rechecked with the published manifest and
+  `litty-linux-x86_64` after publication.
+- CI binaries: macOS 2,338,384 bytes; Linux x86_64 4,819,704 bytes. Both
+  contain version 0.14.1 and the pinned public key and are below 5,000,000
+  bytes.
+- App ZIP: both CFBundle versions equal 0.14.1. Its code signature was not
+  checked (no macOS host in this check).
+- The draft's generated notes were replaced with the prepared release notes
+  before publication; the release is the repository's latest, not a
+  prerelease.
