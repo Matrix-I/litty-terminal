@@ -320,6 +320,7 @@ pub(super) const VK_BLEND_FACTOR_ONE: u32 = 1;
 pub(super) const VK_BLEND_FACTOR_SRC_ALPHA: u32 = 6;
 pub(super) const VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: u32 = 7;
 pub(super) const VK_BLEND_OP_ADD: u32 = 0;
+pub(super) const VK_BLEND_OP_MAX: u32 = 4;
 
 pub(super) const VK_DYNAMIC_STATE_VIEWPORT: u32 = 0;
 pub(super) const VK_DYNAMIC_STATE_SCISSOR: u32 = 1;

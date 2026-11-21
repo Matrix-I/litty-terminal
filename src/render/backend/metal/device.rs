@@ -97,7 +97,12 @@ unsafe fn create_sampler(raw_dev: Id, filter: usize) -> ObjPtr {
 #[derive(Copy, Clone)]
 pub(super) enum BlendMode {
     None,
+    /// Source over, by the source's alpha (images).
     Alpha,
+    /// Color as `Alpha`; alpha keeps the larger of source and target, so
+    /// default-background cells drawn over the `background-opacity` clear
+    /// keep that opacity instead of stacking theirs on it.
+    Cells,
     CornerFade,
 }
 
@@ -144,6 +149,14 @@ pub(super) unsafe fn build_pipeline(
                 msg_send!(att0, c"setDestinationAlphaBlendFactor:", MTL_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA => usize);
                 msg_send!(att0, c"setAlphaBlendOperation:", MTL_BLEND_OPERATION_ADD => usize);
             }
+            BlendMode::Cells => {
+                msg_send!(att0, c"setBlendingEnabled:", true => bool);
+                msg_send!(att0, c"setSourceRGBBlendFactor:", MTL_BLEND_FACTOR_SRC_ALPHA => usize);
+                msg_send!(att0, c"setDestinationRGBBlendFactor:", MTL_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA => usize);
+                msg_send!(att0, c"setRgbBlendOperation:", MTL_BLEND_OPERATION_ADD => usize);
+                // `Max` ignores the factors.
+                msg_send!(att0, c"setAlphaBlendOperation:", MTL_BLEND_OPERATION_MAX => usize);
+            }
             BlendMode::CornerFade => {
                 msg_send!(att0, c"setBlendingEnabled:", true => bool);
                 msg_send!(att0, c"setSourceRGBBlendFactor:", MTL_BLEND_FACTOR_ZERO => usize);
@@ -185,7 +198,7 @@ pub fn shared_pipelines(device: &Device, format: TextureFormat) -> RenderPipelin
     let pipes = unsafe {
         let raw_dev = device.raw.as_ptr();
         let lib = device.library.as_ptr();
-        let cells = build_pipeline(raw_dev, lib, "vs_main", "fs_main", format, BlendMode::Alpha)
+        let cells = build_pipeline(raw_dev, lib, "vs_main", "fs_main", format, BlendMode::Cells)
             .expect("cells pipeline");
         let corner = build_pipeline(raw_dev, lib, "vs_corner", "fs_corner", format, BlendMode::CornerFade)
             .expect("corner pipeline");
@@ -204,6 +217,12 @@ pub fn validate_postfx(_msl_src: &str) -> Result<(), String> {
 }
 
 impl Device {
+    /// Always: a Metal device is created or the app panics at startup.
+    #[cfg(test)]
+    pub fn has_gpu(&self) -> bool {
+        true
+    }
+
     /// Nothing to do: the pipeline is released when its last `ObjPtr`
     /// drops (the Vulkan backend destroys it here).
     pub fn destroy_postfx_pipeline(&self, _pipeline: &ObjPtr) {}
