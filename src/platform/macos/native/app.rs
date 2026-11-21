@@ -84,7 +84,8 @@ unsafe extern "C" fn live_pump_callout<T: 'static, H: EventHandler<T>>(_observer
     // SAFETY: `info` is the `LivePump` registered by `LiveResizeObserver::add`,
     // which outlives the observer.
     let pump = unsafe { &*(info as *const LivePump<'_, '_, T, H>) };
-    pump_live(pump.handler, |h| run_handlers(h, pump.loop_ctx, pump.rx));
+    // AppKit's resize tracking loop, not our wait, woke this cycle.
+    pump_live(pump.handler, |h| run_handlers(h, pump.loop_ctx, pump.rx, false));
 }
 
 /// The registered live-resize observer; invalidated and released on drop.
@@ -187,7 +188,7 @@ pub fn queue_event(id: WindowId, event: WindowEvent) {
 
 pub struct NativeLoopCtx {
     exit_flag: AtomicBool,
-    flow_mode: AtomicU8, // 0 = Wait, 1 = Poll, 2 = WaitUntil
+    flow_mode: AtomicU8, // FLOW_WAIT, FLOW_POLL or FLOW_WAIT_UNTIL
     until_instant: Mutex<Option<Instant>>,
 }
 
@@ -208,19 +209,30 @@ impl NativeLoopCtx {
     pub fn set_flow(&self, flow: Flow) {
         match flow {
             Flow::Wait => {
-                self.flow_mode.store(0, Ordering::SeqCst);
+                self.flow_mode.store(FLOW_WAIT, Ordering::SeqCst);
                 *self.until_instant.lock() = None;
             }
             Flow::Poll => {
-                self.flow_mode.store(1, Ordering::SeqCst);
+                self.flow_mode.store(FLOW_POLL, Ordering::SeqCst);
                 *self.until_instant.lock() = None;
             }
             Flow::WaitUntil(t) => {
-                self.flow_mode.store(2, Ordering::SeqCst);
+                self.flow_mode.store(FLOW_WAIT_UNTIL, Ordering::SeqCst);
                 *self.until_instant.lock() = Some(t);
             }
         }
     }
+}
+
+/// `NativeLoopCtx::flow_mode` values, one per `Flow`.
+const FLOW_WAIT: u8 = 0;
+const FLOW_POLL: u8 = 1;
+const FLOW_WAIT_UNTIL: u8 = 2;
+
+/// Whether the wait that just ended reached its `Flow::WaitUntil` deadline,
+/// which the next cycle reports as `timer_fired` (cursor blink, settles).
+fn deadline_reached(flow_mode: u8, deadline: Option<Instant>, now: Instant) -> bool {
+    flow_mode == FLOW_WAIT_UNTIL && deadline.is_some_and(|t| t <= now)
 }
 
 /// NSEventType values used by the loop.
@@ -326,11 +338,12 @@ unsafe fn dispatch_event<T: 'static, H: EventHandler<T>>(app: Id, event: Id, han
 /// It has a pool of its own: what it autoreleases (a closed window's view and
 /// layer, which pin its last full-size drawable) would otherwise live in the
 /// cycle pool until the next event, and with no window left that may never come.
-fn run_handlers<T: 'static, H: EventHandler<T>>(handler: &mut H, loop_ctx: &LoopCtx, rx: &Receiver<T>) {
-    autoreleasepool(|| run_handlers_unpooled(handler, loop_ctx, rx));
+/// `timer_fired` when the wait before this cycle reached its deadline.
+fn run_handlers<T: 'static, H: EventHandler<T>>(handler: &mut H, loop_ctx: &LoopCtx, rx: &Receiver<T>, timer_fired: bool) {
+    autoreleasepool(|| run_handlers_unpooled(handler, loop_ctx, rx, timer_fired));
 }
 
-fn run_handlers_unpooled<T: 'static, H: EventHandler<T>>(handler: &mut H, loop_ctx: &LoopCtx, rx: &Receiver<T>) {
+fn run_handlers_unpooled<T: 'static, H: EventHandler<T>>(handler: &mut H, loop_ctx: &LoopCtx, rx: &Receiver<T>, timer_fired: bool) {
     // 1. Process user events from proxy
     while let Ok(user_ev) = rx.try_recv() {
         handler.user_event(loop_ctx, user_ev);
@@ -339,7 +352,7 @@ fn run_handlers_unpooled<T: 'static, H: EventHandler<T>>(handler: &mut H, loop_c
     // 2. Deliver pending view/window events
     deliver_pending_events(handler, loop_ctx);
 
-    handler.cycle_started(false);
+    handler.cycle_started(timer_fired);
 
     // 3. Deliver pending redraws
     let redraws: Vec<WindowId> = {
@@ -393,25 +406,26 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         // Declared after `live_pump` so it is removed before the pump is dropped.
         let _live_resize_observer = LiveResizeObserver::add(&live_pump);
 
+        let mut timer_fired = false;
         while !native_ctx.exit_flag.load(Ordering::SeqCst) {
             let pool = msg_send!(class(c"NSAutoreleasePool").unwrap(), c"new"; -> Id);
 
-            run_handlers(&mut *handler.borrow_mut(), &loop_ctx, &rx);
+            run_handlers(&mut *handler.borrow_mut(), &loop_ctx, &rx, timer_fired);
 
             // 4. Wait / poll for Cocoa events
             let flow_mode = native_ctx.flow_mode.load(Ordering::SeqCst);
+            let deadline = *native_ctx.until_instant.lock();
             let until_date = match flow_mode {
-                0 => {
+                FLOW_WAIT => {
                     // Wait: block until event arrives
                     msg_send!(date_cls, c"distantFuture"; -> Id)
                 }
-                1 => {
+                FLOW_POLL => {
                     // Poll: return immediately
                     msg_send!(date_cls, c"distantPast"; -> Id)
                 }
                 _ => {
                     // WaitUntil
-                    let deadline = *native_ctx.until_instant.lock();
                     if let Some(target) = deadline {
                         let now = Instant::now();
                         if target <= now {
@@ -444,6 +458,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
                 until = std::ptr::null_mut();
                 dispatch_event(app, event, &handler, &loop_ctx);
             }
+            timer_fired = deadline_reached(flow_mode, deadline, Instant::now());
 
             msg_send!(pool, c"drain");
         }
@@ -506,7 +521,7 @@ mod tests {
             let native_ctx = NativeLoopCtx::new();
             let loop_ctx = LoopCtx::from_native(&native_ctx);
             let (_tx, rx) = channel::<()>();
-            let run = |weak: &mut Id| run_handlers(&mut AutoreleasesOnWait(weak), &loop_ctx, &rx);
+            let run = |weak: &mut Id| run_handlers(&mut AutoreleasesOnWait(weak), &loop_ctx, &rx, false);
             assert!(!survives(run), "freed when the handlers return");
         });
     }
@@ -527,6 +542,46 @@ mod tests {
         live_resize_ended();
         assert!(!pump(), "an unmatched end does not underflow into a live resize");
         assert_eq!(*handler.borrow(), 1);
+    }
+
+    /// Records the `timer_fired` of each cycle the loop starts.
+    #[derive(Default)]
+    struct RecordsCycles(Vec<bool>);
+
+    impl EventHandler<()> for RecordsCycles {
+        fn cycle_started(&mut self, timer_fired: bool) {
+            self.0.push(timer_fired);
+        }
+        fn resumed(&mut self, _ctx: &LoopCtx) {}
+        fn user_event(&mut self, _ctx: &LoopCtx, _event: ()) {}
+        fn window_event(&mut self, _ctx: &LoopCtx, _id: WindowId, _event: WindowEvent) {}
+        fn about_to_wait(&mut self, _ctx: &LoopCtx) {}
+    }
+
+    /// The cursor blinks (and other `WaitUntil` work runs) only when the
+    /// cycle after a reached deadline says so: it used to always say `false`.
+    #[test]
+    fn a_cycle_after_a_reached_deadline_reports_the_timer() {
+        let native_ctx = NativeLoopCtx::new();
+        let loop_ctx = LoopCtx::from_native(&native_ctx);
+        let (_tx, rx) = channel::<()>();
+        let mut handler = RecordsCycles::default();
+        run_handlers(&mut handler, &loop_ctx, &rx, true);
+        run_handlers(&mut handler, &loop_ctx, &rx, false);
+        assert_eq!(handler.0, [true, false]);
+    }
+
+    #[test]
+    fn only_a_reached_wait_until_deadline_counts_as_the_timer() {
+        let now = Instant::now();
+        let past = now - std::time::Duration::from_millis(1);
+        let later = now + std::time::Duration::from_millis(500);
+        assert!(deadline_reached(FLOW_WAIT_UNTIL, Some(past), now));
+        assert!(deadline_reached(FLOW_WAIT_UNTIL, Some(now), now), "exactly on time");
+        assert!(!deadline_reached(FLOW_WAIT_UNTIL, Some(later), now), "woken early by an event");
+        assert!(!deadline_reached(FLOW_WAIT_UNTIL, None, now));
+        assert!(!deadline_reached(FLOW_WAIT, Some(past), now), "Wait has no timer");
+        assert!(!deadline_reached(FLOW_POLL, Some(past), now), "Poll has no timer");
     }
 
     /// Wake-up events are created on PTY reader threads, which have no run
