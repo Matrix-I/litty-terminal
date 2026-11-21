@@ -1,6 +1,7 @@
 // Native Metal Shading Language (MSL) shaders for Litty:
 // - vs_main / fs_main: single-draw-call instanced cell renderer
 // - vs_corner / fs_corner: rounded window corner cutout pass
+// - vs_corner / fs_premultiply: translucent frame to premultiplied alpha
 // - vs_image / fs_image: inline images (Kitty graphics, Sixel)
 // - vs_postfx: full-screen triangle vertex shader for custom post-processing passes
 
@@ -331,6 +332,12 @@ vertex CornerOut vs_corner(uint i [[vertex_id]]) {
     CornerOut out;
     out.pos = float4(p.x * 2.0f - 1.0f, 1.0f - p.y * 2.0f, 0.0f, 1.0f);
     return out;
+}
+
+// Its blend state multiplies the target's color by its alpha; the output
+// only feeds factors that ignore it.
+fragment float4 fs_premultiply(CornerOut v [[stage_in]]) {
+    return float4(0.0f);
 }
 
 fragment float4 fs_corner(

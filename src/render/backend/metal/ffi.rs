@@ -189,6 +189,7 @@ pub(super) const MTL_BLEND_FACTOR_SRC_ALPHA: usize = 4;
 pub(super) const MTL_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: usize = 5;
 pub(super) const MTL_BLEND_OPERATION_ADD: usize = 0;
 pub(super) const MTL_BLEND_OPERATION_MAX: usize = 4;
+pub(super) const MTL_BLEND_FACTOR_DESTINATION_ALPHA: usize = 8;
 
 pub(super) const MTL_SAMPLER_MIN_MAG_FILTER_NEAREST: usize = 0;
 pub(super) const MTL_SAMPLER_MIN_MAG_FILTER_LINEAR: usize = 1;

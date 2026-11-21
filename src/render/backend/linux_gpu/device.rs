@@ -8,6 +8,7 @@ use crate::render::backend::TextureFormat;
 
 const SHADER_SPV: &[u8] = include_bytes!("../../shaders/shader.spv");
 const IMAGE_SPV: &[u8] = include_bytes!("../../shaders/image.spv");
+const PREMULTIPLY_SPV: &[u8] = include_bytes!("../../shaders/premultiply.spv");
 
 pub struct VulkanCore {
     pub(super) lib: VkLib,
@@ -33,6 +34,7 @@ pub struct VulkanCore {
     pub(super) uploads: parking_lot::Mutex<super::upload::Uploads>,
     pub(super) shader_mod: VkShaderModule,
     pub(super) image_mod: VkShaderModule,
+    pub(super) premultiply_mod: VkShaderModule,
     #[allow(dead_code)]
     pub(super) cells_dset_layout: VkDescriptorSetLayout,
     pub(super) cells_pipe_layout: VkPipelineLayout,
@@ -115,6 +117,8 @@ pub struct Queue {
 pub struct RenderPipelines {
     pub cells: ObjPtr,
     pub corner: ObjPtr,
+    /// Multiplies a translucent frame's colors by their alpha.
+    pub premultiply: ObjPtr,
     pub image: ObjPtr,
     pub render_pass_clear: u64,
     pub render_pass_load: u64,
@@ -686,13 +690,15 @@ impl VulkanCore {
 
             let shader_mod = create_shader_module(&lib, device, SHADER_SPV);
             let image_mod = create_shader_module(&lib, device, IMAGE_SPV);
+            let premultiply_mod = create_shader_module(&lib, device, PREMULTIPLY_SPV);
             let nearest_sampler = create_vk_sampler(&lib, device, VK_FILTER_NEAREST);
             let linear_sampler = create_vk_sampler(&lib, device, VK_FILTER_LINEAR);
             partial.child(c"vkDestroyShaderModule", shader_mod);
             partial.child(c"vkDestroyShaderModule", image_mod);
+            partial.child(c"vkDestroyShaderModule", premultiply_mod);
             partial.child(c"vkDestroySampler", nearest_sampler);
             partial.child(c"vkDestroySampler", linear_sampler);
-            if [shader_mod, image_mod, nearest_sampler, linear_sampler].contains(&0) {
+            if [shader_mod, image_mod, premultiply_mod, nearest_sampler, linear_sampler].contains(&0) {
                 return None;
             }
 
@@ -918,6 +924,7 @@ impl VulkanCore {
                 uploads: parking_lot::Mutex::new(super::upload::Uploads::new(batch_cmd)),
                 shader_mod,
                 image_mod,
+                premultiply_mod,
                 cells_dset_layout,
                 cells_pipe_layout,
                 image_dset_layout,
@@ -1183,6 +1190,9 @@ pub(super) enum Blend {
     Cells,
     /// Fade the target by the source's alpha (rounded corners).
     CornerFade,
+    /// Multiply the target's color by its own alpha, keeping the alpha:
+    /// straight to premultiplied, as compositors read the frame.
+    Premultiply,
     /// Write the output as is (`custom-shader` passes, as on Metal).
     Replace,
 }
@@ -1403,6 +1413,16 @@ pub(super) unsafe fn create_graphics_pipeline(
                 alpha_blend_op: VK_BLEND_OP_MAX,
                 color_write_mask: 0xF,
             },
+            Blend::Premultiply => BlendAtt {
+                blend_enable: 1,
+                src_color_blend_factor: VK_BLEND_FACTOR_ZERO,
+                dst_color_blend_factor: VK_BLEND_FACTOR_DST_ALPHA,
+                color_blend_op: VK_BLEND_OP_ADD,
+                src_alpha_blend_factor: VK_BLEND_FACTOR_ZERO,
+                dst_alpha_blend_factor: VK_BLEND_FACTOR_ONE,
+                alpha_blend_op: VK_BLEND_OP_ADD,
+                color_write_mask: 0xF,
+            },
             Blend::Replace => BlendAtt {
                 blend_enable: 0,
                 src_color_blend_factor: VK_BLEND_FACTOR_ONE,
@@ -1550,6 +1570,17 @@ pub fn shared_pipelines(device: &Device, format: TextureFormat) -> RenderPipelin
                 &[],
                 Blend::CornerFade,
             );
+            let premultiply = create_graphics_pipeline(
+                &vk.lib,
+                vk.device,
+                rp_load,
+                vk.cells_pipe_layout,
+                (vk.shader_mod, c"vs_corner"),
+                (vk.premultiply_mod, c"fs_main"),
+                0,
+                &[],
+                Blend::Premultiply,
+            );
             let image = create_graphics_pipeline(
                 &vk.lib,
                 vk.device,
@@ -1564,6 +1595,7 @@ pub fn shared_pipelines(device: &Device, format: TextureFormat) -> RenderPipelin
             RenderPipelines {
                 cells: ObjPtr(cells),
                 corner: ObjPtr(corner),
+                premultiply: ObjPtr(premultiply),
                 image: ObjPtr(image),
                 render_pass_clear: rp_clear,
                 render_pass_load: rp_load,
@@ -1574,6 +1606,7 @@ pub fn shared_pipelines(device: &Device, format: TextureFormat) -> RenderPipelin
             cells: ObjPtr(1),
             corner: ObjPtr(2),
             image: ObjPtr(3),
+            premultiply: ObjPtr(4),
             render_pass_clear: 0,
             render_pass_load: 0,
         }

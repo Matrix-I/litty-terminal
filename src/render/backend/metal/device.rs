@@ -34,6 +34,8 @@ static SHARED_PIPELINES: parking_lot::Mutex<Option<(TextureFormat, RenderPipelin
 pub struct RenderPipelines {
     pub cells: ObjPtr,
     pub corner: ObjPtr,
+    /// Multiplies a translucent frame's colors by their alpha.
+    pub premultiply: ObjPtr,
     pub image: ObjPtr,
 }
 
@@ -104,6 +106,9 @@ pub(super) enum BlendMode {
     /// keep that opacity instead of stacking theirs on it.
     Cells,
     CornerFade,
+    /// Multiply the target's color by its own alpha, keeping the alpha:
+    /// straight to premultiplied, as Core Animation reads the layer.
+    Premultiply,
 }
 
 pub(super) unsafe fn build_pipeline(
@@ -157,6 +162,15 @@ pub(super) unsafe fn build_pipeline(
                 // `Max` ignores the factors.
                 msg_send!(att0, c"setAlphaBlendOperation:", MTL_BLEND_OPERATION_MAX => usize);
             }
+            BlendMode::Premultiply => {
+                msg_send!(att0, c"setBlendingEnabled:", true => bool);
+                msg_send!(att0, c"setSourceRGBBlendFactor:", MTL_BLEND_FACTOR_ZERO => usize);
+                msg_send!(att0, c"setDestinationRGBBlendFactor:", MTL_BLEND_FACTOR_DESTINATION_ALPHA => usize);
+                msg_send!(att0, c"setRgbBlendOperation:", MTL_BLEND_OPERATION_ADD => usize);
+                msg_send!(att0, c"setSourceAlphaBlendFactor:", MTL_BLEND_FACTOR_ZERO => usize);
+                msg_send!(att0, c"setDestinationAlphaBlendFactor:", MTL_BLEND_FACTOR_ONE => usize);
+                msg_send!(att0, c"setAlphaBlendOperation:", MTL_BLEND_OPERATION_ADD => usize);
+            }
             BlendMode::CornerFade => {
                 msg_send!(att0, c"setBlendingEnabled:", true => bool);
                 msg_send!(att0, c"setSourceRGBBlendFactor:", MTL_BLEND_FACTOR_ZERO => usize);
@@ -202,9 +216,11 @@ pub fn shared_pipelines(device: &Device, format: TextureFormat) -> RenderPipelin
             .expect("cells pipeline");
         let corner = build_pipeline(raw_dev, lib, "vs_corner", "fs_corner", format, BlendMode::CornerFade)
             .expect("corner pipeline");
+        let premultiply = build_pipeline(raw_dev, lib, "vs_corner", "fs_premultiply", format, BlendMode::Premultiply)
+            .expect("premultiply pipeline");
         let image = build_pipeline(raw_dev, lib, "vs_image", "fs_image", format, BlendMode::Alpha)
             .expect("image pipeline");
-        RenderPipelines { cells, corner, image }
+        RenderPipelines { cells, corner, premultiply, image }
     };
     *guard = Some((format, pipes.clone()));
     pipes
