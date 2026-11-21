@@ -206,6 +206,33 @@ const CURSOR_SLOTS: usize = (XC_NUM_GLYPHS / 2) as usize;
 const NORTH_WEST_GRAVITY: c_int = 1;
 /// `CWBitGravity` value mask bit for `XChangeWindowAttributes`.
 const CW_BIT_GRAVITY: c_ulong = 1 << 4;
+/// `CWBackPixel`, `CWBorderPixel` and `CWColormap` value mask bits: a
+/// window whose visual differs from its parent's must set all three, or
+/// `XCreateWindow` fails with `BadMatch`.
+const CW_BACK_PIXEL: c_ulong = 1 << 1;
+const CW_BORDER_PIXEL: c_ulong = 1 << 3;
+const CW_COLORMAP: c_ulong = 1 << 13;
+/// Depth of the ARGB visual a compositor blends by its alpha channel.
+const ARGB_DEPTH: c_int = 32;
+/// Xlib `TrueColor` visual class, `InputOutput` window class, `AllocNone`.
+const TRUE_COLOR: c_int = 4;
+const INPUT_OUTPUT: std::ffi::c_uint = 1;
+const ALLOC_NONE: c_int = 0;
+
+/// Xlib `XVisualInfo`, filled by `XMatchVisualInfo`.
+#[repr(C)]
+pub struct XVisualInfo {
+    visual: *mut c_void,
+    visualid: c_ulong,
+    screen: c_int,
+    depth: c_int,
+    class: c_int,
+    red_mask: c_ulong,
+    green_mask: c_ulong,
+    blue_mask: c_ulong,
+    colormap_size: c_int,
+    bits_per_rgb: c_int,
+}
 
 /// Events every window selects: KeyPress (1), KeyRelease (2), ButtonPress
 /// (4), ButtonRelease (8), PointerMotion (64), Exposure (32768),
@@ -387,6 +414,14 @@ pub struct X11Lib {
     ) -> c_ulong,
     pub XFreePixmap: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
     pub XChangeWindowAttributes: unsafe extern "C" fn(*mut c_void, c_ulong, c_ulong, *mut XSetWindowAttributes) -> c_int,
+    pub XMatchVisualInfo: unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, *mut XVisualInfo) -> c_int,
+    pub XCreateColormap: unsafe extern "C" fn(*mut c_void, c_ulong, *mut c_void, c_int) -> c_ulong,
+    pub XFreeColormap: unsafe extern "C" fn(*mut c_void, c_ulong) -> c_int,
+    #[allow(clippy::type_complexity)]
+    pub XCreateWindow: unsafe extern "C" fn(
+        *mut c_void, c_ulong, c_int, c_int, std::ffi::c_uint, std::ffi::c_uint, std::ffi::c_uint,
+        c_int, std::ffi::c_uint, *mut c_void, c_ulong, *mut XSetWindowAttributes,
+    ) -> c_ulong,
     #[allow(clippy::type_complexity)]
     pub XTranslateCoordinates: unsafe extern "C" fn(
         *mut c_void, c_ulong, c_ulong, c_int, c_int, *mut c_int, *mut c_int, *mut c_ulong,
@@ -459,6 +494,10 @@ impl X11Lib {
                 XCreatePixmapCursor: sym(handle, c"XCreatePixmapCursor")?,
                 XFreePixmap: sym(handle, c"XFreePixmap")?,
                 XChangeWindowAttributes: sym(handle, c"XChangeWindowAttributes")?,
+                XMatchVisualInfo: sym(handle, c"XMatchVisualInfo")?,
+                XCreateColormap: sym(handle, c"XCreateColormap")?,
+                XFreeColormap: sym(handle, c"XFreeColormap")?,
+                XCreateWindow: sym(handle, c"XCreateWindow")?,
             })
         }
     }
@@ -482,6 +521,8 @@ pub struct X11WindowInner {
     pub occlusion: parking_lot::Mutex<OcclusionTracker>,
     pub root: c_ulong,
     pub screen: c_int,
+    /// Colormap of the ARGB visual, freed with the window; 0 for the default.
+    pub colormap: c_ulong,
     pub scale: f64,
     /// Where the window was created, in root coordinates.
     pub origin: PhysicalPosition<i32>,
@@ -514,6 +555,9 @@ impl Drop for X11WindowInner {
                 (self.lib.XFreeCursor)(self.display, cursor);
             }
             (self.lib.XDestroyWindow)(self.display, self.window);
+            if self.colormap != 0 {
+                (self.lib.XFreeColormap)(self.display, self.colormap);
+            }
             (self.lib.XCloseDisplay)(self.display);
         }
     }
@@ -619,6 +663,44 @@ fn scale_from_resources(resources: &str) -> f64 {
         .map_or(1.0, |dpi| dpi / 96.0)
 }
 
+/// The screen's 32-bit TrueColor visual, if it has one (any compositing
+/// X server, XWayland included). Only a window of this visual carries the
+/// alpha the renderer writes for `background-opacity` and rounded corners.
+unsafe fn argb_visual(lib: &X11Lib, display: *mut c_void, screen: c_int) -> Option<*mut c_void> {
+    let mut info = std::mem::MaybeUninit::<XVisualInfo>::zeroed();
+    // SAFETY: `display` is open; `XMatchVisualInfo` fills `info` on success.
+    let found = unsafe { (lib.XMatchVisualInfo)(display, screen, ARGB_DEPTH, TRUE_COLOR, info.as_mut_ptr()) };
+    if found == 0 {
+        return None;
+    }
+    // SAFETY: filled above; zeroed is a valid `XVisualInfo` either way.
+    let visual = unsafe { info.assume_init() }.visual;
+    (!visual.is_null()).then_some(visual)
+}
+
+/// Create a top-level window of the ARGB `visual` with a colormap of its
+/// own, returning (window, colormap); (0, 0) on failure.
+unsafe fn create_argb_window(
+    lib: &X11Lib, display: *mut c_void, root: c_ulong, visual: *mut c_void,
+    (x, y, width, height): (c_int, c_int, c_int, c_int),
+) -> (c_ulong, c_ulong) {
+    // SAFETY: `display` is open and `visual` belongs to its screen.
+    unsafe {
+        let colormap = (lib.XCreateColormap)(display, root, visual, ALLOC_NONE);
+        // Transparent black until the first frame is presented.
+        let mut attrs = XSetWindowAttributes { colormap, ..Default::default() };
+        let window = (lib.XCreateWindow)(
+            display, root, x, y, width as std::ffi::c_uint, height as std::ffi::c_uint, 0,
+            ARGB_DEPTH, INPUT_OUTPUT, visual, CW_BACK_PIXEL | CW_BORDER_PIXEL | CW_COLORMAP, &mut attrs,
+        );
+        if window == 0 {
+            (lib.XFreeColormap)(display, colormap);
+            return (0, 0);
+        }
+        (window, colormap)
+    }
+}
+
 #[derive(Clone)]
 pub struct X11Window(pub Arc<X11WindowInner>);
 
@@ -656,7 +738,10 @@ impl X11Window {
                 }
             };
 
-            let window = (lib.XCreateSimpleWindow)(display, root, x, y, width, height, 0, 0, 0);
+            let (window, colormap) = match spec.transparent.then(|| argb_visual(&lib, display, screen)).flatten() {
+                Some(visual) => create_argb_window(&lib, display, root, visual, (x, y, width, height)),
+                None => ((lib.XCreateSimpleWindow)(display, root, x, y, width, height, 0, 0, 0), 0),
+            };
             if window == 0 {
                 (lib.XCloseDisplay)(display);
                 return None;
@@ -738,6 +823,7 @@ impl X11Window {
                 occlusion: parking_lot::Mutex::new(OcclusionTracker::default()),
                 root,
                 screen,
+                colormap,
                 scale,
                 origin: PhysicalPosition::new(x, y),
                 mods: AtomicU8::new(0),
@@ -1205,6 +1291,10 @@ mod tests {
     }
 
     fn hidden_test_window(title: &'static str) -> Option<X11Window> {
+        hidden_test_window_with(title, false)
+    }
+
+    fn hidden_test_window_with(title: &'static str, transparent: bool) -> Option<X11Window> {
         if std::env::var_os("DISPLAY").is_none() {
             eprintln!("no X display; skipping");
             return None;
@@ -1213,7 +1303,7 @@ mod tests {
             title,
             decorations: true,
             visible: false,
-            transparent: false,
+            transparent,
             inner_size: crate::platform::gui::LogicalSize::new(200.0, 100.0),
             position: None,
         };
@@ -1256,6 +1346,24 @@ mod tests {
     fn new_window_keeps_its_contents_while_resized() {
         let Some(win) = hidden_test_window("litty-gravity-test") else { return };
         assert_eq!(window_attributes(&win).bit_gravity, NORTH_WEST_GRAVITY);
+    }
+
+    /// `background-opacity` and the rounded title bar corners need a
+    /// window with alpha: the default 24-bit visual has none, so the
+    /// compositor drew it opaque whatever the renderer wrote.
+    #[test]
+    fn a_transparent_window_has_an_alpha_channel() {
+        let Some(win) = hidden_test_window_with("litty-argb-test", true) else { return };
+        let attrs = window_attributes(&win);
+        assert_eq!(attrs.depth, 32);
+        assert_ne!(attrs.colormap, 0, "a 32-bit visual needs its own colormap");
+    }
+
+    #[test]
+    fn an_opaque_window_keeps_the_default_visual() {
+        let Some(win) = hidden_test_window_with("litty-opaque-test", false) else { return };
+        // XWayland and Xorg default to a 24-bit TrueColor visual.
+        assert_eq!(window_attributes(&win).depth, 24);
     }
 
     #[repr(C)]
