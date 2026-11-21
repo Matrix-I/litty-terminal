@@ -74,6 +74,60 @@ fn precise_scroll_gpu_pixels() {
     }
 }
 
+/// `background-opacity`: the frame is cleared to the default background at
+/// that opacity, and empty default-background cells drawn over it must keep
+/// it. Blending their alpha over the clear's stacked it (0.5 came out 0.75).
+#[test]
+fn default_background_cells_keep_the_configured_opacity() {
+    let _gpu = crate::render::backend::TEST_GPU.lock();
+    use super::*;
+    let (device, queue) = backend::shared_device_and_queue();
+    if !device.has_gpu() {
+        eprintln!("no GPU; skipping");
+        return;
+    }
+    let format = TextureFormat::Rgba8Unorm;
+    let pipelines = backend::shared_pipelines(&device, format);
+    let texture = Texture::new(&device, 64, 16, format, true);
+    let dummy = Texture::new(&device, 16, 16, TextureFormat::R8Unorm, false);
+    let dummy_color = Texture::new(&device, 16, 16, TextureFormat::Rgba8Unorm, false);
+    let sampler = device.nearest_sampler();
+    let opacity = 0.5;
+    let uniforms = Uniforms {
+        screen: [64.0, 16.0],
+        cell: [16.0, 16.0],
+        atlas_size: [16.0, 16.0],
+        cols: 4,
+        slots_per_row: 1,
+        bg_opacity: opacity,
+        default_bg: 0x2030_4000,
+        pane_count: 1,
+        ..Default::default()
+    };
+    // No scroll-in row: `extra_start` past the cells.
+    let viewports = [Viewport { cols: 4, rows: 1, extra_start: 4, bottom: 16.0, ..Default::default() }];
+    let viewport_buf = HostBuffer::from_slice(&device, &viewports);
+    // Two empty default-background cells, then two with an explicit red background.
+    let explicit_red = Instance { bg: 0xFF00_0080, ..Default::default() };
+    let cells = [Instance::default(), Instance::default(), explicit_red, explicit_red];
+    let instances = HostBuffer::from_slice(&device, &cells);
+    let mut encoder = CommandEncoder::new(&queue);
+    {
+        // As `Renderer::submit` clears a translucent frame.
+        let clear = [0x20 as f64 / 255.0, 0x30 as f64 / 255.0, 0x40 as f64 / 255.0, opacity as f64];
+        let mut pass = encoder.begin_render_pass(texture.raw_ptr(), Some(clear));
+        pass.draw_cells(&pipelines.cells, &instances, &uniforms, &viewport_buf, &dummy, &dummy_color, sampler, 4);
+    }
+    encoder.submit_and_wait();
+    let mut pixels = vec![0u8; 256 * 16];
+    texture.read_pixels(&mut pixels, 256);
+    let px = |x: usize| &pixels[8 * 256 + x * 4..8 * 256 + x * 4 + 4];
+    let alpha = px(8)[3];
+    assert!(alpha.abs_diff(128) <= 1, "default background alpha {alpha}, expected about 128");
+    assert_eq!(px(8)[..3], [0x20, 0x30, 0x40], "default background color");
+    assert_eq!(px(40), [255, 0, 0, 255], "an explicit background stays opaque");
+}
+
 #[test]
 fn test_shader_compilation_and_pipelines() {
     let _gpu = crate::render::backend::TEST_GPU.lock();

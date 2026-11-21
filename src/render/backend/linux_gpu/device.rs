@@ -1175,8 +1175,12 @@ unsafe fn create_render_pass(
 /// How a pipeline's output combines with the target's pixels.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Blend {
-    /// Source over, by the source's alpha (cells, images).
+    /// Source over, by the source's alpha (images).
     Alpha,
+    /// Color as `Alpha`; alpha keeps the larger of source and target, so
+    /// default-background cells drawn over the `background-opacity` clear
+    /// keep that opacity instead of stacking theirs on it.
+    Cells,
     /// Fade the target by the source's alpha (rounded corners).
     CornerFade,
     /// Write the output as is (`custom-shader` passes, as on Metal).
@@ -1388,6 +1392,17 @@ pub(super) unsafe fn create_graphics_pipeline(
                 alpha_blend_op: VK_BLEND_OP_ADD,
                 color_write_mask: 0xF,
             },
+            Blend::Cells => BlendAtt {
+                blend_enable: 1,
+                src_color_blend_factor: VK_BLEND_FACTOR_SRC_ALPHA,
+                dst_color_blend_factor: VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                color_blend_op: VK_BLEND_OP_ADD,
+                // `MAX` ignores the factors.
+                src_alpha_blend_factor: VK_BLEND_FACTOR_ONE,
+                dst_alpha_blend_factor: VK_BLEND_FACTOR_ONE,
+                alpha_blend_op: VK_BLEND_OP_MAX,
+                color_write_mask: 0xF,
+            },
             Blend::Replace => BlendAtt {
                 blend_enable: 0,
                 src_color_blend_factor: VK_BLEND_FACTOR_ONE,
@@ -1522,7 +1537,7 @@ pub fn shared_pipelines(device: &Device, format: TextureFormat) -> RenderPipelin
                 (vk.shader_mod, c"fs_main"),
                 12,
                 &[(0, VK_FORMAT_R32_UINT, 0), (1, VK_FORMAT_R32_UINT, 4), (2, VK_FORMAT_R32_UINT, 8)],
-                Blend::Alpha,
+                Blend::Cells,
             );
             let corner = create_graphics_pipeline(
                 &vk.lib,
@@ -1612,6 +1627,13 @@ fn cached_passes(
 }
 
 impl Device {
+    /// Whether a Vulkan device exists; without one every draw is a no-op
+    /// (GPU tests skip).
+    #[cfg(test)]
+    pub fn has_gpu(&self) -> bool {
+        self.vk.is_some()
+    }
+
     #[inline]
     pub fn nearest_sampler(&self) -> SamplerHandle {
         self.vk.as_ref().map_or(0, |v| v.nearest_sampler)
