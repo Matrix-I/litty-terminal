@@ -26,7 +26,8 @@ Issues go to the [issue note](../validation/2026-11-23-full-test-issues.md).
   blocked + reason, `S` skipped + reason, `—` not applicable. Blank = not run.
   Columns: **M** macOS (packaged `Litty.app` unless the case says the raw
   binary), **X** Linux with the default X11 backend, **W** Linux with
-  `LITTY_BACKEND=wayland`.
+  `LITTY_BACKEND=wayland`. The **W column** (Wayland) is unrelated to
+  functional **section W** (AI assistant).
 - **Unclear expected result**: log it as an issue of type "spec question"
   instead of guessing; do not mark the case `P`.
 
@@ -45,7 +46,7 @@ Where the two platforms differ beyond this table, both are written out.
 | ID | Machine | Required | Notes |
 | --- | --- | --- | --- |
 | E-M1 | Apple Silicon, current macOS 27.x | yes | Packaged app from `./bundle_macos.sh --no-install`, plus the raw `target/release/litty` |
-| E-M2 | macOS 14 or an Intel Mac | optional | Older-OS activation limits, `x86_64` updater asset |
+| E-M2 | Older macOS (e.g. 14) on Apple Silicon (M1 or later) | optional | Older-OS activation limits. Intel Macs are not supported: macOS releases ship `aarch64` only (`src/update/install.rs`) |
 | E-L1 | Ubuntu 24.04+ GNOME, Wayland session | yes | X11 backend through XWayland and the Wayland backend |
 | E-L2 | KDE Plasma 6, X11 and Wayland sessions | yes | Native X11 session for XIM, `VisibilityNotify`, non-GNOME focus policy |
 | E-L3 | sway (wlroots) | yes for W | Open v0.15.0 items: IME, clipboard, drops, tiling |
@@ -141,6 +142,7 @@ value, not only the best.
 | P3-03 | `litty +bench-perf` (latency, 20k stress, features) | Exit 0: DSR mean ≤ 0.05 ms, P99 ≤ 0.4 ms; spawn ≤ 6 ms; APC ≤ 3 ms; Sixel ≤ 5 ms; worst stall ≤ 3 ms; FZF 10k ≤ 2 ms; regex 5k ≤ 0.5 ms | | | — |
 | P3-04 | `litty +bench-stress 100000` | Exit 0; record lines/s and worst stall | | | — |
 | P3-05 | `litty +bench-dsr 5000` | Exit 0 | | | — |
+| P3-05a | `litty +bench-features` on its own | Exit 0 (critical-features benchmark, same as the features part of P3-03) | | | — |
 | P3-06 | `litty +bench-input-latency` with the window visible and focused | Record p50/p95 (reference macOS 6.6–7.1 ms p50 under load) | | | |
 | P3-07 | `litty +bench-first-frame 10` | Record p50 (reference macOS 213–219 ms) | | | |
 | P3-08 | `litty +bench-pty-throughput` | Exit 0; record MiB/s per stream kind | | | |
@@ -325,7 +327,7 @@ Use `k` (appendix B) to see the bytes a key sends.
 | G-18 | `cursor-color`, `selection-background/foreground` | Applied (manual-test 5) | | | |
 | G-19 | `background-opacity = 0.5` with default cells and colored cells; X11 compositor on/off | Translucent, premultiplied; colored cells keep opacity (v0.14.1 fixes) | | | |
 | G-20 | M: `background-blur = true`, `20`, `0`; `window-colorspace = display-p3` | Vibrancy behind translucent window; P3 colors on a P3 display | | — | — |
-| G-21 | Window padding `window-padding-x = 24`, `= 10,30`, `window-padding-balance = true` | Margins as set; grid centred when balanced | | | |
+| G-21 | Window padding `window-padding-x = 24`, `= 10,30`; `window-padding-y = 2,6`; `window-padding-balance = true` | Margins as set (x left/right, y top/bottom); grid centred when balanced | | | |
 | G-22 | `window-width = 100` + `window-height = 30`; only one of them; `window-width = 5` | Initial grid 100×30; one alone → error "must both be set"; below minimum rejected | | | |
 | G-23 | Glyph atlas pressure: print 20,000 distinct CJK characters, then zoom several times | No missing glyphs or corruption; memory recorded | | | |
 | G-24 | 120 Hz display (M ProMotion) scroll smoothness | No stutter (record with `+bench-scroll-fps`) | | | |
@@ -340,8 +342,9 @@ Use `k` (appendix B) to see the bytes a key sends.
 | H-04 | Unknown key, line without `=`, bad values for every key type | One error per line (`line N: key: …`); valid lines still apply; Litty starts | | | |
 | H-05 | `ai-api-key secret` (no `=`) | Error line shows `ai-api-key <redacted>`, never the secret | | | |
 | H-06 | Accepted Ghostty keys `link-url`, `adjust-cursor-thickness`, `window-inherit-working-directory`, `alpha-blending` | Accepted silently | | | |
+| H-06a | Removed key `quick-terminal-autohide = false` | One error line `the Quick Terminal was removed in 0.10.0; this line is ignored`; other lines still apply | | | |
 | H-07 | Empty value `font-size =` for each key | Resets that key to its default | | | |
-| H-08 | `theme = Dracula`, `theme = catppuccin-mocha` (alias), `theme = light:Horizon Bright,dark:Dracula`, unknown theme | Applied before other keys; own colors win; unknown → error | | | |
+| H-08 | (manual-test 13) `theme = Dracula`, `theme = catppuccin-mocha` (alias), `theme = light:Horizon Bright,dark:Dracula`, unknown theme | Applied before other keys; own colors win; unknown → error | | | |
 | H-09 | Switch OS appearance light↔dark with a `light:…,dark:…` theme | Theme follows live; mode 2031 pane receives `CSI ?997;1n`/`;2n` | | | |
 | H-10 | Custom theme files in `~/.litty/themes/` and `~/.config/ghostty/themes/` with a bundled name | Custom file overrides the bundled one | | | |
 | H-11 | `palette = 1=#ff0000` … `15`, `palette = 16=…`, `palette = x` | 0–15 applied; others rejected | | | |
@@ -362,7 +365,7 @@ Use `q` for replies. Reference: `src/terminal/grid/perform.rs`.
 | I-02 | `q '\e[5n'`, `q '\e[6n'`, `q '\e[?6n'` | `^[[0n`, `^[[row;colR`, `^[[?row;colR` | | | |
 | I-03 | `q '\e[?996n'` in dark and light OS mode | `^[[?997;1n` / `^[[?997;2n` | | | |
 | I-04 | DECRQM for modes 1 6 7 25 1000 1002 1003 1004 1006 1007 1016 1049 2004 2026 2027 2031 and an unknown mode | `^[[?N;1$y` set / `;2$y` reset; unknown `;0$y` | | | |
-| I-05 | XTWINOPS `14t`, `16t`, `18t` | Pixel size, cell size, rows/cols matching `tput` | | | |
+| I-05 | XTWINOPS `14t`, `16t`, `18t` (manual-test 4) | Pixel size, cell size, rows/cols matching `tput` | | | |
 | I-06 | XTGETTCAP `TN`, `Co`, `RGB`, `Smulx`, `Setulc`, `Ss`, `Se`, `Ms`, `Sync`, unknown | Values from `control.rs`; unknown → `^[P0+r…` | | | |
 | I-07 | DECRQSS `m`, `r`, ` q`, `"q`, unknown | `^[P1$r…^[\`; unknown `^[P0$r^[\` | | | |
 | I-08 | Cursor movement CUU/CUD/CUF/CUB/CNL/CPL/CHA/VPA/CUP/HVP, tabs HTS/TBC/CHT/CBT, IL/DL/ICH/DCH/ECH, ED 0/1/2/3, EL 0/1/2, DECSTBM, DECOM, IRM (4), DECAWM (7), IND/NEL/RI, DECSC/DECRC, SCOSC/SCORC, DEC line drawing `ESC ( 0` | `vttest` menus 1–2, 8 pass; record each failing screen | | | |
@@ -395,7 +398,7 @@ Use `q` for replies. Reference: `src/terminal/grid/perform.rs`.
 | --- | --- | --- | --- | --- | --- |
 | K-01 | zsh, bash 3.2 (M), bash 5, fish, nushell: no dotfile edits | OSC 133/7 emitted; user rc files still load (`ZDOTDIR` restored for zsh) | | | |
 | K-02 | elvish with `use litty` in `rc.elv` | Works; without the line nothing breaks | | | |
-| K-03 | Prompt jump `Cmd+Shift+↑/↓` / `Ctrl+Shift+↑/↓` | Scrolls to previous/next prompt | | | |
+| K-03 | Prompt jump `Cmd+Shift+↑/↓` / `Ctrl+Shift+↑/↓` (manual-test 6) | Scrolls to previous/next prompt | | | |
 | K-04 | Select last output `Cmd+Shift+O` / `Ctrl+Shift+O` | Selects and copies the last command's output; empty command → previous output (record) | | | |
 | K-05 | Marks survive resize (manual-test 12) | Jumps still land on prompts | | | |
 | K-06 | `shell-integration-features = cursor,title`, `no-cursor`, `sudo`, `false` | Bar cursor at prompt, block in vim; title dir then command; `sudo` feature behaviour recorded | | | |
@@ -440,7 +443,7 @@ Use `q` for replies. Reference: `src/terminal/grid/perform.rs`.
 | N-02 | `LinkMod+Click` URL, `mailto:`, `ftp://` | Opens in the default handler | | | |
 | N-03 | `LinkMod+Click` `~/…`, `./…`, absolute paths: folder, `.txt`, `.rs`, `.pdf`, `.png` | Opens with the default app | | | |
 | N-04 | `LinkMod+Click` a `.sh`, `.command`, `.app`, `.terminal`, `.webloc`, `.desktop`, `.AppImage`, a file without extension | Only revealed in its folder, never executed | | | |
-| N-05 | OSC 8: `ls --hyperlink=auto`, `rg --hyperlink-format`, `gcc` diagnostics, `delta` | Hover shows the real target; click opens | | | |
+| N-05 | OSC 8 (manual-test 28): `ls --hyperlink=auto`, `rg --hyperlink-format`, `gcc` diagnostics, `delta` | Hover shows the real target; click opens | | | |
 | N-06 | OSC 8 with `file://otherhost/…`, `javascript:`, `file:` to a script | Ignored / revealed only | | | |
 | N-07 | Path starting with `-` (`./-rf`), names with spaces, quotes, `$()` and `;` | Passed as one argument, nothing executed by a shell | | | |
 | N-08 | Click 50 links rapidly | Bounded helper processes, no zombies (`ps`) | | | |
@@ -459,6 +462,7 @@ Use `q` for replies. Reference: `src/terminal/grid/perform.rs`.
 | O-08 | Body/title with 10 KB text, leading `-`, quotes, newlines | Truncated safely (title 128, body 512 chars); no option injection | | | |
 | O-09 | Clean quit withdraws notifications (`Cmd+Q`, Dock Quit) | Withdrawn | | | |
 | O-10 | Bell: `bell-features` `system`, `attention`, `title`, `audio` (+ path/volume), `border`, `no-*` (manual-test 7, 11) | Each effect; 🔔 on background tab cleared on visit; Dock bounce / urgency hint | | | |
+| O-10a | `bell-features = audio` with `bell-audio-volume = 0`, `0.2`, `1`, `2`, `abc` | Silent / quiet / full; `2` clamps to `1.0`; `abc` → one error line | | | |
 | O-11 | `bell-audio-path` missing file; Linux without `paplay` | No crash; error recorded | | | |
 | O-12 | Window title from OSC 2, cwd, running command; non-ASCII title on X11 (`xprop _NET_WM_NAME WM_NAME`) | Correct; `WM_CLASS = litty, litty` | | | |
 
@@ -564,7 +568,9 @@ Use `q` for replies. Reference: `src/terminal/grid/perform.rs`.
 | V-04 | `cat /dev/urandom \| head -c 50M` in 4 panes | Responsive; memory bounded | | | |
 | V-05 | Run 8 hours idle with 3 windows (overnight) | No memory growth, 0% CPU apart from blink | | | |
 | V-06 | Low memory (Linux cgroup `systemd-run --user -p MemoryMax=200M litty`) | Degrades or exits cleanly; no corrupted files | — | | |
-| V-07 | GPU reset / switching GPUs (M dual-GPU, Linux PRIME) | Recovers or reports an error | | | |
+| V-07 | GPU reset / switching GPUs (Linux PRIME, eGPU) | Recovers or reports an error | — | | |
+| V-09 | Slow compositor / GPU stall: run under heavy GPU load (e.g. a GPU stress tool) while typing and scrolling (0.15.0 open item) | Input still echoes; frames resume when load ends; no hang or validation error | | | |
+| V-10 | Input-to-photon latency with a high-speed camera (≥ 240 fps) filming key press and screen (0.15.0 open item) | Record p50/p95 per platform next to P3-06 | | | |
 | V-08 | Disk full while writing history delete / update download | Error, original files intact | | | |
 
 ### W. AI assistant (offline only)
