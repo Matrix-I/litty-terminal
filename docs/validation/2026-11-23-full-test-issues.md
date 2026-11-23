@@ -1,8 +1,9 @@
 # Full test run — issue note (2026-11-23)
 
 Plan: [full feature test plan](../plans/2026-11-23-full-test-plan.md).
-Status: automated macOS cases ran on 2026-11-23 (M column); manual
-cases, Linux X11 and Linux Wayland have not run. Nothing below is fixed.
+Status: automated cases ran on 2026-11-23 on macOS (M column) and on
+Linux with the X11 and Wayland backends (X and W columns); manual cases
+have not run on any platform. Nothing below is fixed.
 
 Issues are only logged here during the run. Fixing starts after the whole
 plan has run (plan section 10).
@@ -13,28 +14,48 @@ Fill in at the start (environment) and at the end (counts).
 
 | Item | macOS | Linux X11 | Linux Wayland |
 | --- | --- | --- | --- |
-| Commit | `178357e` (rustc 1.99.1) | | |
-| OS / desktop / compositor | macOS 27.2.1 (26B131), arm64 | | |
-| GPU / driver | Apple M1 Pro (Metal) | | |
-| Display scales | Built-in Retina 3024×1964, scale 2 | | |
-| Date run | 2026-11-23 (automated cases only) | | |
+| Commit | `178357e` (rustc 1.99.1) | `fc3d1d4` (rustc 1.100.0; container 1.99.1) | same as X11 |
+| OS / desktop / compositor | macOS 27.2.1 (26B131), arm64 | Ubuntu 26.04.1, kernel 7.0.0-44, GNOME Shell 50.1 Wayland session (XWayland) | same machine, native Wayland (`LITTY_BACKEND=wayland`) |
+| GPU / driver | Apple M1 Pro (Metal) | Intel UHD 620 (Whiskey Lake), Mesa Vulkan; CPU i5-8365U, `powersave` governor, on AC | same |
+| Display scales | Built-in Retina 3024×1964, scale 2 | eDP 3072×1728 at 59.94 Hz, GNOME scale 1.25 (window reports 2 under XWayland native scaling) | same panel, window scale 1.25 |
+| Date run | 2026-11-23 (automated cases only) | 2026-11-23 (automated cases only) | 2026-11-23 (automated cases only) |
 
-| Phase | Run | Pass | Fail | Blocked | Skipped |
-| --- | --- | --- | --- | --- | --- |
-| P0 preparation | M: 4 | 4 | 0 | 0 | 2 |
-| P1 build gates | M: 11 | 11 | 0 | 0 | 0 |
-| P2 automated suites | M: 6 | 5 | 0 | 1 | 0 |
-| P3 performance | M: 14 | 9 | 4 | 1 | 5 |
-| P4 functional A–W | M: 10 | 9 | 1 | 0 | 265 |
-| P5 packaging/install | M: 2 | 2 | 0 | 0 | 1 |
-| P6 documentation | M: 5 | 0 | 4 | 1 | 0 |
+| Phase | Platform | Run | Pass | Fail | Blocked | Skipped |
+| --- | --- | --- | --- | --- | --- | --- |
+| P0 preparation | M | 4 | 4 | 0 | 0 | 2 |
+| | X | 4 | 4 | 0 | 0 | 2 |
+| | W | 4 | 4 | 0 | 0 | 2 |
+| P1 build gates | M | 11 | 11 | 0 | 0 | 0 |
+| | X | 11 | 11 | 0 | 0 | 0 |
+| | W | — | — | — | — | — |
+| P2 automated suites | M | 6 | 5 | 0 | 1 | 0 |
+| | X | 9 | 6 | 2 | 1 | 0 |
+| | W | 3 | 2 | 0 | 1 | 0 |
+| P3 performance | M | 14 | 9 | 4 | 1 | 5 |
+| | X | 13 | 9 | 4 | 0 | 5 |
+| | W | 7 | 6 | 1 | 0 | 5 |
+| P4 functional A–W | M | 10 | 9 | 1 | 0 | 265 |
+| | X | 16 | 13 | 3 | 0 | 262 |
+| | W | 9 | 7 | 2 | 0 | 259 |
+| P5 packaging/install | M | 2 | 2 | 0 | 0 | 1 |
+| | X | 5 | 3 | 0 | 2 | 1 |
+| | W | 0 | 0 | 0 | 0 | 4 |
+| P6 documentation | M | 5 | 0 | 4 | 1 | 0 |
+| | X | 6 | 0 | 5 | 1 | 0 |
+| | W | 6 | 0 | 5 | 1 | 0 |
 
-Counts are for the M column only; "Run" = pass + fail + blocked. Cases
-marked `—` are not counted. "Skipped" is almost all manual GUI cases,
-which this run left out on purpose (automated cases only). Shell
-coverage (P2-13): zsh, bash 3.2.57 and nu; fish and elvish are not
-installed on this Mac. Each run used an isolated `HOME` with
-`auto-update = off` instead of backing up the real `~/.litty` (P0-02).
+"Run" = pass + fail + blocked. Cases marked `—` are not counted.
+"Skipped" is almost all manual GUI cases, which these runs left out on
+purpose (automated cases only); P3-10 is skipped because it opens the
+app. Each run used an isolated `HOME` with `auto-update = off` instead of
+backing up the real `~/.litty` (P0-02).
+
+Shell coverage (P2-13): macOS zsh, bash 3.2.57 and nu (fish and elvish
+not installed); Linux zsh 5.9 and bash 5.3.9 (fish, nu and elvish not
+installed, skipped by the test). Linux runs used the release binary from
+`bundle_linux.sh` (pinned minisign key) for CLI and update cases, and
+`target/release/litty` for benchmarks. Documentation cases (P6) are the
+same files for both Linux backends, so W repeats X.
 
 ## How to log an issue
 
@@ -67,11 +88,11 @@ Template:
 
 ## Review findings before the run
 
-Status after the automated macOS run:
+Status after the automated macOS and Linux runs:
 
 | REV | Status |
 | --- | --- |
-| REV-01 | Open: needs the manual drop test (E-26) |
+| REV-01 | Open: needs the manual drop test (E-26) on X11; Wayland drops pass (P2-10) |
 | REV-02 | Open: Linux only |
 | REV-03 | Confirmed → ISSUE-006 |
 | REV-04 | Confirmed → ISSUE-008 |
@@ -80,7 +101,7 @@ Status after the automated macOS run:
 | REV-07 | Confirmed → ISSUE-009 |
 | REV-08 | Confirmed → ISSUE-004 |
 | REV-09 | Open: needs the manual paste test (U-02) |
-| REV-10 | Open: Linux only |
+| REV-10 | Confirmed → ISSUE-019 |
 
 Found while writing the plan, by reading the source and documentation at
 `9fd8ab4`. These are **not test results**: each one must be confirmed or
@@ -347,3 +368,174 @@ rejected by its plan case on a real machine, then either becomes an
   say to build with the pinned key (as `bundle_macos.sh` does). The
   updater output names only the SHA-256 check; the minisign check is
   implied by the code path above, not printed.
+
+### ISSUE-012 — PTY test fails under a fresh `HOME` when `SHELL` is zsh
+
+- Cases: P1-04 (fresh `HOME`) · Platform: X, Ubuntu 26.04, zsh 5.9 ·
+  Build: `fc3d1d4`
+- Severity: S4 · Type: test tooling
+- Reproduces: 4 of 4 with a fresh `HOME` and `SHELL=/usr/bin/zsh`; 0 of 1
+  with `SHELL=/bin/bash`; 0 of 1 with an empty `$HOME/.zshrc`
+- Steps:
+  1. `HOME=$(mktemp -d) cargo test shell_exit_is_reported_and_reaped`
+- Expected: the test passes whatever the user's shell and `HOME`.
+- Actual: panic at `src/terminal/pty.rs:1255:61`: `on_exit fires: Timeout`
+  after 10 s. The full suite: 875 passed, 1 failed. With the real `HOME`
+  the suite passes (876 + 1 + 14).
+- Evidence: `printf 'exit\r' | HOME=$(mktemp -d) script -qc zsh /dev/null`
+  prints zsh's `zsh-newuser-install` menu, which reads the `exit` line as
+  a menu answer, so the shell never exits.
+- Notes: the test spawns the user's `$SHELL` (`Pty::spawn_in`), so its
+  result depends on the developer's shell and dotfiles. Same family as
+  ISSUE-002.
+
+### ISSUE-013 — `linux_xdg_open_dispatch_smoke` opens real apps on a desktop
+
+- Cases: P2-05 · Platform: X, GNOME 50 Wayland session · Build: `fc3d1d4`
+- Severity: S4 · Type: test tooling
+- Reproduces: 3 of 3 (also with `XDG_CURRENT_DESKTOP`, `DESKTOP_SESSION`
+  and `DBUS_SESSION_BUS_ADDRESS` unset)
+- Steps:
+  1. `cargo test -- --ignored linux_xdg_open_dispatch_smoke --nocapture`
+     in a GNOME session.
+- Expected (plan): pass.
+- Actual: `assertion left == right failed: executable/script paths must
+  open their containing directory`, `left: []`; stdout shows `Opening in
+  existing browser session.` The files and URL were opened in the
+  desktop's real handlers (text editor, file manager, browser) instead of
+  the stub `$BROWSER`.
+- Evidence: `sh -x /usr/bin/xdg-open` with the variables above unset still
+  selects `DE=gnome3` (it asks `org.gnome.SessionManager` on the session
+  bus at its default path) and calls `gio open`, which ignores `$BROWSER`.
+- Notes: the test is marked "run via `scripts/linux/run.sh`" (container,
+  no desktop); the plan lists it as a real-hardware case. Either run it
+  only in the container or isolate it from the desktop session.
+
+### ISSUE-014 — heap corruption abort in the `cargo test` step of `pre-release-check.sh`
+
+- Cases: P3-01 · Platform: X, Ubuntu 26.04, GNOME 50, `XMODIFIERS=@im=ibus`
+  · Build: `fc3d1d4`
+- Severity: S3 · Type: bug (test-only so far)
+- Reproduces: 1 of 1 `pre-release-check.sh` run; 0 of 3 other full host
+  `cargo test` runs this session (P1-04 twice, P1-05); not seen in the 3
+  container runs (P2-08)
+- Steps:
+  1. `bash scripts/pre-release-check.sh` (isolated `HOME`).
+- Expected: exit 0.
+- Actual: `malloc(): smallbin double linked list corrupted`, test binary
+  killed by `SIGABRT`, `✘ One or more cargo tests failed!`, exit 1. The
+  RAM part of the same run passed.
+- Notes: matches the host-only intermittent heap corruption with
+  `ibus-x11` already recorded in
+  [release-0.14.0](release-0.14.0.md) ("still unexplained"). Not seen
+  outside tests.
+
+### ISSUE-015 — Linux misses several `+bench-perf` / `+bench-stress` limits
+
+- Cases: P3-01, P3-03, P3-04, P3-05a · Platform: X, Intel Core i5-8365U
+  (8 threads, `powersave` governor, on AC), UHD 620, Ubuntu 26.04 ·
+  Build: `fc3d1d4` (release, no other heavy apps open)
+- Severity: S3 · Type: bug or spec question (limits may be macOS-calibrated)
+- Reproduces: throughput 6 of 6 runs; others vary (below)
+- Steps:
+  1. `litty +bench-perf`, `+bench-stress 100000`, `+bench-features`,
+     three times each, isolated `HOME`.
+- Expected: exit 0 with every limit met.
+- Actual (failing limits only):
+  - Throughput ≥ 350,000 lines/s: 222,957 / 154,734 / 278,755 (P3-03),
+    223,363 / 194,174 / 277,847 (P3-04), 162,590 (P3-01).
+  - Worst frame stall ≤ 3 ms: 3.75 ms (P3-03 r2), 3.34 and 4.10 ms
+    (P3-04 r1, r2), 3.75 ms (P3-01).
+  - 64 KB file read ≤ 3 ms: 3.57, 4.89 ms; 1 MB file read ≤ 40 ms:
+    50.31 ms (P3-03 r1, r2); 68.89 ms (P3-01).
+  - 256 KB Kitty APC ≤ 3 ms: 3.12, 3.91 ms; 256 KB Sixel ≤ 5 ms: 6.91,
+    9.01, 5.95 ms (P3-03 r1–r3).
+  - 500 BiDi clusters ≤ 0.2 ms: 0.22 ms (P3-03 r2), 0.21 ms (P3-01).
+  - FZF 10k ≤ 2 ms: 2.18, 2.65 ms (P3-03), 3.57 ms (P3-05a r1), 2.60–
+    2.83 ms (P3-01); Regex 5k ≤ 0.5 ms: 0.716 ms (P3-05a r1).
+  - Passing: DSR mean/P99, PTY spawn (1.24 ms), 500 URLs, post-stress
+    probe, P3-05a runs 2 and 3.
+- Notes: `docs/development/performance.md` has no Linux numbers for these
+  benches. Related to ISSUE-001 (macOS stall). Not checked: the
+  `performance` governor.
+
+### ISSUE-016 — native Wayland scroll misses every fifth frame on a 60 Hz panel
+
+- Cases: P3-09 (W) · Platform: W, GNOME 50, eDP 3072×1728 at 59.999 Hz,
+  scale 1.25 · Build: `fc3d1d4`
+- Severity: S3 · Type: bug (to confirm)
+- Reproduces: 1 of 1 run (3 scenarios)
+- Steps:
+  1. `LITTY_BACKEND=wayland litty +bench-scroll-fps`
+- Expected: about 60 fps, as the X11 backend gives on the same panel.
+- Actual: `submission_fps` 48.4 / 49.2 / 50.0; `interval_p50_ms` 16.75
+  but `interval_p95_ms` 33.5; `intervals_over_25ms` 46 / 43 / 40 of
+  about 194 frames; `render_p95_ms` 0.26, `acquire_p95_ms` 0.06. X11
+  (`P3-09-x11`): 60.0 fps, p95 17.2 ms, 0 intervals over 25 ms.
+- Notes: rendering is fast, so the lost frames are in frame pacing (frame
+  callback / present), not drawing. Wayland `+bench-input-latency` p95 is
+  29.0 ms against 13.7 ms on X11 (echo p95 21.5 ms), possibly the same
+  cause.
+
+### ISSUE-017 — a missing `SHELL` makes Litty exit silently
+
+- Cases: A-03 · Platform: X and W, GNOME 50 · Build: `fc3d1d4`
+- Severity: S3 · Type: bug
+- Reproduces: 3 of 3 (X), 1 of 1 (W)
+- Steps:
+  1. `SHELL=/nonexistent/shell litty`
+- Expected: a clear error or a fallback shell, never a hang or crash.
+- Actual: the process exits 0 after about 0.35 s with nothing on stderr;
+  no window stays open to show an error. `SHELL=/bin/sh` and bash start
+  normally.
+- Notes: `Pty::spawn_shell` (`src/terminal/pty.rs:318`) uses `$SHELL` as
+  given; the child's exec error goes to the PTY and the child exits 127,
+  so the only tab closes and the app quits. Not checked by eye whether the
+  window flashes.
+
+### ISSUE-018 — `+update` on a package install downloads, then fails with a raw error
+
+- Cases: R-07 · Platform: X, Ubuntu 26.04, `litty` 0.14.0 `.deb`
+  (`/usr/bin/litty`, root-owned) · Build: `v0.14.0` package
+- Severity: S4 · Type: bug or spec question
+- Reproduces: 1 of 1
+- Steps:
+  1. As a normal user: `/usr/bin/litty +update`
+- Expected: refused with a clear message; nothing changed.
+- Actual: downloads and verifies v0.14.1, then `Installing update...
+  failed.` / `Error applying update: cannot copy binary: Permission denied
+  (os error 13)`, exit 1. `/usr/bin/litty` is unchanged (same SHA-256)
+  and no stray file is left in `/usr/bin`.
+- Notes: nothing is damaged, but the message does not say the binary is
+  managed by a package manager (use `apt`/`dnf`), and the download happens
+  first. Checked on the v0.14.0 package only.
+
+### ISSUE-019 — `scripts/manual-test.sh` assumes macOS
+
+- Cases: P6-06 (REV-10) · Platform: X, W · Build: `fc3d1d4`
+- Severity: S4 · Type: test tooling
+- Reproduces: n/a (script check)
+- Actual: unchanged since REV-10: `pbpaste` (`scripts/manual-test.sh:340`),
+  `/System/Library/Sounds/Glass.aiff` (`:256`), `Cmd` wording in about 25
+  prompts (for example `:154`, `:198`, `:275`); only group 26 checks `$OS`.
+  No Linux substitutions are documented.
+
+### ISSUE-020 — `rounded_corners_fade_a_premultiplied_frame` fails in the container's full suite
+
+- Cases: P2-08 · Platform: container (Debian 13, Mesa lavapipe, Xvfb),
+  host Ubuntu 26.04 with Podman · Build: `fc3d1d4`
+- Severity: S3 · Type: bug or test tooling (order-dependent)
+- Reproduces: 3 of 3 full-suite runs (`--test-threads=1`); 0 of 4 when the
+  test runs alone in the same image; 0 of 3 on the host (Intel UHD 620)
+- Steps:
+  1. `bash scripts/linux/test.sh`
+- Expected: exit 0.
+- Actual: `src/render/renderer/tests.rs:191`: `(3, 0) [8, 12, 17, 80] is
+  not premultiplied`; later runs `[7, 11, 15, 98]` and `[8, 12, 17, 90]`
+  (want about 10/15/20 at alpha 80). The suite is 875 passed, 1 failed, so
+  `run.sh` stops before its smoke steps. Run by hand in the same image, the
+  remaining steps pass: `linux_xdg_open_dispatch_smoke`, `x11_smoke.py`
+  (4/4), `wayland_smoke.py` (3/3), `wayland_sway_smoke.py` (3/3).
+- Notes: the corner pixel's alpha changes between runs, so the frame
+  depends on state left by earlier tests (shared device or pipelines) or
+  on uninitialised memory. Test added in `42320d7`.

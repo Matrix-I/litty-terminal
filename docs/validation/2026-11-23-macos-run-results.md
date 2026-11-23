@@ -10,8 +10,9 @@ Plan: [full feature test plan](../plans/2026-11-23-full-test-plan.md)
 person at the keyboard were executed: 52 of 325 macOS cases (16%). The
 273 manual GUI cases (keyboard, mouse, IME, windows, rendering checks
 by eye, …) have not run, so exit criterion 1 of the plan (every case
-has a result other than "skipped") is not met for macOS. Linux X11 and
-Linux Wayland have not started.
+has a result other than "skipped") is not met for macOS. The automated
+Linux X11 and Wayland cases are in the
+[Linux results](2026-11-23-linux-run-results.md).
 
 | Item | Value |
 | --- | --- |
