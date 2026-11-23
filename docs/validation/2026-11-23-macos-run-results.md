@@ -117,6 +117,27 @@ the pinned minisign key).
 - P2-12 activation probe with a manual launch.
 - P6-05 after the manual cases.
 
+## Next macOS session (decided 2026-11-23)
+
+Continue the manual cases once computer use (desktop control in the
+Claude desktop app: Settings → System → Computer use) is available, so
+the app can be driven and checked without a person at the keyboard.
+
+1. Enable computer use, start a new session, grant access to `Litty.app`.
+2. Check first which tier Litty gets: terminal apps are limited to
+   clicks (no typing or key presses), which would block most cases. If
+   so, record it and fall back to a person running
+   `scripts/manual-test.sh`.
+3. Run the skipped cases section by section (A–W, then P3-06, P3-10,
+   P3-15..18, P2-12 activation probe, P5-07, P6-05), writing results into
+   column M and issues into the issue note as before.
+4. Cases checked only from screenshots (fonts, colours, images, IME
+   popups) get a note saying so.
+
+Not yet tried, can run without computer use: drive the escape-sequence
+and config cases (section I, parts of H, J, K, O) with a script used as
+`SHELL` inside Litty that sends queries and records the replies.
+
 Raw logs from this run are in a session scratch folder and are not kept
 in the repository; the numbers above and in the issue note are the
 record.
