@@ -494,8 +494,8 @@ Use `q` for replies. Reference: `src/terminal/grid/perform.rs`.
 | --- | --- | --- | --- | --- | --- |
 | R-01 | `litty +check-update` on v0.14.1 | "up to date" (latest is v0.14.1) | P | | — |
 | R-02 | Build tag `v0.14.0` (`git worktree add ../litty-0.14.0 v0.14.0`, release build), run `+check-update` | Reports v0.14.1 available | P | | — |
-| R-03 | v0.14.0 standalone binary in a user-writable path: `+update` | Downloads asset for this CPU, verifies minisign + SHA-256 + `# litty-release: v0.14.1`, replaces the binary; new binary contains 0.14.1 | B (downloads a release asset; needs approval) | | — |
-| R-04 | `+update --force` / `-f` on v0.14.1 | Reinstalls the current version | B (downloads a release asset; needs approval) | | — |
+| R-03 | v0.14.0 standalone binary in a user-writable path: `+update` | Downloads asset for this CPU, verifies minisign + SHA-256 + `# litty-release: v0.14.1`, replaces the binary; new binary contains 0.14.1 | P (with pinned key, ISSUE-011) | | — |
+| R-04 | `+update --force` / `-f` on v0.14.1 | Reinstalls the current version | P (`--force` and `-f`; pinned key, ISSUE-011) | | — |
 | R-05 | M: v0.14.0 `Litty.app`: Litty ▸ Check for Updates… → Update Now | Bundle staged, signed, swapped atomically; app relaunches as 0.14.1 | S manual | — | — |
 | R-06 | M: same with `/Applications` read-only or on a filesystem without atomic swap | Error; installed bundle intact | S manual | — | — |
 | R-07 | Linux `.deb`/`.rpm` install (`/usr/bin/litty`, root-owned): `+update` as a user | Refused with a clear message; nothing changed | — | | — |
@@ -595,7 +595,7 @@ Live providers are out of scope.
 | P5-03 | Fedora: `bash scripts/linux/test-package-rpm.sh`; `sudo dnf install ./litty-<ver>-1.x86_64.rpm` | Same as P5-02 | — | | |
 | P5-04 | `desktop-file-validate resources/linux/litty.desktop`; dock pinning; `StartupWMClass` grouping | Valid; windows group under one icon | — | | |
 | P5-05 | macOS: `./bundle_macos.sh` (install), DMG layout, `Info.plist` versions, `codesign -dv --verbose` | Versions 0.14.1; bundle id `com.litty.terminal` | P | — | — |
-| P5-06 | Release asset verification: download v0.14.1 assets, `sha256sum -c`, `minisign -Vm SHA256SUMS.txt -p resources/minisign.pub` | All hashes and the signature verify; one `# litty-release: v0.14.1` line | B (downloads release assets; needs approval) | | — |
+| P5-06 | Release asset verification: download v0.14.1 assets, `sha256sum -c`, `minisign -Vm SHA256SUMS.txt -p resources/minisign.pub` | All hashes and the signature verify; one `# litty-release: v0.14.1` line | P (6/6 hashes, signature OK) | | — |
 | P5-07 | Raw binary on a clean machine (glibc 2.34 Debian 12; current macOS) | Runs; Linux needs only documented libs | S manual (clean machine) | | |
 
 ## 9. P6 — Documentation consistency

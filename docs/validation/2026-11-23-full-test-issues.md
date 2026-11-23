@@ -25,8 +25,8 @@ Fill in at the start (environment) and at the end (counts).
 | P1 build gates | M: 11 | 11 | 0 | 0 | 0 |
 | P2 automated suites | M: 6 | 5 | 0 | 1 | 0 |
 | P3 performance | M: 14 | 9 | 4 | 1 | 5 |
-| P4 functional A–W | M: 10 | 7 | 1 | 2 | 265 |
-| P5 packaging/install | M: 2 | 1 | 0 | 1 | 1 |
+| P4 functional A–W | M: 10 | 9 | 1 | 0 | 265 |
+| P5 packaging/install | M: 2 | 2 | 0 | 0 | 1 |
 | P6 documentation | M: 5 | 0 | 4 | 1 | 0 |
 
 Counts are for the M column only; "Run" = pass + fail + blocked. Cases
@@ -320,3 +320,30 @@ rejected by its plan case on a real machine, then either becomes an
 - Notes: the window was not focused (started from a script). The source
   of the wake-ups is not identified; P3-13 (all windows closed) shows
   +0.01 s in 60 s and 0.0% `%cpu`, which passes.
+
+### ISSUE-011 — update cases fail with a plain release build (no pinned key)
+
+- Cases: R-03, R-04 (plan steps of R-02/R-03 say only "release build") ·
+  Platform: M · Build: `178357e`, `v0.14.0`
+- Severity: S4 · Type: test tooling
+- Reproduces: 3 of 3 without the key; 0 of 3 with it
+- Steps:
+  1. `cargo build --release` (no `LITTY_MINISIGN_PUBKEY`) for `v0.14.0`
+     and for `178357e`; copy each binary to a user-writable folder.
+  2. `litty +update` on the v0.14.0 copy; `+update --force` and
+     `+update -f` on the v0.14.1 copies.
+- Expected: R-03 updates to v0.14.1; R-04 reinstalls v0.14.1.
+- Actual: `Error downloading/verifying update: this build has no pinned
+  minisign key; refusing an unverifiable update`, exit 1, binary unchanged.
+  Rebuilt with
+  `LITTY_MINISIGN_PUBKEY="$(tail -n 1 resources/minisign.pub)"`, all three
+  succeed: `SHA-256 checksum verified`, `Successfully updated Litty to
+  v0.14.1!`, exit 0, `+check-update` then reports `Current version:
+  v0.14.1`.
+- Evidence: `src/update/verify.rs:205` (`option_env!("LITTY_MINISIGN_PUBKEY")`)
+  and `:243-245` (refusal without a key). P5-06 verified the same release
+  with `minisign -Vm` (signature and trusted comment OK) and 6/6 hashes.
+- Notes: refusing is the intended secure behavior; the plan steps should
+  say to build with the pinned key (as `bundle_macos.sh` does). The
+  updater output names only the SHA-256 check; the minisign check is
+  implied by the code path above, not printed.
