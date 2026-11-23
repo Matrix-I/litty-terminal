@@ -35,8 +35,8 @@ Fill in at the start (environment) and at the end (counts).
 | | X | 13 | 9 | 4 | 0 | 5 |
 | | W | 7 | 6 | 1 | 0 | 5 |
 | P4 functional A–W | M | 10 | 9 | 1 | 0 | 265 |
-| | X | 16 | 13 | 3 | 0 | 262 |
-| | W | 9 | 7 | 2 | 0 | 259 |
+| | X | 50 | 41 | 5 | 4 | 228 |
+| | W | 38 | 29 | 5 | 4 | 230 |
 | P5 packaging/install | M | 2 | 2 | 0 | 0 | 1 |
 | | X | 5 | 3 | 0 | 2 | 1 |
 | | W | 0 | 0 | 0 | 0 | 4 |
@@ -46,7 +46,9 @@ Fill in at the start (environment) and at the end (counts).
 
 "Run" = pass + fail + blocked. Cases marked `—` are not counted.
 "Skipped" is almost all manual GUI cases, which these runs left out on
-purpose (automated cases only); P3-10 is skipped because it opens the
+purpose (automated cases only; on Linux, P4 cases that a script running as
+`SHELL` inside Litty can check through terminal replies, stderr, `xprop` or
+process state were automated); P3-10 is skipped because it opens the
 app. Each run used an isolated `HOME` with `auto-update = off` instead of
 backing up the real `~/.litty` (P0-02).
 
@@ -539,3 +541,51 @@ rejected by its plan case on a real machine, then either becomes an
 - Notes: the corner pixel's alpha changes between runs, so the frame
   depends on state left by earlier tests (shared device or pipelines) or
   on uninitialised memory. Test added in `42320d7`.
+
+### ISSUE-021 — a window title over about 4 KB kills Litty on Wayland
+
+- Cases: I-14 (W) · Platform: W, GNOME 50 · Build: `fc3d1d4`
+- Severity: S1 · Type: bug
+- Reproduces: 3 of 3 (title of 4,100, 5,000 and 100,000 bytes); 0 of 4 at
+  1,000 and 4,000 bytes; 0 of 5 on X11 (same lengths)
+- Steps:
+  1. `LITTY_BACKEND=wayland litty`, then in the shell:
+     `python3 -c "print('\x1b]2;' + 'A'*4100 + '\x07', end='')"`
+- Expected: the title is truncated or ignored; the terminal keeps running.
+- Actual: stderr `wl_display#1: error 1: message length 4116 exceeds 4096`,
+  `litty: lost the connection to the Wayland compositor: Io error: Invalid
+  argument (os error 22)`; Litty exits 1 with every window and shell.
+- Notes: any program can print such a title, so output from an untrusted
+  source can close all of the user's sessions. The Wayland
+  `xdg_toplevel.set_title` message is not length-limited before sending.
+
+### ISSUE-022 — default background is `#000000`, docs say `#121316`
+
+- Cases: H-13 · Platform: X and W · Build: `fc3d1d4`
+- Severity: S4 · Type: docs or spec question
+- Reproduces: 2 of 2 (one per backend), empty config
+- Steps:
+  1. Empty config; in the shell query `printf '\e]11;?\a'`.
+- Expected (plan, `docs/guide/configuration.md:34` and `:80`): `#121316`.
+- Actual: `\e]11;rgb:0000/0000/0000\a`; foreground `rgb:e6e6/e6e6/e6e6`
+  matches. `src/config.rs:182` sets `background: 0x0000_0000`;
+  `#121316` is palette colour 0 (`src/config.rs:79`) and the commented
+  example in the config template (`src/config.rs:975`).
+- Notes: decide which one is intended; the screen colour itself was not
+  checked by eye.
+
+### ISSUE-023 — a UTF-8 BOM breaks the first config line
+
+- Cases: H-16 · Platform: X and W · Build: `fc3d1d4`
+- Severity: S3 · Type: bug
+- Reproduces: 2 of 2 (one per backend)
+- Steps:
+  1. Config written as `EF BB BF` + `background\t=\t"#405060"\r\n` +
+     `foreground = "#a0b0c0"\r\n`.
+- Expected: parsed (BOM ignored).
+- Actual: `line 2: ﻿background: unknown option` (the BOM is part of the
+  key; line 2 because the harness prepends `auto-update = off`, so in a
+  user's file it is line 1); background stays default. The second line
+  with CRLF, spaces and quotes applies (`rgb:a0a0/b0b0/c0c0`). Without the
+  BOM, `background\t=\t"#405060"` with CRLF applies (`rgb:4040/5050/6060`).
+- Notes: Windows editors (Notepad) save UTF-8 with a BOM by default.

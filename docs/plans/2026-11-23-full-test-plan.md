@@ -171,7 +171,7 @@ Unless a case says otherwise, start from an empty config and one window.
 | ID | Steps | Expected | M | X | W |
 | --- | --- | --- | --- | --- | --- |
 | A-01 | Launch from Finder/Dock (M), the app menu (X/W), and from a shell | One window, shell prompt, tab bar; record the starting directory (code default: `$HOME` when none is given) | S manual | S manual | S manual |
-| A-02 | Shell environment: `env \| grep -E 'TERM\|COLORTERM\|LITTY\|LANG'` | `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=litty`, `TERM_PROGRAM_VERSION=0.14.1`, `LITTY_SHELL_INTEGRATION=1`, `LITTY_AI_TRIGGER=yo`; `LANG=en_US.UTF-8` only if neither `LANG` nor `LC_ALL` was set | S manual | S manual | S manual |
+| A-02 | Shell environment: `env \| grep -E 'TERM\|COLORTERM\|LITTY\|LANG'` | `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=litty`, `TERM_PROGRAM_VERSION=0.14.1`, `LITTY_SHELL_INTEGRATION=1`, `LITTY_AI_TRIGGER=yo`; `LANG=en_US.UTF-8` only if neither `LANG` nor `LC_ALL` was set | S manual | P (all listed vars; `LANG=en_US.UTF-8` inherited) | P (all listed vars; `LANG=en_US.UTF-8` inherited) |
 | A-03 | `SHELL=/bin/zsh`, `/bin/bash`, fish, nu, elvish, `/bin/sh`, a non-existent path | Each starts; a bad `SHELL` gives a clear error or fallback, never a hang or crash | S manual | F ISSUE-017 (`/bin/sh`, bash start) | F ISSUE-017 (`/bin/sh`, bash start) |
 | A-04 | Type `exit` in the only tab | M: window closes, app stays in the Dock at 0% CPU; X/W: process exits | S manual | S manual | S manual |
 | A-05 | M: after A-04, click the Dock icon; `open -a Litty`; Shell ▸ New Window | Each opens one fresh window | S manual | — | — |
@@ -183,7 +183,7 @@ Unless a case says otherwise, start from an empty config and one window.
 | A-11 | `kill -9` the shell of one pane | That pane shows the exit / closes per design; other panes unaffected | S manual | S manual | S manual |
 | A-12 | Shell that exits immediately (`SHELL=/usr/bin/true`) | M: window closes, app keeps running; X/W: process exits; no busy loop | S manual | P (exits in 0.56 s, 0.12 s CPU) | P (exits in 0.36 s, 0.08 s CPU) |
 | A-13 | Launch with `HOME` unset and with a read-only `HOME` | Starts; config/cache failures reported on stderr, no crash | S manual | P (read-only: stderr reports cache and shell-integration failures) | P (as X) |
-| A-14 | Launch 20 instances in a loop, close them all | All start and exit cleanly; no leftover registry entries in `$XDG_RUNTIME_DIR/litty-a1` (Linux) | S manual | S manual | S manual |
+| A-14 | Launch 20 instances in a loop, close them all | All start and exit cleanly; no leftover registry entries in `$XDG_RUNTIME_DIR/litty-a1` (Linux) | S manual | P (20 instances; registry empty after exit) | S manual |
 
 ### B. Windows, tabs and splits
 
@@ -312,9 +312,9 @@ Use `k` (appendix B) to see the bytes a key sends.
 | ID | Steps | Expected | M | X | W |
 | --- | --- | --- | --- | --- | --- |
 | G-01 | Default font, `font-family = <name>`, a file path, a fallback chain (3 lines), a missing name | Fonts used in order; missing name logs `font-family … not found; using fallback` | S manual | S manual | S manual |
-| G-02 | `LITTY_FONT=<file.ttf>` and `LITTY_FONT_SIZE=20` env vars | Used when no config overrides | S manual | S manual | S manual |
+| G-02 | `LITTY_FONT=<file.ttf>` and `LITTY_FONT_SIZE=20` env vars | Used when no config overrides | S manual | B (`LITTY_FONT_SIZE=20` applies, config overrides it; font file needs a visual check) | B (`LITTY_FONT_SIZE=20` applies, config overrides it; font file needs a visual check) |
 | G-03 | Zoom in/out/reset `UIMod+=`/`-`/`0` (with and without Shift) | ±1 pt per press, clamped 6–72; reset to `font-size` | S manual | S manual | S manual |
-| G-04 | `font-size = 5`, `= 80`, `= abc` | Clamped / error line; Litty still starts | S manual | S manual | S manual |
+| G-04 | `font-size = 5`, `= 80`, `= abc` | Clamped / error line; Litty still starts | S manual | P (5 → 6 pt, 80 → 72 pt by cell size; `abc` → one error line) | P (5 → 6 pt, 80 → 72 pt by cell size; `abc` → one error line) |
 | G-05 | Bold, italic, bold-italic, dim, inverse, hidden, strikethrough (`SGR 1 3 2 7 8 9`) | Rendered correctly | S manual | S manual | S manual |
 | G-06 | Underline styles `4:1..4:5`, `21`, colored `58:2::r:g:b`, reset `59` (manual-test 10) | Single/double/curly/dotted/dashed with their own color | S manual | S manual | S manual |
 | G-07 | 16/256/truecolor test (`printf '\e[38;2;255;100;0m'`, 256-color chart script) | Exact colors | S manual | S manual | S manual |
@@ -343,21 +343,21 @@ Use `k` (appendix B) to see the bytes a key sends.
 | H-01 | `UIMod+,` with no config; again with `~/.litty` missing and read-only | Creates the template (no options set) and opens it. Code uses `open -t` (macOS) / `xdg-open` (Linux), while the docs say `$EDITOR`: record which editor opens. Errors go to stderr | S manual | S manual | S manual |
 | H-02 | Edit config, `UIMod+Shift+,` | Live reload in every window without losing shells | S manual | S manual | S manual |
 | H-03 | Edit config, switch to another app and back | Auto-reload on focus when the file changed | S manual | S manual | S manual |
-| H-04 | Unknown key, line without `=`, bad values for every key type | One error per line (`line N: key: …`); valid lines still apply; Litty starts | S manual | S manual | S manual |
-| H-05 | `ai-api-key secret` (no `=`) | Error line shows `ai-api-key <redacted>`, never the secret | S manual | S manual | S manual |
-| H-06 | Accepted Ghostty keys `link-url`, `adjust-cursor-thickness`, `window-inherit-working-directory`, `alpha-blending` | Accepted silently | S manual | S manual | S manual |
-| H-06a | Removed key `quick-terminal-autohide = false` | One error line `the Quick Terminal was removed in 0.10.0; this line is ignored`; other lines still apply | S manual | S manual | S manual |
-| H-07 | Empty value `font-size =` for each key | Resets that key to its default | S manual | S manual | S manual |
-| H-08 | (manual-test 13) `theme = Dracula`, `theme = catppuccin-mocha` (alias), `theme = light:Horizon Bright,dark:Dracula`, unknown theme | Applied before other keys; own colors win; unknown → error | S manual | S manual | S manual |
+| H-04 | Unknown key, line without `=`, bad values for every key type | One error per line (`line N: key: …`); valid lines still apply; Litty starts | S manual | P (6 error lines; valid line applied) | P (6 error lines; valid line applied) |
+| H-05 | `ai-api-key secret` (no `=`) | Error line shows `ai-api-key <redacted>`, never the secret | S manual | P (`ai-api-key <redacted>`) | P (`ai-api-key <redacted>`) |
+| H-06 | Accepted Ghostty keys `link-url`, `adjust-cursor-thickness`, `window-inherit-working-directory`, `alpha-blending` | Accepted silently | S manual | P (no output) | P (no output) |
+| H-06a | Removed key `quick-terminal-autohide = false` | One error line `the Quick Terminal was removed in 0.10.0; this line is ignored`; other lines still apply | S manual | P | P |
+| H-07 | Empty value `font-size =` for each key | Resets that key to its default | S manual | P (background and font size back to default) | P (background and font size back to default) |
+| H-08 | (manual-test 13) `theme = Dracula`, `theme = catppuccin-mocha` (alias), `theme = light:Horizon Bright,dark:Dracula`, unknown theme | Applied before other keys; own colors win; unknown → error | S manual | P (Dracula, alias, light/dark in dark mode, unknown → error, own color wins; precedence of later lines not checked visually) | P (Dracula, alias, light/dark in dark mode, unknown → error, own color wins; precedence of later lines not checked visually) |
 | H-09 | Switch OS appearance light↔dark with a `light:…,dark:…` theme | Theme follows live; mode 2031 pane receives `CSI ?997;1n`/`;2n` | S manual | S manual | S manual |
 | H-10 | Custom theme files in `~/.litty/themes/` and `~/.config/ghostty/themes/` with a bundled name | Custom file overrides the bundled one | S manual | S manual | S manual |
-| H-11 | `palette = 1=#ff0000` … `15`, `palette = 16=…`, `palette = x` | 0–15 applied; others rejected | S manual | S manual | S manual |
-| H-12 | `background`/`foreground` as `#rrggbb`, `rrggbb`, X11 names (`midnight blue`) | Accepted where documented | S manual | S manual | S manual |
-| H-13 | Default background/foreground with no config | `#121316` / `#e6e6e6` (documented) | S manual | S manual | S manual |
-| H-14 | `title = Work`; OSC 2 from a program | Title stays `Work` | S manual | S manual | S manual |
-| H-15 | OSC 4/10/11/12 set and query, OSC 104/110/111/112 reset, per-pane colors (manual-test 1, 20) | Replies `rgb:rrrr/gggg/bbbb`; reset to config; other split unaffected | S manual | S manual | S manual |
-| H-16 | Config file with CRLF line endings, UTF-8 BOM, tabs around `=`, quoted values | Parsed (record any failure) | S manual | S manual | S manual |
-| H-17 | Config is a directory / unreadable (chmod 000) | `cannot read config …` on stderr, defaults used | S manual | S manual | S manual |
+| H-11 | `palette = 1=#ff0000` … `15`, `palette = 16=…`, `palette = x` | 0–15 applied; others rejected | S manual | P (1 and 15 applied; 16 and `x` rejected) | P (1 and 15 applied; 16 and `x` rejected) |
+| H-12 | `background`/`foreground` as `#rrggbb`, `rrggbb`, X11 names (`midnight blue`) | Accepted where documented | S manual | P (all three forms) | P (all three forms) |
+| H-13 | Default background/foreground with no config | `#121316` / `#e6e6e6` (documented) | S manual | F ISSUE-022 | F ISSUE-022 |
+| H-14 | `title = Work`; OSC 2 from a program | Title stays `Work` | S manual | P (`_NET_WM_NAME` stays `Work`) | S manual (no title reader on Wayland) |
+| H-15 | OSC 4/10/11/12 set and query, OSC 104/110/111/112 reset, per-pane colors (manual-test 1, 20) | Replies `rgb:rrrr/gggg/bbbb`; reset to config; other split unaffected | S manual | P (OSC 4/10/11/12 set, query, reset; per-pane part manual) | P (OSC 4/10/11/12 set, query, reset; per-pane part manual) |
+| H-16 | Config file with CRLF line endings, UTF-8 BOM, tabs around `=`, quoted values | Parsed (record any failure) | S manual | F ISSUE-023 (BOM; CRLF, tabs and quotes OK) | F ISSUE-023 (BOM; CRLF, tabs and quotes OK) |
+| H-17 | Config is a directory / unreadable (chmod 000) | `cannot read config …` on stderr, defaults used | S manual | P (`cannot read config …: Is a directory` / `Permission denied`) | P (`cannot read config …: Is a directory` / `Permission denied`) |
 
 ### I. Escape-sequence conformance
 
@@ -365,21 +365,21 @@ Use `q` for replies. Reference: `src/terminal/grid/perform.rs`.
 
 | ID | Steps | Expected | M | X | W |
 | --- | --- | --- | --- | --- | --- |
-| I-01 | `q '\e[c'`, `q '\e[>c'`, `q '\e[=c'` | `^[[?62;4;22c`, `^[[>0;0;0c`, `^[P!\|00000000^[\` | S manual | S manual | S manual |
-| I-02 | `q '\e[5n'`, `q '\e[6n'`, `q '\e[?6n'` | `^[[0n`, `^[[row;colR`, `^[[?row;colR` | S manual | S manual | S manual |
-| I-03 | `q '\e[?996n'` in dark and light OS mode | `^[[?997;1n` / `^[[?997;2n` | S manual | S manual | S manual |
-| I-04 | DECRQM for modes 1 6 7 25 1000 1002 1003 1004 1006 1007 1016 1049 2004 2026 2027 2031 and an unknown mode | `^[[?N;1$y` set / `;2$y` reset; unknown `;0$y` | S manual | S manual | S manual |
-| I-05 | XTWINOPS `14t`, `16t`, `18t` (manual-test 4) | Pixel size, cell size, rows/cols matching `tput` | S manual | S manual | S manual |
-| I-06 | XTGETTCAP `TN`, `Co`, `RGB`, `Smulx`, `Setulc`, `Ss`, `Se`, `Ms`, `Sync`, unknown | Values from `control.rs`; unknown → `^[P0+r…` | S manual | S manual | S manual |
-| I-07 | DECRQSS `m`, `r`, ` q`, `"q`, unknown | `^[P1$r…^[\`; unknown `^[P0$r^[\` | S manual | S manual | S manual |
+| I-01 | `q '\e[c'`, `q '\e[>c'`, `q '\e[=c'` | `^[[?62;4;22c`, `^[[>0;0;0c`, `^[P!\|00000000^[\` | S manual | P | P |
+| I-02 | `q '\e[5n'`, `q '\e[6n'`, `q '\e[?6n'` | `^[[0n`, `^[[row;colR`, `^[[?row;colR` | S manual | P | P |
+| I-03 | `q '\e[?996n'` in dark and light OS mode | `^[[?997;1n` / `^[[?997;2n` | S manual | B (dark `997;1` OK; light mode not switched) | B (as X) |
+| I-04 | DECRQM for modes 1 6 7 25 1000 1002 1003 1004 1006 1007 1016 1049 2004 2026 2027 2031 and an unknown mode | `^[[?N;1$y` set / `;2$y` reset; unknown `;0$y` | S manual | P | P |
+| I-05 | XTWINOPS `14t`, `16t`, `18t` (manual-test 4) | Pixel size, cell size, rows/cols matching `tput` | S manual | P (matches `stty`) | P (matches `stty`) |
+| I-06 | XTGETTCAP `TN`, `Co`, `RGB`, `Smulx`, `Setulc`, `Ss`, `Se`, `Ms`, `Sync`, unknown | Values from `control.rs`; unknown → `^[P0+r…` | S manual | P (matches `control.rs`) | P |
+| I-07 | DECRQSS `m`, `r`, ` q`, `"q`, unknown | `^[P1$r…^[\`; unknown `^[P0$r^[\` | S manual | P | P |
 | I-08 | Cursor movement CUU/CUD/CUF/CUB/CNL/CPL/CHA/VPA/CUP/HVP, tabs HTS/TBC/CHT/CBT, IL/DL/ICH/DCH/ECH, ED 0/1/2/3, EL 0/1/2, DECSTBM, DECOM, IRM (4), DECAWM (7), IND/NEL/RI, DECSC/DECRC, SCOSC/SCORC, DEC line drawing `ESC ( 0` | `vttest` menus 1–2, 8 pass; record each failing screen | S manual | S manual | S manual |
 | I-09 | `vttest` full run (menus 1–11) | Record per-screen result; failures that real apps hit become issues | S manual | S manual | S manual |
 | I-10 | Focus events `\e[?1004h`, switch focus | `^[[I` / `^[[O` | S manual | S manual | S manual |
 | I-11 | Bracketed paste `\e[?2004h`, paste | `^[[200~…^[[201~` | S manual | S manual | S manual |
 | I-12 | OSC 0/2 titles with `;` in them, OSC 7 cwd, OSC 133 marks | Title keeps `;`; new tab uses OSC 7 dir; marks used by prompt jump | S manual | S manual | S manual |
 | I-13 | OSC 9;4 progress states 0–4 (manual-test 3, 11) | Title prefix and top-edge bar as documented | S manual | S manual | S manual |
-| I-14 | Malformed/oversized sequences: OSC 100 KB, OSC 2 MB (over the 1 MiB + 64 limit), unterminated OSC then normal output, DCS without ST, CSI with 100 params, nested ESC | No hang, no crash; oversized OSC discarded; later output renders | S manual | S manual | S manual |
-| I-15 | 8-bit C1 controls (`\x9b`) and UTF-8 C1 | Handled per vte; no injection | S manual | S manual | S manual |
+| I-14 | Malformed/oversized sequences: OSC 100 KB, OSC 2 MB (over the 1 MiB + 64 limit), unterminated OSC then normal output, DCS without ST, CSI with 100 params, nested ESC | No hang, no crash; oversized OSC discarded; later output renders | S manual | P | F ISSUE-021 |
+| I-15 | 8-bit C1 controls (`\x9b`) and UTF-8 C1 | Handled per vte; no injection | S manual | P (8-bit and UTF-8 C1 ignored) | B (probe stopped at ISSUE-021) |
 | I-16 | `infocmp xterm-256color` features used by tmux/nvim (`tmux` with `TERM=xterm-256color`, `set -g extended-keys on`) | tmux works inside Litty incl. truecolor, undercurl, focus events | S manual | S manual | S manual |
 
 ### J. Inline images
@@ -390,7 +390,7 @@ Use `q` for replies. Reference: `src/terminal/grid/perform.rs`.
 | J-02 | `kitten icat` PNG, GIF (animated), large JPEG; `timg`; `chafa -f kitty`; yazi previews | Displayed, animation runs, ~0% CPU when scrolled away | S manual | S manual | S manual |
 | J-03 | Sixel: `img2sixel`, `chafa -f sixel` | Displayed; prompt continues below | S manual | S manual | S manual |
 | J-04 | Transfer media `t=d`, `t=f`, `t=t`, `t=s` (shm) | All work; `t=t` file in a temp dir is deleted after reading | S manual | S manual | S manual |
-| J-05 | `t=f` with a path outside temp dirs, a symlink to `~/.ssh/id_*`, `..` traversal, a missing file | Allowed paths per design; every failure replies the same `EPERM:access denied` | S manual | S manual | S manual |
+| J-05 | `t=f` with a path outside temp dirs, a symlink to `~/.ssh/id_*`, `..` traversal, a missing file | Allowed paths per design; every failure replies the same `EPERM:access denied` | S manual | P (temp PNG OK; outside temp, symlink, `..`, missing, `/etc/passwd` all `EPERM:access denied`) | P (temp PNG OK; outside temp, symlink, `..`, missing, `/etc/passwd` all `EPERM:access denied`) |
 | J-06 | Images and resize, scroll, `clear`, alt screen, split panes | Move with text, clipped at pane edge, removed by clear | S manual | S manual | S manual |
 | J-07 | Delete commands `a=d` with each selector; unsupported selector | Correct placements removed; unsupported → error, nothing changed | S manual | S manual | S manual |
 | J-08 | Unicode placeholders inside tmux | Image shown via placeholders | S manual | S manual | S manual |
@@ -400,7 +400,7 @@ Use `q` for replies. Reference: `src/terminal/grid/perform.rs`.
 
 | ID | Steps | Expected | M | X | W |
 | --- | --- | --- | --- | --- | --- |
-| K-01 | zsh, bash 3.2 (M), bash 5, fish, nushell: no dotfile edits | OSC 133/7 emitted; user rc files still load (`ZDOTDIR` restored for zsh) | S manual | S manual | S manual |
+| K-01 | zsh, bash 3.2 (M), bash 5, fish, nushell: no dotfile edits | OSC 133/7 emitted; user rc files still load (`ZDOTDIR` restored for zsh) | S manual | P (zsh 5.9 and bash 5.3: OSC 133 A–D and OSC 7; user rc loaded, bash via `.profile`); fish, nu not installed | P (zsh 5.9 and bash 5.3: OSC 133 A–D and OSC 7; user rc loaded, bash via `.profile`); fish, nu not installed |
 | K-02 | elvish with `use litty` in `rc.elv` | Works; without the line nothing breaks | S manual | S manual | S manual |
 | K-03 | Prompt jump `Cmd+Shift+↑/↓` / `Ctrl+Shift+↑/↓` (manual-test 6) | Scrolls to previous/next prompt | S manual | S manual | S manual |
 | K-04 | Select last output `Cmd+Shift+O` / `Ctrl+Shift+O` | Selects and copies the last command's output; empty command → previous output (record) | S manual | S manual | S manual |
@@ -409,7 +409,7 @@ Use `q` for replies. Reference: `src/terminal/grid/perform.rs`.
 | K-07 | `shell-integration = none`, and forcing `zsh` while running bash | Off: no OSC 133; forced mismatch does not break the shell | S manual | S manual | S manual |
 | K-08 | `TermMod+T` after `cd` in a nested shell / ssh session | New tab uses the OSC 7 / foreground process directory; remote dir not used locally (record) | S manual | S manual | S manual |
 | K-09 | User with existing `ZDOTDIR`, `oh-my-zsh`, `starship`, `powerlevel10k`, `bash-preexec`, `atuin` | Prompts and plugins keep working | S manual | S manual | S manual |
-| K-10 | `~/.cache/litty/shell-integration/<version>/` permissions | Owned by the user, not world-writable | S manual | S manual | S manual |
+| K-10 | `~/.cache/litty/shell-integration/<version>/` permissions | Owned by the user, not world-writable | S manual | P (user-owned, mode 775, not world-writable) | P (user-owned, mode 775, not world-writable) |
 
 ### L. History search (built-in)
 
@@ -468,7 +468,7 @@ Use `q` for replies. Reference: `src/terminal/grid/perform.rs`.
 | O-10 | Bell: `bell-features` `system`, `attention`, `title`, `audio` (+ path/volume), `border`, `no-*` (manual-test 7, 11) | Each effect; 🔔 on background tab cleared on visit; Dock bounce / urgency hint | S manual | S manual | S manual |
 | O-10a | `bell-features = audio` with `bell-audio-volume = 0`, `0.2`, `1`, `2`, `abc` | Silent / quiet / full; `2` clamps to `1.0`; `abc` → one error line | S manual | S manual | S manual |
 | O-11 | `bell-audio-path` missing file; Linux without `paplay` | No crash; error recorded | S manual | S manual | S manual |
-| O-12 | Window title from OSC 2, cwd, running command; non-ASCII title on X11 (`xprop _NET_WM_NAME WM_NAME`) | Correct; `WM_CLASS = litty, litty` | S manual | S manual | S manual |
+| O-12 | Window title from OSC 2, cwd, running command; non-ASCII title on X11 (`xprop _NET_WM_NAME WM_NAME`) | Correct; `WM_CLASS = litty, litty` | S manual | P (OSC 2 with `;`, non-ASCII `COMPOUND_TEXT`, `WM_CLASS = litty, litty`; cwd/command titles in K-01) | S manual (no title reader on Wayland) |
 
 ### P. Terminal inspector and custom shaders
 
@@ -489,7 +489,7 @@ Use `q` for replies. Reference: `src/terminal/grid/perform.rs`.
 | Q-03 | Running process is a benchmark / `+update` | Not chosen | S manual | S manual | S manual |
 | Q-04 | Wayland: launcher activation token forwarded | New window focused (compositor policy permitting) | — | — | S manual |
 | Q-05 | Kill the target process between lookup and request; stale registry entries | Error exit, no duplicate window; stale entries ignored/cleaned | S manual | S manual | S manual |
-| Q-06 | Registry dir permissions (`$XDG_RUNTIME_DIR/litty-a1`, `/tmp/litty-a1-<uid>`); another user's process | `0700`, owned by the user; other UID never joined | S manual | S manual | S manual |
+| Q-06 | Registry dir permissions (`$XDG_RUNTIME_DIR/litty-a1`, `/tmp/litty-a1-<uid>`); another user's process | `0700`, owned by the user; other UID never joined | S manual | B (`0700`, owned by the user; no second user for the other-UID part) | S manual |
 | Q-07 | Directory with spaces/Vietnamese; deleted directory | Correct dir; deleted → clear error | S manual | S manual | S manual |
 
 ### R. Update (real GitHub releases)
@@ -553,7 +553,7 @@ Use `q` for replies. Reference: `src/terminal/grid/perform.rs`.
 | --- | --- | --- | --- | --- | --- |
 | U-01 | Copy text containing `\x1b[201~rm -rf ~\n` (use a file and `pbcopy`/`xclip`), paste in a bracketed shell | ESC and C1 CSI stripped; nothing runs; LF/CRLF → CR | S manual | S manual | S manual |
 | U-02 | Multi-line paste into `cat` (no bracketed paste) | "Confirm Multi-Line Paste" with preview; Cancel sends nothing | S manual | S manual | S manual |
-| U-03 | OSC 52 read attempts, title reporting (`\e[21t`), OSC 4/10/11 query flood | No clipboard read; title not reported; replies bounded | S manual | S manual | S manual |
+| U-03 | OSC 52 read attempts, title reporting (`\e[21t`), OSC 4/10/11 query flood | No clipboard read; title not reported; replies bounded | S manual | P (OSC 52 read and `21t` unanswered; 2000 OSC 11 queries → 2000 replies, still responsive) | P (OSC 52 read and `21t` unanswered; 2000 OSC 11 queries → 2000 replies, still responsive) |
 | U-04 | Notification text with shell metacharacters | Passed as separate arguments | S manual | S manual | S manual |
 | U-05 | Kitty `t=f`/`t=t` probes of private files (J-05) | Same `EPERM` for all failures (CWE-200) | S manual | S manual | S manual |
 | U-06 | History rewrite (L-06) under `strace -f -e rename,openat` / `fs_usage` | Temp file + atomic `rename`; never truncates in place | S manual | S manual | S manual |
@@ -569,9 +569,9 @@ Use `q` for replies. Reference: `src/terminal/grid/perform.rs`.
 | V-01 | Resize storm: drag a corner continuously for 30 s while `yes` runs | No crash, no stuck frame, final size correct; shell gets the final SIGWINCH | S manual | S manual | S manual |
 | V-02 | 100 rapid `TermMod+T` / `TermMod+W` | No crash, no leaked shells (`ps`) | S manual | S manual | S manual |
 | V-03 | Rapid config reloads (script touching the file 100×) | No crash; final config applied | S manual | S manual | S manual |
-| V-04 | `cat /dev/urandom \| head -c 50M` in 4 panes | Responsive; memory bounded | S manual | S manual | S manual |
+| V-04 | `cat /dev/urandom \| head -c 50M` in 4 panes | Responsive; memory bounded | S manual | B (1 pane only: 50 MB in 5.3 s, DSR 1.4 ms after, RSS 80.6 MB; 4 splits need keys) | B (1 pane only: 50 MB in 4.2 s, DSR 1.2 ms after, RSS 78.9 MB) |
 | V-05 | Run 8 hours idle with 3 windows (overnight) | No memory growth, 0% CPU apart from blink | S manual | S manual | S manual |
-| V-06 | Low memory (Linux cgroup `systemd-run --user -p MemoryMax=200M litty`) | Degrades or exits cleanly; no corrupted files | — | S manual | S manual |
+| V-06 | Low memory (Linux cgroup `systemd-run --user -p MemoryMax=200M litty`) | Degrades or exits cleanly; no corrupted files | — | P (`MemoryMax=200M`: 50 MB random output, RSS 80 MB, clean exit) | S manual |
 | V-07 | GPU reset / switching GPUs (Linux PRIME, eGPU) | Recovers or reports an error | — | S manual | S manual |
 | V-09 | Slow compositor / GPU stall: run under heavy GPU load (e.g. a GPU stress tool) while typing and scrolling (0.15.0 open item) | Input still echoes; frames resume when load ends; no hang or validation error | S manual | S manual | S manual |
 | V-10 | Input-to-photon latency with a high-speed camera (≥ 240 fps) filming key press and screen (0.15.0 open item) | Record p50/p95 per platform next to P3-06 | S manual | S manual | S manual |

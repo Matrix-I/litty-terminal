@@ -7,11 +7,15 @@ Plan: [full feature test plan](../plans/2026-11-23-full-test-plan.md)
 
 ## Status
 
-**The Linux run is not complete.** As on macOS, only the cases that run
-without a person at the keyboard were executed: 64 of 334 X11 cases (19%)
-and 29 of 299 Wayland cases (10%). The manual GUI cases (keyboard, mouse,
-IME by hand, windows, rendering checks by eye, …) were left out on
-purpose, so exit criterion 1 of the plan is not met for Linux.
+**The Linux run is not complete.** Only cases that run without a person at
+the keyboard were executed: 98 of 334 X11 cases (29%) and 58 of 299
+Wayland cases (19%). Besides the build, test and benchmark phases, P4
+cases were automated where a script running as `SHELL` inside Litty can
+check them through terminal replies (DA, DSR, DECRQM, XTGETTCAP, OSC 4/10/
+11/12, `CSI 16t`, kitty graphics), stderr, `xprop` or process state. The
+remaining manual GUI cases (keyboard, mouse, IME by hand, windows,
+rendering checks by eye, …) were left out on purpose, so exit criterion 1
+of the plan is not met for Linux.
 
 | Item | Value |
 | --- | --- |
@@ -26,7 +30,8 @@ purpose, so exit criterion 1 of the plan is not met for Linux.
 | Isolation | fresh `HOME` per run, `auto-update = off` |
 
 Not on this machine: Fedora (P5-03), KDE and sway sessions (E-L2, E-L3),
-a second monitor (E-HW), the Khronos validation layer (P2-03), `rpmbuild`.
+a second monitor (E-HW), a second user account (Q-06), the Khronos
+validation layer (P2-03), `rpmbuild`, `vttest`, `tmux`.
 
 ## Totals
 
@@ -35,13 +40,16 @@ a second monitor (E-HW), the Khronos validation layer (P2-03), `rpmbuild`.
 | Cases in the plan | 367 | 367 |
 | Not applicable (`—`) | 33 | 68 |
 | Applicable cases | 334 | 299 |
-| Run | 64 | 29 |
-| — passed | 46 | 19 |
-| — failed | 14 | 8 |
-| — blocked | 4 | 2 |
-| Not run (skipped) | 270 | 270 |
+| Run | 98 | 58 |
+| — passed | 74 | 41 |
+| — failed | 16 | 11 |
+| — blocked | 8 | 6 |
+| Not run (skipped) | 236 | 241 |
 
 ## Per phase and section
+
+Sections not listed here (B–F, L–N, P, S) have no Linux result yet: all
+manual.
 
 | Phase / section | X P/F/B/S | W P/F/B/S |
 | --- | --- | --- |
@@ -49,12 +57,19 @@ a second monitor (E-HW), the Khronos validation layer (P2-03), `rpmbuild`.
 | P1 build gates | 11/0/0/0 | — |
 | P2 automated suites | 6/2/1/0 | 2/0/1/0 |
 | P3 performance | 9/4/0/5 | 6/1/0/5 |
-| A launch, lifecycle, CLI | 4/2/0/7 | 4/2/0/7 |
+| A launch, lifecycle, CLI | 6/2/0/5 | 5/2/0/6 |
+| G rendering, fonts | 1/0/1/21 | 1/0/1/21 |
+| H colors, themes, config | 11/2/0/5 | 10/2/0/6 |
+| I escape sequences | 8/0/1/7 | 6/1/2/7 |
+| J inline images | 1/0/0/8 | 1/0/0/8 |
+| K shell integration | 2/0/0/8 | 2/0/0/8 |
+| O notifications, title | 1/0/0/9 | 0/0/0/10 |
+| Q process reuse | 0/0/1/5 | 0/0/0/7 |
 | R update | 4/1/0/6 | — |
 | T Linux-specific | 2/0/0/11 | 2/0/0/12 |
-| U security | 2/0/0/8 | 1/0/0/8 |
+| U security | 3/0/0/7 | 2/0/0/7 |
+| V robustness | 1/0/1/8 | 0/0/1/9 |
 | W AI assistant (offline) | 1/0/0/5 | 0/0/0/5 |
-| Other P4 sections (B–Q, S, V) | 0/0/0/225 | 0/0/0/227 |
 | P5 packaging, install | 3/0/2/1 | 0/0/0/4 |
 | P6 documentation | 0/5/1/0 | 0/5/1/0 |
 
@@ -62,6 +77,7 @@ a second monitor (E-HW), the Khronos validation layer (P2-03), `rpmbuild`.
 
 | Case | Column | Issue | Summary |
 | --- | --- | --- | --- |
+| I-14 | W | ISSUE-021 | **S1**: a window title over about 4 KB disconnects Litty from the compositor; every window closes |
 | P2-05 | X | ISSUE-013 | `xdg-open` smoke opens real apps on a GNOME desktop; passes in the container |
 | P2-08 | X | ISSUE-020 | Container suite: `rounded_corners_fade_a_premultiplied_frame` fails 3 of 3 full runs, passes alone |
 | P3-01 | X | ISSUE-014, ISSUE-015 | Heap-corruption abort in its `cargo test` step; bench limits missed |
@@ -69,6 +85,8 @@ a second monitor (E-HW), the Khronos validation layer (P2-03), `rpmbuild`.
 | P3-09 | W | ISSUE-016 | Native Wayland scroll at 48–50 fps on a 60 Hz panel (X11: 60 fps) |
 | A-03 | X, W | ISSUE-017 | `SHELL=/nonexistent/shell` exits silently with code 0 |
 | A-09 | X, W | ISSUE-004 | `--version` / `--help` start the terminal (as on macOS) |
+| H-13 | X, W | ISSUE-022 | Default background reports `#000000`; docs say `#121316` |
+| H-16 | X, W | ISSUE-023 | A UTF-8 BOM makes the first config line an unknown option |
 | R-07 | X | ISSUE-018 | `+update` on the root-owned `.deb` install downloads, then fails with `Permission denied` |
 | P6-01..04 | X, W | ISSUE-005..009 | Documentation issues found on macOS; same files |
 | P6-06 | X, W | ISSUE-019 | `scripts/manual-test.sh` assumes macOS (REV-10) |
@@ -82,6 +100,11 @@ Passed with a logged issue: P1-04 (ISSUE-012, fails only under a fresh
 | Case | Column | Reason |
 | --- | --- | --- |
 | P2-03 | X, W | Both tests pass; Khronos validation layer not installed, so VUIDs were not checked |
+| G-02 | X, W | `LITTY_FONT_SIZE` applies and config overrides it; whether `LITTY_FONT` changes the face needs a visual check |
+| I-03 | X, W | Dark mode reply `?997;1n` correct; the desktop was not switched to light mode |
+| I-15 | W | The Wayland probe stopped at ISSUE-021 before this step (X passes) |
+| Q-06 | X | Registry `0700` and user-owned; no second user for the other-UID part |
+| V-04 | X, W | One pane only (50 MB in 4–5 s, DSR 1.2–1.4 ms afterwards); four splits need keys |
 | P5-02 | X | `test-package-deb.sh` passes; `apt install` needs root and was not run (0.14.0 `.deb` is installed from before) |
 | P5-03 | X | No Fedora machine; `rpmbuild` not installed |
 | P6-05 | X, W | Needs the results of the manual P4 cases |
@@ -114,7 +137,7 @@ P3-06 now completes on Linux (the 2026-11-13 run could not finish it).
 - P2-03 with `VK_LAYER_KHRONOS_validation` installed.
 - P5-02 `apt install` / `apt remove` and menu launch; P5-03 on Fedora.
 - KDE, sway and mixed-DPI environments (E-L2, E-L3, E-HW).
-- P6-05 after the manual cases.
+- The blocked cases above, and P6-05 after the manual cases.
 
 Raw logs are in a session scratch folder and are not kept in the
 repository; the numbers above and in the issue note are the record.
