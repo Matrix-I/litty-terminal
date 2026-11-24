@@ -20,6 +20,10 @@
     <string>0.14.1</string>
     <key>CFBundleVersion</key>
     <string>0.14.1</string>
+    <key>CFBundleSupportedPlatforms</key>
+    <array>
+        <string>MacOSX</string>
+    </array>
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
     <key>NSHighResolutionCapable</key>
