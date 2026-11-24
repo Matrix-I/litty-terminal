@@ -2,8 +2,10 @@
 
 Plan: [full feature test plan](../plans/2026-11-23-full-test-plan.md).
 Status: automated cases ran on 2026-11-23 on macOS (M column) and on
-Linux with the X11 and Wayland backends (X and W columns); manual cases
-have not run on any platform. Nothing below is fixed.
+Linux with the X11 and Wayland backends (X and W columns). On 2026-11-24
+the Linux manual cases ran too, driven by scripts in a private headless
+GNOME Shell 50.1 session (input injected through Mutter RemoteDesktop);
+macOS manual cases have not run. Nothing below is fixed.
 
 Issues are only logged here during the run. Fixing starts after the whole
 plan has run (plan section 10).
@@ -18,13 +20,13 @@ Fill in at the start (environment) and at the end (counts).
 | OS / desktop / compositor | macOS 27.2.1 (26B131), arm64 | Ubuntu 26.04.1, kernel 7.0.0-44, GNOME Shell 50.1 Wayland session (XWayland) | same machine, native Wayland (`LITTY_BACKEND=wayland`) |
 | GPU / driver | Apple M1 Pro (Metal) | Intel UHD 620 (Whiskey Lake), Mesa Vulkan; CPU i5-8365U, `powersave` governor, on AC | same |
 | Display scales | Built-in Retina 3024×1964, scale 2 | eDP 3072×1728 at 59.94 Hz, GNOME scale 1.25 (window reports 2 under XWayland native scaling) | same panel, window scale 1.25 |
-| Date run | 2026-11-23 (automated cases only) | 2026-11-23 (automated cases only) | 2026-11-23 (automated cases only) |
+| Date run | 2026-11-23 (automated cases only) | 2026-11-23 (automated); 2026-11-24 (manual cases, headless GNOME session) | same as X11 |
 
 | Phase | Platform | Run | Pass | Fail | Blocked | Skipped |
 | --- | --- | --- | --- | --- | --- | --- |
 | P0 preparation | M | 4 | 4 | 0 | 0 | 2 |
-| | X | 4 | 4 | 0 | 0 | 2 |
-| | W | 4 | 4 | 0 | 0 | 2 |
+| | X | 6 | 6 | 0 | 0 | 0 |
+| | W | 6 | 6 | 0 | 0 | 0 |
 | P1 build gates | M | 11 | 11 | 0 | 0 | 0 |
 | | X | 11 | 11 | 0 | 0 | 0 |
 | | W | — | — | — | — | — |
@@ -32,25 +34,31 @@ Fill in at the start (environment) and at the end (counts).
 | | X | 9 | 6 | 2 | 1 | 0 |
 | | W | 3 | 2 | 0 | 1 | 0 |
 | P3 performance | M | 14 | 9 | 4 | 1 | 5 |
-| | X | 13 | 9 | 4 | 0 | 5 |
-| | W | 7 | 6 | 1 | 0 | 5 |
+| | X | 17 | 13 | 4 | 0 | 1 |
+| | W | 11 | 10 | 1 | 0 | 1 |
 | P4 functional A–W | M | 10 | 9 | 1 | 0 | 265 |
-| | X | 50 | 41 | 5 | 4 | 228 |
-| | W | 38 | 29 | 5 | 4 | 230 |
+| | X | 278 | 219 | 30 | 29 | 0 |
+| | W | 268 | 219 | 20 | 29 | 0 |
 | P5 packaging/install | M | 2 | 2 | 0 | 0 | 1 |
-| | X | 5 | 3 | 0 | 2 | 1 |
-| | W | 0 | 0 | 0 | 0 | 4 |
+| | X | 6 | 3 | 0 | 3 | 0 |
+| | W | 4 | 1 | 0 | 3 | 0 |
 | P6 documentation | M | 5 | 0 | 4 | 1 | 0 |
-| | X | 6 | 0 | 5 | 1 | 0 |
-| | W | 6 | 0 | 5 | 1 | 0 |
+| | X | 6 | 0 | 6 | 0 | 0 |
+| | W | 6 | 0 | 6 | 0 | 0 |
 
 "Run" = pass + fail + blocked. Cases marked `—` are not counted.
-"Skipped" is almost all manual GUI cases, which these runs left out on
-purpose (automated cases only; on Linux, P4 cases that a script running as
-`SHELL` inside Litty can check through terminal replies, stderr, `xprop` or
-process state were automated); P3-10 is skipped because it opens the
-app. Each run used an isolated `HOME` with `auto-update = off` instead of
-backing up the real `~/.litty` (P0-02).
+Linux X and W counts are taken from the plan's result cells after the
+2026-11-24 manual run; only P3-10 is still skipped. Linux manual cases ran
+in a private headless GNOME Shell 50.1 session (`gnome-shell --headless
+--virtual-monitor 1280x800`) with keyboard and pointer injected through
+Mutter RemoteDesktop, so nothing reached the real desktop; a physical
+keyboard and real dock or file manager were not available there, which is
+why several cases are `B`. On macOS, "Skipped" is almost all manual GUI
+cases, which that run left out on purpose. The 2026-11-23 Linux automated
+pass had covered only the P4 cases a script running as `SHELL` inside
+Litty can check (terminal replies, stderr, `xprop`, process state). P3-10
+is skipped because it opens the app. Each run used an isolated `HOME` with
+`auto-update = off` instead of backing up the real `~/.litty` (P0-02).
 
 Shell coverage (P2-13): macOS zsh, bash 3.2.57 and nu (fish and elvish
 not installed); Linux zsh 5.9 and bash 5.3.9 (fish, nu and elvish not
@@ -94,7 +102,7 @@ Status after the automated macOS and Linux runs:
 
 | REV | Status |
 | --- | --- |
-| REV-01 | Open: needs the manual drop test (E-26) on X11; Wayland drops pass (P2-10) |
+| REV-01 | Open: E-26 blocked on X11 (no file manager in the headless session); Wayland drops pass (P2-10) |
 | REV-02 | Open: Linux only |
 | REV-03 | Confirmed → ISSUE-006 |
 | REV-04 | Confirmed → ISSUE-008 |
@@ -102,7 +110,7 @@ Status after the automated macOS and Linux runs:
 | REV-06 | Confirmed and extended → ISSUE-007 |
 | REV-07 | Confirmed → ISSUE-009 |
 | REV-08 | Confirmed → ISSUE-004 |
-| REV-09 | Open: needs the manual paste test (U-02) |
+| REV-09 | Open: U-02 ran on Linux with a 2-line paste; the single line plus newline count was not checked |
 | REV-10 | Confirmed → ISSUE-019 |
 
 Found while writing the plan, by reading the source and documentation at
@@ -589,3 +597,466 @@ rejected by its plan case on a real machine, then either becomes an
   with CRLF, spaces and quotes applies (`rgb:a0a0/b0b0/c0c0`). Without the
   BOM, `background\t=\t"#405060"` with CRLF applies (`rgb:4040/5050/6060`).
 - Notes: Windows editors (Notepad) save UTF-8 with a BOM by default.
+
+
+### ISSUE-024 — dragging a tab out does not reliably tear it off on X11
+
+- Cases: B-08 · Platform: X, Ubuntu 26.04.1, private headless GNOME Shell
+  50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S3 · Type: bug
+- Reproduces: 0 of 3 straight-down drags; 6 of 9 drags with sideways
+  motion; 1 of 2 drops below the window
+- Steps:
+  1. Window with 2 tabs; drag the 2nd tab straight down by 300 px inside
+     the window, release.
+  2. Repeat with sideways motion, and with a drop below the window.
+- Expected: A new window holds the dragged tab.
+- Actual: Straight-down drags never tear out; other drags work about two
+  times in three.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+
+### ISSUE-025 — dropping a tab on another window’s tab strip makes a new window
+
+- Cases: B-09 · Platform: X, Ubuntu 26.04.1, private headless GNOME Shell
+  50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S3 · Type: bug
+- Reproduces: 1 of 1
+- Steps:
+  1. Window A and window B with 2 tabs each.
+  2. Drag a tab of B onto A’s tab strip and release.
+- Expected: A has 3 tabs, B has 1.
+- Actual: A still has 2 tabs; the tab is torn out into a 3rd window.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+
+### ISSUE-026 — GNOME default shortcuts take Ctrl+Alt+arrows and Alt+`
+
+- Cases: C-10, C-01 · Platform: X and W, Ubuntu 26.04.1, private headless
+  GNOME Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S3 · Type: spec question
+- Reproduces: every attempt
+- Steps:
+  1. GNOME 50.1 with default bindings, 2 panes.
+  2. Press Ctrl+Alt+Right/Left/Up/Down, Ctrl+Alt+Shift+Right, Alt+`.
+- Expected: Pane navigation and resize act in Litty.
+- Actual: Ctrl+Alt+Right switches the workspace (focus lost); the other
+  Ctrl+Alt arrows and Ctrl+Alt+Shift+Right reach no Litty action; Alt+` is
+  taken. Super+arrows, Super+[ ] and Super+Ctrl+arrows reach Litty.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+- Notes: Linux defaults clash with the GNOME desktop; the docs could name
+  a working alternative.
+
+### ISSUE-027 — `keybind = ctrl++=…` parses but never matches
+
+- Cases: C-14 · Platform: X and W, Ubuntu 26.04.1, private headless GNOME
+  Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S4 · Type: bug
+- Reproduces: 1 of 1 per backend
+- Steps:
+  1. Config `keybind = ctrl++=text:S2`.
+  2. Press Ctrl+Shift+= (Ctrl++).
+- Expected: Sends `S2`, or the config reports an error.
+- Actual: No config error; the default increase_font_size runs (cols 119 →
+  105) and nothing is sent.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+
+### ISSUE-028 — F1–F12 send no bytes on X11
+
+- Cases: C-21 · Platform: X, Ubuntu 26.04.1, private headless GNOME Shell
+  50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S2 · Type: bug
+- Reproduces: every key and modifier in the run
+- Steps:
+  1. `cat -v` in Litty with the X11 backend.
+  2. Press F1–F12, alone and with Shift/Alt/Ctrl.
+- Expected: xterm sequences such as `^[OP`, `^[[15~`.
+- Actual: Nothing arrives. The same injected keys reach a GTK window on
+  X11 (F5, F12) and Litty on Wayland.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+- Notes: Physical keyboard not checked; injection goes through Mutter
+  RemoteDesktop.
+
+### ISSUE-029 — modified F1 uses rxvt-style sequences
+
+- Cases: C-21 · Platform: W, Ubuntu 26.04.1, private headless GNOME Shell
+  50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S4 · Type: spec question
+- Reproduces: every attempt
+- Steps:
+  1. `cat -v`, press Shift+F1, Alt+F1, Ctrl+F1.
+- Expected: xterm `CSI 1;2P` / `CSI 1;3P` / `CSI 1;5P`.
+- Actual: `CSI 11;2~`, `CSI 11;3~`, `CSI 11;5~`.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+- Notes: A `src/keymap.rs` test expects `\x1b[1;2P` on a different path.
+
+### ISSUE-030 — Copy leaves CLIPBOARD unchanged on X11
+
+- Cases: E-02, E-07, E-10, C-01 · Platform: X, Ubuntu 26.04.1, private
+  headless GNOME Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at
+  `95c2158`)
+- Severity: S2 · Type: bug
+- Reproduces: every attempt
+- Steps:
+  1. Select text; press Ctrl+Shift+C (also Ctrl+Insert, and Select All
+     then Copy).
+  2. Read CLIPBOARD with `wl-paste`.
+- Expected: CLIPBOARD holds the selection.
+- Actual: CLIPBOARD is unchanged; no stderr. Copy-on-select does set
+  CLIPBOARD and PRIMARY; Wayland copies fine.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+
+### ISSUE-031 — Shift+Click does not extend a selection, and Shift snaps to the bottom, on X11
+
+- Cases: E-06, E-20, K-03 · Platform: X, Ubuntu 26.04.1, private headless
+  GNOME Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S3 · Type: bug
+- Reproduces: every attempt
+- Steps:
+  1. Select a word; Shift+Click further on.
+  2. Scroll back; press Shift alone.
+  3. Press Ctrl+Shift+Up repeatedly.
+- Expected: Selection extends; Shift alone keeps the scroll position;
+  Ctrl+Shift+Up walks back through prompts.
+- Actual: Selection does not extend; Shift alone jumps to the bottom, so
+  Ctrl+Shift+Up never gets past the last prompt. Wayland is correct.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+
+### ISSUE-032 — `window-width` / `window-height` give 2 rows fewer on Linux
+
+- Cases: G-22 · Platform: X and W, Ubuntu 26.04.1, private headless GNOME
+  Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S3 · Type: bug
+- Reproduces: 1 of 1 per backend
+- Steps:
+  1. Config `window-width = 100`, `window-height = 30`.
+  2. Query the size with `stty size`.
+- Expected: 30 rows × 100 columns.
+- Actual: 28 × 100.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+- Notes: `src/app/window.rs:71` sizes the window as rows × cell + padding,
+  but Linux draws its own title bar inside that area.
+
+### ISSUE-033 — Devanagari and some combining marks are not shaped
+
+- Cases: G-12 · Platform: X and W, Ubuntu 26.04.1, private headless GNOME
+  Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S4 · Type: bug
+- Reproduces: every attempt
+- Steps:
+  1. Print `कि`, `नमस्ते`, `x̧̌`.
+- Expected: Shaped text: i-matra before its base, virama and e-matra
+  drawn, both marks on x.
+- Actual: i-matra drawn after its base; virama and e-matra missing; the
+  cedilla missing. Latin and Vietnamese stacked diacritics are fine.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+
+### ISSUE-034 — kitty graphics delete with an unknown selector is silent
+
+- Cases: J-07 · Platform: X and W, Ubuntu 26.04.1, private headless GNOME
+  Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S4 · Type: spec question
+- Reproduces: 1 of 1 per backend
+- Steps:
+  1. Send `ESC _G a=d,d=Q ESC \`.
+- Expected: An error reply (kitty replies EINVAL).
+- Actual: No reply; ignored.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+
+### ISSUE-035 — `manual-test.sh img shm` uses a name Litty refuses
+
+- Cases: J-01 · Platform: X and W, Ubuntu 26.04.1, private headless GNOME
+  Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S3 · Type: test tooling
+- Reproduces: every attempt
+- Steps:
+  1. `scripts/manual-test.sh`, group 24, shm item.
+- Expected: The image shows.
+- Actual: Nothing shows: the script names its segment `/lpl<pid>`, and
+  Litty accepts only `/kitty-`, `/litty-`, `/ghostty-`, `/shm-`
+  (`src/terminal/graphics/kitty.rs:407`).
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+- Notes: Either the script or the allowlist is wrong; kitty accepts any
+  name. Group 24 "under" also expects red cells to cover a z = −1 image,
+  but by the kitty spec only z < −1073741824 goes under non-default
+  backgrounds, which Litty does.
+
+### ISSUE-036 — Unicode-placeholder images show seams between rows on Wayland
+
+- Cases: J-01, P6-05 · Platform: W, Ubuntu 26.04.1, private headless GNOME
+  Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S4 · Type: bug
+- Reproduces: every attempt
+- Steps:
+  1. Place a 10×4-cell image with Unicode placeholders.
+- Expected: One seamless image.
+- Actual: 1 px black seams between cell rows. The same binary on X11 draws
+  it seamless.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+
+### ISSUE-037 — bash title shows only the cwd, not the running command
+
+- Cases: K-06, P6-05 · Platform: X and W, Ubuntu 26.04.1, private headless
+  GNOME Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S4 · Type: bug
+- Reproduces: every attempt
+- Steps:
+  1. Default `title` feature; run `sleep 5` in zsh and in bash.
+- Expected: Title is the directory, then the running command, in every
+  shell.
+- Actual: zsh shows the command; bash (`src/shell/litty.bash`) only ever
+  reports the cwd.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+
+### ISSUE-038 — the history popup drops Space
+
+- Cases: L-02 · Platform: X and W, Ubuntu 26.04.1, private headless GNOME
+  Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S3 · Type: bug
+- Reproduces: every attempt
+- Steps:
+  1. Ctrl+R; type `zeta word`.
+- Expected: The query holds a space; multi-word AND and `term !neg` work.
+- Actual: The space is dropped; multi-word and negation queries never
+  match. `zeta word` only finds `zeta multi word` because `zetaword`
+  matches fuzzily.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+- Notes: `handle_history_search_key` (`src/app/search_ui.rs:14`) has no
+  `NamedKey::Space` arm; the find box has one.
+
+### ISSUE-039 — the find box does not refresh while output streams
+
+- Cases: M-08 · Platform: W (X not isolated, see ISSUE-043), Ubuntu
+  26.04.1, private headless GNOME Shell 50.1 · Build: `fc3d1d4` (`src/`
+  unchanged at `95c2158`)
+- Severity: S3 · Type: bug
+- Reproduces: 1 of 1
+- Steps:
+  1. Ctrl+Shift+F; type `stream-2500$`.
+  2. Start output that prints that line.
+- Expected: The match count updates.
+- Actual: Still `no matches` 15 s later; closing and reopening finds 1/1.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+- Notes: `refresh_search` runs only on key input (`src/app/search_ui.rs`).
+
+### ISSUE-040 — Ctrl+Click on a soft-wrapped path opens a prefix
+
+- Cases: N-03, P6-05 · Platform: X and W, Ubuntu 26.04.1, private headless
+  GNOME Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S4 · Type: bug
+- Reproduces: 1 of 1 per backend
+- Steps:
+  1. Print a 160-character absolute file path that wraps.
+  2. Ctrl+Click it.
+- Expected: The file opens.
+- Actual: Its parent prefix (`…/homes`) opens, cut at the wrap.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+
+### ISSUE-041 — plain-text links recognise only http(s)
+
+- Cases: N-02 · Platform: X and W, Ubuntu 26.04.1, private headless GNOME
+  Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S4 · Type: bug
+- Reproduces: every attempt
+- Steps:
+  1. Print `mailto:someone@example.com` and `ftp://ftp.example.com/file`.
+  2. Ctrl+Click each.
+- Expected: They open.
+- Actual: Not clickable. OSC 8 accepts these schemes
+  (`src/terminal/grid/links.rs:469`); plain-text detection (`links.rs:55`)
+  knows only http(s).
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+
+### ISSUE-042 — the scanlines example shader makes the window translucent
+
+- Cases: P-02 · Platform: X and W, Ubuntu 26.04.1, private headless GNOME
+  Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S4 · Type: bug
+- Reproduces: every attempt
+- Steps:
+  1. `custom-shader = examples/shaders/scanlines.glsl`,
+     `background-opacity` 1.
+- Expected: Opaque window.
+- Actual: The desktop shows through: the shader multiplies alpha by s < 1.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+- Notes: Either the example should keep alpha, or the post-process pass
+  should force opaque output for an opaque window.
+
+### ISSUE-043 — X11 input starves while a pane floods output
+
+- Cases: V-04, M-08 · Platform: X, Ubuntu 26.04.1, private headless GNOME
+  Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S2 · Type: bug
+- Reproduces: every attempt
+- Steps:
+  1. Split into 2 or 4 panes; run `yes stream-line` in one.
+  2. Press Ctrl+C there; click another pane and type.
+- Expected: Responsive: Ctrl+C lands at once, other panes take input.
+- Actual: Ctrl+C takes 20–60+ s; typing into other panes never arrives
+  while the flood runs. Wayland: about 2 s. During the flood the
+  `pty-reader` thread uses a full core, the main thread about 3 %,
+  Xwayland is idle.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+- Notes: The main thread is waiting, not busy. Grid-lock or event-loop
+  wakeup starvation on the X11 path is a guess, not verified.
+
+### ISSUE-044 — `yo` retries a refused connection for 4 minutes
+
+- Cases: W-04 · Platform: X and W, Ubuntu 26.04.1, private headless GNOME
+  Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S3 · Type: bug
+- Reproduces: 1 of 1 per backend
+- Steps:
+  1. Point the AI endpoint at `127.0.0.1:9` (nothing listening).
+  2. Run `yo hello`.
+- Expected: Fails fast with a clear error.
+- Actual: Retries 10 times with backoff, 242 s before the error; Enter
+  typed meanwhile waits the whole time.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+- Notes: A refused connection is not transient.
+
+### ISSUE-045 — AI transport error shows Rust Debug formatting
+
+- Cases: W-04 · Platform: X and W, Ubuntu 26.04.1, private headless GNOME
+  Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S4 · Type: bug
+- Reproduces: every attempt
+- Steps:
+  1. As ISSUE-044.
+- Expected: A readable error.
+- Actual: `AI transport failed (curl exit Some(7))`.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+
+### ISSUE-046 — SIGTERM / SIGHUP leave the reuse-registry entry behind
+
+- Cases: A-10, A-14 · Platform: X and W, Ubuntu 26.04.1, private headless
+  GNOME Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S4 · Type: bug
+- Reproduces: 20 of 20
+- Steps:
+  1. Start Litty; send SIGTERM (or SIGHUP).
+  2. List `$XDG_RUNTIME_DIR/litty-a1`.
+- Expected: Entry removed on exit.
+- Actual: Default signal action (exit −15/−1); the entry stays. Shells are
+  cleaned up; later launches treat the entries as stale (Q-05), so the
+  impact is clutter.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+
+### ISSUE-047 — Linux never withdraws a notification when the window regains focus
+
+- Cases: T-16 · Platform: X and W, Ubuntu 26.04.1, private headless GNOME
+  Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S4 · Type: bug
+- Reproduces: every attempt
+- Steps:
+  1. Window in the background; OSC 9 notification arrives.
+  2. Focus the window again.
+- Expected: The notification is withdrawn, as on macOS.
+- Actual: No `CloseNotification` call; the banner stays in the GNOME list.
+  Clicking the banner works and selects the tab that rang.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+- Notes: on quit (O-09) GNOME Shell closes the notification itself
+  (`NotificationClosed`, reason 2) as Litty exits; Litty still sends no
+  `CloseNotification`.
+
+### ISSUE-048 — a confirm dialog freezes every window
+
+- Cases: T-08 · Platform: X and W, Ubuntu 26.04.1, private headless GNOME
+  Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S3 · Type: bug
+- Reproduces: every attempt
+- Steps:
+  1. Stream output in one window; trigger a confirm (close with a running
+     process).
+- Expected: Other windows keep drawing and taking input.
+- Actual: All windows stop redrawing and handling input until the dialog
+  closes; output is read meanwhile and shows afterwards.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+- Notes: Confirm dialogs run `zenity … .status()` on the main thread
+  (`src/app/tabs.rs`).
+
+### ISSUE-049 — with an IME active, find box and history popup input goes to the shell
+
+- Cases: D-05 · Platform: X and W, Ubuntu 26.04.1, private headless GNOME
+  Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S3 · Type: bug
+- Reproduces: every attempt
+- Steps:
+  1. ibus with Unikey (Telex) active.
+  2. Ctrl+Shift+F (or Ctrl+R) and type.
+- Expected: The query takes the text.
+- Actual: Preedit and committed text go to the shell prompt behind the
+  box; the query stays empty. With Unikey on even ASCII letters arrive as
+  commits, so the boxes cannot be typed into.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+
+### ISSUE-050 — keys stop reaching Litty after the XIM server is killed (unconfirmed)
+
+- Cases: D-06 · Platform: X, Ubuntu 26.04.1, private headless GNOME Shell
+  50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S2 · Type: bug
+- Reproduces: 1 of 1, not re-run
+- Steps:
+  1. Litty on X11 with `ibus-daemon --xim`.
+  2. Kill ibus; type.
+- Expected: Plain text input continues.
+- Actual: Typed text did not reach Litty within 5 s. Wayland recovers
+  (plain text, composes again after restart).
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+- Notes: Not re-run: killing ibus made the headless GNOME Shell rewrite
+  the input-source order in the shared user dconf.
+
+### ISSUE-051 — Ctrl+, opens the config with xdg-open, not `$EDITOR`
+
+- Cases: C-01 · Platform: X and W, Ubuntu 26.04.1, private headless GNOME
+  Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S4 · Type: docs
+- Reproduces: every attempt
+- Steps:
+  1. Press Ctrl+,.
+- Expected: `docs/guide/shortcuts.md`: opens `~/.litty/config` in
+  `$EDITOR`.
+- Actual: Runs `xdg-open` (`open_config_in_editor` in `src/config.rs`), so
+  the desktop text handler opens it and `$EDITOR` is ignored.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
+
+### ISSUE-052 — `+update` from a cached download still says "Downloading"
+
+- Cases: R-11 · Platform: X and W, Ubuntu 26.04.1, private headless GNOME
+  Shell 50.1 · Build: `fc3d1d4` (`src/` unchanged at `95c2158`)
+- Severity: S4 · Type: bug
+- Reproduces: 1 of 1
+- Steps:
+  1. `auto-update = download`; launch; wait for "Litty Update Ready".
+  2. Run `litty +update`.
+- Expected: Installs from the cache and says so.
+- Actual: Prints "Downloading the linux/x86_64 build..." although the exec
+  trace shows only the releases API call; installs v0.14.1 correctly.
+- Evidence: headless harness run (input via Mutter RemoteDesktop); logs
+  and screenshots kept outside the repo
