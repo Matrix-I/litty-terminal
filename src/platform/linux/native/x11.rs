@@ -355,11 +355,25 @@ const CTRL_ALT_SUPER: u32 = 4 | 8 | 64;
 /// `XLookupString` under `state`: the keysym and the text it types.
 fn x11_key_input(evdev: u32, state: u32, pressed: bool, repeat: bool, lookup: impl Fn(u32) -> (u32, Option<String>)) -> KeyInput {
     let mut key_input = convert_linux_key(evdev, state, pressed, repeat);
+    let (sym, text) = lookup(state & !CTRL_ALT_SUPER);
+    // The keysym decides the logical key of a named key, as on Wayland
+    // (`Keymap::key`): F-keys and modifiers are not in the evdev table, and a
+    // remapped key (Caps Lock as Escape) means what it produces. Keypad keys
+    // keep `keypad_key`'s Num Lock rules.
+    if key_input.location != KeyLocation::Numpad
+        && let Some((name, location)) = super::xkb::named_key(sym)
+    {
+        key_input.logical = Key::Named(name);
+        key_input.unshifted = Key::Named(name);
+        key_input.text = None;
+        key_input.location = location.unwrap_or(key_input.location);
+        return key_input;
+    }
     // Keys outside the evdev table (other layouts' extra keys, remapped
     // keycodes) still produce layout text, Shift and AltGr applied. This keeps
     // a layout's own keypad symbols (KP_Separator).
     if !matches!(key_input.logical, Key::Named(_)) {
-        if let (_, Some(c)) = lookup(state & !CTRL_ALT_SUPER) {
+        if let Some(c) = text {
             key_input.logical = Key::Character(c.clone());
             key_input.text = Some(c);
         }
@@ -1294,6 +1308,41 @@ mod tests {
         assert_eq!(c.unshifted, Key::Character("c".into()));
         let home = x11_key_input(102, 0, true, false, |_| (0xff50, None));
         assert_eq!(home.logical, Key::Named(NamedKey::Home));
+    }
+
+    /// F-keys and modifiers are not in the evdev table; on X11 they were
+    /// `Unidentified`, so F1–F12 sent nothing (ISSUE-028) and a Shift or Ctrl
+    /// press cleared the selection before Copy (ISSUE-030).
+    #[test]
+    fn x11_function_and_modifier_keys_take_their_name_from_the_keysym() {
+        use crate::platform::input::NamedKey;
+        use xkbcommon_dl::keysyms as k;
+        let key = |evdev: u32, sym: u32| x11_key_input(evdev, 0, true, false, move |_| (sym, None));
+        assert_eq!(key(59, k::F1).logical, Key::Named(NamedKey::F1));
+        assert_eq!(key(88, k::F12).logical, Key::Named(NamedKey::F12));
+        let shift = key(42, k::Shift_L);
+        assert_eq!((shift.logical, shift.location), (Key::Named(NamedKey::Shift), KeyLocation::Left));
+        let ctrl = key(97, k::Control_R);
+        assert_eq!((ctrl.logical, ctrl.location), (Key::Named(NamedKey::Control), KeyLocation::Right));
+        // A remapped key means what it produces, as on Wayland: Caps Lock as Escape.
+        let caps = key(58, k::Escape);
+        assert_eq!((caps.logical, caps.text, caps.unshifted), (Key::Named(NamedKey::Escape), None, Key::Named(NamedKey::Escape)));
+        // Ctrl+Alt+F1 is still F1: the lookup leaves Ctrl and Alt out.
+        let vt = x11_key_input(59, 4 | 8, true, false, |state| {
+            assert_eq!(state & (4 | 8), 0);
+            (k::F1, None)
+        });
+        assert_eq!(vt.logical, Key::Named(NamedKey::F1));
+        // Keypad keys keep the Num Lock rules of `keypad_key`.
+        let kp_home = x11_key_input(71, 0, true, false, |_| (k::KP_Home, None));
+        assert_eq!((kp_home.logical, kp_home.location), (Key::Named(NamedKey::Home), KeyLocation::Numpad));
+        // Num Lock (16) + Shift (1): the keysym is KP_Home, but the key's base is
+        // its Num Lock digit, so the keysym must not rename `unshifted`.
+        let kp_shift = x11_key_input(71, 16 | 1, true, false, |_| (k::KP_Home, None));
+        assert_eq!(
+            (kp_shift.logical, kp_shift.unshifted, kp_shift.location),
+            (Key::Named(NamedKey::Home), Key::Character("7".into()), KeyLocation::Numpad)
+        );
     }
 
     /// The resize edges must show resize arrows, not the default pointer.
