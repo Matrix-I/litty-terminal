@@ -7,7 +7,7 @@ use crate::platform::gui::{CursorIcon, Ime, PhysicalPosition, PhysicalSize, RawH
 use super::sym;
 use super::xim::{with_xlib_locale, XimContext};
 use super::events::{wm_state_event, wm_state_hidden, OcclusionTracker, WmStateAtoms, convert_linux_key, keysym_char, mods_after_key, mods_from_state, x11_button_event, HeldKeys};
-use crate::platform::input::{Key, KeyLocation, Mods};
+use crate::platform::input::{Key, KeyInput, KeyLocation, Mods};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Once, OnceLock};
 
@@ -345,6 +345,33 @@ fn xkb_keysym_to_utf8() -> Option<unsafe extern "C" fn(u32, *mut c_char, usize) 
         let p = libc::dlsym(handle, c"xkb_keysym_to_utf8".as_ptr());
         (!p.is_null()).then(|| std::mem::transmute_copy(&p))
     })
+}
+
+/// Ctrl, Alt and Super select no level in standard layouts; leaving them out
+/// of the lookup keeps the printable character the keymap matches against.
+const CTRL_ALT_SUPER: u32 = 4 | 8 | 64;
+
+/// The key event for an X11 key press or release. `lookup(state)` is
+/// `XLookupString` under `state`: the keysym and the text it types.
+fn x11_key_input(evdev: u32, state: u32, pressed: bool, repeat: bool, lookup: impl Fn(u32) -> (u32, Option<String>)) -> KeyInput {
+    let mut key_input = convert_linux_key(evdev, state, pressed, repeat);
+    // Keys outside the evdev table (other layouts' extra keys, remapped
+    // keycodes) still produce layout text, Shift and AltGr applied. This keeps
+    // a layout's own keypad symbols (KP_Separator).
+    if !matches!(key_input.logical, Key::Named(_)) {
+        if let (_, Some(c)) = lookup(state & !CTRL_ALT_SUPER) {
+            key_input.logical = Key::Character(c.clone());
+            key_input.text = Some(c);
+        }
+        // A keypad key's base key is its Num Lock one, not the navigation
+        // key `state` 0 would give.
+        if key_input.location != KeyLocation::Numpad
+            && let (_, Some(c)) = lookup(0)
+        {
+            key_input.unshifted = Key::Character(c);
+        }
+    }
+    key_input
 }
 
 /// Text a keysym produces, or `None` for function keys and control codes.
@@ -1026,8 +1053,9 @@ impl X11Window {
         }
     }
 
-    /// Text the key produces under `state`, through the X keyboard layout.
-    fn lookup(&self, kev: &XKeyEvent, state: u32) -> Option<String> {
+    /// The keysym and the text the key produces under `state`, through the X
+    /// keyboard layout.
+    fn lookup(&self, kev: &XKeyEvent, state: u32) -> (u32, Option<String>) {
         let mut ev = XKeyEvent { state: state as c_int, ..*kev };
         let mut buf = [0 as c_char; 16];
         let mut keysym: c_ulong = 0;
@@ -1035,7 +1063,7 @@ impl X11Window {
             (self.0.lib.XLookupString)(&mut ev, buf.as_mut_ptr(), buf.len() as c_int, &mut keysym, std::ptr::null_mut());
         }
         // The returned bytes are Latin-1 only; the keysym covers every layout.
-        keysym_text(keysym)
+        (u32::try_from(keysym).unwrap_or(0), keysym_text(keysym))
     }
 
     /// Current `_NET_WM_STATE` as a `StateChanged` event and whether it
@@ -1173,26 +1201,7 @@ impl X11Window {
                             continue;
                         }
                         let repeat = pressed && was_held;
-                        let mut key_input = convert_linux_key(evdev_code, state, pressed, repeat);
-                        // Keys outside the evdev table (other layouts' extra
-                        // keys, remapped keycodes) still produce layout text.
-                        if !matches!(key_input.logical, Key::Named(_)) {
-                            // Layout-aware text: Shift (and AltGr) applied,
-                            // Ctrl/Alt/Super left to the keymap. This keeps
-                            // a layout's own keypad symbols (KP_Separator).
-                            const CTRL_ALT_SUPER: u32 = 4 | 8 | 64;
-                            if let Some(c) = self.lookup(kev, state & !CTRL_ALT_SUPER) {
-                                key_input.logical = Key::Character(c.clone());
-                                key_input.text = Some(c);
-                            }
-                            // A keypad key's base key is its Num Lock one,
-                            // not the navigation key `state` 0 would give.
-                            if key_input.location != KeyLocation::Numpad
-                                && let Some(c) = self.lookup(kev, 0)
-                            {
-                                key_input.unshifted = Key::Character(c);
-                            }
-                        }
+                        let key_input = x11_key_input(evdev_code, state, pressed, repeat, |s| self.lookup(kev, s));
                         events.push(WindowEvent::Key(key_input));
                     }
                     // ButtonPress = 4, ButtonRelease = 5
@@ -1267,6 +1276,25 @@ impl X11Window {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Text keys take the layout's text under Shift (Ctrl/Alt/Super left out)
+    /// and their first level as base key; evdev-named keys keep their name.
+    #[test]
+    fn x11_text_keys_take_layout_text_and_named_keys_keep_their_name() {
+        use crate::platform::input::NamedKey;
+        const SHIFT: u32 = 1;
+        const CTRL: u32 = 4;
+        let layout = |state: u32| {
+            assert_eq!(state & CTRL, 0, "Ctrl is left out of the lookup");
+            if state & SHIFT != 0 { (0x43, Some("C".to_string())) } else { (0x63, Some("c".to_string())) }
+        };
+        let c = x11_key_input(46, SHIFT | CTRL, true, false, layout);
+        assert_eq!(c.logical, Key::Character("C".into()));
+        assert_eq!(c.text.as_deref(), Some("C"));
+        assert_eq!(c.unshifted, Key::Character("c".into()));
+        let home = x11_key_input(102, 0, true, false, |_| (0xff50, None));
+        assert_eq!(home.logical, Key::Named(NamedKey::Home));
+    }
 
     /// The resize edges must show resize arrows, not the default pointer.
     #[test]
