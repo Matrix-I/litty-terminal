@@ -277,7 +277,7 @@ impl Drop for Compose {
 
 /// The named key a keysym stands for, and the side for modifiers; `None`
 /// for keysyms that type text (or that Litty has no name for).
-fn named_key(sym: xkb_keysym_t) -> Option<(NamedKey, Option<KeyLocation>)> {
+pub(super) fn named_key(sym: xkb_keysym_t) -> Option<(NamedKey, Option<KeyLocation>)> {
     use xkbcommon_dl::keysyms as k;
     let (left, right, numpad) = (Some(KeyLocation::Left), Some(KeyLocation::Right), Some(KeyLocation::Numpad));
     let named = |n| Some((n, None));
