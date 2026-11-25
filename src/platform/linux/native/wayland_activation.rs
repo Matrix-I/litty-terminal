@@ -27,7 +27,10 @@ pub(super) fn startup_token() -> Option<String> { STARTUP.get()?.lock().take() }
 /// The launcher token without using it up: `+reuse` hands it to the running
 /// instance, yet keeps it for its own first window if none answers.
 pub(crate) fn startup_token_peek() -> Option<String> { STARTUP.get()?.lock().clone() }
-pub(crate) fn valid_token(token: &str) -> bool { !token.is_empty() && token.len() <= 4096 && !token.contains('\0') }
+/// Opaque, NUL-free, and short enough that `activate` stays one Wayland message.
+pub(crate) fn valid_token(token: &str) -> bool {
+    !token.is_empty() && token.len() <= super::wayland::MAX_WIRE_STRING && !token.contains('\0')
+}
 
 /// How long a token handed over by another process or the notification
 /// server stays usable: compositors expire unused tokens within seconds.
@@ -144,5 +147,14 @@ pub(crate) mod tests {
         assert!(!valid_token(""));
         assert!(!valid_token("a\0b"));
         assert!(!valid_token(&"a".repeat(4097)));
+    }
+
+    /// `xdg_activation_v1.activate` carries the token plus a surface; a token
+    /// that makes the request pass 4096 bytes would drop the connection.
+    #[test]
+    fn tokens_fit_one_activate_request() {
+        assert!(valid_token(&"a".repeat(super::super::wayland::MAX_WIRE_STRING)));
+        assert!(!valid_token(&"a".repeat(super::super::wayland::MAX_WIRE_STRING + 1)));
+        assert!(!valid_token(&"a".repeat(4096)), "a 4096-byte token no longer fits");
     }
 }

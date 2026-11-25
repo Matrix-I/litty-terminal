@@ -569,6 +569,19 @@ impl Drop for SurfaceScaling {
     }
 }
 
+/// libwayland refuses to send a message over 4096 bytes and the connection,
+/// with every window, is lost (ISSUE-021). A string argument also costs its
+/// length, NUL and padding next to the header and other arguments, so strings
+/// that can come from outside (titles, activation tokens) stay under this.
+pub(super) const MAX_WIRE_STRING: usize = 2048;
+// Header (8) + length (4) + bytes + NUL padded to 4, plus one object argument.
+const _: () = assert!(8 + 4 + (MAX_WIRE_STRING + 1).next_multiple_of(4) + 4 <= 4096);
+
+/// The longest prefix of `s` that fits `MAX_WIRE_STRING`, cut on a char boundary.
+fn wire_string(s: &str) -> &str {
+    &s[..s.floor_char_boundary(MAX_WIRE_STRING)]
+}
+
 impl WaylandWindow {
     pub fn create(spec: &WindowSpec, id: WindowId) -> Result<Self, String> {
         let client = client()?;
@@ -578,7 +591,7 @@ impl WaylandWindow {
         // Litty draws its own title bar when the spec turns decorations off.
         let decorations = if spec.decorations { WindowDecorations::RequestServer } else { WindowDecorations::RequestClient };
         let window = client.xdg.create_window(surface, decorations, &client.qh);
-        window.set_title(spec.title);
+        window.set_title(wire_string(spec.title));
         window.set_app_id(APP_ID);
         // The spec is in logical pixels; the scale arrives later (on the
         // first configure's round trips, or once the surface is shown).
@@ -736,7 +749,7 @@ impl WaylandWindow {
 
     /// Takes effect at once: `xdg_toplevel.set_title` is not double-buffered.
     pub fn set_title(&self, title: &str) {
-        self.0.window.set_title(title);
+        self.0.window.set_title(wire_string(title));
     }
 
     pub fn set_maximized(&self, maximized: bool) {
@@ -922,6 +935,21 @@ delegate_noop!(State: WpFractionalScaleManagerV1);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A title past libwayland's 4096-byte message limit drops the whole
+    /// connection (ISSUE-021), so what is sent is cut on a char boundary.
+    #[test]
+    fn titles_are_cut_to_fit_one_wayland_message() {
+        let short = "vim ~/notes.txt";
+        assert_eq!(wire_string(short), short, "a short title is sent as is");
+        let long = "A".repeat(100_000);
+        assert_eq!(wire_string(&long).len(), MAX_WIRE_STRING);
+        // 'ệ' is 3 bytes: 2048 is not a char boundary of this string.
+        let wide = "ệ".repeat(1000);
+        let cut = wire_string(&wide);
+        assert!(cut.len() <= MAX_WIRE_STRING && wide.starts_with(cut));
+        assert_eq!(cut.len(), 2046, "the longest whole-char prefix");
+    }
 
     #[test]
     fn backend_defaults_to_x11_and_accepts_both_names() {

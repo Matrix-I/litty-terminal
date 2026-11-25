@@ -14,7 +14,7 @@ pub(super) fn encode(request: &ActivationRequest, token: Option<&str>) -> io::Re
     if !valid_token(token) {
         return Err(wire::invalid());
     }
-    // `valid_token` bounds a token to 4096 bytes, so its length fits a u16.
+    // `valid_token` bounds a token to `MAX_WIRE_STRING` bytes, so its length fits a u16.
     let mut out = Vec::with_capacity(MAGIC.len() + 2 + token.len() + inner.len());
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&(token.len() as u16).to_be_bytes());
