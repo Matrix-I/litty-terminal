@@ -566,6 +566,7 @@ rejected by its plan case on a real machine, then either becomes an
 - Notes: any program can print such a title, so output from an untrusted
   source can close all of the user's sessions. The Wayland
   `xdg_toplevel.set_title` message is not length-limited before sending.
+- Status: fixed on fix/linux-s1-s2 (`75fc9b0`), e2e re-run 2026-11-25: Wayland, 100,000-byte title, Litty still running after 5 s, stderr empty (no `exceeds 4096`, no `lost the connection`)
 
 ### ISSUE-022 — default background is `#000000`, docs say `#121316`
 
@@ -679,6 +680,7 @@ rejected by its plan case on a real machine, then either becomes an
   and screenshots kept outside the repo
 - Notes: Physical keyboard not checked; injection goes through Mutter
   RemoteDesktop.
+- Status: fixed on fix/linux-s1-s2 (`7983d3e`), e2e re-run 2026-11-25: X11, `F1 F5 F12 shift+F5 ctrl+F5` into `cat -v` gave `^[OP^[[15~^[[24~^[[15;2~^[[15;5~`
 
 ### ISSUE-029 — modified F1 uses rxvt-style sequences
 
@@ -710,6 +712,7 @@ rejected by its plan case on a real machine, then either becomes an
   CLIPBOARD and PRIMARY; Wayland copies fine.
 - Evidence: headless harness run (input via Mutter RemoteDesktop); logs
   and screenshots kept outside the repo
+- Status: fixed on fix/linux-s1-s2 (`7983d3e`), e2e re-run 2026-11-25: X11, `copy-on-select = false`, Select All then Ctrl+Shift+C and then Ctrl+Insert each left the selected text (`hello-030`) in CLIPBOARD, read with `wl-paste` after seeding it with `x`
 
 ### ISSUE-031 — Shift+Click does not extend a selection, and Shift snaps to the bottom, on X11
 
@@ -727,6 +730,7 @@ rejected by its plan case on a real machine, then either becomes an
   Ctrl+Shift+Up never gets past the last prompt. Wayland is correct.
 - Evidence: headless harness run (input via Mutter RemoteDesktop); logs
   and screenshots kept outside the repo
+- Status: partly fixed on fix/linux-s1-s2 (`7983d3e`), e2e re-run 2026-11-25: X11, after scrolling back to lines 195–226, Shift alone left the view unchanged (screenshots identical in the terminal area). Shift+Click extending a selection and Ctrl+Shift+Up were not re-tested and remain open
 
 ### ISSUE-032 — `window-width` / `window-height` give 2 rows fewer on Linux
 
@@ -917,6 +921,8 @@ rejected by its plan case on a real machine, then either becomes an
   and screenshots kept outside the repo
 - Notes: The main thread is waiting, not busy. Grid-lock or event-loop
   wakeup starvation on the X11 path is a guess, not verified.
+- Re-run 2026-11-25 on `3235ce8` (headless GNOME, X11, 2 panes, `yes` in one): single-pane Ctrl+C lands in 0.56 s; typing into the idle pane arrives in 1–3 s (about 1.2 s of that is injection); Ctrl+C into the flooding pane after a split could not be tested because neither a click nor Ctrl+Alt+[ moved focus in the harness, even without a flood (harness or a separate X11 bug, unknown). During the flood the main thread sat in `drm_syncobj_array_wait_timeout` (a GPU fence wait) in 35–40 of 40 samples, not in a grid-lock futex. The reported "input never arrives" did not reproduce for the idle pane; root cause unknown.
+- Status: open, needs investigation
 
 ### ISSUE-044 — `yo` retries a refused connection for 4 minutes
 
@@ -1060,3 +1066,78 @@ rejected by its plan case on a real machine, then either becomes an
   trace shows only the releases API call; installs v0.14.1 correctly.
 - Evidence: headless harness run (input via Mutter RemoteDesktop); logs
   and screenshots kept outside the repo
+
+### ISSUE-053 — Wayland without a keymap: F-keys and modifiers are unnamed (unconfirmed)
+
+- Cases: none (found in code review of `fix/linux-s1-s2`) · Platform: W ·
+  Build: `da6a81a`
+- Severity: S3 · Type: bug
+- Reproduces: not run; no tested compositor sends no keymap
+- Steps:
+  1. Run Litty on a Wayland compositor that sends no keymap, or with a
+     keymap libxkbcommon cannot compile.
+  2. Press F1, or select text and press Ctrl+Shift+C.
+- Expected: F1 sends `ESC O P`; Copy copies the selection.
+- Actual (from the source): `Keyboard::key` falls back to
+  `convert_linux_key` (`src/platform/linux/native/wayland_input.rs:175`),
+  whose evdev table (`src/platform/linux/native/events.rs:284`) names no
+  F-keys or modifiers, so the ISSUE-028/030 symptoms return on this path.
+- Evidence: source reading at `da6a81a`
+- Notes: X11 was fixed by naming keys from their keysym (ISSUE-028/030).
+  Adding F1–F12 (evdev 59–68, 87, 88) and the modifiers (29, 42, 54, 56,
+  97, 100, 125, 126) to the evdev table would cover both backends.
+
+### ISSUE-054 — an AltGr press clears the selection and scrolls to the bottom (unconfirmed)
+
+- Cases: none (found in code review of `fix/linux-s1-s2`) · Platform: X, W ·
+  Build: `da6a81a`
+- Severity: S3 · Type: bug
+- Reproduces: not run
+- Steps:
+  1. On a layout with AltGr (`ISO_Level3_Shift`), select text or scroll
+     back.
+  2. Press AltGr alone.
+- Expected: Like Shift or Ctrl alone: the selection and scroll position
+  stay.
+- Actual (from the source): `xkb::named_key`
+  (`src/platform/linux/native/xkb.rs:339`) has no name for
+  `ISO_Level3_Shift`, so the key is not a modifier for
+  `keymap::is_modifier_key` and `handle_key` calls `reset_display`
+  (`src/app/keyboard.rs:189`).
+- Evidence: source reading at `da6a81a`
+- Notes: Same mechanism as ISSUE-030; Caps Lock and Hyper may be affected
+  the same way.
+
+### ISSUE-055 — OSC 0/2 titles are not bounded in grid memory (unconfirmed)
+
+- Cases: none (found while planning `fix/linux-s1-s2`) · Platform: M, X, W ·
+  Build: `da6a81a`
+- Severity: S3 · Type: bug
+- Reproduces: not run
+- Steps:
+  1. Print `ESC ] 2 ; <very long text> BEL`.
+- Expected: The title is cut to a bounded length.
+- Actual (from the source): the title is stored whole
+  (`src/terminal/grid/perform.rs:392`). The Wayland request is now cut to
+  2048 bytes (ISSUE-021), but the grid copy is not.
+- Evidence: source reading at `da6a81a`
+- Notes: Related: ISSUE-021.
+
+### ISSUE-056 — two X11 unit tests fail when an ibus XIM is active
+
+- Cases: none (seen running `cargo test` for `fix/linux-s1-s2`) ·
+  Platform: X, Ubuntu 26.04.1 host with `XMODIFIERS=@im=ibus` · Build:
+  `da6a81a`
+- Severity: S3 · Type: test tooling
+- Reproduces: every run on that host; also on unmodified `da6a81a`
+- Steps:
+  1. `cargo test` with `XMODIFIERS=@im=ibus` and ibus running.
+- Expected: All tests pass.
+- Actual: `x11::tests::keycode_zero_presses_are_not_keys` and
+  `x11::tests::a_window_after_a_closed_one_still_looks_up_text` fail: the
+  key press arrives as `Ime(Preedit("a"))` instead of a key event. With
+  `XMODIFIERS=` (empty) all tests pass.
+- Evidence: `cargo test` output on 2026-11-25, 878 passed / 2 failed;
+  `XMODIFIERS= cargo test`, 880 passed
+- Notes: The tests depend on the host's input method; they should clear
+  `XMODIFIERS` or not open an input context.
