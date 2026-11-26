@@ -40,12 +40,15 @@ Severity S1–S4 as defined in the issue note.
 
 Answer these before the items that depend on them.
 
-- [ ] **D1** — ISSUE-004: should `--version` / `--help` print and exit
+- [x] **D1** — ISSUE-004: should `--version` / `--help` print and exit
   instead of opening a window? (blocks ISSUE-004)
-- [ ] **D2** — ISSUE-006 / ISSUE-051: should `open_config` use `$EDITOR`
+  Answer: print and exit 0.
+- [x] **D2** — ISSUE-006 / ISSUE-051: should `open_config` use `$EDITOR`
   (in a terminal tab) or keep `open -t` / `xdg-open` and fix the docs?
-- [ ] **D3** — ISSUE-022: is the default background `#000000` (fix docs)
+  Answer: keep `open -t` / `xdg-open`, docs fixed.
+- [x] **D3** — ISSUE-022: is the default background `#000000` (fix docs)
   or `#121316` (fix code)?
+  Answer: `#000000`, docs fixed.
 - [ ] **D4** — ISSUE-026: change the Linux pane shortcuts that clash with
   GNOME, or only document the clash?
 - [ ] **D5** — ISSUE-029: modified F1 as xterm `CSI 1;nP` or keep rxvt
