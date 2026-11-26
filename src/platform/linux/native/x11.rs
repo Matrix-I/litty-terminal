@@ -1379,6 +1379,7 @@ mod tests {
         unsafe { (win.0.lib.XSelectInput)(win.0.display, win.0.window, BASE_EVENT_MASK | xim.filter_events()) };
         // Drops the host-method context the window was created with.
         *win.0.xim.lock() = Some(xim);
+        assert!(win.0.xim.lock().as_ref().is_some_and(XimContext::has_context), "Xlib's built-in input method did not open");
         Some(win)
     }
 
