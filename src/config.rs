@@ -972,7 +972,7 @@ const TEMPLATE: &str = r#"# This is the configuration file for Litty.
 # ---------------------------------------------------------------------------
 
 # Default background and foreground color (#rrggbb).
-# background = #121316
+# background = #000000
 # foreground = #e6e6e6
 
 # ---------------------------------------------------------------------------
@@ -1343,6 +1343,17 @@ shell-integration-features = no-cursor,sudo
         let (c, errs) = Config::parse(TEMPLATE);
         assert!(errs.is_empty(), "{errs:?}");
         assert_eq!(c, Config::default());
+    }
+
+    #[test]
+    fn template_documents_default_background() {
+        let line = TEMPLATE
+            .lines()
+            .find(|l| l.starts_with("# background = #"))
+            .expect("template documents the default background");
+        let (c, errs) = Config::parse(line.trim_start_matches("# "));
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(c.background, Config::default().background);
     }
 
     #[test]

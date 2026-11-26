@@ -22,6 +22,8 @@ keybind = cmd+d=unbind
 | `resize_split:left\|right\|up\|down` | Dynamically expand or shrink active split ratio |
 | `equalize_splits` | Reset all split divider ratios evenly |
 | `toggle_split_zoom` | Maximize active pane to fill tab (toggle) |
+| `increase_font_size` / `decrease_font_size` / `reset_font_size` | Zoom the font in / out / back to the configured size |
+| `scroll_page_up` / `scroll_page_down` | Scroll the viewport up / down by one page |
 | `previous_tab` / `next_tab` / `last_tab` | Cycle between tabs |
 | `goto_tab:1` .. `goto_tab:9` | Switch directly to tab 1 through 9 |
 | `copy_to_clipboard` / `paste_from_clipboard` | Copy selection / Paste clipboard (bracketed-paste safe) |

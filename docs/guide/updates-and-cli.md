@@ -13,6 +13,12 @@ Litty includes a built-in, zero-dependency self-updater that checks for releases
 - **Atomic macOS app updates**: the updater extracts and signs a complete bundle in a private directory beside the installed app, then swaps both directories atomically. Staging, signing or swap failures leave the installed bundle intact. A filesystem without atomic swap support returns an error.
 - Only one update runs at a time (a lock in `~/.cache/litty/updates`, shared with `litty +update`), and every network request has connect and transfer timeouts.
 
+## GitHub token (optional)
+
+The update client reads `GITHUB_TOKEN`, or `GH_TOKEN` if `GITHUB_TOKEN` is unset. If the chosen variable is empty, no token is sent (an empty `GITHUB_TOKEN` does not fall through to `GH_TOKEN`). A token is sent as an authorization header on GitHub API release requests, so they are not limited to the anonymous rate limit.
+
+The token is optional. If the API request fails for any reason, with or without a token (for example a 403 rate limit), the updater falls back to the web redirect, which only knows the latest stable release. On the `tip` channel (`auto-update-channel = tip`), a rate-limited updater without a token may therefore miss prereleases.
+
 ## Reuse an existing process
 
 Run `litty +reuse` (or `litty --reuse`) to open a new window in the most

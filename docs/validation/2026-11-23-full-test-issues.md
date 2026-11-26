@@ -104,11 +104,11 @@ Status after the automated macOS and Linux runs:
 | --- | --- |
 | REV-01 | Open: E-26 blocked on X11 (no file manager in the headless session); Wayland drops pass (P2-10) |
 | REV-02 | Open: Linux only |
-| REV-03 | Confirmed → ISSUE-006 |
-| REV-04 | Confirmed → ISSUE-008 |
-| REV-05 | Confirmed → ISSUE-005 |
-| REV-06 | Confirmed and extended → ISSUE-007 |
-| REV-07 | Confirmed → ISSUE-009 |
+| REV-03 | Confirmed → ISSUE-006; fixed on fix/docs-guide-sync (`09fa9d5`) |
+| REV-04 | Confirmed → ISSUE-008; fixed on fix/docs-guide-sync (`00ed170`) |
+| REV-05 | Confirmed → ISSUE-005; fixed on fix/docs-guide-sync (`1807f26`) |
+| REV-06 | Confirmed and extended → ISSUE-007; fixed on fix/docs-guide-sync (`ce02d3b`) |
+| REV-07 | Confirmed → ISSUE-009; fixed on fix/docs-guide-sync (`d7ebfa0`) |
 | REV-08 | Confirmed → ISSUE-004 |
 | REV-09 | Open: U-02 ran on Linux with a 2-line paste; the single line plus newline count was not checked |
 | REV-10 | Confirmed → ISSUE-019 |
@@ -286,6 +286,8 @@ rejected by its plan case on a real machine, then either becomes an
   the terminal), matching `src/cli.rs:88-98` (unknown arguments fall
   through to `Command::Run`).
 - Notes: there is no command-line way to print the version.
+- Decision D1: print the version / help text and exit 0. Agreed fix; still
+  open.
 
 ### ISSUE-005 — default shortcuts missing from `shortcuts.md`
 
@@ -296,6 +298,10 @@ rejected by its plan case on a real machine, then either becomes an
   `Ctrl+Alt+D` (split down) and macOS `Cmd+Ctrl+=` (equalize splits) are
   bound in `src/keymap.rs` (lines 136-140, 209) but not listed in
   `docs/guide/shortcuts.md`.
+- Status: fixed on fix/docs-guide-sync (`1807f26`)
+- Fix evidence: `docs/guide/shortcuts.md` now lists Linux
+  `Ctrl+PageUp`/`Ctrl+PageDown`, Linux `Ctrl+Alt+D` and macOS `Cmd+Ctrl+=`,
+  copied from `src/keymap.rs`.
 
 ### ISSUE-006 — docs say `open_config` uses `$EDITOR`; code uses `open -t` / `xdg-open`
 
@@ -304,6 +310,10 @@ rejected by its plan case on a real machine, then either becomes an
 - Actual: `src/config.rs:935` opens the file with `/usr/bin/open -t` or
   `xdg-open`; `docs/guide/configuration.md` and `docs/guide/shortcuts.md`
   say `$EDITOR`.
+- Status: fixed on fix/docs-guide-sync (`09fa9d5`)
+- Fix evidence: `docs/guide/configuration.md` and `shortcuts.md` now say
+  `open_config` opens the file with `open -t` (macOS) / `xdg-open` (Linux),
+  as in `src/config.rs`; decision D2: keep the code.
 
 ### ISSUE-007 — undocumented environment variables and config alias
 
@@ -316,6 +326,14 @@ rejected by its plan case on a real machine, then either becomes an
     (`src/update/client.rs:167`), not in `docs/guide/updates-and-cli.md`.
   - `background-blur-radius`, accepted as an alias of `background-blur`
     (`src/config.rs:363`).
+- Status: fixed on fix/docs-guide-sync (`ce02d3b`)
+- Fix evidence: `LITTY_FONT`, `LITTY_FONT_SIZE`, `GITHUB_TOKEN`/`GH_TOKEN`
+  and the `background-blur-radius` alias are documented in
+  `configuration.md` and `updates-and-cli.md`.
+- Follow-up, open (found in Task 3): `src/config.rs:343` accepts
+  `font-size` 1..255 and values outside 6..72 are clamped silently at
+  runtime (`src/app/window.rs:70`, `:667`); the docs range 6..72 is right.
+  Open: whether to warn on or reject out-of-range values.
 
 ### ISSUE-008 — actions missing from `keybinding-actions.md`
 
@@ -324,6 +342,12 @@ rejected by its plan case on a real machine, then either becomes an
 - Actual: `increase_font_size`, `decrease_font_size`, `reset_font_size`,
   `scroll_page_up`, `scroll_page_down` are accepted by `src/keymap.rs` and
   not listed in the actions guide.
+- Status: fixed on fix/docs-guide-sync (`00ed170`)
+- Fix evidence: `docs/guide/keybinding-actions.md` lists
+  `increase_font_size`, `decrease_font_size`, `reset_font_size`,
+  `scroll_page_up`, `scroll_page_down`; every other action arm in
+  `src/keymap.rs` was already listed (`toggle_quick_terminal` only returns a
+  removal error).
 
 ### ISSUE-009 — install docs name the v0.8.0 packages
 
@@ -332,6 +356,10 @@ rejected by its plan case on a real machine, then either becomes an
 - Actual: `README.md` line 42 and `docs/guide/installation.md` lines 17-42
   name `litty_0.8.0_amd64.deb` and `litty-0.8.0-1.x86_64.rpm`; the current
   release is v0.14.1.
+- Status: fixed on fix/docs-guide-sync (`d7ebfa0`)
+- Fix evidence: `README.md` and `docs/guide/installation.md` use
+  `litty_*_amd64.deb`, `litty-*.x86_64.rpm` and `/releases/latest`; `grep -n
+  '0\.8\.0'` on both returns nothing.
 
 ### ISSUE-010 — idle CPU time still grows with cursor blink off
 
@@ -582,6 +610,11 @@ rejected by its plan case on a real machine, then either becomes an
   example in the config template (`src/config.rs:975`).
 - Notes: decide which one is intended; the screen colour itself was not
   checked by eye.
+- Status: fixed on fix/docs-guide-sync (`481e50c`)
+- Fix evidence: Decision D3: the code default `#000000` is right.
+  `configuration.md` and the template comment `# background = #000000` now
+  match; new test `template_documents_default_background` guards the
+  template.
 
 ### ISSUE-023 — a UTF-8 BOM breaks the first config line
 
@@ -1053,6 +1086,9 @@ rejected by its plan case on a real machine, then either becomes an
   the desktop text handler opens it and `$EDITOR` is ignored.
 - Evidence: headless harness run (input via Mutter RemoteDesktop); logs
   and screenshots kept outside the repo
+- Status: fixed on fix/docs-guide-sync (`09fa9d5`)
+- Fix evidence: Same fix as ISSUE-006 (decision D2): `shortcuts.md` now
+  describes `open -t` / `xdg-open`.
 
 ### ISSUE-052 — `+update` from a cached download still says "Downloading"
 
