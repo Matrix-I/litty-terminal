@@ -5,7 +5,7 @@ Litty reads its configuration from:
 ~/.litty/config
 ```
 
-- Press <kbd>Cmd</kbd> + <kbd>,</kbd> (macOS) or <kbd>Ctrl</kbd> + <kbd>,</kbd> (Linux) inside Litty to create a documented template and open it in your default `$EDITOR`.
+- Press <kbd>Cmd</kbd> + <kbd>,</kbd> (macOS) or <kbd>Ctrl</kbd> + <kbd>,</kbd> (Linux) inside Litty to create a documented template and open it. macOS opens the file in the default text editor (`open -t`); Linux opens it with the desktop's handler for text files (`xdg-open`). `$EDITOR` is not used.
 - Press <kbd>Cmd</kbd> + <kbd>Shift</kbd> + <kbd>,</kbd> / <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>,</kbd> to live-reload.
 - Configuration is also **automatically reloaded on window focus** whenever the file is modified on disk.
 - Litty maintains full syntax compatibility with Ghostty configuration keys and loads custom themes from `~/.litty/themes` or `~/.config/ghostty/themes`.

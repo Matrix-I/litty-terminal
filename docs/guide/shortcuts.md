@@ -25,7 +25,7 @@ Litty provides complete shortcut parity across macOS and Linux, adhering strictl
 | **Zoom in (+1.0 pt)** | <kbd>Cmd</kbd> + <kbd>+</kbd> / <kbd>=</kbd> | <kbd>Ctrl</kbd> + <kbd>+</kbd> / <kbd>=</kbd> *(with/without Shift, or Super)* | Font size clamps between 6.0 – 72.0 pt |
 | **Zoom out (-1.0 pt)** | <kbd>Cmd</kbd> + <kbd>-</kbd> | <kbd>Ctrl</kbd> + <kbd>-</kbd> / <kbd>_</kbd> *(with/without Shift, or Super)* | Font size clamps between 6.0 – 72.0 pt |
 | **Reset zoom** | <kbd>Cmd</kbd> + <kbd>0</kbd> | <kbd>Ctrl</kbd> + <kbd>0</kbd> *(with/without Shift, or Super)* | Resets to configured default font size |
-| **Open config editor** | <kbd>Cmd</kbd> + <kbd>,</kbd> | <kbd>Ctrl</kbd> + <kbd>,</kbd> *(or <kbd>Super</kbd> + <kbd>,</kbd>)* | Opens `~/.litty/config` in `$EDITOR` |
+| **Open config editor** | <kbd>Cmd</kbd> + <kbd>,</kbd> | <kbd>Ctrl</kbd> + <kbd>,</kbd> *(or <kbd>Super</kbd> + <kbd>,</kbd>)* | Opens `~/.litty/config` with `open -t` (macOS, default text editor) or `xdg-open` (Linux, the desktop's text-file handler); `$EDITOR` is not used |
 | **Reload config file** | <kbd>Cmd</kbd> + <kbd>Shift</kbd> + <kbd>,</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>,</kbd> | Live reload without losing shell session |
 | **Open URL or path** | <kbd>Cmd</kbd> + <kbd>Click</kbd> | <kbd>Ctrl</kbd> + <kbd>Click</kbd> *(or <kbd>Super</kbd> + <kbd>Click</kbd>)* | Opens in default browser / editor via `open` or `xdg-open` |
 | **Hover URL preview** | <kbd>Cmd</kbd> + <kbd>Mouse Move</kbd> | <kbd>Ctrl</kbd> + <kbd>Mouse Move</kbd> *(or <kbd>Super</kbd>)* | Underlines URL and displays preview pill |
