@@ -1242,9 +1242,16 @@ mod tests {
         assert!(wait_for("WINCHED"), "SIGWINCH delivered without a size change");
     }
 
+    /// Spawns a non-login POSIX `/bin/sh`, which reads only `$ENV` (unset in the
+    /// test environment), so tests that type into it do not depend on `$SHELL`
+    /// or `HOME` (ISSUE-012).
+    fn spawn_test_shell() -> Pty {
+        Pty::spawn_program("/bin/sh", &["sh"], &[], (80, 24), (8, 16)).expect("spawn /bin/sh")
+    }
+
     #[test]
     fn shell_exit_is_reported_and_reaped() {
-        let pty = Pty::spawn_in(80, 24, 8, 16, None, None).expect("spawn pty");
+        let pty = spawn_test_shell();
         let pid = pty.pid;
         let (tx, rx) = std::sync::mpsc::channel();
         pty.spawn_reader(Arc::new(Mutex::new(Grid::new(80, 24))), || {}, move || {
@@ -1260,7 +1267,7 @@ mod tests {
 
     #[test]
     fn output_after_enter_is_not_held_back_waiting_for_the_prompt() {
-        let pty = Pty::spawn_in(80, 24, 8, 16, None, None).expect("spawn pty");
+        let pty = spawn_test_shell();
         let grid = Arc::new(Mutex::new(Grid::new(80, 24)));
         let screen = |g: &Grid| -> String {
             let row = |r: usize| -> String { g.display_row(r).iter().map(|c| char::from_u32(c.codepoint).filter(|&c| c != '\0').unwrap_or(' ')).collect() };
