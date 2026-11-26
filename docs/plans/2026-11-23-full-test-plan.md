@@ -498,7 +498,7 @@ Use `q` for replies. Reference: `src/terminal/grid/perform.rs`.
 | ID | Steps | Expected | M | X | W |
 | --- | --- | --- | --- | --- | --- |
 | R-01 | `litty +check-update` on v0.14.1 | "up to date" (latest is v0.14.1) | P | P | — |
-| R-02 | Build tag `v0.14.0` (`git worktree add ../litty-0.14.0 v0.14.0`, release build), run `+check-update` | Reports v0.14.1 available | P | P | — |
+| R-02 | Build tag `v0.14.0` (`git worktree add ../litty-0.14.0 v0.14.0`, then `LITTY_MINISIGN_PUBKEY="$(tail -n 1 resources/minisign.pub)" cargo build --release`; a build without the pinned key refuses to update, by design; ISSUE-011), run `+check-update` | Reports v0.14.1 available | P | P | — |
 | R-03 | v0.14.0 standalone binary in a user-writable path: `+update` | Downloads asset for this CPU, verifies minisign + SHA-256 + `# litty-release: v0.14.1`, replaces the binary; new binary contains 0.14.1 | P (with pinned key, ISSUE-011) | P (pinned key, ISSUE-011; result byte-identical to the asset) | — |
 | R-04 | `+update --force` / `-f` on v0.14.1 | Reinstalls the current version | P (`--force` and `-f`; pinned key, ISSUE-011) | P (`--force` and `-f`) | — |
 | R-05 | M: v0.14.0 `Litty.app`: Litty ▸ Check for Updates… → Update Now | Bundle staged, signed, swapped atomically; app relaunches as 0.14.1 | S manual | — | — |
