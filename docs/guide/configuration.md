@@ -31,7 +31,7 @@ Litty reads its configuration from:
 | | `font-thicken` | `true`, `false` | `false` | Enable synthetic bold/thickening for thin fonts |
 | | `font-feature` | Comma-separated or repeatable | None | OpenType font features (e.g. `-calt`, `ss01`, `liga=0`) |
 | | `grapheme-width-method` | `unicode`, `legacy`, `wcswidth` | `unicode` | `unicode` enables DEC mode 2027 (emoji ZWJ clustering); `legacy` is 1 cell/codepoint |
-| **Colors & Themes** | `background` | `#rrggbb` or named color | `#121316` | Default terminal background color |
+| **Colors & Themes** | `background` | `#rrggbb` or named color | `#000000` | Default terminal background color |
 | | `foreground` | `#rrggbb` or named color | `#e6e6e6` | Default terminal foreground color |
 | | `theme` | Theme name or `light:X,dark:Y` | `None` | Color theme (861 bundled; dynamic light/dark OS switching supported) |
 | | `palette` | `N=color` (0..15) | Default 16-color | Override specific ANSI palette index (`palette = 1=#ff0000`) |
