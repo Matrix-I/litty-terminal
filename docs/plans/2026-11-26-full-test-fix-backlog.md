@@ -27,8 +27,8 @@ Severity S1–S4 as defined in the issue note.
 
 | # | Group | Effort | Items | Done |
 | --- | --- | --- | --- | --- |
-| 1 | Docs | L | 7 (+3 after decisions) | 0 |
-| 2 | Test tooling | L–M | 8 | 0 |
+| 1 | Docs | L | 7 (+3 after decisions) | 6 (#105) |
+| 2 | Test tooling | L–M | 8 | 6 |
 | 3 | Lifecycle, config, CLI | L–M | 6 | 0 |
 | 4 | Update and AI | L–M | 4 | 0 |
 | 5 | Search, links, text, render | L–H | 10 | 0 |
@@ -62,17 +62,17 @@ Answer these before the items that depend on them.
 
 ## 1. Docs — `docs/<topic>`
 
-- [ ] **ISSUE-009** (S4, L) — install docs name the v0.8.0 packages
+- [x] **ISSUE-009** (S4, L) — install docs name the v0.8.0 packages
   (`README.md:42`, `docs/guide/installation.md`).
-- [ ] **ISSUE-005** (S4, L) — default shortcuts missing from
+- [x] **ISSUE-005** (S4, L) — default shortcuts missing from
   `shortcuts.md`.
-- [ ] **ISSUE-008** (S4, L) — actions missing from
+- [x] **ISSUE-008** (S4, L) — actions missing from
   `keybinding-actions.md`.
-- [ ] **ISSUE-007** (S4, L) — undocumented environment variables and config
+- [x] **ISSUE-007** (S4, L) — undocumented environment variables and config
   alias.
-- [ ] **ISSUE-022** (S4, L) — default background docs vs code. Needs
+- [x] **ISSUE-022** (S4, L) — default background docs vs code. Needs
   decision D3.
-- [ ] **ISSUE-006 + ISSUE-051** (S4, L if docs only, M if code) —
+- [x] **ISSUE-006 + ISSUE-051** (S4, L if docs only, M if code) —
   `open_config` and `$EDITOR`. Needs decision D2.
 - [ ] **ISSUE-026** (S3, L if docs only) — GNOME shortcut clash. Needs
   decision D4.
@@ -93,22 +93,46 @@ Answer these before the items that depend on them.
 Done first among the code groups: a failing `cargo test` on the host blocks
 the verification of every later group.
 
-- [ ] **ISSUE-056** (S3, L) — two X11 tests fail with an ibus XIM; tests
+- [x] **ISSUE-056** (S3, L) — two X11 tests fail with an ibus XIM; tests
   should clear `XMODIFIERS` or open no input context.
 - [ ] **ISSUE-002** (S4, L) — `poc_cwe22_macos_library_is_blocked` must
-  create `~/Library/Caches` itself.
-- [ ] **ISSUE-012** (S4, L) — PTY test depends on the user's `$SHELL` and
+  create `~/Library/Caches` itself. Fixed on fix/test-tooling (`5b6218e`);
+  tick after a Mac run with a fresh `HOME`.
+- [x] **ISSUE-012** (S4, L) — PTY test depends on the user's `$SHELL` and
   `HOME`; pin a shell in the test.
-- [ ] **ISSUE-013** (S4, L) — `linux_xdg_open_dispatch_smoke` opens real
+- [x] **ISSUE-013** (S4, L) — `linux_xdg_open_dispatch_smoke` opens real
   apps on a desktop; gate it to the container.
-- [ ] **ISSUE-035** (S3, L) — `manual-test.sh img shm` segment name is
+- [x] **ISSUE-035** (S3, L) — `manual-test.sh img shm` segment name is
   refused by Litty's allowlist; align script or allowlist.
-- [ ] **ISSUE-011** (S4, L) — update plan steps need a build with a pinned
+- [x] **ISSUE-011** (S4, L) — update plan steps need a build with a pinned
   key (plan/docs change; refusing is correct).
-- [ ] **ISSUE-019 / REV-10** (S4, M) — `scripts/manual-test.sh` assumes
+- [x] **ISSUE-019 / REV-10** (S4, M) — `scripts/manual-test.sh` assumes
   macOS (`pbpaste`, …).
 - [ ] **ISSUE-020** (S3, M) — `rounded_corners_fade_a_premultiplied_frame`
   is order-dependent in the container's full suite.
+
+- [ ] **Follow-up** (S4, L) — `linux_xdg_open_dispatch_smoke` reports ok
+  when skipped, and its skip text says "unset" for any value other than 1
+  (`src/platform/process.rs`). Found in the `fix/test-tooling` review.
+- [ ] **Follow-up** (S4, L) — `XimContext::builtin_only` copies `new`'s
+  struct literal (`src/platform/linux/native/xim.rs`); share a private
+  constructor. Found in the `fix/test-tooling` review.
+- [ ] **Follow-up** (S4, L) — `scripts/manual-test.sh`: the Linux key note
+  prints before argument handling (also for `-l`), does not name split down
+  (Ctrl+Shift+E), and `clip()` gives no install hint when `wl-paste` or
+  `xclip` is missing. Found in the `fix/test-tooling` review.
+- [ ] **Follow-up** (S4, L) — full test plan R-02 does not say to
+  `cd ../litty-0.14.0` before building. Found in the `fix/test-tooling`
+  review.
+- [ ] **Follow-up** (S4, L) — `docs/guide/configuration.md:109` bell-audio
+  example gives only the macOS sound path. Found in the `fix/test-tooling`
+  review.
+- [ ] **Follow-up** (S4, L) — the Task 3 PTY helper inherits `$ENV`; an
+  interactive `sh` would source it (`src/terminal/pty.rs`
+  `spawn_test_shell`). Found in the `fix/test-tooling` review.
+- [ ] **Follow-up** (S4, L) — CI (`.github/workflows/ci.yml`) never runs
+  `scripts/linux/run.sh`, so the X11 tests (no DISPLAY) and the xdg-open
+  smoke are not run in CI. Found in the `fix/test-tooling` review.
 
 Deferred (not in this backlog until a real user report):
 ISSUE-014, host heap corruption in `cargo test`.
@@ -208,9 +232,9 @@ ISSUE-014, host heap corruption in `cargo test`.
 
 ## Already fixed
 
-- [x] **ISSUE-021** (S1) — long title kills Litty on Wayland (`75fc9b0`).
-- [x] **ISSUE-028** (S2) — F1–F12 send no bytes on X11 (`7983d3e`).
+- [x] **ISSUE-021** (S1) — long title kills Litty on Wayland (#103, `d3d9a2f`).
+- [x] **ISSUE-028** (S2) — F1–F12 send no bytes on X11 (#103, `d3d9a2f`).
 - [x] **ISSUE-030** (S2) — Copy leaves CLIPBOARD unchanged on X11
-  (`7983d3e`).
+  (#103, `d3d9a2f`).
 - [x] **ISSUE-043** (S2) — X11 input starves while a pane floods output
-  (`49324e7`).
+  (#104, `5a5ece5`).

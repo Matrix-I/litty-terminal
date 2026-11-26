@@ -471,6 +471,39 @@ impl XimContext {
         ctx
     }
 
+    /// Connect `window` to Xlib's built-in method only, never to the one
+    /// `XMODIFIERS` names and never waiting for a server: tests that inject
+    /// keys must not depend on the host's input method.
+    ///
+    /// # Safety
+    /// `display` and `window` must stay live until the context is dropped.
+    #[cfg(test)]
+    pub unsafe fn builtin_only(display: *mut Display, window: c_ulong) -> Self {
+        let mut ctx = Self {
+            id: NEXT_CONTEXT_ID.fetch_add(1, Relaxed),
+            display,
+            window,
+            im: std::ptr::null_mut(),
+            ic: std::ptr::null_mut(),
+            style: 0,
+            shared: Box::default(),
+            waiting: None,
+            reopened: false,
+            allowed: true,
+            focused: false,
+            spot: None,
+            sent_spot: None,
+            rearms: 0,
+        };
+        let Some(lib) = xim_lib() else { return ctx };
+        let watch = XLIB_IM.lock();
+        init_locale(lib);
+        unsafe {
+            ctx.open(lib, &watch, c"@im=none");
+        }
+        ctx
+    }
+
     /// Event types the method needs selected on the window (0 without one).
     pub fn filter_events(&mut self) -> c_long {
         let Some(lib) = xim_lib() else { return 0 };

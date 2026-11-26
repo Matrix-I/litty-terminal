@@ -1371,6 +1371,18 @@ mod tests {
         hidden_test_window_with(title, false)
     }
 
+    /// A hidden window on Xlib's built-in input method, whatever method the
+    /// host runs: key-injection tests must not see its preedit.
+    fn hidden_test_window_builtin_im(title: &'static str) -> Option<X11Window> {
+        let win = hidden_test_window(title)?;
+        let mut xim = unsafe { XimContext::builtin_only(win.0.display, win.0.window) };
+        unsafe { (win.0.lib.XSelectInput)(win.0.display, win.0.window, BASE_EVENT_MASK | xim.filter_events()) };
+        // Drops the host-method context the window was created with.
+        *win.0.xim.lock() = Some(xim);
+        assert!(win.0.xim.lock().as_ref().is_some_and(XimContext::has_context), "Xlib's built-in input method did not open");
+        Some(win)
+    }
+
     fn hidden_test_window_with(title: &'static str, transparent: bool) -> Option<X11Window> {
         if std::env::var_os("DISPLAY").is_none() {
             eprintln!("no X display; skipping");
@@ -1858,21 +1870,24 @@ mod tests {
 
     /// Keycode 0 carries input-method text, never a key: without composed
     /// text it is dropped instead of reaching the keymap as a bogus key.
+    /// Pins Xlib's built-in method so the host's (e.g. ibus) cannot turn the
+    /// injected press into preedit.
     #[test]
     fn keycode_zero_presses_are_not_keys() {
-        let Some(win) = hidden_test_window("litty-keycode-zero-test") else { return };
+        let Some(win) = hidden_test_window_builtin_im("litty-keycode-zero-test") else { return };
         assert_keycode_zero_is_not_a_key(&win);
     }
 
     /// A keycode-0 press another client sends is not looked up. Xlib's
     /// built-in method would read a compose-tree entry it never initialised;
     /// the first window's tree sits in fresh zeroed pages, so the second
-    /// window's, on reused heap, is the one that crashes.
+    /// window's, on reused heap, is the one that crashes. Both windows pin
+    /// Xlib's built-in method, whatever method the host runs.
     #[test]
     fn a_window_after_a_closed_one_still_looks_up_text() {
-        let Some(first) = hidden_test_window("litty-xim-first") else { return };
+        let Some(first) = hidden_test_window_builtin_im("litty-xim-first") else { return };
         drop(first);
-        let Some(win) = hidden_test_window("litty-xim-second") else { return };
+        let Some(win) = hidden_test_window_builtin_im("litty-xim-second") else { return };
         assert_keycode_zero_is_not_a_key(&win);
     }
 

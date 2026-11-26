@@ -125,7 +125,7 @@ verification steps plus release-only checks.
 | P2-02 | `cargo test -- --ignored warm_overlay_builders_do_not_allocate` | Pass | P | P | — |
 | P2-03 | Linux: `cargo test -- --ignored an_uploaded_image_is_drawn_in_the_same_frame a_given_up_frame_still_runs_its_uploads_and_signals_its_fence` with the Khronos validation layer enabled (`VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`) | Pass, zero VUID messages | — | B (2/2 pass; Khronos validation layer not installed, VUIDs not checked) | B (offscreen test, same run as X) |
 | P2-04 | Linux: `cargo test -- --ignored glyph_upload_cost --nocapture` | Record numbers (reference: 1024 glyphs ≈ 8 ms on Intel UHD 620) | — | P (1 glyph 0.26 ms, 64 1.21 ms, 1024 8.26 ms) | — |
-| P2-05 | Linux: `cargo test -- --ignored linux_xdg_open_dispatch_smoke --nocapture` | Pass | — | F ISSUE-013 | — |
+| P2-05 | Linux, container only: `bash scripts/linux/test.sh` (its run.sh sets `LITTY_XDG_OPEN_SMOKE=1`; on a desktop the smoke opens real apps, and without the variable it skips and reports ok) | Pass | — | F ISSUE-013 | — |
 | P2-06 | Linux X11: `cargo test -- --ignored set_fullscreen_is_reported_back_by_the_window_manager` | Pass | — | P (GNOME 50 XWayland) | — |
 | P2-07 | Remaining ignored probes: `grid_throughput_probe`, `resize_probe`, `benchmark_*`, `perf_legit_images`, `theme_lookup_timing` with `--release --ignored --nocapture` | Run to completion; record numbers | P (9 probes) | P (9 probes) | — |
 | P2-08 | Linux: `bash scripts/linux/test.sh` (container: check, clippy, tests under Xvfb, shell smoke, X11, Weston, sway smoke) | Exit 0 | — | F ISSUE-020 (3/3 full runs; smoke steps pass when run by hand) | — |
@@ -498,7 +498,7 @@ Use `q` for replies. Reference: `src/terminal/grid/perform.rs`.
 | ID | Steps | Expected | M | X | W |
 | --- | --- | --- | --- | --- | --- |
 | R-01 | `litty +check-update` on v0.14.1 | "up to date" (latest is v0.14.1) | P | P | — |
-| R-02 | Build tag `v0.14.0` (`git worktree add ../litty-0.14.0 v0.14.0`, release build), run `+check-update` | Reports v0.14.1 available | P | P | — |
+| R-02 | Build tag `v0.14.0` (`git worktree add ../litty-0.14.0 v0.14.0`, then `LITTY_MINISIGN_PUBKEY="$(tail -n 1 resources/minisign.pub)" cargo build --release`; a build without the pinned key refuses to update, by design; ISSUE-011), run `+check-update` | Reports v0.14.1 available | P | P | — |
 | R-03 | v0.14.0 standalone binary in a user-writable path: `+update` | Downloads asset for this CPU, verifies minisign + SHA-256 + `# litty-release: v0.14.1`, replaces the binary; new binary contains 0.14.1 | P (with pinned key, ISSUE-011) | P (pinned key, ISSUE-011; result byte-identical to the asset) | — |
 | R-04 | `+update --force` / `-f` on v0.14.1 | Reinstalls the current version | P (`--force` and `-f`; pinned key, ISSUE-011) | P (`--force` and `-f`) | — |
 | R-05 | M: v0.14.0 `Litty.app`: Litty ▸ Check for Updates… → Update Now | Bundle staged, signed, swapped atomically; app relaunches as 0.14.1 | S manual | — | — |

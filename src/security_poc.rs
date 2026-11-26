@@ -120,6 +120,8 @@ fn poc_cwe200_no_file_existence_oracle() {
 #[test]
 fn poc_cwe22_macos_library_is_blocked() {
     let dir = PathBuf::from(std::env::var("HOME").unwrap()).join("Library/Caches");
+    // A fresh HOME (e.g. a new CI user) has no Library/Caches yet.
+    std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join(format!("litty-poc-{}.rgba", std::process::id()));
     std::fs::write(&file, [1u8, 2, 3, 4]).unwrap();
     let res = graphics::decode_kitty(&file_cmd(32, 1, 1), &b64(file.to_str().unwrap().as_bytes()));

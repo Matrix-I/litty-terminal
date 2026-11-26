@@ -14,6 +14,25 @@ BIN=$REPO/target/release/litty
 export LC_ALL=en_US.UTF-8
 OS=$(uname -s)
 
+# Per-OS wording and tools; macOS values are the original prompts.
+if [ "$OS" = Darwin ]; then
+    BELL_SOUND=/System/Library/Sounds/Glass.aiff
+    LS_COLOR='ls -G'
+    ATTN_YES="Litty bounces in the Dock"
+    ATTN_NO="no Dock bounce"
+    APPEARANCE="macOS Appearance"
+    FILE_SRC="Finder file"
+    LAST_WINDOW="closing last window keeps Dock icon, click opens a window"
+else
+    BELL_SOUND=/usr/share/sounds/freedesktop/stereo/bell.oga
+    LS_COLOR='ls --color=always'
+    ATTN_YES="window requests attention (taskbar/dock highlight)"
+    ATTN_NO="no attention request"
+    APPEARANCE="desktop light/dark style"
+    FILE_SRC="file from the file manager"
+    LAST_WINDOW="closing the last window quits Litty"
+fi
+
 B=$'\e[1m' D=$'\e[2m' R=$'\e[0m' G=$'\e[32m' RED=$'\e[31m' Y=$'\e[33m' C=$'\e[36m'
 GROUP=""
 
@@ -21,6 +40,7 @@ GROUP=""
 
 say() { printf '%s\n' "  $*"; }
 note() { printf '%s\n' "  ${D}$*${R}"; }
+[ "$OS" = Darwin ] || note "Prompts say Cmd; on Linux use Ctrl+Shift for terminal actions (copy, paste, tab, split, close), Option = Alt; see docs/guide/shortcuts.md for the rest."
 # Show a command, then run it.
 run() { printf '  %s$ %s%s\n' "$C" "$1" "$R"; eval "$1"; }
 # Show text to copy (config lines, commands for another tab).
@@ -28,6 +48,13 @@ paste_box() {
     printf '  %s┌─ copy ──────────────────────────────────────────%s\n' "$Y" "$R"
     while IFS= read -r l; do printf '  %s│%s %s\n' "$Y" "$R" "$l"; done
     printf '  %s└─────────────────────────────────────────────────%s\n' "$Y" "$R"
+}
+# Print the system clipboard (macOS, Wayland, or X11).
+clip() {
+    if [ "$OS" = Darwin ]; then pbpaste
+    elif [ -n "${WAYLAND_DISPLAY:-}" ]; then wl-paste --no-newline
+    else xclip -o -selection clipboard
+    fi
 }
 pause() { printf '  %s[Enter] %s%s' "$D" "${1:-continue}" "$R"; IFS= read -r _; }
 
@@ -120,7 +147,8 @@ elif mode == "anim":
 elif mode == "shm":
     from multiprocessing import shared_memory, resource_tracker
     data = png(160, 80)
-    shm = shared_memory.SharedMemory(create=True, size=len(data), name="lpl%d" % os.getpid())
+    # The terminal only opens segments named /litty-* (allowlist in src/terminal/graphics/kitty.rs).
+    shm = shared_memory.SharedMemory(create=True, size=len(data), name="litty-%d" % os.getpid())
     shm.buf[:len(data)] = data
     resource_tracker.unregister(shm._name, "shared_memory")  # the terminal unlinks it
     send("a=T,f=100,t=s,S=%d,q=2" % len(data), shm._name.encode())
@@ -175,7 +203,7 @@ g3() { GROUP="Notifications, progress, pointer, bell"
     run "printf '\e]22;text\a'"; verdict "I-beam"
     run "printf '\e]22;\a'"; verdict "arrow"
     say "open a 2nd tab, run this there, then switch to this tab:"; echo "sleep 2; printf '\a'" | paste_box; pause; verdict "that tab gets 🔔, cleared when you visit it"
-    say "switch to another app within 3 s…"; sleep 3; printf '\a'; verdict "Litty bounces in the Dock"
+    say "switch to another app within 3 s…"; sleep 3; printf '\a'; verdict "$ATTN_YES"
 }
 
 g4() { GROUP="XTGETTCAP, DECRQSS, pixel mouse, color scheme"
@@ -187,7 +215,7 @@ g4() { GROUP="XTGETTCAP, DECRQSS, pixel mouse, color scheme"
     query '\e[?996n' 'n'; auto "DSR 996 color scheme" "$REPLY_V" '*\[?997;[12]n'
     printf '\e[?1016h\e[?1003h'; key "(move the mouse over the window)" 10 '^\[\[<35;*M*'
     printf '\e[?1016l\e[?1003l'; note "cols=$(tput cols): the X above should be in pixels (hundreds)"; verdict "pixel coordinates"
-    printf '\e[?2031h'; key "(switch macOS Appearance Light↔Dark)" 25 '^\[\[?997;[12]n'; printf '\e[?2031l'
+    printf '\e[?2031h'; key "(switch $APPEARANCE Light↔Dark)" 25 '^\[\[?997;[12]n'; printf '\e[?2031l'
     say "nvim: :checkhealth (no true color / undercurl warnings), :lua print(vim.o.termguicolors) → true"; pause; verdict "nvim health"
 }
 
@@ -213,19 +241,19 @@ g6() { GROUP="Shell integration, prompt jump, output selection"
 }
 
 g7() { GROUP="Drag & drop, scrollbar, secure input, bell-features"
-    say "Drag a Finder file whose name has spaces into this window (wait 15 s)"
+    say "Drag a $FILE_SRC whose name has spaces into this window (wait 15 s)"
     key "(drop the file)" 15 "*'/*' *"
     run "seq 500"; say "scroll up with the trackpad"; pause; verdict "thin thumb at the right edge, gone at the bottom"
     echo 'keybind = cmd+alt+s=toggle_secure_input' | paste_box; pause; verdict "🔒 in title, survives app switch, toggles off"
     echo 'bell-features = system' | paste_box; pause; run "printf '\a'"; verdict "alert sound"
-    echo 'bell-features = no-attention' | paste_box; pause; say "switch away within 3 s…"; sleep 3; printf '\a'; verdict "no Dock bounce"
+    echo 'bell-features = no-attention' | paste_box; pause; say "switch away within 3 s…"; sleep 3; printf '\a'; verdict "$ATTN_NO"
 }
 
 g8() { GROUP="Multiple windows"
     printf '%s\n' 'cd /tmp   # then Cmd+N → shell in /tmp; Cmd+T still a tab in this window' 'while true; do date; sleep 1; done   # in one window, type in the other' | paste_box; pause
     verdict "Cmd+N opens in /tmp"; verdict "windows independent, both update"
-    verdict "Cmd+W / exit / red button closes only that window"
-    verdict "closing last window keeps Dock icon, click opens a window"
+    verdict "Cmd+W / exit / the window's close button closes only that window"
+    verdict "$LAST_WINDOW"
     verdict "split, tabs, find, reload, theme switch work in every window"
     echo 'keybind = cmd+shift+n=new_window' | paste_box; pause; verdict "keybind new_window"
 }
@@ -253,7 +281,7 @@ g11() { GROUP="Scrollbar drag, progress bar, bell border/audio"
     run "printf '\e]9;4;3\a'"; verdict "full dim blue"
     run "printf '\e]9;4;0\a'"; verdict "bar gone"
     echo 'bell-features = border' | paste_box; pause; run "sleep 2; printf '\a'"; verdict "amber outline, cleared on key/refocus"
-    printf '%s\n' 'bell-features = audio' 'bell-audio-path = /System/Library/Sounds/Glass.aiff' 'bell-audio-volume = 0.1' | paste_box; pause; run "printf '\a'"; verdict "quiet Glass sound"
+    printf '%s\n' 'bell-features = audio' "bell-audio-path = $BELL_SOUND" 'bell-audio-volume = 0.1' | paste_box; pause; run "printf '\a'"; verdict "quiet bell sound"
 }
 
 g12() { GROUP="Shell integration additions"
@@ -274,11 +302,12 @@ g13() { GROUP="Bundled themes"
 g14() { GROUP="confirm-close-surface"
     say "in another tab: sleep 100, then Cmd+W"; pause; verdict "alert; Cancel keeps, Close closes"
     verdict "idle prompt Cmd+W closes without asking"
-    verdict "Cmd+Q asks 'Quit Litty?', red button asks 'Close this window?'"
+    verdict "Cmd+Q asks 'Quit Litty?', the window's close button asks 'Close this window?'"
     printf '%s\n' 'confirm-close-surface = false' '# then = always' | paste_box; pause; verdict "false never asks, always always asks"
 }
 
 g15() { GROUP="macOS menu bar"
+    [ "$OS" = Darwin ] || { note "macOS only"; log skip "all" "not on macOS"; return; }
     verdict "Litty/Shell/Edit/View/Window menus, every item works"
     verdict "Secure Keyboard Entry menu item toggles ✓ and 🔒"
     verdict "Cmd+H, Ctrl+Cmd+F, Minimize, Window menu lists windows"
@@ -293,11 +322,12 @@ g16() { GROUP="Kitty Caps Lock"
 }
 
 g17() { GROUP="Terminal inspector"
-    say "Cmd+Option+I, move over colored output, type a, Ctrl+C, ↑ in another tab"; run "ls -G /"; pause
+    say "Cmd+Option+I, move over colored output, type a, Ctrl+C, ↑ in another tab"; run "$LS_COLOR /"; pause
     verdict "panel shows sections, toggles off"; verdict "Cell updates live"; verdict "Last key shows bytes"; verdict "vim → alternate / app-cursor on, sleep → running"
 }
 
 g18() { GROUP="Native macOS tabs"
+    [ "$OS" = Darwin ] || { note "macOS only"; log skip "all" "not on macOS"; return; }
     echo 'macos-native-tabs = true' | paste_box; pause
     verdict "Cmd+T native tab in cwd"; verdict "Cmd+Shift+[ ] and Cmd+1/2 switch, Cmd+W closes one"; verdict "without option: own tab bar"
 }
@@ -310,7 +340,7 @@ g19() { GROUP="Custom shaders"
 }
 
 g20() { GROUP="OSC 4 recolors existing text"
-    run "printf '\e[31mred\e[0m\n'; ls -G /"; pause "then recolor"
+    run "printf '\e[31mred\e[0m\n'; $LS_COLOR /"; pause "then recolor"
     run "printf '\e]4;1;#00ff00\a'"; verdict "earlier red and ls colors turned green"
     run "printf '\e]104\a'"; verdict "red again"
 }
@@ -337,7 +367,7 @@ g23() { GROUP="Color emoji and grapheme clusters"
     local s='😀 👍🏽 👨‍👩‍👧 🇻🇳 ❤️ #️⃣ 🏳️‍🌈'
     run "echo '$s'"; verdict "all color, each cluster one glyph 2 cells, text after aligned"
     say "drag-select the emoji OUTPUT line (the one below the echo), then Cmd+C"; pause
-    auto "clipboard round trip" "$(pbpaste)" "$s"
+    auto "clipboard round trip" "$(clip)" "$s"
     run "printf '\e[?2027l'; echo '👨‍👩‍👧'; printf '\e[?2027h'"; verdict "legacy: three separate faces"
     run "echo 'q̃ x̧̌ कि नमस्ते'"; verdict "marks on their base letters"
     run "printf '\e[1m😀\e[0m \e[7m👍🏽\e[0m\n'"; verdict "bold / inverse emoji still in color"

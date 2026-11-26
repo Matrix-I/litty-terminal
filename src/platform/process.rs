@@ -237,12 +237,18 @@ mod tests {
     }
 
     /// Drives the production `open_target` through the real `xdg-open`; a stub
-    /// `$BROWSER` records what the utility dispatches. Run by `scripts/linux/run.sh`.
+    /// `$BROWSER` records what the utility dispatches. Runs only when
+    /// `LITTY_XDG_OPEN_SMOKE=1` (set by `scripts/linux/run.sh`): on a desktop
+    /// session `xdg-open` can reach real apps through the shared `HOME`.
     #[test]
     #[cfg(target_os = "linux")]
-    #[ignore = "needs xdg-utils; run via scripts/linux/run.sh"]
+    #[ignore = "needs xdg-utils; set LITTY_XDG_OPEN_SMOKE=1 (done by scripts/linux/run.sh)"]
     fn linux_xdg_open_dispatch_smoke() {
         use std::os::unix::fs::PermissionsExt;
+        if std::env::var_os("LITTY_XDG_OPEN_SMOKE").as_deref() != Some("1".as_ref()) {
+            eprintln!("LITTY_XDG_OPEN_SMOKE unset; skipping (it opens real apps on a desktop session)");
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("litty-xdg-open-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("dispatched.log");
