@@ -27,7 +27,7 @@ Severity S1–S4 as defined in the issue note.
 
 | # | Group | Effort | Items | Done |
 | --- | --- | --- | --- | --- |
-| 1 | Docs | L | 4 (+3 after decisions) | 0 |
+| 1 | Docs | L | 7 (+3 after decisions) | 0 |
 | 2 | Test tooling | L–M | 8 | 0 |
 | 3 | Lifecycle, config, CLI | L–M | 6 | 0 |
 | 4 | Update and AI | L–M | 4 | 0 |
@@ -76,6 +76,17 @@ Answer these before the items that depend on them.
   `open_config` and `$EDITOR`. Needs decision D2.
 - [ ] **ISSUE-026** (S3, L if docs only) — GNOME shortcut clash. Needs
   decision D4.
+- [ ] **Follow-up** (S4, L) — the install commands' globs
+  (`./litty_*_amd64.deb`, `./litty-*.x86_64.rpm` in `README.md:42`,
+  `docs/guide/installation.md`) match several files when older downloads
+  are in the directory; say to use the downloaded file's name. Found in
+  the `fix/docs-guide-sync` review.
+- [ ] **Follow-up** (S4, L) — `docs/development/building.md:104-123`
+  packaging examples still name `0.8.0`. Found with ISSUE-009.
+- [ ] **Follow-up** (S4, L) — `docs/guide/updates-and-cli.md`: a
+  `GITHUB_TOKEN` that is not valid UTF-8 falls through to `GH_TOKEN`
+  (`src/update/client.rs:167`, `env::var` returns `Err`); the docs do
+  not say so. Found in the `fix/docs-guide-sync` review.
 
 ## 2. Test tooling — `fix/test-tooling`
 
