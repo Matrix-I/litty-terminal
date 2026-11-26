@@ -14,10 +14,10 @@ Now you can launch Litty from Spotlight, Launchpad, or the Applications folder!
 
 ## Debian / Ubuntu (.deb, amd64)
 
-Download **`litty_0.8.0_amd64.deb`** from the [v0.8.0 release](https://github.com/Matrix-I/litty-terminal/releases/tag/v0.8.0), then install it from the download directory:
+Download **`litty_*_amd64.deb`** from the [latest release](https://github.com/Matrix-I/litty-terminal/releases/latest), then install it from the download directory:
 
 ```bash
-sudo apt install ./litty_0.8.0_amd64.deb
+sudo apt install ./litty_*_amd64.deb
 ```
 
 Open your applications menu and search for **Litty Terminal**. The package installs
@@ -36,10 +36,10 @@ do not run Litty as root to update. Uninstall with `sudo apt remove litty`.
 
 ## Fedora (.rpm, x86_64)
 
-Download **`litty-0.8.0-1.x86_64.rpm`** from the [v0.8.0 release](https://github.com/Matrix-I/litty-terminal/releases/tag/v0.8.0), then install it from the download directory:
+Download **`litty-*.x86_64.rpm`** from the [latest release](https://github.com/Matrix-I/litty-terminal/releases/latest), then install it from the download directory:
 
 ```bash
-sudo dnf install ./litty-0.8.0-1.x86_64.rpm
+sudo dnf install ./litty-*.x86_64.rpm
 ```
 
 Open the applications menu and search for **Litty Terminal**. The RPM includes
