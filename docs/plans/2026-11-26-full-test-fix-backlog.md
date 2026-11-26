@@ -27,7 +27,7 @@ Severity S1–S4 as defined in the issue note.
 
 | # | Group | Effort | Items | Done |
 | --- | --- | --- | --- | --- |
-| 1 | Docs | L | 7 (+3 after decisions) | 0 |
+| 1 | Docs | L | 7 (+3 after decisions) | 6 (#105) |
 | 2 | Test tooling | L–M | 8 | 0 |
 | 3 | Lifecycle, config, CLI | L–M | 6 | 0 |
 | 4 | Update and AI | L–M | 4 | 0 |
@@ -62,17 +62,17 @@ Answer these before the items that depend on them.
 
 ## 1. Docs — `docs/<topic>`
 
-- [ ] **ISSUE-009** (S4, L) — install docs name the v0.8.0 packages
+- [x] **ISSUE-009** (S4, L) — install docs name the v0.8.0 packages
   (`README.md:42`, `docs/guide/installation.md`).
-- [ ] **ISSUE-005** (S4, L) — default shortcuts missing from
+- [x] **ISSUE-005** (S4, L) — default shortcuts missing from
   `shortcuts.md`.
-- [ ] **ISSUE-008** (S4, L) — actions missing from
+- [x] **ISSUE-008** (S4, L) — actions missing from
   `keybinding-actions.md`.
-- [ ] **ISSUE-007** (S4, L) — undocumented environment variables and config
+- [x] **ISSUE-007** (S4, L) — undocumented environment variables and config
   alias.
-- [ ] **ISSUE-022** (S4, L) — default background docs vs code. Needs
+- [x] **ISSUE-022** (S4, L) — default background docs vs code. Needs
   decision D3.
-- [ ] **ISSUE-006 + ISSUE-051** (S4, L if docs only, M if code) —
+- [x] **ISSUE-006 + ISSUE-051** (S4, L if docs only, M if code) —
   `open_config` and `$EDITOR`. Needs decision D2.
 - [ ] **ISSUE-026** (S3, L if docs only) — GNOME shortcut clash. Needs
   decision D4.
@@ -208,9 +208,9 @@ ISSUE-014, host heap corruption in `cargo test`.
 
 ## Already fixed
 
-- [x] **ISSUE-021** (S1) — long title kills Litty on Wayland (`75fc9b0`).
-- [x] **ISSUE-028** (S2) — F1–F12 send no bytes on X11 (`7983d3e`).
+- [x] **ISSUE-021** (S1) — long title kills Litty on Wayland (#103, `d3d9a2f`).
+- [x] **ISSUE-028** (S2) — F1–F12 send no bytes on X11 (#103, `d3d9a2f`).
 - [x] **ISSUE-030** (S2) — Copy leaves CLIPBOARD unchanged on X11
-  (`7983d3e`).
+  (#103, `d3d9a2f`).
 - [x] **ISSUE-043** (S2) — X11 input starves while a pane floods output
-  (`49324e7`).
+  (#104, `5a5ece5`).

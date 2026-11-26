@@ -104,11 +104,11 @@ Status after the automated macOS and Linux runs:
 | --- | --- |
 | REV-01 | Open: E-26 blocked on X11 (no file manager in the headless session); Wayland drops pass (P2-10) |
 | REV-02 | Open: Linux only |
-| REV-03 | Confirmed → ISSUE-006; fixed on fix/docs-guide-sync (`09fa9d5`) |
-| REV-04 | Confirmed → ISSUE-008; fixed on fix/docs-guide-sync (`00ed170`) |
-| REV-05 | Confirmed → ISSUE-005; fixed on fix/docs-guide-sync (`1807f26`) |
-| REV-06 | Confirmed and extended → ISSUE-007; fixed on fix/docs-guide-sync (`ce02d3b`) |
-| REV-07 | Confirmed → ISSUE-009; fixed on fix/docs-guide-sync (`d7ebfa0`) |
+| REV-03 | Confirmed → ISSUE-006; fixed on main in #105 (`de11e29`; branch commit `09fa9d5`) |
+| REV-04 | Confirmed → ISSUE-008; fixed on main in #105 (`de11e29`; branch commit `00ed170`) |
+| REV-05 | Confirmed → ISSUE-005; fixed on main in #105 (`de11e29`; branch commit `1807f26`) |
+| REV-06 | Confirmed and extended → ISSUE-007; fixed on main in #105 (`de11e29`; branch commit `ce02d3b`) |
+| REV-07 | Confirmed → ISSUE-009; fixed on main in #105 (`de11e29`; branch commit `d7ebfa0`) |
 | REV-08 | Confirmed → ISSUE-004 |
 | REV-09 | Open: U-02 ran on Linux with a 2-line paste; the single line plus newline count was not checked |
 | REV-10 | Confirmed → ISSUE-019 |
@@ -298,7 +298,7 @@ rejected by its plan case on a real machine, then either becomes an
   `Ctrl+Alt+D` (split down) and macOS `Cmd+Ctrl+=` (equalize splits) are
   bound in `src/keymap.rs` (lines 136-140, 209) but not listed in
   `docs/guide/shortcuts.md`.
-- Status: fixed on fix/docs-guide-sync (`1807f26`)
+- Status: fixed on main in #105 (`de11e29`; branch commit `1807f26`)
 - Fix evidence: `docs/guide/shortcuts.md` now lists Linux
   `Ctrl+PageUp`/`Ctrl+PageDown`, Linux `Ctrl+Alt+D` and macOS `Cmd+Ctrl+=`,
   copied from `src/keymap.rs`.
@@ -310,7 +310,7 @@ rejected by its plan case on a real machine, then either becomes an
 - Actual: `src/config.rs:935` opens the file with `/usr/bin/open -t` or
   `xdg-open`; `docs/guide/configuration.md` and `docs/guide/shortcuts.md`
   say `$EDITOR`.
-- Status: fixed on fix/docs-guide-sync (`09fa9d5`)
+- Status: fixed on main in #105 (`de11e29`; branch commit `09fa9d5`)
 - Fix evidence: `docs/guide/configuration.md` and `shortcuts.md` now say
   `open_config` opens the file with `open -t` (macOS) / `xdg-open` (Linux),
   as in `src/config.rs`; decision D2: keep the code.
@@ -326,7 +326,7 @@ rejected by its plan case on a real machine, then either becomes an
     (`src/update/client.rs:167`), not in `docs/guide/updates-and-cli.md`.
   - `background-blur-radius`, accepted as an alias of `background-blur`
     (`src/config.rs:363`).
-- Status: fixed on fix/docs-guide-sync (`ce02d3b`)
+- Status: fixed on main in #105 (`de11e29`; branch commit `ce02d3b`)
 - Fix evidence: `LITTY_FONT`, `LITTY_FONT_SIZE`, `GITHUB_TOKEN`/`GH_TOKEN`
   and the `background-blur-radius` alias are documented in
   `configuration.md` and `updates-and-cli.md`.
@@ -342,7 +342,7 @@ rejected by its plan case on a real machine, then either becomes an
 - Actual: `increase_font_size`, `decrease_font_size`, `reset_font_size`,
   `scroll_page_up`, `scroll_page_down` are accepted by `src/keymap.rs` and
   not listed in the actions guide.
-- Status: fixed on fix/docs-guide-sync (`00ed170`)
+- Status: fixed on main in #105 (`de11e29`; branch commit `00ed170`)
 - Fix evidence: `docs/guide/keybinding-actions.md` lists
   `increase_font_size`, `decrease_font_size`, `reset_font_size`,
   `scroll_page_up`, `scroll_page_down`; every other action arm in
@@ -356,7 +356,7 @@ rejected by its plan case on a real machine, then either becomes an
 - Actual: `README.md` line 42 and `docs/guide/installation.md` lines 17-42
   name `litty_0.8.0_amd64.deb` and `litty-0.8.0-1.x86_64.rpm`; the current
   release is v0.14.1.
-- Status: fixed on fix/docs-guide-sync (`d7ebfa0`)
+- Status: fixed on main in #105 (`de11e29`; branch commit `d7ebfa0`)
 - Fix evidence: `README.md` and `docs/guide/installation.md` use
   `litty_*_amd64.deb`, `litty-*.x86_64.rpm` and `/releases/latest`; `grep -n
   '0\.8\.0'` on both returns nothing.
@@ -594,7 +594,7 @@ rejected by its plan case on a real machine, then either becomes an
 - Notes: any program can print such a title, so output from an untrusted
   source can close all of the user's sessions. The Wayland
   `xdg_toplevel.set_title` message is not length-limited before sending.
-- Status: fixed on fix/linux-s1-s2 (`75fc9b0`), e2e re-run 2026-11-25: Wayland, 100,000-byte title, Litty still running after 5 s, stderr empty (no `exceeds 4096`, no `lost the connection`)
+- Status: fixed on main in #103 (`d3d9a2f`; branch commit `75fc9b0`), e2e re-run 2026-11-25: Wayland, 100,000-byte title, Litty still running after 5 s, stderr empty (no `exceeds 4096`, no `lost the connection`)
 
 ### ISSUE-022 — default background is `#000000`, docs say `#121316`
 
@@ -610,7 +610,7 @@ rejected by its plan case on a real machine, then either becomes an
   example in the config template (`src/config.rs:975`).
 - Notes: decide which one is intended; the screen colour itself was not
   checked by eye.
-- Status: fixed on fix/docs-guide-sync (`481e50c`)
+- Status: fixed on main in #105 (`de11e29`; branch commit `481e50c`)
 - Fix evidence: Decision D3: the code default `#000000` is right.
   `configuration.md` and the template comment `# background = #000000` now
   match; new test `template_documents_default_background` guards the
@@ -713,7 +713,7 @@ rejected by its plan case on a real machine, then either becomes an
   and screenshots kept outside the repo
 - Notes: Physical keyboard not checked; injection goes through Mutter
   RemoteDesktop.
-- Status: fixed on fix/linux-s1-s2 (`7983d3e`), e2e re-run 2026-11-25: X11, `F1 F5 F12 shift+F5 ctrl+F5` into `cat -v` gave `^[OP^[[15~^[[24~^[[15;2~^[[15;5~`
+- Status: fixed on main in #103 (`d3d9a2f`; branch commit `7983d3e`), e2e re-run 2026-11-25: X11, `F1 F5 F12 shift+F5 ctrl+F5` into `cat -v` gave `^[OP^[[15~^[[24~^[[15;2~^[[15;5~`
 
 ### ISSUE-029 — modified F1 uses rxvt-style sequences
 
@@ -745,7 +745,7 @@ rejected by its plan case on a real machine, then either becomes an
   CLIPBOARD and PRIMARY; Wayland copies fine.
 - Evidence: headless harness run (input via Mutter RemoteDesktop); logs
   and screenshots kept outside the repo
-- Status: fixed on fix/linux-s1-s2 (`7983d3e`), e2e re-run 2026-11-25: X11, `copy-on-select = false`, Select All then Ctrl+Shift+C and then Ctrl+Insert each left the selected text (`hello-030`) in CLIPBOARD, read with `wl-paste` after seeding it with `x`
+- Status: fixed on main in #103 (`d3d9a2f`; branch commit `7983d3e`), e2e re-run 2026-11-25: X11, `copy-on-select = false`, Select All then Ctrl+Shift+C and then Ctrl+Insert each left the selected text (`hello-030`) in CLIPBOARD, read with `wl-paste` after seeding it with `x`
 
 ### ISSUE-031 — Shift+Click does not extend a selection, and Shift snaps to the bottom, on X11
 
@@ -763,7 +763,7 @@ rejected by its plan case on a real machine, then either becomes an
   Ctrl+Shift+Up never gets past the last prompt. Wayland is correct.
 - Evidence: headless harness run (input via Mutter RemoteDesktop); logs
   and screenshots kept outside the repo
-- Status: partly fixed on fix/linux-s1-s2 (`7983d3e`), e2e re-run 2026-11-25: X11, after scrolling back to lines 195–226, Shift alone left the view unchanged (screenshots identical in the terminal area). Shift+Click extending a selection and Ctrl+Shift+Up were not re-tested and remain open
+- Status: partly fixed on main in #103 (`d3d9a2f`; branch commit `7983d3e`), e2e re-run 2026-11-25: X11, after scrolling back to lines 195–226, Shift alone left the view unchanged (screenshots identical in the terminal area). Shift+Click extending a selection and Ctrl+Shift+Up were not re-tested and remain open
 
 ### ISSUE-032 — `window-width` / `window-height` give 2 rows fewer on Linux
 
@@ -957,7 +957,7 @@ rejected by its plan case on a real machine, then either becomes an
 - Re-run 2026-11-25 on `3235ce8` (headless GNOME, X11, 2 panes, `yes` in one): single-pane Ctrl+C lands in 0.56 s; typing into the idle pane arrives in 1–3 s (about 1.2 s of that is injection); Ctrl+C into the flooding pane after a split could not be tested because neither a click nor Ctrl+Alt+[ moved focus in the harness, even without a flood (harness or a separate X11 bug, unknown). During the flood the main thread sat in `drm_syncobj_array_wait_timeout` (a GPU fence wait) in 35–40 of 40 samples, not in a grid-lock futex. The reported "input never arrives" did not reproduce for the idle pane; root cause unknown.
 - Re-run 2026-11-26 on `d3d9a2f` (headless GNOME, one RemoteDesktop session per run, IBus 1.5.34 XIM, libX11 1.8.13): reproduces. With `sleep 4; yes stream-line` in pane 1 and `touch <file>` typed into the idle pane 2, the text arrived reordered (`/tmp/claude-1000` → `/tmp/claudet1n000ud`) in 3 of 3 runs. Without XIM (`XMODIFIERS=@im=none`) it arrived in order but up to about 0.5 s late; with IBus and no flood it was in order; Wayland was in order.
 - Root cause: step 1 of the Linux native loop (`src/platform/linux/native/app.rs`) drained user events until the channel was empty. Each PTY `WakeUp` re-arms its waker and renders; on X11 the render waits about 15 ms for vsync (fence plus acquire), long enough for the PTY reader to queue the next `WakeUp`, so the drain went on while the pane streamed and the X11 connection was not polled. Measured with temporary instrumentation: 19–33 renders per cycle, 115–530 ms cycles, all of it in step 1; Wayland at most 3 user events per cycle (its render waits for the frame callback). With XIM the backlog made IBus-forwarded keys go through `XFilterEvent` again, the same event (same serial and time) up to 3 times over about 12 s, so keys overtook each other.
-- Status: fixed on fix/event-loop-wakeup-starvation (`49324e7`), e2e re-run 2026-11-26 with the same harness and IBus XIM on: typed command in order and run at once 3 of 3 (2 panes) and 1 of 1 (4 panes); Ctrl+C in the flooding pane 0.05–0.07 s (2 runs, split) and 0.05 s (single pane); `@im=none` and Wayland also in order. `+bench-pty-throughput` ascii in-app, 3 runs each: X11 31.4–34.0 MB/s before, 33.8–35.1 MB/s after; Wayland 35.2–35.6 MB/s before (one 9.6 MB/s first-run outlier), 32.3–36.4 MB/s after. Regression test: `events_queued_while_delivering_wait_for_the_next_cycle`. Real desktop, physical keyboard, 2026-11-26 (Ubuntu 26.04.1 GNOME Wayland session, X11 backend through XWayland, IBus XIM, the maintainer typing; the shell logged when each command finished and a watcher when `yes` started and stopped; the Ctrl+C keystroke itself was not timed): `sleep 3; yes stream-line` in pane 1, Ctrl+Shift+D, `echo …` typed into pane 2, then Ctrl+C in pane 1. Before (`d3d9a2f`): typing in pane 2 lagged, and the `echo` reached the shell only after the flood had ended (31 s after `yes` stopped); `yes` ran 22 s and 38 s in the two attempts. After: the `echo` ran while `yes` was still streaming (10.7 s into it), and the maintainer reported no lag and that Ctrl+C stopped it at once. The macOS loop has the same drain; it is listed as verification debt in `ROADMAP.md`.
+- Status: fixed on main in #104 (`5a5ece5`; branch commit `49324e7`), e2e re-run 2026-11-26 with the same harness and IBus XIM on: typed command in order and run at once 3 of 3 (2 panes) and 1 of 1 (4 panes); Ctrl+C in the flooding pane 0.05–0.07 s (2 runs, split) and 0.05 s (single pane); `@im=none` and Wayland also in order. `+bench-pty-throughput` ascii in-app, 3 runs each: X11 31.4–34.0 MB/s before, 33.8–35.1 MB/s after; Wayland 35.2–35.6 MB/s before (one 9.6 MB/s first-run outlier), 32.3–36.4 MB/s after. Regression test: `events_queued_while_delivering_wait_for_the_next_cycle`. Real desktop, physical keyboard, 2026-11-26 (Ubuntu 26.04.1 GNOME Wayland session, X11 backend through XWayland, IBus XIM, the maintainer typing; the shell logged when each command finished and a watcher when `yes` started and stopped; the Ctrl+C keystroke itself was not timed): `sleep 3; yes stream-line` in pane 1, Ctrl+Shift+D, `echo …` typed into pane 2, then Ctrl+C in pane 1. Before (`d3d9a2f`): typing in pane 2 lagged, and the `echo` reached the shell only after the flood had ended (31 s after `yes` stopped); `yes` ran 22 s and 38 s in the two attempts. After: the `echo` ran while `yes` was still streaming (10.7 s into it), and the maintainer reported no lag and that Ctrl+C stopped it at once. The macOS loop has the same drain; it is listed as verification debt in `ROADMAP.md`.
 
 ### ISSUE-044 — `yo` retries a refused connection for 4 minutes
 
@@ -1086,7 +1086,7 @@ rejected by its plan case on a real machine, then either becomes an
   the desktop text handler opens it and `$EDITOR` is ignored.
 - Evidence: headless harness run (input via Mutter RemoteDesktop); logs
   and screenshots kept outside the repo
-- Status: fixed on fix/docs-guide-sync (`09fa9d5`)
+- Status: fixed on main in #105 (`de11e29`; branch commit `09fa9d5`)
 - Fix evidence: Same fix as ISSUE-006 (decision D2): `shortcuts.md` now
   describes `open -t` / `xdg-open`.
 
