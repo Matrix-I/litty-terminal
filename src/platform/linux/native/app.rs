@@ -325,6 +325,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         let mut events: [libc::epoll_event; 32] = std::mem::zeroed();
         let mut timer_fired = false;
         // Reused every cycle: the idle loop must not allocate (TD-10).
+        let mut user_events: Vec<T> = Vec::new();
         let mut wins: Vec<NativeWindow> = Vec::new();
         let mut window_events: Vec<WindowEvent> = Vec::new();
         let mut pending: Vec<(WindowId, WindowEvent)> = Vec::new();
@@ -333,9 +334,7 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
 
         while !native_ctx.exit_flag.load(Ordering::SeqCst) {
             // 1. Process user events from proxy
-            while let Ok(user_ev) = rx.try_recv() {
-                handler.user_event(&loop_ctx, user_ev);
-            }
+            deliver_queued(&rx, &mut user_events, |user_ev| handler.user_event(&loop_ctx, user_ev));
 
             // 2. Poll each window's connection: its own for X11, the
             //    shared one (dispatched once here) for Wayland
@@ -435,6 +434,20 @@ pub fn run_native<T: 'static, H: EventHandler<T>>(make: impl FnOnce(EventProxy<T
         libc::close(timer_fd);
         libc::close(event_fd);
         libc::close(epoll_fd);
+    }
+}
+
+/// Deliver the user events queued when the cycle starts; ones sent while
+/// they run wait for the next cycle (their send already woke the eventfd,
+/// so it starts at once). A PTY wake-up re-arms its waker before rendering,
+/// and output during the render queues another: draining until the channel
+/// was empty rendered back to back while a pane streamed output, and the
+/// windows were not polled, so X11 keys waited (ISSUE-043). `queued` is the
+/// loop's reused buffer, so a cycle does not allocate.
+fn deliver_queued<T>(rx: &Receiver<T>, queued: &mut Vec<T>, mut deliver: impl FnMut(T)) {
+    queued.extend(rx.try_iter());
+    for event in queued.drain(..) {
+        deliver(event);
     }
 }
 
@@ -560,6 +573,29 @@ mod tests {
         assert_eq!(watch_portal(-1), None);
         assert_eq!(super::super::portal::dispatch(), Err(super::super::portal::Disconnected));
         super::super::portal::reopen_for_test();
+    }
+
+    /// A PTY wake-up re-arms its waker and renders; output arriving during
+    /// the render queues the next wake-up. Draining until the channel was
+    /// empty then rendered back to back while a pane streamed output, and
+    /// window input (X11 keys, Ctrl+C) waited for the flood (ISSUE-043).
+    #[test]
+    fn events_queued_while_delivering_wait_for_the_next_cycle() {
+        let (tx, rx) = channel();
+        tx.send(0).unwrap();
+        tx.send(1).unwrap();
+        let mut queued = Vec::new();
+        let mut delivered = Vec::new();
+        deliver_queued(&rx, &mut queued, |n: u32| {
+            delivered.push(n);
+            // Bounded, so the drain-until-empty bug fails instead of hanging.
+            if n < 100 {
+                tx.send(n + 2).unwrap();
+            }
+        });
+        assert_eq!(delivered, [0, 1], "events sent during delivery ran in the same cycle");
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), [2, 3], "re-queued events kept for the next cycle, in order");
+        assert!(queued.is_empty());
     }
 
     /// The registry must not keep a window alive: its strong reference kept
