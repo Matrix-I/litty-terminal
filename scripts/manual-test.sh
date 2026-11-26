@@ -120,7 +120,8 @@ elif mode == "anim":
 elif mode == "shm":
     from multiprocessing import shared_memory, resource_tracker
     data = png(160, 80)
-    shm = shared_memory.SharedMemory(create=True, size=len(data), name="lpl%d" % os.getpid())
+    # The terminal only opens segments named /litty-* (allowlist in src/terminal/graphics/kitty.rs).
+    shm = shared_memory.SharedMemory(create=True, size=len(data), name="litty-%d" % os.getpid())
     shm.buf[:len(data)] = data
     resource_tracker.unregister(shm._name, "shared_memory")  # the terminal unlinks it
     send("a=T,f=100,t=s,S=%d,q=2" % len(data), shm._name.encode())
