@@ -17,7 +17,7 @@ Litty reads its configuration from:
 | **Window & Layout** | `window-width` | Integer $\ge 10$ | `None` (auto) | Initial terminal width in grid columns (must be set with `window-height`) |
 | | `window-height` | Integer $\ge 4$ | `None` (auto) | Initial terminal height in grid rows (must be set with `window-width`) |
 | | `background-opacity` | Float `0.0` .. `1.0` | `1.0` | Window transparency (0 = transparent, 1 = opaque) |
-| | `background-blur` | `true`, `false`, or uint `0`..`255` | `0` (off) | macOS vibrancy blur radius behind transparent windows (`true` = 20 pt) |
+| | `background-blur` | `true`, `false`, or uint `0`..`255` | `0` (off) | macOS vibrancy blur radius behind transparent windows (`true` = 20 pt). Alias: `background-blur-radius` |
 | | `window-colorspace` | `srgb`, `display-p3` | `srgb` | Surface rendering color space (macOS) |
 | | `window-padding-x` | Float (points) or `left,right` | `4.0` | Horizontal padding between window edge and terminal grid |
 | | `window-padding-y` | Float (points) or `top,bottom` | `4.0` | Vertical padding between window edge and terminal grid |
@@ -134,6 +134,8 @@ keybind = cmd+d=unbind
 | Variable | Values | Effect |
 |---|---|---|
 | `LITTY_BACKEND` | `x11` (default), `wayland` | Linux window system. `wayland` opens native Wayland windows (falls back to X11 if the compositor cannot be reached); it is a preview: keyboard, mouse, fractional scaling, Litty's own title bar (moving and resizing the window), text-input-v3 IME (checked with IBus Unikey Telex on GNOME), local dead keys/Compose (preserved across keymap replacements), clipboard/primary selection, local file drops, frame-callback occlusion and compositor-approved activation work; GNOME and KDE live checks plus Weston/sway/KWin headless checks have passed, while full desktop acceptance remains open. KDE coverage includes Telex, clipboard/primary, Dolphin drops, pointer move/resize and live scaling; see the [KDE report](../validation/wayland-kde-2026-11-15.md). See the [validation report](../validation/wayland-integrated-2026-11-14.md) and [Wayland checklist](../plans/wayland-backend.md#acceptance-checklist). |
+| `LITTY_FONT` | Path to a font file | Primary font used when no configured `font-family` resolves; tried before the platform default fonts. |
+| `LITTY_FONT_SIZE` | Number, clamped to `6.0`..`72.0` | Default font size in points, replaced by `font-size` when the config sets it; an unparsable value falls back to `14.0`. |
 | `XDG_ACTIVATION_TOKEN` | Opaque launcher token | Linux Wayland only. Used once to request activation of the first window, then removed from the environment before any shell or helper is spawned. Focus and attention remain subject to compositor policy. |
 
 ## See also
