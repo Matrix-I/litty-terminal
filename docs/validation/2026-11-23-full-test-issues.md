@@ -111,7 +111,7 @@ Status after the automated macOS and Linux runs:
 | REV-07 | Confirmed → ISSUE-009; fixed on main in #105 (`de11e29`; branch commit `d7ebfa0`) |
 | REV-08 | Confirmed → ISSUE-004 |
 | REV-09 | Open: U-02 ran on Linux with a 2-line paste; the single line plus newline count was not checked |
-| REV-10 | Confirmed → ISSUE-019 |
+| REV-10 | Confirmed → ISSUE-019; fixed on fix/test-tooling (`c5d79bb`) |
 
 Found while writing the plan, by reading the source and documentation at
 `9fd8ab4`. These are **not test results**: each one must be confirmed or
@@ -255,6 +255,7 @@ rejected by its plan case on a real machine, then either becomes an
 - Evidence: `run/p3/P3-01.log`, `run/p3/P3-01-rerun.log`.
 - Notes: the test writes into `$HOME/Library/Caches` and assumes it
   exists, which is not true on a fresh CI user or a clean `HOME`.
+- Status: fix on fix/test-tooling (`5b6218e`), not yet verified: the test is macOS-only; run `HOME=$(mktemp -d) cargo test security_poc` on a Mac (the CI macOS runner's HOME already has Library/Caches, so CI only proves it compiles)
 
 ### ISSUE-003 — macOS reports no monitor refresh rate; scroll runs at 60 fps
 
@@ -406,6 +407,7 @@ rejected by its plan case on a real machine, then either becomes an
   say to build with the pinned key (as `bundle_macos.sh` does). The
   updater output names only the SHA-256 check; the minisign check is
   implied by the code path above, not printed.
+- Status: fixed on fix/test-tooling (`9f316b0`), R-02 of the full test plan now says to build with `LITTY_MINISIGN_PUBKEY="$(tail -n 1 resources/minisign.pub)"`
 
 ### ISSUE-012 — PTY test fails under a fresh `HOME` when `SHELL` is zsh
 
@@ -426,6 +428,7 @@ rejected by its plan case on a real machine, then either becomes an
 - Notes: the test spawns the user's `$SHELL` (`Pty::spawn_in`), so its
   result depends on the developer's shell and dotfiles. Same family as
   ISSUE-002.
+- Status: fixed on fix/test-tooling (`bf08bc1`), `HOME=<fresh> SHELL=/usr/bin/zsh cargo test shell_exit_is_reported_and_reaped` timed out before (pty.rs:1255) and passes after; `cargo test pty::` under the same env 21 passed. The two tests that type into the shell now use `/bin/sh`
 
 ### ISSUE-013 — `linux_xdg_open_dispatch_smoke` opens real apps on a desktop
 
@@ -448,6 +451,7 @@ rejected by its plan case on a real machine, then either becomes an
 - Notes: the test is marked "run via `scripts/linux/run.sh`" (container,
   no desktop); the plan lists it as a real-hardware case. Either run it
   only in the container or isolate it from the desktop session.
+- Status: fixed on fix/test-tooling (`aa026e8`, `96c6ac5`), the smoke runs only with `LITTY_XDG_OPEN_SMOKE=1`, which `scripts/linux/run.sh` sets; on the host without it the test prints a skip line and opens nothing; in the container image the smoke run alone passed (the full `run.sh` stops earlier on ISSUE-020); P2-05 in the full test plan now says container only
 
 ### ISSUE-014 — heap corruption abort in the `cargo test` step of `pre-release-check.sh`
 
@@ -557,6 +561,7 @@ rejected by its plan case on a real machine, then either becomes an
   `/System/Library/Sounds/Glass.aiff` (`:256`), `Cmd` wording in about 25
   prompts (for example `:154`, `:198`, `:275`); only group 26 checks `$OS`.
   No Linux substitutions are documented.
+- Status: fixed on fix/test-tooling (`c5d79bb`), clipboard via `wl-paste`/`xclip`, bell sound, `ls` colour flag and macOS wording chosen per OS, macOS-only groups 15 and 18 skip on Linux, a start note maps Cmd/Option to Linux keys; group 23 clipboard check auto-passed on Wayland in headless GNOME. Not verified: the xclip (X11) branch (xclip not installed), the bell sound (paplay missing), the macOS branches
 
 ### ISSUE-020 — `rounded_corners_fade_a_premultiplied_frame` fails in the container's full suite
 
@@ -827,6 +832,7 @@ rejected by its plan case on a real machine, then either becomes an
   name. Group 24 "under" also expects red cells to cover a z = −1 image,
   but by the kitty spec only z < −1073741824 goes under non-default
   backgrounds, which Litty does.
+- Status: fixed on fix/test-tooling (`349b6e4`), the script names the segment `/litty-<pid>`; in a private headless GNOME, `scripts/manual-test.sh 24` showed the shm image
 
 ### ISSUE-036 — Unicode-placeholder images show seams between rows on Wayland
 
@@ -1179,3 +1185,4 @@ rejected by its plan case on a real machine, then either becomes an
   `XMODIFIERS= cargo test`, 880 passed
 - Notes: The tests depend on the host's input method; they should clear
   `XMODIFIERS` or not open an input context.
+- Status: fixed on fix/test-tooling (`2407d58`, `347132b`), with the Unikey (ibus) input source active and XMODIFIERS=@im=ibus, `keycode_zero_presses_are_not_keys` and `a_window_after_a_closed_one_still_looks_up_text` failed before (`[Ime(Preedit("a"))]`, x11.rs:1905) and pass after; the tests now pin Xlib's built-in method and assert it opened; full host `cargo test` 882 + 1 + 14 passed
