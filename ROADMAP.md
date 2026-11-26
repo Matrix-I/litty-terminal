@@ -72,6 +72,10 @@ project's platform compatibility and verification rules.
 
 ## Verification debt
 
+- [ ] **macOS event loop may starve window events while a pane floods output (ISSUE-043 variant)**
+  - Found 2026-11-26 while fixing ISSUE-043 on Linux: `run_handlers_unpooled` in `src/platform/macos/native/app.rs` drains user events with `while let Ok(..) = rx.try_recv()`, the pattern that starved X11 input (each `WakeUp` re-arms the waker and renders; output arriving during the render queues the next `WakeUp`, so the drain never ends while output streams).
+  - Not reproduced on macOS: whether a render there blocks long enough to re-queue a `WakeUp` is unknown. Verify first (V-04 on macOS: flood one pane, type into another, Ctrl+C in the flooding one), then apply the Linux fix (deliver only the events queued when the cycle starts) with its regression test.
+
 - [x] Manually test Kitty keys in the real app: letters, `Ctrl`/`Alt`+letter, `Esc`, `Tab` vs `Ctrl+I`, key repeat (verify `key_without_modifiers()` on macOS)
 - [x] Manually test OSC 8 hover (`Cmd`/`Ctrl` + mouse move underlines the link, preview pill shows the URI)
 - [x] **Historical Linux feature and stability validation** (user-confirmed, 2026-11-04)
