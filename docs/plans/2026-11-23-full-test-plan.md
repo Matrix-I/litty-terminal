@@ -125,7 +125,7 @@ verification steps plus release-only checks.
 | P2-02 | `cargo test -- --ignored warm_overlay_builders_do_not_allocate` | Pass | P | P | — |
 | P2-03 | Linux: `cargo test -- --ignored an_uploaded_image_is_drawn_in_the_same_frame a_given_up_frame_still_runs_its_uploads_and_signals_its_fence` with the Khronos validation layer enabled (`VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`) | Pass, zero VUID messages | — | B (2/2 pass; Khronos validation layer not installed, VUIDs not checked) | B (offscreen test, same run as X) |
 | P2-04 | Linux: `cargo test -- --ignored glyph_upload_cost --nocapture` | Record numbers (reference: 1024 glyphs ≈ 8 ms on Intel UHD 620) | — | P (1 glyph 0.26 ms, 64 1.21 ms, 1024 8.26 ms) | — |
-| P2-05 | Linux: `cargo test -- --ignored linux_xdg_open_dispatch_smoke --nocapture` | Pass | — | F ISSUE-013 | — |
+| P2-05 | Linux, container only: `bash scripts/linux/test.sh` (its run.sh sets `LITTY_XDG_OPEN_SMOKE=1`; on a desktop the smoke opens real apps, and without the variable it skips and reports ok) | Pass | — | F ISSUE-013 | — |
 | P2-06 | Linux X11: `cargo test -- --ignored set_fullscreen_is_reported_back_by_the_window_manager` | Pass | — | P (GNOME 50 XWayland) | — |
 | P2-07 | Remaining ignored probes: `grid_throughput_probe`, `resize_probe`, `benchmark_*`, `perf_legit_images`, `theme_lookup_timing` with `--release --ignored --nocapture` | Run to completion; record numbers | P (9 probes) | P (9 probes) | — |
 | P2-08 | Linux: `bash scripts/linux/test.sh` (container: check, clippy, tests under Xvfb, shell smoke, X11, Weston, sway smoke) | Exit 0 | — | F ISSUE-020 (3/3 full runs; smoke steps pass when run by hand) | — |
